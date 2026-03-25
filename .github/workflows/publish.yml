@@ -48,7 +48,7 @@ jobs:
       id-token: write
     environment:
       name: testpypi
-      url: https://test.pypi.org/p/pycodex
+      url: https://test.pypi.org/p/python-codex
     steps:
       - name: Download distributions
         uses: actions/download-artifact@v4
@@ -69,7 +69,7 @@ jobs:
       id-token: write
     environment:
       name: pypi
-      url: https://pypi.org/p/pycodex
+      url: https://pypi.org/p/python-codex
     steps:
       - name: Download distributions
         uses: actions/download-artifact@v4

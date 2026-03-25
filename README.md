@@ -1,7 +1,7 @@
-# pycodex
+# python-codex
 
-This repository is intentionally starting with a minimal placeholder package and
-GitHub Actions-based PyPI publishing pipeline.
+This repository is intentionally starting with a minimal placeholder release for
+the `python-codex` package and a GitHub Actions-based PyPI publishing pipeline.
 
 ## What is included
 

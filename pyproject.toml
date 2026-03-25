@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pycodex"
+name = "python-codex"
 version = "0.0.1"
-description = "Placeholder initial release for pycodex."
+description = "Placeholder initial release for python-codex."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
