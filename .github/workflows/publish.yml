@@ -13,6 +13,9 @@ on:
           - pypi
   release:
     types: [published]
+  push:
+    tags:
+      - "v*"
 
 jobs:
   build:
@@ -59,7 +62,7 @@ jobs:
           repository-url: https://test.pypi.org/legacy/
 
   publish-pypi:
-    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.repository == 'pypi')
+    if: github.event_name == 'release' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.repository == 'pypi')
     needs: build
     runs-on: ubuntu-latest
     permissions:
