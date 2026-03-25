@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pycodex"
+version = "0.0.1"
+description = "Placeholder initial release for pycodex."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Randomizez/pycodex"
+Issues = "https://github.com/Randomizez/pycodex/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pycodex"]
