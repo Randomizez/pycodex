@@ -1,5 +1,8 @@
 # pycodex
 
+PyPI distribution name: `codex-python`  
+Import path and CLI command remain `pycodex`.
+
 这个仓库把上游 Codex（`https://github.com/openai/codex`）里最核心的 agent
 闭环先抽成一个尽量小的 Python 版本，重点保留两层结构：
 

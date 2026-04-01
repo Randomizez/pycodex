@@ -3,6 +3,7 @@
 ## Repo Priors
 
 - 这个仓库的目标是尽可能准确地复现上游 Codex（`https://github.com/openai/codex`），不是发明一个“类似 Codex”的简化替代品；凡是行为差异都应优先朝原版 Codex 收敛。
+- 发布到 PyPI 时，distribution name 用 `codex-python`；代码包目录、`import` 路径和 CLI 命令仍保持 `pycodex`。
 - 包结构直接放在 repo 根目录下的 `pycodex/`，不使用 `src/` layout。
 - Rust 到 Python 的主映射：`submission_loop` -> `pycodex/runtime.py`，`run_turn` / `run_sampling_request` -> `pycodex/agent.py`，`ToolRouter` -> `pycodex/tools/base_tool.py` + `pycodex/tools/`.
 - 会话协议先收敛到 4 类 item：`UserMessage`、`AssistantMessage`、`ToolCall`、`ToolResult`；只有这层稳定后再扩 richer event model。

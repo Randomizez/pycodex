@@ -3,7 +3,7 @@ requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pycodex"
+name = "codex-python"
 version = "0.1.0"
 description = "A minimal Python extraction of Codex's main agent loop"
 readme = "README.md"
