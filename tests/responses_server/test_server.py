@@ -4,6 +4,7 @@ import json
 
 from fastapi.testclient import TestClient
 from responses_server import CompatServerConfig, ManagedResponseServer
+from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
     APPLY_PATCH_CHAT_INPUT_DESCRIPTION,
@@ -115,6 +116,192 @@ def test_responses_server_preserves_request_model_without_default_override(
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["model"] == "gpt-5.4"
+
+
+def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("Hello"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="stepfun",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {"role": "user", "content": "hi"},
+    ]
+
+
+def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def _tag_vllm_payload(
+        outcomming_request: dict[str, object],
+    ) -> dict[str, object]:
+        outcomming_request["provider_tag"] = "vllm"
+        return outcomming_request
+
+    monkeypatch.setitem(
+        PAYLOAD_POST_PROCESSORS,
+        "vllm",
+        _tag_vllm_payload,
+    )
+
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("Hello"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="unknown-provider",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["provider_tag"] == "vllm"
+
+
+def test_responses_server_uses_model_provider_payload_processor_for_each_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def _tag_demo_payload(
+        outcomming_request: dict[str, object],
+    ) -> dict[str, object]:
+        outcomming_request["provider_tag"] = "demo"
+        return outcomming_request
+
+    monkeypatch.setitem(
+        PAYLOAD_POST_PROCESSORS,
+        "demo",
+        _tag_demo_payload,
+    )
+
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            build_tool_call_chunks(
+                "ws_1",
+                "web_search",
+                ['{"query":"demo"}'],
+            ),
+            build_text_chunks("done"),
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="demo",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Search the web, then answer.",
+                                }
+                            ],
+                        }
+                    ],
+                    "tools": [
+                        {
+                            "type": "web_search",
+                            "external_web_access": True,
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 2
+    first_request = json.loads(request_files[0].read_text())
+    second_request = json.loads(request_files[1].read_text())
+    assert first_request["body"]["provider_tag"] == "demo"
+    assert second_request["body"]["provider_tag"] == "demo"
 
 
 def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path) -> None:

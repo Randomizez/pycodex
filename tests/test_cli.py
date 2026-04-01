@@ -218,8 +218,12 @@ def test_launch_chat_completion_compat_server_normalizes_vllm_base_url(
             seen["started"] = True
 
     monkeypatch.setattr("responses_server.app.ManagedResponseServer", _FakeManagedServer)
-    launch_chat_completion_compat_server("http://127.0.0.1:18000")
+    launch_chat_completion_compat_server(
+        "http://127.0.0.1:18000",
+        model_provider="vllm",
+    )
     assert seen["server_config"].outcomming_base_url == "http://127.0.0.1:18000/v1"
+    assert seen["server_config"].model_provider == "vllm"
     assert seen["started"] is True
 
 
@@ -329,9 +333,11 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     def fake_launch(
         base_url,
         api_key_env=None,
+        model_provider=None,
     ):
         started["endpoint"] = base_url
         started["api_key_env"] = api_key_env
+        started["model_provider"] = model_provider
         return _FakeManagedServer()
 
     def fake_build_runtime(
@@ -367,6 +373,7 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
 
     assert exit_code == 0
     assert started["endpoint"] == "http://127.0.0.1:18000"
+    assert started["model_provider"] == "vllm"
     assert started["session_mode"] == "tui"
     assert started["prompt_text"] == "Reply with exactly OK."
     assert started["base_url_override"] == "http://127.0.0.1:18001/v1"

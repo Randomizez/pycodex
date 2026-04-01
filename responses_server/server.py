@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .config import CompatServerConfig
+from .payload_processors import post_process_outcomming_request
 from .session_store import SessionStore
 from .stream_router import StreamRouter
 
@@ -37,6 +38,10 @@ class ResponseServer:
         request_headers: dict[str, str],
     ):
         outcomming_request = self._stream_router.build_outcomming_request(request_body)
+        outcomming_request = post_process_outcomming_request(
+            outcomming_request,
+            self._config.model_provider,
+        )
         custom_tool_names = self._stream_router.collect_custom_tool_names(request_body)
         session_id = (
             request_headers.get("x-client-request-id")

@@ -318,11 +318,13 @@ def _build_model_client(
         if vllm_endpoint:
             managed_server = launch_chat_completion_compat_server(
                 vllm_endpoint,
+                model_provider="vllm",
             )
         else:
             managed_server = launch_chat_completion_compat_server(
                 provider_config.base_url,
                 provider_config.api_key_env,
+                model_provider=provider_config.provider_name,
             )
         atexit.register(managed_server.stop)
         url, key_env = (

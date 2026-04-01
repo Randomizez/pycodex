@@ -45,6 +45,7 @@
 - `responses_server/app.py`：FastAPI app 和 CLI 入口
 - `responses_server/server.py`：`ResponseServer`，负责持有 `SessionStore` 和 `StreamRouter`
 - `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming chat 请求和流路由
+- `responses_server/payload_processors.py`：按 `CompatServerConfig.model_provider` 选择 provider-specific payload `post_process`
 - `responses_server/tools/`：provider 侧工具适配层；当前放 mock `web_search` 和 custom-tool function wrapper
 - `responses_server/session_store.py`：最小隐藏状态存储
 
@@ -54,11 +55,18 @@
 
 ```bash
 uv run python -m responses_server \
-  --outcomming-base-url http://127.0.0.1:8000/v1
+  --outcomming-base-url http://127.0.0.1:8000/v1 \
+  --model-provider vllm
 ```
 
 默认会在本地启动一个 incomming Responses 服务；真正监听地址由 `--host` 和 `--port`
 控制。
+
+如果下游 provider 需要对 chat payload 做定制化改写，可以在
+`responses_server/payload_processors.py` 里注册对应 `model_provider -> proc_fn`
+映射；server 会在真正发出每一条 outcomming `/v1/chat/completions` 请求前，
+对 canonical `outcomming_request` 调一次这个 hook，默认按 `vllm` 处理。
+当前内置规则里，`vllm` 是 identity，`stepfun` 会删除所有 `developer` role。
 
 ## 验证
 

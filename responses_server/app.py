@@ -53,6 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--outcomming-base-url", required=True)
     parser.add_argument("--outcomming-api-key-env", default=None)
+    parser.add_argument("--model-provider", default=None)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
     return parser
 
@@ -69,8 +70,13 @@ def run_server(config: CompatServerConfig) -> None:
 def launch_chat_completion_compat_server(
     base_url: str,
     api_key_env: str | None = None,
+    model_provider: str | None = None,
 ):
-    config = CompatServerConfig.from_base_url(base_url, api_key_env)
+    config = CompatServerConfig.from_base_url(
+        base_url,
+        api_key_env,
+        model_provider=model_provider,
+    )
     server = ManagedResponseServer(config)
     server.start()
     return server
@@ -191,6 +197,7 @@ def main() -> None:
             port=args.port,
             outcomming_base_url=args.outcomming_base_url,
             outcomming_api_key_env=args.outcomming_api_key_env,
+            model_provider=args.model_provider,
             timeout_seconds=args.timeout_seconds,
         )
     )

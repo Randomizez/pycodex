@@ -11,6 +11,7 @@ class CompatServerConfig:
     port: int = 0
     outcomming_base_url: str = "http://127.0.0.1:8000/v1"
     outcomming_api_key_env: str | None = None
+    model_provider: str | None = None
     timeout_seconds: float = 120.0
 
     def outcomming_api_key(self) -> str | None:
@@ -33,6 +34,7 @@ class CompatServerConfig:
             port=0,
             outcomming_base_url=self.outcomming_base_url,
             outcomming_api_key_env=self.outcomming_api_key_env,
+            model_provider=self.model_provider,
             timeout_seconds=self.timeout_seconds,
         )
 
@@ -41,6 +43,7 @@ class CompatServerConfig:
         cls,
         outcomming_base_url: str,
         api_key_env: str | None = None,
+        model_provider: str | None = None,
     ) -> CompatServerConfig:
         parsed = urllib.parse.urlparse(outcomming_base_url)
         if not parsed.scheme or not parsed.netloc:
@@ -56,4 +59,5 @@ class CompatServerConfig:
         return cls(
             outcomming_base_url=outcomming_base_url,
             outcomming_api_key_env=api_key_env,
+            model_provider=model_provider,
         )
