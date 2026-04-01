@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pycodex"
+version = "0.1.0"
+description = "A minimal Python extraction of Codex's main agent loop"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "debugpy>=1.8.20",
+    "fastapi>=0.115",
+    "loguru>=0.7.3",
+    "prompt-toolkit>=3.0",
+    "requests>=2.31",
+    "tomli>=2.0; python_version < '3.11'",
+    "uvicorn>=0.32",
+]
+
+[project.scripts]
+pycodex = "pycodex.cli:main"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.uv]
+package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["pycodex"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+asyncio_mode = "auto"

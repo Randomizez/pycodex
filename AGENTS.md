@@ -1,0 +1,36 @@
+# pycodex AGENTS
+
+## Repo Priors
+
+- 这个仓库的目标是尽可能准确地复现上游 Codex（`https://github.com/openai/codex`），不是发明一个“类似 Codex”的简化替代品；凡是行为差异都应优先朝原版 Codex 收敛。
+- 包结构直接放在 repo 根目录下的 `pycodex/`，不使用 `src/` layout。
+- Rust 到 Python 的主映射：`submission_loop` -> `pycodex/runtime.py`，`run_turn` / `run_sampling_request` -> `pycodex/agent.py`，`ToolRouter` -> `pycodex/tools/base_tool.py` + `pycodex/tools/`.
+- 会话协议先收敛到 4 类 item：`UserMessage`、`AssistantMessage`、`ToolCall`、`ToolResult`；只有这层稳定后再扩 richer event model。
+- 优先保持主循环可测试、可替换：模型侧通过 `ModelClient` 协议接入；测试专用的 `ScriptedModelClient` 放在 `tests/fakes.py`，不要放进运行时包。
+- `ResponsesModelClient` 直接复用 `~/.codex/config.toml` 的 provider 配置；当前已验证这里的 responses provider 需要 `stream = true`，否则会返回 `400` 和 `Stream must be set to true`。
+- `responses_server` compat 层应透传请求里的 `model`；不要再做 “取 downstream /models 第一个 id 并强制覆盖请求模型” 这种兜底兼容。
+- `pycodex` 默认是最小交互 CLI；无 prompt 时进入 REPL，并通过 `AgentRuntime` 跑外层提交循环。当前会显示最小事件流、assistant 流式输出、简单 title/history（`/title`, `/history`），并默认注册一组与原版一一对应的本地工具子集。
+- 交互 CLI 的事件流展示优先表达用户可感知的阶段（例如工具开始/完成、模型回看工具结果），不要直接把内部 `iteration` 计数暴露成主要状态文案；`iterations` 应继续保留在 `TurnResult` 等程序化结果里。
+- prompt/context 相关逻辑统一放在 `pycodex/context.py`：`AgentLoop` 只维护真实会话历史；每轮请求前由 `ContextManager` 注入 base instructions、developer message、`AGENTS.md` 指令和 `<environment_context>`，且这些注入项不写回 history。
+- `AgentLoop` 的 turn-loop 语义要跟上游 `codex-rs/core/src/codex.rs` 一致：按 follow-up / tool handoff 自然收敛，不要加固定 12 轮之类的 hard cap，也不要保留本地专用的 iteration-limit 参数。
+- `README.md` 和 `docs/` 属于对齐工作的一部分：只要实现状态、对齐结论或使用方式发生实质变化，就应及时更新，不要让文档滞后于当前代码。
+- 新工具必须继承 `BaseTool`，然后通过 `ToolRegistry.register(tool_instance)` 接入；不要再给 registry 传散装 name/description/handler 参数。
+- request/tool schema 对齐应落在实际建模层（`ToolSpec` / `BaseTool` / request builder）本身，不要再引入 prompt 级别的 `serialized_tools` 旁路覆盖。
+- 当前已接入的内置工具子集：`shell`、`shell_command`、`exec_command`、`write_stdin`、`exec`、`wait`、`web_search`、`update_plan`、`request_user_input`、`request_permissions`、`spawn_agent`、`send_input`、`resume_agent`、`wait_agent`、`close_agent`、`apply_patch`、`grep_files`、`read_file`、`list_dir`、`view_image`。后续继续新增时，仍然按原版 Codex 内置工具逐个补齐。
+- `exec_command` / `write_stdin` 的 unified-exec 对齐要注意两层默认截断语义：省略 `max_output_tokens` 时也要按 upstream 默认 `10_000` token 预算裁剪 tool response；同时长时间未轮询的未读输出缓冲不能无限累积，需保留 upstream 同款 `1 MiB` head/tail。
+- 当前协议层已经支持两类原版工具载荷：普通 function tools，以及 `apply_patch` 这类 freeform/custom tools；工具结果也支持结构化 `input_image` content items，用于 `view_image` 这类会把图片喂回模型的工具。
+- 当前本地 runtime 已支持一个最小的 in-process sub-agent 管理层：`spawn_agent` / `send_input` / `resume_agent` / `wait_agent` / `close_agent` 通过共享的 `SubAgentManager` 驱动新的 `AgentRuntime` 实例，不依赖 CLI harness 自带的多 agent 基础设施。
+- 当前交互工具 `request_user_input` / `request_permissions` 已接到 `pycodex` 交互 CLI：它们会在一次 turn 内直接复用同一个 stdin/input_fn 向用户提问，因此只有交互模式下有完整体验；非交互调用默认会返回取消/不可用类错误。
+- `request_user_input` 对齐上游时要注意两层：Default mode 默认返回固定错误 `request_user_input is unavailable in Default mode`；Plan mode happy path 则要求每个问题都有非空 `options`、handler 会补 `isOther=true`，并把结构化答案序列化成 JSON 字符串加 `success=true` 塞回 `function_call_output`。
+- 在 `/data/pycodex` 本机已安装的 `codex-cli 0.115.0` 上，用 `tests/compare_request_user_input_roundtrip.py` 做 Plan-mode deterministic proxy live capture 时，upstream 的 second request `function_call_output` 当前不带 `success`；而 GitHub `openai/codex` `main` 源码里的 `FunctionCallOutputPayload` / `request_user_input` handler 支持传递 `success`。写对齐结论时要明确区分“installed CLI live capture”与“upstream main 源码建模”。
+- 当前 `exec` / `wait` 已有一个最小 code-mode 实现：底层通过 Node 子进程运行 JavaScript，自带 `text` / `image` / `store` / `load` / `exit` / `notify` / `yield_control` helper，并允许通过 `tools.<name>(...)` 调回本地已注册工具；`web_search` 当前作为 Responses API provider-native tool declaration 暴露给模型，不经过本地 ToolRegistry 执行。
+- 我们支持的 tools 必须和原版 Codex 内置 tools 一一对应：名称、定位、参数形状、交互模型、输出语义都应尽量对齐；不要混合多个原版工具的语义做一个“折中工具”。
+- 代码风格上不要使用 `*` 定义 keyword-only 参数；接口默认允许位置参数。
+- 本仓库使用 `uv`；本地默认没有预装测试依赖，开始工作前先跑 `uv sync --dev`，验证用 `uv run pytest`。
+- 上游 Codex 的 `steer` 目前是 TUI 交互层能力：开启后 `Enter` 会立即提交，`Tab` 才是排队。对齐时优先盯“下一次发出去的请求体”而不是内部控制流；当前 `pycodex` 已把 steer/queue 语义下沉到 `AgentRuntime`，并让 `AgentLoop.run_turn(texts)` 一次接收一批 user texts，这样下一次请求的 `input` 可以把多个 steer 文本按顺序并到 history 尾部。`CliSessionView.handle_event()` 把 spinner 再次拉起。要保证输入不被遮挡，需要让 view 知道“当前正在输入”，并在 input-active 期间抑制这些事件对 spinner 的 resume。
+- steer 的最小交互反馈已经约定为两条显式状态文案：入队时打印 `[steer] queued: <prompt>`，该条 queued turn 真正开始执行时打印 `[steer] inserted: <prompt>`。后续如果补更复杂的 queue UI，也应保留这两个核心状态语义。
+- 在当前 `pycodex` CLI 里，普通输入与 `/queue <message>` 只负责选择 runtime queue；真正的 steer/queue 差别由 `AgentRuntime.enqueue_user_turn(..., queue=...)` 决定。runtime 内部也应保持成两个同构 queue，而不是一个普通 queue 再叠一个 steer 专用旁路状态机。
+- 对上游 steer 语义要非常谨慎：正常 active-turn steer 首先走的是 `inject_input(...)` + `pending_input`，不是立刻 `spawn_task(...)` / `TurnAbortReason::Replaced`。更准确的理解是“在最近一次 sampling 边界插入”，而不是“任意时刻硬打断当前模型/工具调用”。
+- 用 `tests/fake_responses_server.py` 做 steer 时序对比时，不要把 proxy capture 文件的生成时刻当成“请求已到达 upstream”的信号；`build_proxy_handler(...)` 会等整条 upstream response 读完后才 `write_capture(...)`。如果要在第一条 request 仍未完成时注入 steer，应该同步等待 fake origin 自己收到第 1 条 POST。
+- 在本机做 steer fake-server 对比时，不要把用户本地 `config.toml` 里的 `service_tier` / fast-mode 设置混进“默认 steer”结论。`tests/compare_steer_request_bodies.py` 现在会给 upstream 和 `pycodex` 都生成临时 config，并去掉顶层 `service_tier` 后再比较 request body。
+- `x-codex-turn-metadata.workspaces` 的时机不是“整个 session 只发第一条请求”。当前对齐结论是：首个 turn 的后续 steer/follow-up request 也继续带 `workspaces`；切到后续新 turn 才省略。
