@@ -1,6 +1,6 @@
 # pycodex
 
-PyPI distribution name: `codex-python`  
+PyPI distribution name: `python-codex`  
 Import path and CLI command remain `pycodex`.
 
 这个仓库把上游 Codex（`https://github.com/openai/codex`）里最核心的 agent
