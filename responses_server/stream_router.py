@@ -36,11 +36,37 @@ class StreamRouter:
         self._config = config
         self._mock_web_search = WebSearchTool()
 
+    def _provider_capability(
+        self,
+        explicit_support: dict[str, bool],
+        default: bool | None = None,
+    ) -> bool:
+        provider_name = str(self._config.model_provider or "").strip().lower()
+        if provider_name in explicit_support:
+            return explicit_support[provider_name]
+        if "vllm" in explicit_support:
+            return explicit_support["vllm"]
+        if default is not None:
+            return default
+        raise KeyError("provider capability map is missing `vllm` fallback")
+
     def _supports_chat_reasoning(self) -> bool:
-        return str(self._config.model_provider or "").strip().lower() == "vllm"
+        # Unknown providers inherit the vLLM compatibility behavior unless a
+        # provider is explicitly declared otherwise.
+        return self._provider_capability(
+            {
+                "vllm": True,
+                "stepfun": True,
+            }
+        )
 
     def _supports_stream_usage(self) -> bool:
-        return str(self._config.model_provider or "").strip().lower() == "vllm"
+        return self._provider_capability(
+            {
+                "vllm": True,
+                "stepfun": True,
+            }
+        )
 
     def validate_incomming_request(
         self,

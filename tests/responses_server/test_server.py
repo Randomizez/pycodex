@@ -374,6 +374,83 @@ def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_cha
     ]
 
 
+def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_chat(
+    tmp_path,
+) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("done"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="stepfun",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        },
+                        {
+                            "type": "reasoning",
+                            "summary": [],
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "inspect repo",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "continue"}],
+                        },
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "reasoning": "inspect repo",
+            "content": "done",
+        },
+        {"role": "user", "content": "continue"},
+    ]
+
+
 def test_responses_server_preserves_request_model_without_default_override(
     tmp_path,
 ) -> None:
@@ -519,6 +596,84 @@ def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["provider_tag"] == "vllm"
+    assert request["body"]["stream_options"] == {"include_usage": True}
+
+
+def test_responses_server_unknown_provider_reconstructs_reasoning_history_like_vllm(
+    tmp_path,
+) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("done"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="unknown-provider",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        },
+                        {
+                            "type": "reasoning",
+                            "summary": [],
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "inspect repo",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "done"}],
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "continue"}],
+                        },
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "reasoning": "inspect repo",
+            "content": "done",
+        },
+        {"role": "user", "content": "continue"},
+    ]
 
 
 def test_responses_server_uses_model_provider_payload_processor_for_each_request(
