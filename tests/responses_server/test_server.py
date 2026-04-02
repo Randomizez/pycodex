@@ -275,6 +275,104 @@ def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
     assert request["body"]["stream_options"] == {"include_usage": True}
 
 
+def test_responses_server_stepfun_uses_latest_usage_snapshot_instead_of_summing(
+    tmp_path,
+) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            {
+                "id": "chatcmpl_usage",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 25,
+                    "completion_tokens": 0,
+                    "total_tokens": 25,
+                },
+            },
+            {
+                "id": "chatcmpl_usage",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "OK"},
+                        "finish_reason": None,
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 25,
+                    "completion_tokens": 92,
+                    "total_tokens": 117,
+                },
+            },
+            {
+                "id": "chatcmpl_usage",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 25,
+                    "completion_tokens": 93,
+                    "total_tokens": 118,
+                },
+            },
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="stepfun",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    assert '"input_tokens": 25' in body
+    assert '"output_tokens": 93' in body
+    assert '"total_tokens": 118' in body
+    assert '"input_tokens": 75' not in body
+    assert '"output_tokens": 185' not in body
+    assert '"total_tokens": 260' not in body
+
+
 def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
 ) -> None:

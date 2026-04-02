@@ -199,21 +199,24 @@ class StreamRouter:
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
-        usage_totals: dict[str, object] = {}
+        latest_usage: dict[str, object] = {}
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = incomming_stream
 
         while True:
             tool_calls: dict[int, dict[str, object]] = {}
+            current_usage: dict[str, object] = {}
             for chunk in current_stream:
                 for event_name, payload in self._consume_chat_chunk(
                     chunk,
                     reasoning_parts,
                     text_parts,
                     tool_calls,
-                    usage_totals,
+                    current_usage,
                 ):
                     yield event_name, payload
+            if current_usage:
+                latest_usage = json.loads(json.dumps(current_usage))
 
             hydrate_tool_call_names(tool_calls, current_request)
             mock_search_calls, ordinary_tool_calls = partition_tool_calls(
@@ -277,8 +280,8 @@ class StreamRouter:
                     "id": stored_response.response_id,
                     "output": [],
                     **(
-                        {"usage": json.loads(json.dumps(usage_totals))}
-                        if usage_totals
+                        {"usage": json.loads(json.dumps(latest_usage))}
+                        if latest_usage
                         else {}
                     ),
                 },
@@ -542,12 +545,12 @@ class StreamRouter:
         reasoning_parts: list[str],
         text_parts: list[str],
         tool_calls: dict[int, dict[str, object]],
-        usage_totals: dict[str, object],
+        current_usage: dict[str, object],
     ) -> list[tuple[str, dict[str, object]]]:
         events: list[tuple[str, dict[str, object]]] = []
         usage = payload.get("usage")
         if isinstance(usage, dict):
-            self._accumulate_usage(usage_totals, usage)
+            self._capture_usage_snapshot(current_usage, usage)
 
         choices = payload.get("choices") or []
         if not isinstance(choices, list):
@@ -622,9 +625,9 @@ class StreamRouter:
 
         return events
 
-    def _accumulate_usage(
+    def _capture_usage_snapshot(
         self,
-        usage_totals: dict[str, object],
+        current_usage: dict[str, object],
         usage: dict[str, object],
     ) -> None:
         scalar_mappings = (
@@ -637,7 +640,7 @@ class StreamRouter:
         )
         for key, value in scalar_mappings:
             if isinstance(value, int):
-                usage_totals[key] = int(usage_totals.get(key, 0)) + value
+                current_usage[key] = value
 
         detail_mappings = (
             (
@@ -654,23 +657,7 @@ class StreamRouter:
         )
         for key, value in detail_mappings:
             if isinstance(value, dict):
-                target = usage_totals.setdefault(key, {})
-                if isinstance(target, dict):
-                    self._merge_usage_details(target, value)
-
-    def _merge_usage_details(
-        self,
-        target: dict[str, object],
-        incoming: dict[str, object],
-    ) -> None:
-        for key, value in incoming.items():
-            if isinstance(value, int):
-                target[key] = int(target.get(key, 0)) + value
-                continue
-            if isinstance(value, dict):
-                nested = target.setdefault(key, {})
-                if isinstance(nested, dict):
-                    self._merge_usage_details(nested, value)
+                current_usage[key] = json.loads(json.dumps(value))
 
     def _build_output_items(
         self,
