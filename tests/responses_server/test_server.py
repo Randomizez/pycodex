@@ -212,7 +212,13 @@ def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
                 "choices": [],
                 "usage": {
                     "prompt_tokens": 11,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 3,
+                    },
                     "completion_tokens": 7,
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 5,
+                    },
                     "total_tokens": 18,
                 },
             },
@@ -255,9 +261,13 @@ def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
 
     assert status == 200
     assert '"usage"' in body
-    assert '"prompt_tokens": 11' in body
-    assert '"completion_tokens": 7' in body
+    assert '"input_tokens": 11' in body
+    assert '"output_tokens": 7' in body
     assert '"total_tokens": 18' in body
+    assert '"input_tokens_details"' in body
+    assert '"cached_tokens": 3' in body
+    assert '"output_tokens_details"' in body
+    assert '"reasoning_tokens": 5' in body
 
     request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
     assert len(request_files) == 1

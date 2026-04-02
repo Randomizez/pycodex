@@ -173,7 +173,7 @@ class StreamRouter:
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
-        usage_totals: dict[str, int] = {}
+        usage_totals: dict[str, object] = {}
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = incomming_stream
 
@@ -251,7 +251,7 @@ class StreamRouter:
                     "id": stored_response.response_id,
                     "output": [],
                     **(
-                        {"usage": dict(usage_totals)}
+                        {"usage": json.loads(json.dumps(usage_totals))}
                         if usage_totals
                         else {}
                     ),
@@ -516,7 +516,7 @@ class StreamRouter:
         reasoning_parts: list[str],
         text_parts: list[str],
         tool_calls: dict[int, dict[str, object]],
-        usage_totals: dict[str, int],
+        usage_totals: dict[str, object],
     ) -> list[tuple[str, dict[str, object]]]:
         events: list[tuple[str, dict[str, object]]] = []
         usage = payload.get("usage")
@@ -598,13 +598,53 @@ class StreamRouter:
 
     def _accumulate_usage(
         self,
-        usage_totals: dict[str, int],
+        usage_totals: dict[str, object],
         usage: dict[str, object],
     ) -> None:
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            value = usage.get(key)
+        scalar_mappings = (
+            ("input_tokens", usage.get("input_tokens", usage.get("prompt_tokens"))),
+            (
+                "output_tokens",
+                usage.get("output_tokens", usage.get("completion_tokens")),
+            ),
+            ("total_tokens", usage.get("total_tokens")),
+        )
+        for key, value in scalar_mappings:
             if isinstance(value, int):
                 usage_totals[key] = int(usage_totals.get(key, 0)) + value
+
+        detail_mappings = (
+            (
+                "input_tokens_details",
+                usage.get("input_tokens_details", usage.get("prompt_tokens_details")),
+            ),
+            (
+                "output_tokens_details",
+                usage.get(
+                    "output_tokens_details",
+                    usage.get("completion_tokens_details"),
+                ),
+            ),
+        )
+        for key, value in detail_mappings:
+            if isinstance(value, dict):
+                target = usage_totals.setdefault(key, {})
+                if isinstance(target, dict):
+                    self._merge_usage_details(target, value)
+
+    def _merge_usage_details(
+        self,
+        target: dict[str, object],
+        incoming: dict[str, object],
+    ) -> None:
+        for key, value in incoming.items():
+            if isinstance(value, int):
+                target[key] = int(target.get(key, 0)) + value
+                continue
+            if isinstance(value, dict):
+                nested = target.setdefault(key, {})
+                if isinstance(nested, dict):
+                    self._merge_usage_details(nested, value)
 
     def _build_output_items(
         self,
