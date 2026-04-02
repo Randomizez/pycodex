@@ -39,6 +39,9 @@ class StreamRouter:
     def _supports_chat_reasoning(self) -> bool:
         return str(self._config.model_provider or "").strip().lower() == "vllm"
 
+    def _supports_stream_usage(self) -> bool:
+        return str(self._config.model_provider or "").strip().lower() == "vllm"
+
     def validate_incomming_request(
         self,
         incomming_request: dict[str, object],
@@ -100,6 +103,8 @@ class StreamRouter:
             ),
             "stream": True,
         }
+        if self._supports_stream_usage():
+            payload["stream_options"] = {"include_usage": True}
 
         tools = incomming_request.get("tools") or []
         if tools:
@@ -168,6 +173,7 @@ class StreamRouter:
 
         text_parts: list[str] = []
         reasoning_parts: list[str] = []
+        usage_totals: dict[str, int] = {}
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = incomming_stream
 
@@ -179,6 +185,7 @@ class StreamRouter:
                     reasoning_parts,
                     text_parts,
                     tool_calls,
+                    usage_totals,
                 ):
                     yield event_name, payload
 
@@ -243,6 +250,11 @@ class StreamRouter:
                 "response": {
                     "id": stored_response.response_id,
                     "output": [],
+                    **(
+                        {"usage": dict(usage_totals)}
+                        if usage_totals
+                        else {}
+                    ),
                 },
             },
         )
@@ -504,8 +516,13 @@ class StreamRouter:
         reasoning_parts: list[str],
         text_parts: list[str],
         tool_calls: dict[int, dict[str, object]],
+        usage_totals: dict[str, int],
     ) -> list[tuple[str, dict[str, object]]]:
         events: list[tuple[str, dict[str, object]]] = []
+        usage = payload.get("usage")
+        if isinstance(usage, dict):
+            self._accumulate_usage(usage_totals, usage)
+
         choices = payload.get("choices") or []
         if not isinstance(choices, list):
             return events
@@ -578,6 +595,16 @@ class StreamRouter:
                     )
 
         return events
+
+    def _accumulate_usage(
+        self,
+        usage_totals: dict[str, int],
+        usage: dict[str, object],
+    ) -> None:
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            value = usage.get(key)
+            if isinstance(value, int):
+                usage_totals[key] = int(usage_totals.get(key, 0)) + value
 
     def _build_output_items(
         self,

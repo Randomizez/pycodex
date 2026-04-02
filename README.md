@@ -170,7 +170,8 @@ Current behavior:
   reasoning is now preserved across this path: chat chunks with `reasoning` or
   `reasoning_content` are translated back into Responses `reasoning` items, and
   historical `reasoning` items are replayed into downstream assistant messages
-  via the `reasoning` field
+  via the `reasoning` field. Streaming token usage is also requested from vLLM
+  and forwarded to the final `response.completed.response.usage`
 - `pycodex doctor` checks config, `.env`, API keys, DNS, TCP/TLS, and an
   optional live Responses API request
 

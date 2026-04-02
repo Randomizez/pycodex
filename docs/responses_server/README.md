@@ -24,6 +24,7 @@
 - 流式 assistant 文本
 - vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
+- vLLM streaming `usage` -> final `response.completed.response.usage`
 - 普通 function tools
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）

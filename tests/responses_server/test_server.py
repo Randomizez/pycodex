@@ -188,6 +188,83 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert request["path"] == "/v1/chat/completions"
 
 
+def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            {
+                "id": "chatcmpl_usage",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "done"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_usage",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 11,
+                    "completion_tokens": 7,
+                    "total_tokens": 18,
+                },
+            },
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="vllm",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    assert '"usage"' in body
+    assert '"prompt_tokens": 11' in body
+    assert '"completion_tokens": 7' in body
+    assert '"total_tokens": 18' in body
+
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["stream_options"] == {"include_usage": True}
+
+
 def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
 ) -> None:
