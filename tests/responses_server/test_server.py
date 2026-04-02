@@ -76,6 +76,217 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> None:
     ]
 
 
+def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
+    tmp_path,
+) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning": "inspect ",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "reasoning_content": "repo",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "content": "done",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="vllm",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    assert '"type": "reasoning"' in body
+    assert '"type": "reasoning_text"' in body
+    assert '"text": "inspect repo"' in body
+    assert '"type": "message"' in body
+    assert '"text": "done"' in body
+
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["path"] == "/v1/chat/completions"
+
+
+def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_chat(
+    tmp_path,
+) -> None:
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("done"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="vllm",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        },
+                        {
+                            "type": "reasoning",
+                            "summary": [],
+                            "content": [
+                                {
+                                    "type": "reasoning_text",
+                                    "text": "inspect repo",
+                                }
+                            ],
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "echo",
+                            "arguments": '{"text":"hello"}',
+                        },
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call_1",
+                            "output": "hello",
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "echo",
+                            "description": "Echo text.",
+                            "parameters": {"type": "object"},
+                            "strict": False,
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "reasoning": "inspect repo",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "echo",
+                        "arguments": '{"text":"hello"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "hello",
+        },
+    ]
+
+
 def test_responses_server_preserves_request_model_without_default_override(
     tmp_path,
 ) -> None:

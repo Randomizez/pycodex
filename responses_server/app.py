@@ -134,7 +134,7 @@ class ManagedResponseServer:
                 for key, value in request.headers.items()
             }
             try:
-                response_server.stream_router.build_outcomming_request(request_body)
+                response_server.stream_router.validate_incomming_request(request_body)
             except UnsupportedIncommingFeature as exc:
                 return JSONResponse(
                     {"error": {"message": str(exc)}},

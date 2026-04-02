@@ -128,7 +128,7 @@ pycodex doctor
 - `/model <name>` 会切换当前交互会话后续请求使用的模型；`/model` 会显示当前模型和可选模型
 - 交互模式默认支持 steer：普通输入会走 runtime 的 steer 路径，当前请求会在下一个安全边界尽快停下，后续 steer 文本会按顺序并入下一次模型请求的 `input`；如需明确排队可用 `/queue <message>`，会打印 `[steer] queued: ...`，随后等该 turn 真正开始时再打印 `[steer] inserted: ...`
 - 当前默认注册一组与原版 Codex 一一对应的本地工具子集：`shell`、`shell_command`、`exec_command`、`write_stdin`、`exec`、`wait`、`web_search`、`update_plan`、`request_user_input`、`request_permissions`、`spawn_agent`、`send_input`、`resume_agent`、`wait_agent`、`close_agent`、`apply_patch`、`grep_files`、`read_file`、`list_dir`、`view_image`
-- `--vllm-endpoint http://host:port` 会自动拉起一个本地 `responses_server` compat 层；当 path 为空时会内部补 `/v1`，再把 `/responses` 请求转到下游 `/v1/chat/completions`，并在 provider 侧适配 mock `web_search` 与 custom-tool function wrapper
+- `--vllm-endpoint http://host:port` 会自动拉起一个本地 `responses_server` compat 层；当 path 为空时会内部补 `/v1`，继续把 `/responses` 请求转到下游 `/v1/chat/completions`。当前对 `model_provider = "vllm"` 已补上 reasoning 兼容：会把 chat chunk 里的 `reasoning` / `reasoning_content` 翻回 Responses `reasoning` item，并把历史里的 `reasoning` item 回放成下游 assistant message 的 `reasoning` 字段
 - `pycodex doctor` 会检查配置、`.env`、API key、DNS、TCP/TLS，以及可选的 live Responses API 请求
 
 它目前主要用于：

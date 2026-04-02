@@ -22,6 +22,8 @@
 - incomming `GET /v1/models`
 - outcomming `POST /v1/chat/completions`
 - 流式 assistant 文本
+- vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
+- vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
 - 普通 function tools
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）
@@ -44,7 +46,7 @@
 
 - `responses_server/app.py`：FastAPI app 和 CLI 入口
 - `responses_server/server.py`：`ResponseServer`，负责持有 `SessionStore` 和 `StreamRouter`
-- `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming chat 请求和流路由
+- `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming chat 请求和流路由；对 `model_provider = "vllm"` 额外适配 chat-level reasoning
 - `responses_server/payload_processors.py`：按 `CompatServerConfig.model_provider` 选择 provider-specific payload `post_process`
 - `responses_server/tools/`：provider 侧工具适配层；当前放 mock `web_search` 和 custom-tool function wrapper
 - `responses_server/session_store.py`：最小隐藏状态存储
@@ -66,7 +68,8 @@ uv run python -m responses_server \
 `responses_server/payload_processors.py` 里注册对应 `model_provider -> proc_fn`
 映射；server 会在真正发出每一条 outcomming `/v1/chat/completions` 请求前，
 对 canonical `outcomming_request` 调一次这个 hook，默认按 `vllm` 处理。
-当前内置规则里，`vllm` 是 identity，`stepfun` 会删除所有 `developer` role。
+当前内置规则里，`vllm` 仍走 chat-completions compat 路径，但会额外保留
+reasoning；`stepfun` 会删除所有 `developer` role。
 
 ## 验证
 

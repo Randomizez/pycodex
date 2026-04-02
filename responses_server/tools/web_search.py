@@ -131,6 +131,7 @@ def build_followup_request(
     tool: WebSearchTool,
     outcomming_request: dict[str, object],
     mock_search_calls: list[dict[str, object]],
+    reasoning_text: str | None = None,
 ) -> dict[str, object]:
     followup_request = deepcopy(outcomming_request)
     messages = followup_request.get("messages") or []
@@ -153,12 +154,13 @@ def build_followup_request(
             }
         )
     if assistant_tool_calls:
-        messages.append(
-            {
-                "role": "assistant",
-                "tool_calls": assistant_tool_calls,
-            }
-        )
+        assistant_message: dict[str, object] = {
+            "role": "assistant",
+            "tool_calls": assistant_tool_calls,
+        }
+        if reasoning_text:
+            assistant_message["reasoning"] = reasoning_text
+        messages.append(assistant_message)
 
     for tool_call in mock_search_calls:
         tool_output = _build_mock_output((tool_call.get("function") or {}).get("arguments"))

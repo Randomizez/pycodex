@@ -36,6 +36,29 @@ class StreamRouter:
         self._config = config
         self._mock_web_search = WebSearchTool()
 
+    def _supports_chat_reasoning(self) -> bool:
+        return str(self._config.model_provider or "").strip().lower() == "vllm"
+
+    def validate_incomming_request(
+        self,
+        incomming_request: dict[str, object],
+    ) -> None:
+        model = str(incomming_request.get("model", "")).strip()
+        if not model:
+            raise UnsupportedIncommingFeature("incomming request is missing `model`")
+
+        stream = incomming_request.get("stream", True)
+        if stream is not True:
+            raise UnsupportedIncommingFeature(
+                "only streaming incomming `/responses` requests are supported"
+            )
+
+        input_items = incomming_request.get("input") or []
+        if not isinstance(input_items, list):
+            raise UnsupportedIncommingFeature("incomming `input` must be a list")
+
+        self.build_outcomming_request(incomming_request)
+
     def collect_custom_tool_names(
         self,
         incomming_request: dict[str, object],
@@ -144,6 +167,7 @@ class StreamRouter:
         )
 
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = incomming_stream
 
@@ -152,6 +176,7 @@ class StreamRouter:
             for chunk in current_stream:
                 for event_name, payload in self._consume_chat_chunk(
                     chunk,
+                    reasoning_parts,
                     text_parts,
                     tool_calls,
                 ):
@@ -177,6 +202,11 @@ class StreamRouter:
                         self._mock_web_search,
                         current_request,
                         mock_search_calls,
+                        reasoning_text=(
+                            "".join(reasoning_parts)
+                            if self._supports_chat_reasoning()
+                            else None
+                        ),
                     )
                 except ValueError as exc:
                     raise OutcommingChatError(str(exc)) from exc
@@ -184,6 +214,7 @@ class StreamRouter:
                 continue
 
             for item in self._build_output_items(
+                reasoning_parts,
                 text_parts,
                 ordinary_tool_calls,
                 custom_tool_names or set(),
@@ -233,6 +264,7 @@ class StreamRouter:
                 return
             if (
                 "content" not in pending_assistant
+                and "reasoning" not in pending_assistant
                 and "tool_calls" not in pending_assistant
             ):
                 pending_assistant = None
@@ -248,7 +280,6 @@ class StreamRouter:
             item_type = raw_item.get("type")
 
             if item_type == "message":
-                flush_pending_assistant()
                 role = str(raw_item.get("role", "")).strip()
                 if role not in {"developer", "user", "assistant", "system"}:
                     raise UnsupportedIncommingFeature(
@@ -256,11 +287,29 @@ class StreamRouter:
                     )
                 text = self._coalesce_content_text(raw_item.get("content"))
                 if role == "assistant":
-                    pending_assistant = {"role": "assistant"}
+                    if pending_assistant is None:
+                        pending_assistant = {"role": "assistant"}
                     if text:
-                        pending_assistant["content"] = text
+                        pending_assistant["content"] = (
+                            str(pending_assistant.get("content", "")) + text
+                        )
                     continue
+                flush_pending_assistant()
                 messages.append({"role": role, "content": text})
+                continue
+
+            if item_type == "reasoning":
+                if not self._supports_chat_reasoning():
+                    raise UnsupportedIncommingFeature(
+                        "incomming `reasoning` items are not supported by this chat backend"
+                    )
+                if pending_assistant is None:
+                    pending_assistant = {"role": "assistant"}
+                reasoning_text = self._coalesce_reasoning_text(raw_item)
+                if reasoning_text:
+                    pending_assistant["reasoning"] = (
+                        str(pending_assistant.get("reasoning", "")) + reasoning_text
+                    )
                 continue
 
             if item_type == "function_call":
@@ -362,6 +411,36 @@ class StreamRouter:
             return self._coalesce_content_text(raw_output)
         return json.dumps(raw_output, ensure_ascii=False)
 
+    def _coalesce_reasoning_text(self, raw_item: dict[str, object]) -> str:
+        content = raw_item.get("content")
+        if isinstance(content, list):
+            text_parts: list[str] = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                part_type = part.get("type")
+                if part_type in {"reasoning_text", "summary_text"}:
+                    text_parts.append(str(part.get("text", "")))
+            if text_parts:
+                return "".join(text_parts)
+
+        summary = raw_item.get("summary")
+        if isinstance(summary, list):
+            text_parts = []
+            for part in summary:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "summary_text":
+                    text_parts.append(str(part.get("text", "")))
+            if text_parts:
+                return "".join(text_parts)
+
+        for key in ("reasoning", "reasoning_content", "text"):
+            value = raw_item.get(key)
+            if isinstance(value, str) and value:
+                return value
+        return ""
+
     def _translate_tools(self, incomming_tools: list[object]) -> list[dict[str, object]]:
         translated: list[dict[str, object]] = []
         for raw_tool in incomming_tools:
@@ -422,6 +501,7 @@ class StreamRouter:
     def _consume_chat_chunk(
         self,
         payload: dict[str, object],
+        reasoning_parts: list[str],
         text_parts: list[str],
         tool_calls: dict[int, dict[str, object]],
     ) -> list[tuple[str, dict[str, object]]]:
@@ -436,6 +516,14 @@ class StreamRouter:
             delta = choice.get("delta") or {}
             if not isinstance(delta, dict):
                 continue
+
+            reasoning = delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                reasoning_parts.append(reasoning)
+
+            reasoning_content = delta.get("reasoning_content")
+            if isinstance(reasoning_content, str) and reasoning_content:
+                reasoning_parts.append(reasoning_content)
 
             content = delta.get("content")
             if isinstance(content, str) and content:
@@ -493,11 +581,26 @@ class StreamRouter:
 
     def _build_output_items(
         self,
+        reasoning_parts: list[str],
         text_parts: list[str],
         tool_calls: dict[int, dict[str, object]],
         custom_tool_names: set[str],
     ) -> list[dict[str, object]]:
         items: list[dict[str, object]] = []
+        reasoning_text = "".join(reasoning_parts)
+        if reasoning_text:
+            items.append(
+                {
+                    "type": "reasoning",
+                    "summary": [],
+                    "content": [
+                        {
+                            "type": "reasoning_text",
+                            "text": reasoning_text,
+                        }
+                    ],
+                }
+            )
         text = "".join(text_parts)
         if text:
             items.append(
