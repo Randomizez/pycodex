@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from .agent import AgentLoop, EventHandler, NOOP_EVENT_HANDLER, TurnInterrupted
 from .protocol import AgentEvent, Operation, ShutdownOp, Submission, TurnResult, UserTurnOp
 from .utils import uuid7_string
+
+if TYPE_CHECKING:
+    from .runtime_services import RuntimeEnvironment
 
 
 @dataclass(slots=True)
@@ -20,8 +23,9 @@ class _QueuedSubmission:
 class AgentRuntime:
     """Thin outer queue that mirrors the Rust `submission_loop` shape."""
 
-    def __init__(self, agent_loop: AgentLoop) -> None:
+    def __init__(self, agent_loop: AgentLoop, runtime_environment: RuntimeEnvironment | None = None) -> None:
         self._agent_loop = agent_loop
+        self.runtime_environment = runtime_environment
         self._enqueue_queue: deque[_QueuedSubmission] = deque()
         self._steer_queue: deque[_QueuedSubmission] = deque()
         self._queue_lock = asyncio.Lock()

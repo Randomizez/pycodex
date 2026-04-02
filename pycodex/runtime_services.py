@@ -397,11 +397,12 @@ class RuntimeEnvironment:
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
 
-    def configure_runtime_builder(self, builder: RuntimeBuilder | None) -> None:
-        self.subagent_manager.set_runtime_builder(builder)
+
+def create_runtime_environment() -> RuntimeEnvironment:
+    return RuntimeEnvironment()
 
 
-_RUNTIME_ENV = RuntimeEnvironment()
+_RUNTIME_ENV = create_runtime_environment()
 
 
 def get_runtime_environment() -> RuntimeEnvironment:

@@ -28,6 +28,7 @@ from .runtime_services import (
     RequestPermissionsManager,
     RequestUserInputManager,
     SubAgentManager,
+    create_runtime_environment,
     get_runtime_environment,
 )
 from .tools import (
@@ -91,6 +92,7 @@ __all__ = [
     "AssistantMessage",
     "BaseTool",
     "CloseAgentTool",
+    "create_runtime_environment",
     "CodeModeManager",
     "ContextConfig",
     "ContextManager",

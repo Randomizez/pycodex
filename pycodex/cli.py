@@ -16,7 +16,7 @@ from .context import ContextManager
 from .model import ResponsesModelClient, ResponsesProviderConfig
 from .protocol import AgentEvent
 from .runtime import AgentRuntime
-from .runtime_services import get_runtime_environment
+from .runtime_services import RuntimeEnvironment, create_runtime_environment
 from .utils import CliSessionView, load_codex_dotenv
 from responses_server import launch_chat_completion_compat_server
 
@@ -121,7 +121,7 @@ def resolve_prompt_text(prompt_parts: Sequence[str]) -> str:
     raise ValueError("prompt is required either as argv text or stdin")
 
 
-def get_tools(exec_mode: bool = False):
+def get_tools(runtime_environment: RuntimeEnvironment, exec_mode: bool = False):
     from .tools import (
         ApplyPatchTool,
         CloseAgentTool,
@@ -148,7 +148,6 @@ def get_tools(exec_mode: bool = False):
         WriteStdinTool,
     )
 
-    runtime_environment = get_runtime_environment()
     registry = Registry()
     code_mode_manager = CodeModeManager(registry)
     unified_exec_manager = UnifiedExecManager()
@@ -214,7 +213,7 @@ def get_tools(exec_mode: bool = False):
     return registry
 
 
-def get_subagent_tools():
+def get_subagent_tools(runtime_environment: RuntimeEnvironment):
     from .tools import (
         ApplyPatchTool,
         ExecCommandTool,
@@ -226,7 +225,6 @@ def get_subagent_tools():
         WriteStdinTool,
     )
 
-    runtime_environment = get_runtime_environment()
     registry = Registry()
     unified_exec_manager = UnifiedExecManager()
     registry.register(ExecCommandTool(unified_exec_manager))
@@ -260,32 +258,50 @@ def build_runtime(
         base_instructions_override=system_prompt,
         include_collaboration_instructions=False,
     )
-    runtime_environment = get_runtime_environment()
+    runtime_environment = create_runtime_environment()
     runtime_environment.request_user_input_manager.set_handler(None)
     runtime_environment.request_permissions_manager.set_handler(None)
 
-    def build_nested_runtime(
-        model_override: str | None,
-        reasoning_effort_override: str | None,
-        initial_history=(),
-        session_id: str | None = None,
-    ) -> AgentRuntime:
-        nested_client = client.with_overrides(
-            model_override,
-            reasoning_effort_override,
-            session_id=session_id,
-            openai_subagent="collab_spawn",
-        )
-        nested_agent = AgentLoop(
-            nested_client,
-            get_subagent_tools(),
-            subagent_context_manager,
-            initial_history=tuple(initial_history),
-        )
-        return AgentRuntime(nested_agent)
+    def make_subagent_runtime_builder(base_client):
+        def build_subagent_runtime(
+            model_override: str | None,
+            reasoning_effort_override: str | None,
+            initial_history=(),
+            session_id: str | None = None,
+        ) -> AgentRuntime:
+            nested_client = base_client.with_overrides(
+                model_override,
+                reasoning_effort_override,
+                session_id=session_id,
+                openai_subagent="collab_spawn",
+            )
+            subagent_runtime_environment = create_runtime_environment()
+            subagent_runtime_environment.request_user_input_manager.set_handler(None)
+            subagent_runtime_environment.request_permissions_manager.set_handler(None)
+            subagent_runtime_environment.subagent_manager.set_runtime_builder(
+                make_subagent_runtime_builder(nested_client)
+            )
+            sub_agent = AgentLoop(
+                nested_client,
+                get_subagent_tools(subagent_runtime_environment),
+                subagent_context_manager,
+                initial_history=tuple(initial_history),
+            )
+            return AgentRuntime(
+                sub_agent, runtime_environment=subagent_runtime_environment
+            )
 
-    runtime_environment.configure_runtime_builder(build_nested_runtime)
-    return AgentRuntime(AgentLoop(client, get_tools(exec_mode=True), context_manager))
+        return build_subagent_runtime
+
+    runtime_environment.subagent_manager.set_runtime_builder(
+        make_subagent_runtime_builder(client)
+    )
+    return AgentRuntime(
+        AgentLoop(
+            client, get_tools(runtime_environment, exec_mode=True), context_manager
+        ),
+        runtime_environment=runtime_environment,
+    )
 
 
 def format_turn_output(result, json_mode: bool) -> str:
@@ -456,7 +472,7 @@ async def run_interactive_session(
     model_client = runtime._agent_loop._model_client
     runtime.set_event_handler(view.handle_event)
     pending_turn_tasks: set[asyncio.Task[None]] = set()
-    runtime_environment = get_runtime_environment()
+    runtime_environment = runtime.runtime_environment
     runtime_environment.request_user_input_manager.set_handler(
         lambda payload: prompt_request_user_input(view, payload)
     )
@@ -466,6 +482,7 @@ async def run_interactive_session(
     view.write_line("pycodex interactive mode. Type /exit to quit.")
     view.write_line("Extra commands: /history, /title, /model")
     try:
+
         def has_pending_turn_tasks() -> bool:
             pending_turn_tasks.difference_update(
                 task for task in tuple(pending_turn_tasks) if task.done()
