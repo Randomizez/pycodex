@@ -1,5 +1,6 @@
 import asyncio
 import functools
+import shlex
 
 try:
     from importlib import metadata as importlib_metadata
@@ -59,3 +60,31 @@ def patch_asyncio():
                 loop.close()
 
         asyncio.run = run
+
+
+def shlex_join(parts):
+    join = getattr(shlex, "join", None)
+    if join is not None:
+        return join(parts)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def stream_writer_is_closing(writer):
+    method = getattr(writer, "is_closing", None)
+    if callable(method):
+        return method()
+    transport = getattr(writer, "transport", None)
+    if transport is None:
+        return False
+    transport_is_closing = getattr(transport, "is_closing", None)
+    if callable(transport_is_closing):
+        return transport_is_closing()
+    return False
+
+
+def is_ascii(text):
+    try:
+        text.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    return True

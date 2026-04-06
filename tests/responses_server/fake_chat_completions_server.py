@@ -1,5 +1,6 @@
 """Minimal FastAPI Chat Completions server for standalone responses-server tests."""
 
+import asyncio
 import json
 from pathlib import Path
 import socket
@@ -13,6 +14,11 @@ import uvicorn
 import typing
 
 DEFAULT_MODEL_ID = "gpt-5.4"
+
+
+def _run_uvicorn_server(server):
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    server.run()
 
 
 class CaptureStore:
@@ -67,7 +73,11 @@ class RunningFastAPITestServer:
             access_log=False,
         )
         self._server = uvicorn.Server(self._config)
-        self._thread = threading.Thread(target=self._server.run, daemon=True)
+        self._thread = threading.Thread(
+            target=_run_uvicorn_server,
+            args=(self._server,),
+            daemon=True,
+        )
 
     @property
     def base_url(self) -> 'str':

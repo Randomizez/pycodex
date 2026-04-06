@@ -9,8 +9,9 @@ appropriate hook from `CompatServerConfig.model_provider`.
 """
 
 from copy import deepcopy
-from typing import Callable, Optional, TypedDict
+from typing import Callable, Optional
 import typing
+from typing_extensions import TypedDict
 
 ChatMessage = typing.Dict[str, object]
 

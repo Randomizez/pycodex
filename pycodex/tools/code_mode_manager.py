@@ -19,6 +19,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..compat import is_ascii, stream_writer_is_closing
 from ..protocol import JSONDict, JSONValue, ToolCall
 from .base_tool import StructuredToolOutput, ToolContext, ToolRegistry
 import typing
@@ -288,7 +289,7 @@ class CodeModeManager:
 
     async def _send_message(self, cell: 'ExecCell', payload: 'JSONDict') -> 'None':
         stdin = cell.process.stdin
-        if stdin is None or stdin.is_closing():
+        if stdin is None or stream_writer_is_closing(stdin):
             return
         stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
         await stdin.drain()
@@ -504,7 +505,7 @@ class CodeModeManager:
             is_valid = (
                 char == "_"
                 or char == "$"
-                or (char.isascii() and char.isalnum() and (index != 0 or char.isalpha()))
+                or (is_ascii(char) and char.isalnum() and (index != 0 or char.isalpha()))
             )
             if is_valid:
                 identifier.append(char)

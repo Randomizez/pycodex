@@ -1,5 +1,6 @@
 
 import argparse
+import asyncio
 from dataclasses import replace
 import json
 import socket
@@ -15,6 +16,11 @@ from .config import CompatServerConfig
 from .server import ResponseServer
 from .stream_router import OutcommingChatError, UnsupportedIncommingFeature
 import typing
+
+
+def _run_uvicorn_server(server) -> 'None':
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    server.run()
 
 
 def _format_sse_event(event_name: 'str', payload: 'typing.Dict[str, object]') -> 'bytes':
@@ -164,7 +170,11 @@ class ManagedResponseServer:
             access_log=False,
         )
         self._server = uvicorn.Server(self._uvicorn_config)
-        self._thread = threading.Thread(target=self._server.run, daemon=True)
+        self._thread = threading.Thread(
+            target=_run_uvicorn_server,
+            args=(self._server,),
+            daemon=True,
+        )
 
     @property
     def base_url(self) -> 'str':

@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
+
+from ..compat import shlex_join, stream_writer_is_closing
 import typing
 
 DEFAULT_EXEC_YIELD_TIME_MS = 10_000
@@ -237,7 +239,7 @@ class UnifiedExecManager:
             session_id=session_id,
             process=process,
             start_time=asyncio.get_running_loop().time(),
-            command_display=shlex.join(command),
+            command_display=shlex_join(command),
             tty=tty,
         )
         session.reader_task = asyncio.create_task(self._pump_output(session))
@@ -347,7 +349,7 @@ class UnifiedExecManager:
             session = self._sessions.pop(session_id, None)
         if session is None:
             return
-        if session.process.stdin is not None and not session.process.stdin.is_closing():
+        if session.process.stdin is not None and not stream_writer_is_closing(session.process.stdin):
             session.process.stdin.close()
 
     async def _pump_output(self, session: 'UnifiedExecSession') -> 'None':

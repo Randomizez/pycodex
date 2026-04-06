@@ -22,6 +22,8 @@ import threading
 import time
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
+
+from pycodex.compat import shlex_join
 from pathlib import Path
 
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
@@ -336,7 +338,7 @@ def proxy_url_placeholder() -> 'str':
 
 
 def build_upstream_codex_command(provider_name: 'str', prompt: 'str') -> 'typing.List[str]':
-    inner_command = shlex.join(
+    inner_command = shlex_join(
         [
             "codex",
             "--no-alt-screen",

@@ -1,5 +1,5 @@
-const readline = require('node:readline');
-const { stdin, stdout } = require('node:process');
+const readline = require('readline');
+const { stdin, stdout } = require('process');
 
 const pending = new Map();
 let storedValues = {};
@@ -41,7 +41,7 @@ function image(value) {
     send({
       type: 'output_image',
       image_url: value.image_url,
-      detail: value.detail ?? null,
+      detail: value.detail === undefined ? null : value.detail,
     });
     return;
   }

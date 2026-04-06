@@ -7,18 +7,21 @@ name = "python-codex"
 version = "0.1.2"
 description = "A minimal Python extraction of Codex's main agent loop"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.6.2"
 dependencies = [
-    "cryptography>=40.0.2",
+    "cryptography>=40.0.2,<41; python_version < '3.7'",
+    "cryptography>=40.0.2; python_version >= '3.7'",
     "dataclasses>=0.8; python_version < '3.7'",
-    "fastapi>=0.83.0",
+    "fastapi>=0.83.0,<0.84; python_version < '3.7'",
+    "fastapi>=0.83.0; python_version >= '3.7'",
     "importlib_metadata>=4.8.3; python_version < '3.8'",
     "loguru>=0.7.3",
     "prompt-toolkit>=3.0.36",
     "requests>=2.27.1",
     "tomli>=1.2.3,<2; python_version < '3.11'",
     "typing_extensions>=4.1.1; python_version < '3.8'",
-    "uvicorn>=0.16.0",
+    "uvicorn>=0.16.0,<0.17; python_version < '3.7'",
+    "uvicorn>=0.16.0; python_version >= '3.7'",
 ]
 
 [project.scripts]
@@ -26,8 +29,8 @@ pycodex = "pycodex.cli:main"
 
 [dependency-groups]
 dev = [
-    "debugpy>=1.8.20; python_version >= '3.7'",
-    "httpx>=0.23.0,<0.24; python_version < '3.8'",
+    "debugpy>=1.8.20; python_version >= '3.8'",
+    "httpx>=0.22.0,<0.23; python_version < '3.8'",
     "httpx>=0.28; python_version >= '3.8'",
     "pytest>=6.2.5,<7; python_version < '3.8'",
     "pytest>=8.0; python_version >= '3.8'",
