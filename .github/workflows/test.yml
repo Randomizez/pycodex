@@ -8,16 +8,9 @@ on:
       - main
 
 jobs:
-  pytest:
-    runs-on: ${{ matrix.runs-on }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - python-version: "3.6.15"
-            runs-on: ubuntu-20.04
-          - python-version: "3.10"
-            runs-on: ubuntu-22.04
+  pytest-py310:
+    name: pytest (Python 3.10)
+    runs-on: ubuntu-22.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -25,10 +18,31 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.10"
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
+
+      - name: Sync dependencies
+        run: uv sync --dev
+
+      - name: Run pytest
+        run: uv run pytest
+
+  pytest-py36:
+    name: pytest (Python 3.6)
+    runs-on: ubuntu-22.04
+    container:
+      image: python:3.6.15-slim-bullseye
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Show Python version
+        run: python --version
 
       - name: Sync dependencies
         run: uv sync --dev
