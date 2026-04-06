@@ -38,11 +38,22 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install system dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
 
-      - name: Show Python version
+      - name: Show runtime versions
         run: python --version
+      - run: node --version
 
       - name: Sync dependencies
         run: uv sync --dev

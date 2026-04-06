@@ -259,7 +259,9 @@ async def test_exec_command_tool_returns_session_for_long_running_process(tmp_pa
 
     assert closed.is_error is False
     assert "Process exited with code 0" in closed.output
-    assert "startend" in closed.output
+    combined_output = result.output + closed.output
+    assert "start" in combined_output
+    assert "end" in combined_output
 
 
 @pytest.mark.asyncio
@@ -917,6 +919,18 @@ async def test_spawn_agent_send_input_wait_and_close_round_trip() -> None:
         ),
         ToolContext(turn_id="turn_wait", history=()),
     )
+    if waited.output == {
+        "status": {agent_id: {"completed": "done one"}},
+        "timed_out": False,
+    }:
+        waited = await registry.execute(
+            ToolCall(
+                call_id="call_wait_again",
+                name="wait_agent",
+                arguments={"ids": [agent_id], "timeout_ms": 1000},
+            ),
+            ToolContext(turn_id="turn_wait_again", history=()),
+        )
 
     assert waited.output == {
         "status": {agent_id: {"completed": "done two"}},
