@@ -139,6 +139,9 @@ printf 'Reply with exactly OK.' | pycodex
 pycodex --json "Reply with exactly OK."
 pycodex --profile model_proxy "Reply with exactly OK."
 pycodex --vllm-endpoint http://127.0.0.1:18000 "Reply with exactly OK."
+pycodex --put @127.0.0.1:5577
+pycodex --put /data/.codex/@127.0.0.1:5577
+pycodex --call SECRET-CALLID@127.0.0.1:5577 "Reply with exactly OK."
 pycodex doctor
 ```
 
@@ -188,6 +191,30 @@ pycodex doctor
 pycodex doctor --skip-live
 pycodex doctor --json
 ```
+
+## Portable Mode
+
+`Portable Mode` is the quickest way to bring your usual `pycodex` setup into a
+fresh machine, container, or debug image.
+
+Use it like this:
+
+```bash
+pycodex --put @127.0.0.1:5577
+pycodex --put /data/.codex/@127.0.0.1:5577
+```
+
+- `--put` prints a reusable `SECRET-CALLID@host:port` plus a final one-line
+  `pycodex --call ...` command
+- on the new environment or image, run that printed `--call` command directly
+- quickly restoring your usual `config.toml`, `.env`, `AGENTS.md`, and
+  `skills/` into a clean debug environment
+- keeping a new image focused on the bug you are debugging instead of spending
+  time rebuilding local Codex setup by hand
+- bootstrapping `pycodex` even when the target environment does not already
+  have a populated `~/.codex`
+- bare `--put` uses the current user's `~/.codex`
+- `--put /path/.codex/@host:port` lets you publish a different Codex home
 
 ## Example
 

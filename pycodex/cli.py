@@ -5,7 +5,9 @@ import argparse
 import asyncio
 import json
 import os
+import shlex
 import sys
+import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Literal, Sequence
@@ -14,6 +16,7 @@ from .agent import AgentLoop
 from .collaboration import DEFAULT_COLLABORATION_MODE, CollaborationMode
 from .context import ContextManager
 from .model import ResponsesModelClient, ResponsesProviderConfig
+from .portable import bootstrap_called_home, upload_codex_home
 from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
@@ -58,6 +61,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "prompt", nargs="*", help="Prompt text. If omitted, read from stdin."
+    )
+    parser.add_argument(
+        "--put",
+        default=None,
+        metavar="PATH@SERVER",
+        help=(
+            "Upload a Codex home using `--put @host:port` or "
+            "`--put /path/.codex@host:port`."
+        ),
+    )
+    parser.add_argument(
+        "--call",
+        default=None,
+        help=(
+            "Download and use a stored Codex home via <secret>-<call_id>@<host:port>."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -121,7 +140,10 @@ def resolve_prompt_text(prompt_parts: Sequence[str]) -> str:
     raise ValueError("prompt is required either as argv text or stdin")
 
 
-def get_tools(runtime_environment: RuntimeEnvironment, exec_mode: bool = False):
+def get_tools(
+    runtime_environment: RuntimeEnvironment | None = None,
+    exec_mode: bool = False,
+):
     from .tools import (
         ApplyPatchTool,
         CloseAgentTool,
@@ -148,6 +170,7 @@ def get_tools(runtime_environment: RuntimeEnvironment, exec_mode: bool = False):
         WriteStdinTool,
     )
 
+    runtime_environment = runtime_environment or create_runtime_environment()
     registry = Registry()
     code_mode_manager = CodeModeManager(registry)
     unified_exec_manager = UnifiedExecManager()
@@ -213,7 +236,7 @@ def get_tools(runtime_environment: RuntimeEnvironment, exec_mode: bool = False):
     return registry
 
 
-def get_subagent_tools(runtime_environment: RuntimeEnvironment):
+def get_subagent_tools(runtime_environment: RuntimeEnvironment | None = None):
     from .tools import (
         ApplyPatchTool,
         ExecCommandTool,
@@ -225,6 +248,7 @@ def get_subagent_tools(runtime_environment: RuntimeEnvironment):
         WriteStdinTool,
     )
 
+    runtime_environment = runtime_environment or create_runtime_environment()
     registry = Registry()
     unified_exec_manager = UnifiedExecManager()
     registry.register(ExecCommandTool(unified_exec_manager))
@@ -473,6 +497,9 @@ async def run_interactive_session(
     runtime.set_event_handler(view.handle_event)
     pending_turn_tasks: set[asyncio.Task[None]] = set()
     runtime_environment = runtime.runtime_environment
+    if runtime_environment is None:
+        runtime_environment = create_runtime_environment()
+        runtime.runtime_environment = runtime_environment
     runtime_environment.request_user_input_manager.set_handler(
         lambda payload: prompt_request_user_input(view, payload)
     )
@@ -585,10 +612,30 @@ async def run_interactive_session(
 
 
 async def run_cli(args: argparse.Namespace) -> int:
-    configure_loguru()
     runtime = None
     worker = None
     try:
+        if args.put is not None and args.call:
+            raise ValueError("--put and --call cannot be combined")
+        if args.put is not None and args.prompt:
+            raise ValueError("--put does not accept prompt text")
+        configure_loguru()
+        if args.put is not None:
+            def emit_put_log(message: str) -> None:
+                print(message, flush=True)
+
+            call_spec = upload_codex_home(args.put, event_handler=emit_put_log)
+            emit_put_log(f"[put] testing call: {call_spec}")
+            with tempfile.TemporaryDirectory(prefix="pycodex-put-call-test-") as tmpdir:
+                config_path = bootstrap_called_home(call_spec, storage_root=tmpdir)
+            emit_put_log(f"[put] call test ok: {config_path.name}")
+            print("[put] one-click start:", flush=True)
+            print(f"pycodex --call {shlex.quote(call_spec)}", flush=True)
+            return 0
+        if args.call:
+            config_path = bootstrap_called_home(args.call)
+            args.config = str(config_path)
+            os.environ["CODEX_HOME"] = str(config_path.parent)
         client = _build_model_client(
             args.config,
             args.profile,

@@ -37,3 +37,8 @@
 - 用 `tests/fake_responses_server.py` 做 steer 时序对比时，不要把 proxy capture 文件的生成时刻当成“请求已到达 upstream”的信号；`build_proxy_handler(...)` 会等整条 upstream response 读完后才 `write_capture(...)`。如果要在第一条 request 仍未完成时注入 steer，应该同步等待 fake origin 自己收到第 1 条 POST。
 - 在本机做 steer fake-server 对比时，不要把用户本地 `config.toml` 里的 `service_tier` / fast-mode 设置混进“默认 steer”结论。`tests/compare_steer_request_bodies.py` 现在会给 upstream 和 `pycodex` 都生成临时 config，并去掉顶层 `service_tier` 后再比较 request body。
 - `x-codex-turn-metadata.workspaces` 的时机不是“整个 session 只发第一条请求”。当前对齐结论是：首个 turn 的后续 steer/follow-up request 也继续带 `workspaces`；切到后续新 turn 才省略。
+- 远端 Codex home 存储模式当前仍刻意只挂在 `pycodex/cli.py` 启动前：`--put`/`--call` 只负责上传或落本地 `CODEX_HOME` 并重写 `args.config`，`model/context/runtime` 继续完全按 `config_path.parent` 读取 `.env`、`AGENTS.md`、`skills/`；后续扩展时优先保持这个隔离边界，不要把分支判断散到运行时各模块里。
+- 当前存储服务原型契约固定为 `POST /v1/storage/put` 上传客户端本地加密后的 bundle，并返回/使用 `SECRET-CALLID@<host:port>` 这种 call token；`GET /v1/storage/call/<call_id>` 只下载密文，bundle 的解密和解压都在 client 侧完成。做 smoke 或排障时，优先先验证这两个 endpoint 和 call token 形状。
+- `--put` 的 CLI UX 现在约定为“先打印打包文件清单和上传目标，再打印结果”，并且最后一行保留为可直接执行的 `pycodex --call SECRET-CALLID@<host:port>` 一键启动命令；后续如果再改输出，尽量保留这个末行语义。
+- `--put` 现在不是“只上传就结束”：上传成功后还会立刻跑一次真实的 `--call` 下载/解包 round-trip 测试，只有这个测试也成功才算整个 `--put` 成功。排障时如果上传成功但 CLI 仍退出非零，要继续看 call 路径而不只看 put 端。
+- `--put` 现在会先做 `/healthz` preflight，再开始扫描/压缩目录；如果用户报“卡死”，先看目标 `host:port` 是否真有 storage server 在监听。默认打包策略也已经切到白名单：只带 `config.toml`、`.env`、`AGENTS.md`、`AGENTS.override.md`、`skills/**`，以及 config 里相对引用的 `model_instructions_file`，所以像 `sessions/` 这类运行态目录不会再靠黑名单排除。

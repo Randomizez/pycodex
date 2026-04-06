@@ -42,6 +42,8 @@ from pycodex.cli import (
     run_interactive_session,
     should_run_interactive,
 )
+from pycodex.portable import DEFAULT_ENTRY_CONFIG, upload_codex_home
+from pycodex.portable_server import CodexStorageServer
 from pycodex.utils.visualize import colorize_cli_message
 from tests.fake_responses_server import CaptureStore, build_handler
 from tests.fakes import ScriptedModelClient
@@ -86,6 +88,26 @@ def _build_cli_view(
     stream_chunks: list[str] | None = None,
 ) -> CliSessionView:
     return _configure_cli_view_output(CliSessionView(), line_output, stream_chunks)
+
+
+def _write_stored_codex_home(root: Path) -> None:
+    (root / "skills" / "demo").mkdir(parents=True)
+    (root / "skills" / "demo" / "SKILL.md").write_text(
+        "# Demo\n\nStored skill.\n"
+    )
+    (root / "AGENTS.md").write_text("stored agents instructions\n")
+    (root / ".env").write_text('PORTABLE_API_KEY="from-storage-dotenv"\n')
+    (root / DEFAULT_ENTRY_CONFIG).write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "PORTABLE_API_KEY"',
+            ]
+        )
+    )
 
 
 def _install_test_cli_view(
@@ -188,6 +210,35 @@ def test_build_parser_recognizes_vllm_endpoint() -> None:
     args = parser.parse_args(["--vllm-endpoint", "http://127.0.0.1:18000", "hello"])
     assert args.vllm_endpoint == "http://127.0.0.1:18000"
     assert args.prompt == ["hello"]
+
+
+def test_build_parser_recognizes_put_and_call_flags() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "--put",
+            "/tmp/.codex@127.0.0.1:5577",
+        ]
+    )
+
+    assert args.put == "/tmp/.codex@127.0.0.1:5577"
+    assert args.call is None
+    assert args.prompt == []
+
+    bare_server_args = parser.parse_args(
+        [
+            "--put",
+            "@127.0.0.1:5577",
+        ]
+    )
+    assert bare_server_args.put == "@127.0.0.1:5577"
+
+
+def test_build_parser_rejects_put_without_argument() -> None:
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--put"])
+
 
 def test_vllm_base_url_normalizes_empty_path_to_v1() -> None:
     from responses_server import CompatServerConfig
@@ -380,6 +431,159 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     assert callable(registered["callback"])
     registered["callback"]()
     assert started["stopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_cli_put_uploads_codex_home_and_prints_call_spec(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    _write_stored_codex_home(codex_home)
+    server = CodexStorageServer(tmp_path / "storage-server", port=0)
+    server.start()
+    line_output: list[str] = []
+    monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *args, **kwargs: line_output.append(" ".join(str(arg) for arg in args)),
+    )
+
+    try:
+        args = build_parser().parse_args(
+            [
+                "--put",
+                f"{codex_home}@{server.server_address}",
+            ]
+        )
+        exit_code = await run_cli(args)
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+    assert any(line.startswith("[put] source: ") for line in line_output)
+    assert "[put] file: config.toml" in line_output
+    assert "[put] file: AGENTS.md" in line_output
+    assert any(line.startswith("[put] uploaded: ") for line in line_output)
+    assert any(line.startswith("[put] testing call: ") for line in line_output)
+    assert "[put] call test ok: config.toml" in line_output
+    assert "[put] one-click start:" in line_output
+    assert line_output[-1].startswith("pycodex --call ")
+    assert line_output[-1].endswith(f"@{server.server_address}")
+
+
+@pytest.mark.asyncio
+async def test_run_cli_bootstraps_called_home_before_loading_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    _write_stored_codex_home(codex_home)
+    server = CodexStorageServer(tmp_path / "storage-server", port=0)
+    server.start()
+    stored_call = upload_codex_home(f"{codex_home}@{server.server_address}")
+    captured = {}
+
+    class _FakeResponsesModelClient:
+        def __init__(
+            self,
+            config,
+            timeout_seconds,
+            session_id=None,
+            originator=None,
+            user_agent=None,
+            openai_subagent=None,
+        ):
+            captured["provider_config"] = config
+            captured["timeout_seconds"] = timeout_seconds
+            captured["session_id"] = session_id
+            captured["originator"] = originator
+            captured["user_agent"] = user_agent
+            captured["openai_subagent"] = openai_subagent
+            self._config = config
+            self.model = config.model
+
+        def with_overrides(
+            self,
+            model=None,
+            reasoning_effort=None,
+            session_id=None,
+            openai_subagent=None,
+        ):
+            del model, reasoning_effort, session_id, openai_subagent
+            return self
+
+    class _FakeRuntime:
+        def __init__(self):
+            self._stopped = asyncio.Event()
+
+        def set_event_handler(self, _handler=None):
+            return None
+
+        async def run_forever(self):
+            await self._stopped.wait()
+
+        async def submit_user_turn(self, prompt_text):
+            captured["prompt_text"] = prompt_text
+            return type(
+                "_Result",
+                (),
+                {
+                    "output_text": "OK",
+                    "turn_id": "turn_1",
+                    "iterations": 1,
+                    "response_items": (),
+                    "history": (),
+                },
+            )()
+
+        async def shutdown(self):
+            self._stopped.set()
+
+    def fake_build_runtime(
+        config_path,
+        profile,
+        system_prompt,
+        client,
+        session_mode="exec",
+        collaboration_mode="default",
+    ):
+        del profile, system_prompt, collaboration_mode
+        captured["config_path"] = config_path
+        captured["client_base_url"] = client._config.base_url
+        captured["session_mode"] = session_mode
+        return _FakeRuntime()
+
+    monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
+    monkeypatch.setattr("pycodex.cli.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
+    monkeypatch.setattr("sys.stdin.read", lambda: "")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("PORTABLE_API_KEY", raising=False)
+
+    try:
+        args = build_parser().parse_args(
+            [
+                "--call",
+                stored_call,
+                "Reply with exactly OK.",
+            ]
+        )
+        exit_code = await run_cli(args)
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+    assert captured["prompt_text"] == "Reply with exactly OK."
+    assert captured["session_mode"] == "tui"
+    assert Path(captured["config_path"]).name == "config.toml"
+    assert Path(captured["config_path"]).is_file()
+    assert os.environ["CODEX_HOME"] == str(Path(captured["config_path"]).parent)
+    assert os.environ["PORTABLE_API_KEY"] == "from-storage-dotenv"
+    assert captured["provider_config"].base_url == "https://example.com/v1"
+    assert captured["provider_config"].api_key_env == "PORTABLE_API_KEY"
 
 
 def test_get_tools_registers_expected_builtin_tools() -> None:

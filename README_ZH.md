@@ -116,6 +116,9 @@ printf 'Reply with exactly OK.' | pycodex
 pycodex --json "Reply with exactly OK."
 pycodex --profile model_proxy "Reply with exactly OK."
 pycodex --vllm-endpoint http://127.0.0.1:18000 "Reply with exactly OK."
+pycodex --put @127.0.0.1:5577
+pycodex --put /data/.codex/@127.0.0.1:5577
+pycodex --call SECRET-CALLID@127.0.0.1:5577 "只回复 OK。"
 pycodex doctor
 ```
 
@@ -146,6 +149,26 @@ pycodex doctor
 pycodex doctor --skip-live
 pycodex doctor --json
 ```
+
+## Portable Mode
+
+`Portable Mode` 适合在新机器、新容器或新的调试镜像里，快速带起你平时使用的
+`pycodex` 配置。
+
+常见用法：
+
+```bash
+pycodex --put @127.0.0.1:5577
+pycodex --put /data/.codex/@127.0.0.1:5577
+uv run pycodex --call SECRET-CALLID@127.0.0.1:5577
+uv run pycodex --call SECRET-CALLID@127.0.0.1:5577 "检查当前工作区并解释为什么启动失败。"
+```
+
+- `--put` 会打印一个可复用的 `SECRET-CALLID@host:port`，以及最终可直接执行的
+  `pycodex --call ...` 命令
+- 到新环境后，直接执行那条 `--call` 命令即可开始使用
+- 这个模式适合快速恢复 `config.toml`、`.env`、`AGENTS.md` 和 `skills/`
+- `--put /path/.codex/@host:port` 可以发布另一套 Codex home
 
 ## 示例
 
