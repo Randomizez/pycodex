@@ -344,9 +344,23 @@ def test_build_runtime_overrides_provider_for_managed_vllm_mode(
 @pytest.mark.asyncio
 async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     monkeypatch,
+    tmp_path,
 ) -> None:
     started = {}
     registered = {}
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+    monkeypatch.setenv("DUMMY_KEY", "test-key")
 
     class _FakeManagedServer:
         base_url = "http://127.0.0.1:18001/v1"
@@ -415,6 +429,8 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
 
     args = build_parser().parse_args(
         [
+            "--config",
+            str(config_path),
             "--vllm-endpoint",
             "http://127.0.0.1:18000",
             "Reply with exactly OK.",
@@ -2588,7 +2604,22 @@ async def test_prompt_request_permissions_supports_session_scope() -> None:
 async def test_run_cli_returns_non_zero_on_single_turn_error(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+    monkeypatch.setenv("DUMMY_KEY", "test-key")
+
     class _FakeRuntime:
         def __init__(self):
             self._stopped = asyncio.Event()
@@ -2609,7 +2640,7 @@ async def test_run_cli_returns_non_zero_on_single_turn_error(
     monkeypatch.setattr("pycodex.cli.build_runtime", lambda *args, **kwargs: _FakeRuntime())
     monkeypatch.setattr("sys.stdin.read", lambda: "")
 
-    args = build_parser().parse_args(["hello"])
+    args = build_parser().parse_args(["--config", str(config_path), "hello"])
     code = await run_cli(args)
 
     assert code == 1

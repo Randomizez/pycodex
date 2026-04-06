@@ -184,6 +184,9 @@ class _HeadTailBuffer:
         self.tail.clear()
         return combined
 
+    def has_data(self) -> bool:
+        return bool(self.head or self.tail)
+
 
 @dataclass(slots=True)
 class UnifiedExecSession:
@@ -194,6 +197,7 @@ class UnifiedExecSession:
     tty: bool
     unread_output: _HeadTailBuffer = field(default_factory=_HeadTailBuffer)
     reader_task: asyncio.Task | None = None
+    output_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class UnifiedExecManager:
@@ -294,11 +298,22 @@ class UnifiedExecManager:
         if session is None:
             return f"Error: session_id {session_id} is not running."
 
-        start_wait = asyncio.get_running_loop().time()
+        loop = asyncio.get_running_loop()
+        start_wait = loop.time()
         try:
             await asyncio.wait_for(session.process.wait(), timeout=yield_time_ms / 1000.0)
         except asyncio.TimeoutError:
-            pass
+            remaining_seconds = (yield_time_ms / 1000.0) - (loop.time() - start_wait)
+            if (
+                session.process.returncode is None
+                and not session.unread_output.has_data()
+                and remaining_seconds > 0
+            ):
+                session.output_event.clear()
+                try:
+                    await asyncio.wait_for(session.output_event.wait(), timeout=remaining_seconds)
+                except asyncio.TimeoutError:
+                    pass
 
         if session.reader_task is not None and session.process.returncode is not None:
             await session.reader_task
@@ -345,6 +360,8 @@ class UnifiedExecManager:
             if not chunk:
                 break
             session.unread_output.push_chunk(chunk)
+            session.output_event.set()
+        session.output_event.set()
 
     def _resolve_workdir(self, workdir: str | None) -> Path:
         if not workdir:
