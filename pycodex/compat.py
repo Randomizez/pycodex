@@ -3,6 +3,15 @@ import functools
 import shlex
 
 try:
+    from http.server import ThreadingHTTPServer
+except ImportError:  # pragma: no cover - Python 3.6 path
+    from http.server import HTTPServer
+    from socketserver import ThreadingMixIn
+
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
+try:
     from importlib import metadata as importlib_metadata
 except ImportError:  # pragma: no cover - Python 3.6 path
     import importlib_metadata  # type: ignore

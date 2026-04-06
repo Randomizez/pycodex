@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler
 
 import pytest
 
-from pycodex.http_compat import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 from pycodex import (
     AgentEvent,
     AgentLoop,

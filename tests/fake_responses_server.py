@@ -19,7 +19,7 @@ import urllib.error
 import urllib.request
 import typing
 
-from pycodex.http_compat import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 
 DEFAULT_PORT = 8765
 DEFAULT_MODEL_ID = "gpt-5.4"

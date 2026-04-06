@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import pycodex.utils.get_env as get_env
-from pycodex.http_compat import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 from pycodex import (
     AssistantMessage,
     ContextMessage,

@@ -7,7 +7,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from .http_compat import ThreadingHTTPServer
+from .compat import ThreadingHTTPServer
 from .portable import (
     DEFAULT_STORAGE_SERVER,
     HEALTHCHECK_PATH,

@@ -29,12 +29,13 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlparse
 
 from pycodex.cli import _build_model_client, build_runtime
+from pycodex.compat import ThreadingHTTPServer
 from pycodex.runtime_services import get_runtime_environment
 from tests.compare_tool_schemas import (
     build_proxy_config_copy,

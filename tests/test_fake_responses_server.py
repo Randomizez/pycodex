@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import urllib.request
 
-from pycodex.http_compat import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
 import typing
 

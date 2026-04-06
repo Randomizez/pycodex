@@ -24,7 +24,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -38,6 +38,7 @@ from tests.compare_tool_schemas import (
     load_provider_info,
     rewrite_config_base_url,
 )
+from pycodex.compat import ThreadingHTTPServer
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
 import typing
 

@@ -21,7 +21,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
-from http.server import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 
 from pycodex.compat import shlex_join
 from pathlib import Path

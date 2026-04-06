@@ -3,7 +3,7 @@ import threading
 
 import pytest
 
-from pycodex.http_compat import ThreadingHTTPServer
+from pycodex.compat import ThreadingHTTPServer
 from pycodex.cli import main
 from pycodex.doctor import collect_doctor_report
 from tests.fake_responses_server import CaptureStore, build_handler
