@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import pycodex.utils.get_env as get_env
 from pycodex import (
     AssistantMessage,
     ContextMessage,
@@ -539,6 +540,29 @@ def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> None:
 
     assert headers['originator'] == 'codex-tui'
     assert re.match(r'^codex-tui/.+ \(.+; .+\) .+ \(codex-tui; .+\)$', headers['user-agent'])
+
+
+def test_get_package_version_reads_distribution_name(monkeypatch) -> None:
+    def fake_version(name: str) -> str:
+        if name == 'python-codex':
+            return '0.1.2'
+        raise get_env.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(get_env, '_detect_upstream_codex_version', lambda: None)
+    monkeypatch.setattr(get_env.importlib.metadata, 'version', fake_version)
+
+    assert get_env.get_package_version() == '0.1.2'
+
+
+def test_get_package_version_falls_back_to_local_pyproject(monkeypatch) -> None:
+    def fake_missing_version(_name: str) -> str:
+        raise get_env.importlib.metadata.PackageNotFoundError
+
+    monkeypatch.setattr(get_env, '_detect_upstream_codex_version', lambda: None)
+    monkeypatch.setattr(get_env.importlib.metadata, 'version', fake_missing_version)
+    monkeypatch.setattr(get_env, '_read_local_package_version', lambda: '0.1.2')
+
+    assert get_env.get_package_version() == '0.1.2'
 
 
 def test_responses_model_client_serializes_prompt_turn_metadata(monkeypatch) -> None:

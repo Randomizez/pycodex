@@ -21,7 +21,6 @@ from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
 from .utils import CliSessionView, load_codex_dotenv
-from responses_server import launch_chat_completion_compat_server
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 HISTORY_COMMAND = "/history"
@@ -31,6 +30,14 @@ QUEUE_COMMAND = "/queue"
 CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
+
+
+def launch_chat_completion_compat_server(*args, **kwargs):
+    from responses_server import (
+        launch_chat_completion_compat_server as launch_compat_server,
+    )
+
+    return launch_compat_server(*args, **kwargs)
 
 
 def configure_loguru() -> None:

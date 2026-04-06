@@ -83,10 +83,15 @@ def get_package_version() -> str:
     detected = _detect_upstream_codex_version()
     if detected is not None:
         return detected
-    try:
-        return importlib.metadata.version("pycodex")
-    except importlib.metadata.PackageNotFoundError:
-        return "0.1.0"
+    for distribution_name in ("python-codex", "pycodex"):
+        try:
+            return importlib.metadata.version(distribution_name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    local_version = _read_local_package_version()
+    if local_version is not None:
+        return local_version
+    return "0.1.0"
 
 
 def get_os_info() -> tuple[str, str]:
@@ -176,6 +181,20 @@ def _normalize_os_version(version: str) -> str:
         major, minor = parts
         return f"{int(major)}.{int(minor)}.0"
     return version
+
+
+def _read_local_package_version() -> str | None:
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject_path.is_file():
+        return None
+    match = re.search(
+        r'^\s*version\s*=\s*"([^"]+)"\s*$',
+        pyproject_path.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if match is None:
+        return None
+    return match.group(1).strip() or None
 
 
 def _tmux_display_message(fmt: str) -> str | None:
