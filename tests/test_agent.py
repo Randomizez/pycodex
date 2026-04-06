@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -41,6 +40,25 @@ class SlowTool(BaseTool):
     async def run(self, context, args):
         del context, args
         await asyncio.sleep(0.05)
+        return "done"
+
+
+class CoordinatedParallelTool(BaseTool):
+    description = "Tool that proves both calls entered before either finished."
+    input_schema = {"type": "object"}
+    supports_parallel = True
+
+    def __init__(self, name: str, entered: list[str], both_started: asyncio.Event) -> None:
+        self.name = name
+        self._entered = entered
+        self._both_started = both_started
+
+    async def run(self, context, args):
+        del context, args
+        self._entered.append(self.name)
+        if len(self._entered) == 2:
+            self._both_started.set()
+        await asyncio.wait_for(self._both_started.wait(), timeout=0.2)
         return "done"
 
 
@@ -109,17 +127,16 @@ async def test_parallel_tools_share_one_model_round() -> None:
     )
 
     tools = ToolRegistry()
-    tools.register(SlowTool("slow_a"))
-    tools.register(SlowTool("slow_b"))
+    entered: list[str] = []
+    both_started = asyncio.Event()
+    tools.register(CoordinatedParallelTool("slow_a", entered, both_started))
+    tools.register(CoordinatedParallelTool("slow_b", entered, both_started))
 
     agent = AgentLoop(model, tools)
-
-    started = time.perf_counter()
     result = await agent.run_turn(["并行跑两个工具"])
-    elapsed = time.perf_counter() - started
 
     assert result.output_text == "两个工具都执行完了"
-    assert elapsed < 0.11
+    assert entered == ["slow_a", "slow_b"] or entered == ["slow_b", "slow_a"]
 
 
 @pytest.mark.asyncio

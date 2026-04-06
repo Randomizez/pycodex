@@ -346,6 +346,9 @@ class SubAgentManager:
             managed.state = "completed"
         finally:
             managed.pending_submission_ids.discard(submission_id)
+            if managed.pending_submission_ids and managed.error_message is None:
+                managed.completed_message = None
+                managed.state = "running"
             async with self._condition:
                 self._condition.notify_all()
 

@@ -35,13 +35,16 @@ jobs:
     container:
       image: python:3.6.15-slim-bullseye
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
       - name: Install system dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$PWD"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
