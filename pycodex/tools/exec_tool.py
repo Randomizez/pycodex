@@ -17,7 +17,7 @@ from ..protocol import JSONValue
 from .base_tool import BaseTool, ToolContext
 from .code_mode_manager import CodeModeManager
 
-EXEC_FREEFORM_GRAMMAR = """start: pragma_source | plain_source
+EXEC_FREEFORM_GRAMMAR = r"""start: pragma_source | plain_source
 pragma_source: PRAGMA_LINE NEWLINE SOURCE
 plain_source: SOURCE
 

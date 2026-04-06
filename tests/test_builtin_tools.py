@@ -374,9 +374,27 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(tmp_path)
         ToolContext(turn_id="turn_9_write_finish", history=()),
     )
 
+    body = poll.output.split("Output:\n", 1)[1]
+    for _ in range(5):
+        if "tokens truncated" in body:
+            break
+        if "Process exited with code 0" in poll.output:
+            break
+        poll = await registry.execute(
+            ToolCall(
+                call_id="call_9_write_finish_poll",
+                name="write_stdin",
+                arguments={
+                    "session_id": session_id,
+                    "yield_time_ms": 200,
+                },
+            ),
+            ToolContext(turn_id="turn_9_write_finish_poll", history=()),
+        )
+        body = poll.output.split("Output:\n", 1)[1]
+
     assert poll.is_error is False
     assert "Original token count: " in poll.output
-    body = poll.output.split("Output:\n", 1)[1]
     assert body.startswith("Total output lines: 1\n\nHEAD")
     assert "tokens truncated" in body
     assert body.endswith("TAIL")
