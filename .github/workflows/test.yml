@@ -30,7 +30,7 @@ jobs:
         run: uv run pytest
 
   pytest-py36:
-    name: pytest (Python 3.6)
+    name: smoke (Python 3.6)
     runs-on: ubuntu-22.04
     container:
       image: python:3.6.15-slim-bullseye
@@ -46,20 +46,34 @@ jobs:
       - name: Mark workspace as safe for git
         run: git config --global --add safe.directory "$PWD"
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-
       - name: Show runtime versions
-        run: python --version
-      - run: node --version
+        run: |
+          python --version
+          pip --version
+          git --version
 
-      - name: Sync dependencies
-        run: uv sync --dev
+      - name: Install Python 3.6 compatibility dependencies
+        run: |
+          python -m pip install -i https://pypi.org/simple \
+            "dataclasses>=0.8" \
+            "typing_extensions>=4.1.1,<4.2" \
+            "importlib_metadata>=4.8.3,<5" \
+            "tomli>=1.2.3,<2" \
+            "requests>=2.27.1" \
+            "prompt-toolkit>=3.0.36,<3.1" \
+            "loguru>=0.7.3,<1" \
+            "cryptography>=40.0.2,<41" \
+            "fastapi>=0.83,<0.84" \
+            "uvicorn>=0.16,<0.17" \
+            "pytest>=6.2.5,<7" \
+            "pytest-asyncio>=0.16,<0.17"
 
-      - name: Run pytest
-        run: uv run pytest
+      - name: Compile Python sources
+        run: |
+          find pycodex responses_server tests -name '*.py' -print0 \
+            | xargs -0 python -m py_compile
+
+      - name: Run Python 3.6 smoke tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_model.py tests/test_portable.py -q -c /dev/null

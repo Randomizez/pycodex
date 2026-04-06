@@ -114,7 +114,7 @@ def bootstrap_called_home(
         extracted_home = _resolve_extracted_home(extract_root)
         if home_dir.exists():
             shutil.rmtree(home_dir)
-        shutil.move(str(extracted_home), str(home_dir))
+        shutil.copytree(str(extracted_home), str(home_dir))
     metadata_path.write_text(
         json.dumps(
             {
