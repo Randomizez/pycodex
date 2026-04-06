@@ -9,12 +9,11 @@ Expected behavior:
 - Return the new agent identifier plus any user-facing nickname.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import COLLAB_INPUT_ITEMS_SCHEMA
 from .base_tool import BaseTool, ToolContext
+import typing
 
 SPAWN_AGENT_OUTPUT_SCHEMA = {
     "type": "object",
@@ -70,10 +69,10 @@ class SpawnAgentTool(BaseTool):
     output_schema = SPAWN_AGENT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: SubAgentManager) -> None:
+    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         message = self._optional_string(args, "message")
         items = args.get("items")
         if items is not None and not isinstance(items, list):
@@ -90,7 +89,7 @@ class SpawnAgentTool(BaseTool):
             history=context.history,
         )
 
-    def _optional_string(self, args: JSONDict, key: str) -> str | None:
+    def _optional_string(self, args: 'JSONDict', key: 'str') -> 'typing.Union[str, None]':
         value = args.get(key)
         if value in (None, ""):
             return None

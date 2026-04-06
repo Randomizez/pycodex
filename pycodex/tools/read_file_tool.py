@@ -9,13 +9,12 @@ Expected behavior:
   mode used to inspect code structure without shelling out to `sed` or `cat`.
 """
 
-from __future__ import annotations
-
 from collections import deque
 from pathlib import Path
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
+import typing
 
 MAX_LINE_LENGTH = 500
 TAB_WIDTH = 4
@@ -49,7 +48,7 @@ class ReadFileTool(BaseTool):
         "required": ["file_path"],
     }
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         file_path = Path(str(args.get("file_path", "")))
         offset = int(args.get("offset", 1))
@@ -72,7 +71,7 @@ class ReadFileTool(BaseTool):
             return self._read_indentation(file_path, offset, limit, indentation)
         return self._read_slice(file_path, offset, limit)
 
-    def _read_slice(self, file_path: Path, offset: int, limit: int) -> str:
+    def _read_slice(self, file_path: 'Path', offset: 'int', limit: 'int') -> 'str':
         lines = file_path.read_text(errors="replace").splitlines()
         if offset > len(lines):
             return "Error: `offset` exceeds file length."
@@ -85,11 +84,11 @@ class ReadFileTool(BaseTool):
 
     def _read_indentation(
         self,
-        file_path: Path,
-        offset: int,
-        limit: int,
-        indentation: JSONDict,
-    ) -> str:
+        file_path: 'Path',
+        offset: 'int',
+        limit: 'int',
+        indentation: 'JSONDict',
+    ) -> 'str':
         lines = self._collect_line_records(file_path)
         anchor_line = int(indentation.get("anchor_line", offset))
         max_levels = int(indentation.get("max_levels", 0))
@@ -171,7 +170,7 @@ class ReadFileTool(BaseTool):
             f"L{record['number']}: {record['display']}" for record in selected
         )
 
-    def _collect_line_records(self, file_path: Path) -> list[dict[str, object]]:
+    def _collect_line_records(self, file_path: 'Path') -> 'typing.List[typing.Dict[str, object]]':
         records = []
         for number, raw in enumerate(file_path.read_text(errors="replace").splitlines(), start=1):
             records.append(
@@ -185,7 +184,7 @@ class ReadFileTool(BaseTool):
             )
         return records
 
-    def _compute_effective_indents(self, records: list[dict[str, object]]) -> list[int]:
+    def _compute_effective_indents(self, records: 'typing.List[typing.Dict[str, object]]') -> 'typing.List[int]':
         effective = []
         previous_indent = 0
         for record in records:
@@ -196,7 +195,7 @@ class ReadFileTool(BaseTool):
                 effective.append(previous_indent)
         return effective
 
-    def _measure_indent(self, line: str) -> int:
+    def _measure_indent(self, line: 'str') -> 'int':
         total = 0
         for character in line:
             if character == " ":
@@ -207,10 +206,10 @@ class ReadFileTool(BaseTool):
                 break
         return total
 
-    def _format_line(self, text: str) -> str:
+    def _format_line(self, text: 'str') -> 'str':
         return text[:MAX_LINE_LENGTH]
 
-    def _trim_empty_lines(self, records: deque[dict[str, object]]) -> None:
+    def _trim_empty_lines(self, records: 'deque[typing.Dict[str, object]]') -> 'None':
         while records and not str(records[0]["raw"]).strip():
             records.popleft()
         while records and not str(records[-1]["raw"]).strip():

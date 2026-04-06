@@ -1,14 +1,14 @@
-from __future__ import annotations
 
 import os
 from pathlib import Path
+import typing
 
 ILLEGAL_ENV_VAR_PREFIX = "CODEX_"
 DOTENV_FILENAME = ".env"
-_LOADED_CODEX_DOTENV_HOMES: set[str] = set()
+_LOADED_CODEX_DOTENV_HOMES: 'typing.Set[str]' = set()
 
 
-def load_codex_dotenv(config_path: str | Path) -> None:
+def load_codex_dotenv(config_path: 'typing.Union[str, Path]') -> 'None':
     codex_home = str(Path(config_path).resolve().parent)
     if codex_home in _LOADED_CODEX_DOTENV_HOMES:
         return
@@ -26,8 +26,8 @@ def load_codex_dotenv(config_path: str | Path) -> None:
     _LOADED_CODEX_DOTENV_HOMES.add(codex_home)
 
 
-def parse_dotenv(text: str) -> dict[str, str]:
-    values: dict[str, str] = {}
+def parse_dotenv(text: 'str') -> 'typing.Dict[str, str]':
+    values: 'typing.Dict[str, str]' = {}
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -45,7 +45,7 @@ def parse_dotenv(text: str) -> dict[str, str]:
     return values
 
 
-def parse_dotenv_value(raw_value: str) -> str:
+def parse_dotenv_value(raw_value: 'str') -> 'str':
     if not raw_value:
         return ""
 

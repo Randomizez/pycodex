@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import json
 
@@ -15,9 +14,10 @@ from tests.responses_server.fake_chat_completions_server import (
     build_text_chunks,
     build_tool_call_chunks,
 )
+import typing
 
 
-def test_responses_server_streams_text_from_chat_backend(tmp_path) -> None:
+def test_responses_server_streams_text_from_chat_backend(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -78,7 +78,7 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> None:
 
 def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -188,7 +188,7 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert request["path"] == "/v1/chat/completions"
 
 
-def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
+def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -277,7 +277,7 @@ def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> None:
 
 def test_responses_server_stepfun_uses_latest_usage_snapshot_instead_of_summing(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -375,7 +375,7 @@ def test_responses_server_stepfun_uses_latest_usage_snapshot_instead_of_summing(
 
 def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -474,7 +474,7 @@ def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_cha
 
 def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -551,7 +551,7 @@ def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_
 
 def test_responses_server_preserves_request_model_without_default_override(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -591,7 +591,7 @@ def test_responses_server_preserves_request_model_without_default_override(
     assert request["body"]["model"] == "gpt-5.4"
 
 
-def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> None:
+def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -643,10 +643,10 @@ def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> None:
 def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     def _tag_vllm_payload(
-        outcomming_request: dict[str, object],
-    ) -> dict[str, object]:
+        outcomming_request: 'typing.Dict[str, object]',
+    ) -> 'typing.Dict[str, object]':
         outcomming_request["provider_tag"] = "vllm"
         return outcomming_request
 
@@ -699,7 +699,7 @@ def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
 
 def test_responses_server_unknown_provider_reconstructs_reasoning_history_like_vllm(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -777,10 +777,10 @@ def test_responses_server_unknown_provider_reconstructs_reasoning_history_like_v
 def test_responses_server_uses_model_provider_payload_processor_for_each_request(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     def _tag_demo_payload(
-        outcomming_request: dict[str, object],
-    ) -> dict[str, object]:
+        outcomming_request: 'typing.Dict[str, object]',
+    ) -> 'typing.Dict[str, object]':
         outcomming_request["provider_tag"] = "demo"
         return outcomming_request
 
@@ -855,7 +855,7 @@ def test_responses_server_uses_model_provider_payload_processor_for_each_request
     assert second_request["body"]["provider_tag"] == "demo"
 
 
-def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path) -> None:
+def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -910,7 +910,7 @@ def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path
     assert '\\"text\\":\\"hello\\"' in body
 
 
-def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path) -> None:
+def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -996,7 +996,7 @@ def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path
     ]
 
 
-def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> None:
+def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1080,7 +1080,7 @@ def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> None
 
 def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1173,7 +1173,7 @@ def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
 
 def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
     tmp_path,
-) -> None:
+) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1235,7 +1235,7 @@ def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
     assert '"input": "*** Begin Patch\\n*** End Patch\\n"' in body
 
 
-def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> None:
+def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,

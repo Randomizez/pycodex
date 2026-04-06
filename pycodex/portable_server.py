@@ -1,56 +1,57 @@
-from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+from .http_compat import ThreadingHTTPServer
 from .portable import (
     DEFAULT_STORAGE_SERVER,
     HEALTHCHECK_PATH,
     STORAGE_API_PREFIX,
     _call_id_from_payload,
 )
+import typing
 
 
 class CodexStorageServer:
     def __init__(
         self,
-        root: str | Path,
-        host: str = "127.0.0.1",
-        port: int = 5577,
-    ) -> None:
+        root: 'typing.Union[str, Path]',
+        host: 'str' = "127.0.0.1",
+        port: 'int' = 5577,
+    ) -> 'None':
         self._root = Path(root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._objects_dir = self._root / "objects"
         self._objects_dir.mkdir(parents=True, exist_ok=True)
         self._server = ThreadingHTTPServer((host, port), self._build_handler())
-        self._thread: threading.Thread | None = None
+        self._thread: 'typing.Union[threading.Thread, None]' = None
 
     @property
-    def host(self) -> str:
+    def host(self) -> 'str':
         return str(self._server.server_address[0])
 
     @property
-    def port(self) -> int:
+    def port(self) -> 'int':
         return int(self._server.server_address[1])
 
     @property
-    def server_address(self) -> str:
+    def server_address(self) -> 'str':
         return f"{self.host}:{self.port}"
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> 'str':
         return f"http://{self.server_address}{STORAGE_API_PREFIX}"
 
     @property
-    def root(self) -> Path:
+    def root(self) -> 'Path':
         return self._root
 
-    def start(self) -> None:
+    def start(self) -> 'None':
         if self._thread is not None:
             return
         self._thread = threading.Thread(
@@ -60,7 +61,7 @@ class CodexStorageServer:
         )
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> 'None':
         self._server.shutdown()
         self._server.server_close()
         if self._thread is not None:
@@ -71,7 +72,7 @@ class CodexStorageServer:
         server = self
 
         class Handler(BaseHTTPRequestHandler):
-            def do_GET(self) -> None:  # noqa: N802
+            def do_GET(self) -> 'None':  # noqa: N802
                 path = urlparse(self.path).path
                 if path == HEALTHCHECK_PATH:
                     self._send_json(200, {"ok": True})
@@ -101,7 +102,7 @@ class CodexStorageServer:
                 self.end_headers()
                 self.wfile.write(payload)
 
-            def do_POST(self) -> None:  # noqa: N802
+            def do_POST(self) -> 'None':  # noqa: N802
                 path = urlparse(self.path).path
                 if path != f"{STORAGE_API_PREFIX}/put":
                     self._send_json(404, {"error": "not found"})
@@ -138,10 +139,10 @@ class CodexStorageServer:
                     },
                 )
 
-            def log_message(self, _format: str, *_args) -> None:
+            def log_message(self, _format: 'str', *_args) -> 'None':
                 return
 
-            def _send_json(self, status: int, payload: dict[str, object]) -> None:
+            def _send_json(self, status: 'int', payload: 'typing.Dict[str, object]') -> 'None':
                 body = json.dumps(payload).encode("utf-8")
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -151,11 +152,11 @@ class CodexStorageServer:
 
         return Handler
 
-    def _object_path(self, call_id: str) -> Path:
+    def _object_path(self, call_id: 'str') -> 'Path':
         return self._objects_dir / f"{call_id}.bin"
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> 'argparse.ArgumentParser':
     parser = argparse.ArgumentParser(
         prog="python -m pycodex.portable_server",
         description="Run a pycodex remote storage service for --put/--call testing.",
@@ -179,7 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: 'typing.Union[typing.List[str], None]' = None) -> 'int':
     parser = build_parser()
     args = parser.parse_args(argv)
     server = CodexStorageServer(args.root, host=args.host, port=args.port)

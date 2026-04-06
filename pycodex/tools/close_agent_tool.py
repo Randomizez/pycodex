@@ -8,8 +8,6 @@ Expected behavior:
 - Return the agent status observed at close time.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import AGENT_STATUS_SCHEMA
@@ -44,10 +42,10 @@ class CloseAgentTool(BaseTool):
     output_schema = CLOSE_AGENT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: SubAgentManager) -> None:
+    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         agent_id = str(args.get("id", "")).strip()
         if not agent_id:

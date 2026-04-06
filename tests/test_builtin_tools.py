@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 from pathlib import Path
@@ -40,9 +39,10 @@ from pycodex.tools import (
     WriteStdinTool,
 )
 from tests.fakes import ScriptedModelClient
+import typing
 
 
-def make_registry(tmp_path) -> ToolRegistry:
+def make_registry(tmp_path) -> 'ToolRegistry':
     registry = ToolRegistry()
     code_mode_manager = CodeModeManager(registry, tmp_path)
     manager = UnifiedExecManager(tmp_path)
@@ -64,7 +64,7 @@ def make_registry(tmp_path) -> ToolRegistry:
 
 def make_subagent_registry(
     model_factory,
-) -> ToolRegistry:
+) -> 'ToolRegistry':
     manager = SubAgentManager()
 
     def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
@@ -88,8 +88,8 @@ def make_subagent_registry(
 
 def make_subagent_registry_with_session_capture(
     model_factory,
-    captured_session_ids: list[str],
-) -> ToolRegistry:
+    captured_session_ids: 'typing.List[str]',
+) -> 'ToolRegistry':
     manager = SubAgentManager()
 
     def runtime_builder(_model, _reasoning_effort, initial_history, session_id):
@@ -111,7 +111,7 @@ def make_subagent_registry_with_session_capture(
 
 
 @pytest.mark.asyncio
-async def test_shell_tool_runs_argv_command_in_target_directory(tmp_path) -> None:
+async def test_shell_tool_runs_argv_command_in_target_directory(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -129,7 +129,7 @@ async def test_shell_tool_runs_argv_command_in_target_directory(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_shell_tool_reports_timeout(tmp_path) -> None:
+async def test_shell_tool_reports_timeout(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -145,7 +145,7 @@ async def test_shell_tool_reports_timeout(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_shell_command_tool_runs_shell_script(tmp_path) -> None:
+async def test_shell_command_tool_runs_shell_script(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -161,7 +161,7 @@ async def test_shell_command_tool_runs_shell_script(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_dir_tool_lists_entries_from_absolute_path(tmp_path) -> None:
+async def test_list_dir_tool_lists_entries_from_absolute_path(tmp_path) -> 'None':
     (tmp_path / "a.txt").write_text("a")
     subdir = tmp_path / "sub"
     subdir.mkdir()
@@ -184,7 +184,7 @@ async def test_list_dir_tool_lists_entries_from_absolute_path(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_read_file_tool_reads_slice_with_line_numbers(tmp_path) -> None:
+async def test_read_file_tool_reads_slice_with_line_numbers(tmp_path) -> 'None':
     file_path = tmp_path / "sample.py"
     file_path.write_text("first\nsecond\nthird\n")
     registry = make_registry(tmp_path)
@@ -202,7 +202,7 @@ async def test_read_file_tool_reads_slice_with_line_numbers(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_grep_files_tool_returns_matching_paths(tmp_path) -> None:
+async def test_grep_files_tool_returns_matching_paths(tmp_path) -> 'None':
     matched = tmp_path / "match.py"
     matched.write_text("hello world\n")
     unmatched = tmp_path / "skip.py"
@@ -223,7 +223,7 @@ async def test_grep_files_tool_returns_matching_paths(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_exec_command_tool_returns_session_for_long_running_process(tmp_path) -> None:
+async def test_exec_command_tool_returns_session_for_long_running_process(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -265,7 +265,7 @@ async def test_exec_command_tool_returns_session_for_long_running_process(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata(tmp_path) -> None:
+async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     start = await registry.execute(
         ToolCall(
@@ -318,7 +318,7 @@ async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata
 
 
 @pytest.mark.asyncio
-async def test_exec_command_tool_defaults_to_upstream_truncation_budget(tmp_path) -> None:
+async def test_exec_command_tool_defaults_to_upstream_truncation_budget(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -344,7 +344,7 @@ async def test_exec_command_tool_defaults_to_upstream_truncation_budget(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(tmp_path) -> None:
+async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     start = await registry.execute(
         ToolCall(
@@ -419,7 +419,7 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(tmp_path)
 @pytest.mark.asyncio
 async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
     tmp_path,
-) -> None:
+) -> 'None':
     registry = make_registry(tmp_path)
     start = await registry.execute(
         ToolCall(
@@ -468,7 +468,7 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
 
 
 @pytest.mark.asyncio
-async def test_exec_tool_runs_javascript_and_returns_completed_status(tmp_path) -> None:
+async def test_exec_tool_runs_javascript_and_returns_completed_status(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
         ToolCall(
@@ -486,7 +486,7 @@ async def test_exec_tool_runs_javascript_and_returns_completed_status(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_exec_tool_can_yield_and_wait_for_remaining_output(tmp_path) -> None:
+async def test_exec_tool_can_yield_and_wait_for_remaining_output(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     start = await registry.execute(
         ToolCall(
@@ -530,7 +530,7 @@ async def test_exec_tool_can_yield_and_wait_for_remaining_output(tmp_path) -> No
     assert "finish" in finish.output_text()
 
 
-def test_web_search_tool_serializes_as_provider_native_spec(tmp_path) -> None:
+def test_web_search_tool_serializes_as_provider_native_spec(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     web_search = registry.get_tool("web_search")
     assert web_search is not None
@@ -541,7 +541,7 @@ def test_web_search_tool_serializes_as_provider_native_spec(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_plan_tool_returns_confirmation_and_stores_plan(tmp_path) -> None:
+async def test_update_plan_tool_returns_confirmation_and_stores_plan(tmp_path) -> 'None':
     plan_store = PlanStore()
     registry = ToolRegistry()
     registry.register(UpdatePlanTool(plan_store))
@@ -573,7 +573,7 @@ async def test_update_plan_tool_returns_confirmation_and_stores_plan(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_request_user_input_tool_is_unavailable_in_default_mode() -> None:
+async def test_request_user_input_tool_is_unavailable_in_default_mode() -> 'None':
     manager = RequestUserInputManager()
     registry = ToolRegistry()
     registry.register(RequestUserInputTool(manager))
@@ -610,9 +610,9 @@ async def test_request_user_input_tool_is_unavailable_in_default_mode() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_user_input_tool_returns_structured_answers_in_plan_mode() -> None:
+async def test_request_user_input_tool_returns_structured_answers_in_plan_mode() -> 'None':
     manager = RequestUserInputManager()
-    captured_payloads: list[dict[str, object]] = []
+    captured_payloads: 'typing.List[typing.Dict[str, object]]' = []
 
     async def handler(payload):
         captured_payloads.append(payload)
@@ -695,7 +695,7 @@ async def test_request_user_input_tool_returns_structured_answers_in_plan_mode()
 
 
 @pytest.mark.asyncio
-async def test_request_user_input_tool_requires_non_empty_options_in_plan_mode() -> None:
+async def test_request_user_input_tool_requires_non_empty_options_in_plan_mode() -> 'None':
     manager = RequestUserInputManager()
     registry = ToolRegistry()
     registry.register(RequestUserInputTool(manager))
@@ -730,7 +730,7 @@ async def test_request_user_input_tool_requires_non_empty_options_in_plan_mode()
 
 
 @pytest.mark.asyncio
-async def test_request_permissions_tool_returns_permission_response() -> None:
+async def test_request_permissions_tool_returns_permission_response() -> 'None':
     manager = RequestPermissionsManager()
 
     async def handler(payload):
@@ -768,7 +768,7 @@ async def test_request_permissions_tool_returns_permission_response() -> None:
 
 
 @pytest.mark.asyncio
-async def test_apply_patch_tool_applies_multiple_operations_atomically(tmp_path) -> None:
+async def test_apply_patch_tool_applies_multiple_operations_atomically(tmp_path) -> 'None':
     target = tmp_path / "modify.txt"
     doomed = tmp_path / "delete.txt"
     target.write_text("line1\nline2\n")
@@ -815,7 +815,7 @@ async def test_apply_patch_tool_applies_multiple_operations_atomically(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_apply_patch_tool_does_not_leave_partial_writes_on_failure(tmp_path) -> None:
+async def test_apply_patch_tool_does_not_leave_partial_writes_on_failure(tmp_path) -> 'None':
     patch = "\n".join(
         [
             "*** Begin Patch",
@@ -846,7 +846,7 @@ async def test_apply_patch_tool_does_not_leave_partial_writes_on_failure(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -> None:
+async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -> 'None':
     image_path = tmp_path / "pixel.png"
     image_path.write_bytes(
         bytes.fromhex(
@@ -880,7 +880,7 @@ async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_send_input_wait_and_close_round_trip() -> None:
+async def test_spawn_agent_send_input_wait_and_close_round_trip() -> 'None':
     first_client = ScriptedModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="done one")]),
@@ -950,7 +950,7 @@ async def test_spawn_agent_send_input_wait_and_close_round_trip() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_requires_message_or_items() -> None:
+async def test_spawn_agent_requires_message_or_items() -> 'None':
     client = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="unused")])])
     registry = make_subagent_registry(lambda: client)
 
@@ -964,8 +964,8 @@ async def test_spawn_agent_requires_message_or_items() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_uses_agent_id_as_nested_session_id() -> None:
-    captured_session_ids: list[str] = []
+async def test_spawn_agent_uses_agent_id_as_nested_session_id() -> 'None':
+    captured_session_ids: 'typing.List[str]' = []
     client = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     registry = make_subagent_registry_with_session_capture(
         lambda: client,
@@ -1009,7 +1009,7 @@ async def test_spawn_agent_uses_agent_id_as_nested_session_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_resume_agent_restarts_closed_agent_runtime() -> None:
+async def test_resume_agent_restarts_closed_agent_runtime() -> 'None':
     client = ScriptedModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="initial done")]),

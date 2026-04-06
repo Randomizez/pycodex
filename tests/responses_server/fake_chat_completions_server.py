@@ -1,7 +1,5 @@
 """Minimal FastAPI Chat Completions server for standalone responses-server tests."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 import socket
@@ -12,17 +10,18 @@ from urllib.parse import urlsplit
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 import uvicorn
+import typing
 
 DEFAULT_MODEL_ID = "gpt-5.4"
 
 
 class CaptureStore:
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: 'Path') -> 'None':
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._counter_path = self._root / "counter.txt"
 
-    def next_request_id(self) -> int:
+    def next_request_id(self) -> 'int':
         if self._counter_path.exists():
             value = int(self._counter_path.read_text()) + 1
         else:
@@ -32,12 +31,12 @@ class CaptureStore:
 
     def write_capture(
         self,
-        request_id: int,
-        method: str,
-        path: str,
-        headers: dict[str, str],
-        body: object,
-    ) -> None:
+        request_id: 'int',
+        method: 'str',
+        path: 'str',
+        headers: 'typing.Dict[str, str]',
+        body: 'object',
+    ) -> 'None':
         parsed = urlsplit(path)
         safe_name = parsed.path.strip("/").replace("/", "_") or "root"
         filename = self._root / f"{request_id:03d}_{method}_{safe_name}.json"
@@ -56,7 +55,7 @@ class CaptureStore:
 
 
 class RunningFastAPITestServer:
-    def __init__(self, app: FastAPI, host: str = "127.0.0.1", port: int | None = None) -> None:
+    def __init__(self, app: 'FastAPI', host: 'str' = "127.0.0.1", port: 'typing.Union[int, None]' = None) -> 'None':
         self.app = app
         self.host = host
         self.port = port or _reserve_free_port()
@@ -71,14 +70,14 @@ class RunningFastAPITestServer:
         self._thread = threading.Thread(target=self._server.run, daemon=True)
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> 'str':
         return f"http://{self.host}:{self.port}"
 
     @property
-    def server_port(self) -> int:
+    def server_port(self) -> 'int':
         return self.port
 
-    def start(self, timeout_seconds: float = 5.0) -> None:
+    def start(self, timeout_seconds: 'float' = 5.0) -> 'None':
         self._thread.start()
         deadline = time.time() + timeout_seconds
         while not self._server.started:
@@ -86,14 +85,14 @@ class RunningFastAPITestServer:
                 raise RuntimeError("timed out waiting for fake FastAPI server to start")
             time.sleep(0.01)
 
-    def stop(self, timeout_seconds: float = 5.0) -> None:
+    def stop(self, timeout_seconds: 'float' = 5.0) -> 'None':
         self._server.should_exit = True
         self._thread.join(timeout=timeout_seconds)
         if self._thread.is_alive():
             raise RuntimeError("timed out waiting for fake FastAPI server to stop")
 
 
-def build_text_chunks(text: str, model_id: str = DEFAULT_MODEL_ID) -> list[dict[str, object]]:
+def build_text_chunks(text: 'str', model_id: 'str' = DEFAULT_MODEL_ID) -> 'typing.List[typing.Dict[str, object]]':
     return [
         {
             "id": "chatcmpl_mock",
@@ -123,14 +122,14 @@ def build_text_chunks(text: str, model_id: str = DEFAULT_MODEL_ID) -> list[dict[
 
 
 def build_tool_call_chunks(
-    call_id: str,
-    tool_name: str,
-    arguments_parts: list[str],
-    model_id: str = DEFAULT_MODEL_ID,
-) -> list[dict[str, object]]:
-    chunks: list[dict[str, object]] = []
+    call_id: 'str',
+    tool_name: 'str',
+    arguments_parts: 'typing.List[str]',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'typing.List[typing.Dict[str, object]]':
+    chunks: 'typing.List[typing.Dict[str, object]]' = []
     for index, part in enumerate(arguments_parts):
-        chunk: dict[str, object] = {
+        chunk: 'typing.Dict[str, object]' = {
             "id": "chatcmpl_mock",
             "object": "chat.completion.chunk",
             "model": model_id,
@@ -174,14 +173,14 @@ def build_tool_call_chunks(
 
 
 def build_test_app(
-    capture_store: CaptureStore,
-    stream_chunks: list[dict[str, object]] | list[list[dict[str, object]]],
-    model_id: str = DEFAULT_MODEL_ID,
-) -> FastAPI:
+    capture_store: 'CaptureStore',
+    stream_chunks: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]]]',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'FastAPI':
     app = FastAPI(title="FakeChat", version="0.1.0")
     chat_completion_count = 0
 
-    async def write_capture(request: Request, body: object) -> None:
+    async def write_capture(request: 'Request', body: 'object') -> 'None':
         request_id = capture_store.next_request_id()
         path = request.url.path
         if request.url.query:
@@ -196,7 +195,7 @@ def build_test_app(
 
     @app.get("/models")
     @app.get("/v1/models")
-    async def models(request: Request):
+    async def models(request: 'Request'):
         await write_capture(request, None)
         return {
             "object": "list",
@@ -205,10 +204,10 @@ def build_test_app(
 
     @app.post("/chat/completions")
     @app.post("/v1/chat/completions")
-    async def chat_completions(request: Request):
+    async def chat_completions(request: 'Request'):
         nonlocal chat_completion_count
         try:
-            decoded_body: object = await request.json()
+            decoded_body: 'object' = await request.json()
         except Exception:
             decoded_body = (await request.body()).decode("utf-8", errors="replace")
         await write_capture(request, decoded_body)
@@ -230,8 +229,8 @@ def build_test_app(
         )
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
-    async def fallback(path: str, request: Request):
-        body: object = None
+    async def fallback(path: 'str', request: 'Request'):
+        body: 'object' = None
         if request.method != "GET":
             try:
                 body = await request.json()
@@ -244,19 +243,19 @@ def build_test_app(
 
 
 def build_test_server(
-    capture_store: CaptureStore,
-    stream_chunks: list[dict[str, object]] | list[list[dict[str, object]]],
-    model_id: str = DEFAULT_MODEL_ID,
-) -> RunningFastAPITestServer:
+    capture_store: 'CaptureStore',
+    stream_chunks: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]]]',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'RunningFastAPITestServer':
     return RunningFastAPITestServer(
         build_test_app(capture_store, stream_chunks, model_id=model_id)
     )
 
 
 def _select_stream_chunks(
-    stream_chunks: list[dict[str, object]] | list[list[dict[str, object]]],
-    request_index: int,
-) -> list[dict[str, object]]:
+    stream_chunks: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]]]',
+    request_index: 'int',
+) -> 'typing.List[typing.Dict[str, object]]':
     if stream_chunks and isinstance(stream_chunks[0], list):
         stream_sequence = stream_chunks
         selected_index = min(request_index - 1, len(stream_sequence) - 1)
@@ -266,7 +265,7 @@ def _select_stream_chunks(
     return stream_chunks
 
 
-def _reserve_free_port() -> int:
+def _reserve_free_port() -> 'int':
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind(("127.0.0.1", 0))

@@ -1,11 +1,10 @@
-from __future__ import annotations
 
 import random
 import time
 import uuid
 
 
-def uuid7_string() -> str:
+def uuid7_string() -> 'str':
     timestamp_ms = int(time.time() * 1000) & ((1 << 48) - 1)
     rand_a = random.getrandbits(12)
     rand_b = random.getrandbits(62)

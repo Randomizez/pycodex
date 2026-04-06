@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 """Provider-specific post-process hooks for canonical outgoing chat requests.
 
@@ -9,11 +8,11 @@ building one canonical `outcomming_request`, while `server.py` selects the
 appropriate hook from `CompatServerConfig.model_provider`.
 """
 
-from collections.abc import Callable
 from copy import deepcopy
-from typing import Optional, TypedDict
+from typing import Callable, Optional, TypedDict
+import typing
 
-ChatMessage = dict[str, object]
+ChatMessage = typing.Dict[str, object]
 
 
 class OutgoingRequest(TypedDict):
@@ -25,24 +24,24 @@ class OutgoingRequest(TypedDict):
     not rely on TypedDict inheritance.
     """
 
-    model: str
-    messages: list[ChatMessage]
-    stream: bool
-    tools: Optional[list[dict[str, object]]]
-    tool_choice: Optional[object]
-    parallel_tool_calls: Optional[bool]
+    model: 'str'
+    messages: 'typing.List[ChatMessage]'
+    stream: 'bool'
+    tools: 'Optional[typing.List[typing.Dict[str, object]]]'
+    tool_choice: 'Optional[object]'
+    parallel_tool_calls: 'Optional[bool]'
 
 
 PayloadPostProcessor = Callable[[OutgoingRequest], OutgoingRequest]
 
 
-def _identity(outcomming_request: OutgoingRequest) -> OutgoingRequest:
+def _identity(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
     """Keep the canonical request unchanged."""
 
     return outcomming_request
 
 
-def _drop_developer_messages(outcomming_request: OutgoingRequest) -> OutgoingRequest:
+def _drop_developer_messages(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
     """Remove all developer-role messages for providers that reject them."""
 
     outcomming_request["messages"] = [
@@ -53,7 +52,7 @@ def _drop_developer_messages(outcomming_request: OutgoingRequest) -> OutgoingReq
     return outcomming_request
 
 
-PAYLOAD_POST_PROCESSORS: dict[str, PayloadPostProcessor] = {
+PAYLOAD_POST_PROCESSORS: 'typing.Dict[str, PayloadPostProcessor]' = {
     "stepfun": _drop_developer_messages,
     "vllm": _identity,
 }
@@ -61,9 +60,9 @@ PAYLOAD_POST_PROCESSORS: dict[str, PayloadPostProcessor] = {
 
 
 def post_process_outcomming_request(
-    outcomming_request: OutgoingRequest,
-    model_provider: str | None,
-) -> OutgoingRequest:
+    outcomming_request: 'OutgoingRequest',
+    model_provider: 'typing.Union[str, None]',
+) -> 'OutgoingRequest':
     """Apply the provider-specific payload hook to one outgoing request.
 
     This is the single wrapper around `PAYLOAD_POST_PROCESSORS`: it normalizes

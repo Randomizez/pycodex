@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import os
 from pathlib import Path
@@ -13,13 +12,14 @@ from pycodex.portable import (
     upload_codex_home,
 )
 from pycodex.portable_server import CodexStorageServer
+import typing
 
 
 def _write_codex_home(
-    root: Path,
+    root: 'Path',
     *,
-    with_model_instructions: bool = False,
-) -> None:
+    with_model_instructions: 'bool' = False,
+) -> 'None':
     (root / "skills" / "demo").mkdir(parents=True)
     (root / "skills" / "demo" / "SKILL.md").write_text("# Demo\n\nStored skill.\n")
     (root / "AGENTS.md").write_text("stored agents instructions\n")
@@ -43,7 +43,7 @@ def _write_codex_home(
     (root / DEFAULT_ENTRY_CONFIG).write_text("\n".join(lines))
 
 
-def test_upload_codex_home_returns_call_spec_and_whitelist_logs(tmp_path) -> None:
+def test_upload_codex_home_returns_call_spec_and_whitelist_logs(tmp_path) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home)
@@ -53,7 +53,7 @@ def test_upload_codex_home_returns_call_spec_and_whitelist_logs(tmp_path) -> Non
     (codex_home / ".tmp" / "ignored.txt").write_text("ignore me")
     server = CodexStorageServer(tmp_path / "storage-server", port=0)
     server.start()
-    log_lines: list[str] = []
+    log_lines: 'typing.List[str]' = []
     try:
         call_spec = upload_codex_home(
             f"{codex_home}@{server.server_address}",
@@ -71,7 +71,7 @@ def test_upload_codex_home_returns_call_spec_and_whitelist_logs(tmp_path) -> Non
     assert "[put] file: sessions/2026/04/rollout.jsonl" not in log_lines
 
 
-def test_upload_codex_home_stores_ciphertext_not_plain_zip(tmp_path) -> None:
+def test_upload_codex_home_stores_ciphertext_not_plain_zip(tmp_path) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home)
@@ -88,13 +88,13 @@ def test_upload_codex_home_stores_ciphertext_not_plain_zip(tmp_path) -> None:
     assert not stored_bytes.startswith(b"PK")
 
 
-def test_upload_codex_home_includes_relative_model_instructions_file(tmp_path) -> None:
+def test_upload_codex_home_includes_relative_model_instructions_file(tmp_path) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home, with_model_instructions=True)
     server = CodexStorageServer(tmp_path / "storage-server", port=0)
     server.start()
-    log_lines: list[str] = []
+    log_lines: 'typing.List[str]' = []
     try:
         upload_codex_home(
             f"{codex_home}@{server.server_address}",
@@ -106,7 +106,7 @@ def test_upload_codex_home_includes_relative_model_instructions_file(tmp_path) -
     assert "[put] file: instructions/base.md" in log_lines
 
 
-def test_upload_codex_home_checks_server_before_packing(tmp_path, monkeypatch) -> None:
+def test_upload_codex_home_checks_server_before_packing(tmp_path, monkeypatch) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home)
@@ -121,7 +121,7 @@ def test_upload_codex_home_checks_server_before_packing(tmp_path, monkeypatch) -
         upload_codex_home(f"{codex_home}@127.0.0.1:1")
 
 
-def test_resolve_put_source_dir_defaults_to_home_dotcodex(tmp_path, monkeypatch) -> None:
+def test_resolve_put_source_dir_defaults_to_home_dotcodex(tmp_path, monkeypatch) -> 'None':
     fake_home = tmp_path / "fake-home"
     codex_home = fake_home / ".codex"
     codex_home.mkdir(parents=True)
@@ -131,7 +131,7 @@ def test_resolve_put_source_dir_defaults_to_home_dotcodex(tmp_path, monkeypatch)
     assert resolve_put_source_dir(None) == codex_home.resolve()
 
 
-def test_bootstrap_called_home_downloads_and_reuses_cache(tmp_path, monkeypatch) -> None:
+def test_bootstrap_called_home_downloads_and_reuses_cache(tmp_path, monkeypatch) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home)
@@ -151,12 +151,12 @@ def test_bootstrap_called_home_downloads_and_reuses_cache(tmp_path, monkeypatch)
     assert (first_config.parent / "AGENTS.md").read_text() == "stored agents instructions\n"
 
 
-def test_bootstrap_called_home_rejects_invalid_call_spec() -> None:
+def test_bootstrap_called_home_rejects_invalid_call_spec() -> 'None':
     with pytest.raises(RemoteStorageError, match="call spec"):
         bootstrap_called_home("not-a-valid-call-spec")
 
 
-def test_bootstrap_called_home_rejects_wrong_secret(tmp_path) -> None:
+def test_bootstrap_called_home_rejects_wrong_secret(tmp_path) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_codex_home(codex_home)

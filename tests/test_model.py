@@ -1,14 +1,14 @@
-from __future__ import annotations
 
 import json
 import re
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
 
 import pycodex.utils.get_env as get_env
+from pycodex.http_compat import ThreadingHTTPServer
 from pycodex import (
     AssistantMessage,
     ContextMessage,
@@ -23,6 +23,7 @@ from pycodex import (
     UserMessage,
 )
 from tests.fake_responses_server import CaptureStore, build_handler
+import typing
 
 EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
   "model": "demo-model",
@@ -137,11 +138,11 @@ EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
 }"""
 
 
-def _normalized_headers(headers: dict[str, str]) -> dict[str, str]:
+def _normalized_headers(headers: 'typing.Dict[str, str]') -> 'typing.Dict[str, str]':
     return {key.lower(): value for key, value in headers.items()}
 
 
-def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path, monkeypatch) -> None:
+def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path, monkeypatch) -> 'None':
     config_path = tmp_path / 'config.toml'
     config_path.write_text(
         '\n'.join(
@@ -187,7 +188,7 @@ def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path
     assert provider.beta_features_header == 'guardian_approval'
 
 
-def test_responses_model_client_builds_responses_payload() -> None:
+def test_responses_model_client_builds_responses_payload() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -303,14 +304,14 @@ def test_responses_model_client_builds_responses_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_responses_model_client_lists_models_from_provider(monkeypatch) -> None:
-    requests_seen: list[str] = []
+async def test_responses_model_client_lists_models_from_provider(monkeypatch) -> 'None':
+    requests_seen: 'typing.List[str]' = []
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args) -> None:
+        def log_message(self, format: 'str', *args) -> 'None':
             del format, args
 
-        def do_GET(self) -> None:
+        def do_GET(self) -> 'None':
             requests_seen.append(self.path)
             body = json.dumps(
                 {
@@ -352,7 +353,7 @@ async def test_responses_model_client_lists_models_from_provider(monkeypatch) ->
     assert requests_seen == ["/v1/models"]
 
 
-def test_responses_model_client_payload_matches_hardcoded_reference() -> None:
+def test_responses_model_client_payload_matches_hardcoded_reference() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -425,7 +426,7 @@ def test_responses_model_client_payload_matches_hardcoded_reference() -> None:
     assert json.dumps(payload, ensure_ascii=False, indent=2) == EXPECTED_RESPONSES_REQUEST_BODY_JSON
 
 
-def test_responses_model_client_builds_codex_headers_and_stable_session_id(monkeypatch) -> None:
+def test_responses_model_client_builds_codex_headers_and_stable_session_id(monkeypatch) -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -473,7 +474,7 @@ def test_responses_model_client_builds_codex_headers_and_stable_session_id(monke
 def test_responses_model_client_wire_headers_and_body_match_builders(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     capture_root = tmp_path / "capture"
     capture_store = CaptureStore(capture_root)
     httpd = ThreadingHTTPServer(
@@ -526,7 +527,7 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
     assert 'connection' not in headers
 
 
-def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> None:
+def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -542,30 +543,30 @@ def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> None:
     assert re.match(r'^codex-tui/.+ \(.+; .+\) .+ \(codex-tui; .+\)$', headers['user-agent'])
 
 
-def test_get_package_version_reads_distribution_name(monkeypatch) -> None:
-    def fake_version(name: str) -> str:
+def test_get_package_version_reads_distribution_name(monkeypatch) -> 'None':
+    def fake_version(name: 'str') -> 'str':
         if name == 'python-codex':
             return '0.1.2'
-        raise get_env.importlib.metadata.PackageNotFoundError
+        raise get_env.importlib_metadata.PackageNotFoundError
 
     monkeypatch.setattr(get_env, '_detect_upstream_codex_version', lambda: None)
-    monkeypatch.setattr(get_env.importlib.metadata, 'version', fake_version)
+    monkeypatch.setattr(get_env.importlib_metadata, 'version', fake_version)
 
     assert get_env.get_package_version() == '0.1.2'
 
 
-def test_get_package_version_falls_back_to_local_pyproject(monkeypatch) -> None:
-    def fake_missing_version(_name: str) -> str:
-        raise get_env.importlib.metadata.PackageNotFoundError
+def test_get_package_version_falls_back_to_local_pyproject(monkeypatch) -> 'None':
+    def fake_missing_version(_name: 'str') -> 'str':
+        raise get_env.importlib_metadata.PackageNotFoundError
 
     monkeypatch.setattr(get_env, '_detect_upstream_codex_version', lambda: None)
-    monkeypatch.setattr(get_env.importlib.metadata, 'version', fake_missing_version)
+    monkeypatch.setattr(get_env.importlib_metadata, 'version', fake_missing_version)
     monkeypatch.setattr(get_env, '_read_local_package_version', lambda: '0.1.2')
 
     assert get_env.get_package_version() == '0.1.2'
 
 
-def test_responses_model_client_serializes_prompt_turn_metadata(monkeypatch) -> None:
+def test_responses_model_client_serializes_prompt_turn_metadata(monkeypatch) -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -609,7 +610,7 @@ def test_responses_model_client_serializes_prompt_turn_metadata(monkeypatch) -> 
     }
 
 
-def test_responses_model_client_serializes_reasoning_item_in_input() -> None:
+def test_responses_model_client_serializes_reasoning_item_in_input() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -643,7 +644,7 @@ def test_responses_model_client_serializes_reasoning_item_in_input() -> None:
     ]
 
 
-def test_responses_model_client_parses_sse_stream() -> None:
+def test_responses_model_client_parses_sse_stream() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -675,7 +676,7 @@ def test_responses_model_client_parses_sse_stream() -> None:
     assert response.items[1].text == 'done'
 
 
-def test_responses_model_client_parses_reasoning_output_item() -> None:
+def test_responses_model_client_parses_reasoning_output_item() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -702,7 +703,7 @@ def test_responses_model_client_parses_reasoning_output_item() -> None:
     }
 
 
-def test_responses_model_client_parses_custom_tool_call_item() -> None:
+def test_responses_model_client_parses_custom_tool_call_item() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',
@@ -725,7 +726,7 @@ def test_responses_model_client_parses_custom_tool_call_item() -> None:
     assert item.arguments == '*** Begin Patch\n*** End Patch'
 
 
-def test_responses_model_client_emits_event_for_web_search_call() -> None:
+def test_responses_model_client_emits_event_for_web_search_call() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',
         provider_name='demo',

@@ -1,3 +1,7 @@
+from .compat import patch_asyncio
+
+patch_asyncio()
+
 from .agent import AgentLoop
 from .context import ContextConfig, ContextManager
 from .model import (
@@ -60,7 +64,7 @@ from .tools import (
     WriteStdinTool,
 )
 
-def debug(stop: bool = False):
+def debug(stop: 'bool' = False):
 
     import socket
 

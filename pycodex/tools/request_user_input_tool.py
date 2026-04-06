@@ -12,14 +12,13 @@ Expected behavior:
   `success=true`.
 """
 
-from __future__ import annotations
-
 import json
 
 from ..collaboration import collaboration_mode_display_name
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import RequestUserInputManager
 from .base_tool import BaseTool, StructuredToolOutput, ToolContext
+import typing
 
 REQUEST_USER_INPUT_QUESTION_SCHEMA = {
     "type": "object",
@@ -67,9 +66,9 @@ REQUEST_USER_INPUT_QUESTION_SCHEMA = {
 
 
 def request_user_input_is_available(
-    mode: str,
-    default_mode_request_user_input: bool = False,
-) -> bool:
+    mode: 'str',
+    default_mode_request_user_input: 'bool' = False,
+) -> 'bool':
     normalized = mode.strip().lower()
     return normalized == "plan" or (
         default_mode_request_user_input and normalized == "default"
@@ -77,9 +76,9 @@ def request_user_input_is_available(
 
 
 def request_user_input_unavailable_message(
-    mode: str,
-    default_mode_request_user_input: bool = False,
-) -> str | None:
+    mode: 'str',
+    default_mode_request_user_input: 'bool' = False,
+) -> 'typing.Union[str, None]':
     if request_user_input_is_available(mode, default_mode_request_user_input):
         return None
     return (
@@ -89,8 +88,8 @@ def request_user_input_unavailable_message(
 
 
 def request_user_input_tool_description(
-    default_mode_request_user_input: bool = False,
-) -> str:
+    default_mode_request_user_input: 'bool' = False,
+) -> 'str':
     if default_mode_request_user_input:
         allowed_modes = "Default or Plan mode"
     else:
@@ -120,16 +119,16 @@ class RequestUserInputTool(BaseTool):
 
     def __init__(
         self,
-        request_manager: RequestUserInputManager,
-        default_mode_request_user_input: bool = False,
-    ) -> None:
+        request_manager: 'RequestUserInputManager',
+        default_mode_request_user_input: 'bool' = False,
+    ) -> 'None':
         self._request_manager = request_manager
         self._default_mode_request_user_input = default_mode_request_user_input
         self.description = request_user_input_tool_description(
             default_mode_request_user_input
         )
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         unavailable = request_user_input_unavailable_message(
             context.collaboration_mode,
             self._default_mode_request_user_input,

@@ -10,8 +10,6 @@ Expected behavior:
   `write_stdin`.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 from .unified_exec_manager import (
@@ -21,6 +19,7 @@ from .unified_exec_manager import (
     UNIFIED_EXEC_OUTPUT_SCHEMA,
     UnifiedExecManager,
 )
+import typing
 
 
 class ExecCommandTool(BaseTool):
@@ -64,10 +63,10 @@ class ExecCommandTool(BaseTool):
     output_schema = UNIFIED_EXEC_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, manager: UnifiedExecManager) -> None:
+    def __init__(self, manager: 'UnifiedExecManager') -> 'None':
         self._manager = manager
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         cmd = str(args.get("cmd", "")).strip()
         if not cmd:
@@ -83,13 +82,13 @@ class ExecCommandTool(BaseTool):
             max_output_tokens=self._optional_int(args, "max_output_tokens"),
         )
 
-    def _optional_string(self, args: JSONDict, key: str) -> str | None:
+    def _optional_string(self, args: 'JSONDict', key: 'str') -> 'typing.Union[str, None]':
         value = args.get(key)
         if value in (None, ""):
             return None
         return str(value)
 
-    def _optional_int(self, args: JSONDict, key: str) -> int | None:
+    def _optional_int(self, args: 'JSONDict', key: 'str') -> 'typing.Union[int, None]':
         value = args.get(key)
         if value in (None, ""):
             return None

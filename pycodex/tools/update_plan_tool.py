@@ -10,11 +10,10 @@ Expected behavior:
   confirmation text Codex uses.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import PlanItem, PlanStore
 from .base_tool import BaseTool, ToolContext
+import typing
 
 VALID_PLAN_STATUSES = {"pending", "in_progress", "completed"}
 
@@ -52,16 +51,16 @@ class UpdatePlanTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, plan_store: PlanStore) -> None:
+    def __init__(self, plan_store: 'PlanStore') -> 'None':
         self._plan_store = plan_store
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         raw_plan = args.get("plan")
         if not isinstance(raw_plan, list):
             return "Error: `plan` must be a list."
 
-        plan_items: list[PlanItem] = []
+        plan_items: 'typing.List[PlanItem]' = []
         for item in raw_plan:
             if not isinstance(item, dict):
                 return "Error: each `plan` item must be an object."

@@ -1,7 +1,5 @@
 """Shared schemas for Codex-aligned collaboration tools."""
 
-from __future__ import annotations
-
 COLLAB_INPUT_ITEMS_SCHEMA = {
     "type": "array",
     "description": (

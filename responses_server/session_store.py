@@ -1,25 +1,25 @@
-from __future__ import annotations
 
 from dataclasses import dataclass
 import threading
 import time
+import typing
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class StoredResponse:
-    response_id: str
-    session_id: str | None
-    model: str
-    created_at: float
+    response_id: 'str'
+    session_id: 'typing.Union[str, None]'
+    model: 'str'
+    created_at: 'float'
 
 
 class SessionStore:
-    def __init__(self) -> None:
+    def __init__(self) -> 'None':
         self._lock = threading.Lock()
         self._next_response_number = 1
-        self._responses: dict[str, StoredResponse] = {}
+        self._responses: 'typing.Dict[str, StoredResponse]' = {}
 
-    def create_response(self, session_id: str | None, model: str) -> StoredResponse:
+    def create_response(self, session_id: 'typing.Union[str, None]', model: 'str') -> 'StoredResponse':
         with self._lock:
             response_id = f"resp_{self._next_response_number:08d}"
             self._next_response_number += 1
@@ -32,6 +32,6 @@ class SessionStore:
             self._responses[response_id] = stored
             return stored
 
-    def get_response(self, response_id: str) -> StoredResponse | None:
+    def get_response(self, response_id: 'str') -> 'typing.Union[StoredResponse, None]':
         with self._lock:
             return self._responses.get(response_id)

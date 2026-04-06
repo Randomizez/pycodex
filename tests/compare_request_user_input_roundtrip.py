@@ -17,8 +17,6 @@ under `tests/` rather than an always-on pytest, because it depends on a local
 Codex CLI installation plus tmux.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 from contextlib import contextmanager
@@ -44,6 +42,7 @@ from tests.compare_tool_schemas import (
     rewrite_config_base_url,
 )
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
+import typing
 
 DEFAULT_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_OUTPUT_ROOT = Path(".tmp") / "request_user_input_roundtrip_compare"
@@ -55,17 +54,17 @@ DEFAULT_QUESTION_ID = "confirm_path"
 DEFAULT_UPSTREAM_COMMAND = "codex"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class RunCapture:
-    label: str
-    request_paths: tuple[Path, Path]
-    request_bodies: tuple[dict[str, object], dict[str, object]]
-    collaboration_text: str | None
-    function_call_item: dict[str, object] | None
-    function_call_output_item: dict[str, object] | None
+    label: 'str'
+    request_paths: 'typing.Tuple[Path, Path]'
+    request_bodies: 'typing.Tuple[typing.Dict[str, object], typing.Dict[str, object]]'
+    collaboration_text: 'typing.Union[str, None]'
+    function_call_item: 'typing.Union[typing.Dict[str, object], None]'
+    function_call_output_item: 'typing.Union[typing.Dict[str, object], None]'
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> 'argparse.ArgumentParser':
     parser = argparse.ArgumentParser(
         prog="uv run python tests/compare_request_user_input_roundtrip.py",
         description=(
@@ -105,7 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main() -> 'None':
     args = build_parser().parse_args()
     config_path = Path(args.config).resolve()
     output_root = Path(args.root).resolve()
@@ -195,7 +194,7 @@ def main() -> None:
         print(json.dumps(pycodex_capture.function_call_output_item, ensure_ascii=False, indent=2))
 
 
-def detect_upstream_version(upstream_command: str) -> str | None:
+def detect_upstream_version(upstream_command: 'str') -> 'typing.Union[str, None]':
     command = shlex.split(upstream_command) + ["--version"]
     try:
         result = subprocess.run(
@@ -213,10 +212,10 @@ def detect_upstream_version(upstream_command: str) -> str | None:
 
 def build_request_user_input_sequence(
     *,
-    model_id: str,
-    call_id: str,
-    question_id: str,
-) -> tuple[str, str]:
+    model_id: 'str',
+    call_id: 'str',
+    question_id: 'str',
+) -> 'typing.Tuple[str, str]':
     first = "".join(
         [
             "event: response.created\n",
@@ -276,29 +275,29 @@ def build_request_user_input_sequence(
 
 
 class ScriptedOriginServer:
-    def __init__(self, *, model_id: str, response_bodies: tuple[str, ...]) -> None:
+    def __init__(self, *, model_id: 'str', response_bodies: 'typing.Tuple[str, ...]') -> 'None':
         self._model_id = model_id
         self._response_bodies = response_bodies
-        self._httpd: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
+        self._httpd: 'typing.Union[ThreadingHTTPServer, None]' = None
+        self._thread: 'typing.Union[threading.Thread, None]' = None
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> 'str':
         if self._httpd is None:
             raise RuntimeError("origin server has not started")
         return f"http://127.0.0.1:{self._httpd.server_port}/v1"
 
-    def start(self) -> None:
+    def start(self) -> 'None':
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             counter = 0
 
-            def log_message(self, format: str, *args) -> None:
+            def log_message(self, format: 'str', *args) -> 'None':
                 del format, args
                 return
 
-            def do_GET(self) -> None:
+            def do_GET(self) -> 'None':
                 parsed = urlparse(self.path)
                 if parsed.path.endswith("/models") or parsed.path == "/models":
                     body = json.dumps(
@@ -321,7 +320,7 @@ class ScriptedOriginServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def do_POST(self) -> None:
+            def do_POST(self) -> 'None':
                 length = int(self.headers.get("Content-Length", "0"))
                 if length:
                     self.rfile.read(length)
@@ -340,7 +339,7 @@ class ScriptedOriginServer:
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> 'None':
         if self._httpd is not None:
             self._httpd.shutdown()
         if self._thread is not None:
@@ -352,8 +351,8 @@ class ScriptedOriginServer:
 @contextmanager
 def scripted_origin_server(
     *,
-    model_id: str,
-    response_bodies: tuple[str, ...],
+    model_id: 'str',
+    response_bodies: 'typing.Tuple[str, ...]',
 ):
     server = ScriptedOriginServer(
         model_id=model_id,
@@ -368,14 +367,14 @@ def scripted_origin_server(
 
 def run_upstream_codex_capture(
     *,
-    config_path: Path,
-    provider_name: str,
-    output_root: Path,
-    prompt: str,
-    timeout_seconds: float,
-    upstream_command: str,
-    origin_base_url: str,
-) -> RunCapture:
+    config_path: 'Path',
+    provider_name: 'str',
+    output_root: 'Path',
+    prompt: 'str',
+    timeout_seconds: 'float',
+    upstream_command: 'str',
+    origin_base_url: 'str',
+) -> 'RunCapture':
     capture_root = output_root / "upstream"
     log_root = output_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
@@ -395,17 +394,17 @@ def run_upstream_codex_capture(
 
 def run_pycodex_capture(
     *,
-    config_path: Path,
-    output_root: Path,
-    prompt: str,
-    timeout_seconds: float,
-    origin_base_url: str,
-) -> RunCapture:
+    config_path: 'Path',
+    output_root: 'Path',
+    prompt: 'str',
+    timeout_seconds: 'float',
+    origin_base_url: 'str',
+) -> 'RunCapture':
     capture_root = output_root / "pycodex"
     config_root = output_root / "config"
     temp_config_path = build_proxy_config_copy(config_path, config_root)
 
-    def run_with_proxy(proxy_url: str) -> None:
+    def run_with_proxy(proxy_url: 'str') -> 'None':
         rewrite_config_base_url(temp_config_path, proxy_url)
         asyncio.run(
             run_pycodex_plan_session(
@@ -426,14 +425,14 @@ def run_pycodex_capture(
 
 def run_proxy_capture_with_tmux(
     *,
-    capture_root: Path,
-    origin_base_url: str,
-    timeout_seconds: float,
-    provider_name: str,
-    upstream_command: str,
-    prompt: str,
-    terminal_log_path: Path,
-) -> str:
+    capture_root: 'Path',
+    origin_base_url: 'str',
+    timeout_seconds: 'float',
+    provider_name: 'str',
+    upstream_command: 'str',
+    prompt: 'str',
+    terminal_log_path: 'Path',
+) -> 'str':
     if capture_root.exists():
         shutil.rmtree(capture_root)
     capture_root.mkdir(parents=True, exist_ok=True)
@@ -476,11 +475,11 @@ def run_proxy_capture_with_tmux(
 
 def run_proxy_capture_inline(
     *,
-    capture_root: Path,
-    origin_base_url: str,
-    timeout_seconds: float,
+    capture_root: 'Path',
+    origin_base_url: 'str',
+    timeout_seconds: 'float',
     runner,
-) -> None:
+) -> 'None':
     if capture_root.exists():
         shutil.rmtree(capture_root)
     capture_root.mkdir(parents=True, exist_ok=True)
@@ -502,10 +501,10 @@ def run_proxy_capture_inline(
 
 async def run_pycodex_plan_session(
     *,
-    config_path: Path,
-    prompt: str,
-    timeout_seconds: float,
-) -> None:
+    config_path: 'Path',
+    prompt: 'str',
+    timeout_seconds: 'float',
+) -> 'None':
     args = SimpleNamespace(
         config=str(config_path),
         profile=None,
@@ -532,9 +531,9 @@ async def run_pycodex_plan_session(
     worker = asyncio.create_task(runtime.run_forever())
     runtime_environment = get_runtime_environment()
 
-    async def answer_handler(payload: dict[str, object]) -> dict[str, object]:
+    async def answer_handler(payload: 'typing.Dict[str, object]') -> 'typing.Dict[str, object]':
         questions = payload.get("questions")
-        answers: dict[str, dict[str, list[str]]] = {}
+        answers: 'typing.Dict[str, typing.Dict[str, typing.List[str]]]' = {}
         if isinstance(questions, list):
             for question in questions:
                 if not isinstance(question, dict):
@@ -560,7 +559,7 @@ async def run_pycodex_plan_session(
         await worker
 
 
-def load_roundtrip_capture(label: str, capture_root: Path) -> RunCapture:
+def load_roundtrip_capture(label: 'str', capture_root: 'Path') -> 'RunCapture':
     request_files = sorted(capture_root.glob("*_POST_*.json"))
     captures = [
         (path, json.loads(path.read_text()))
@@ -592,7 +591,7 @@ def load_roundtrip_capture(label: str, capture_root: Path) -> RunCapture:
     )
 
 
-def extract_collaboration_text(request_body: dict[str, object]) -> str | None:
+def extract_collaboration_text(request_body: 'typing.Dict[str, object]') -> 'typing.Union[str, None]':
     for item in request_body.get("input", []):
         if not isinstance(item, dict) or item.get("role") != "developer":
             continue
@@ -608,7 +607,7 @@ def extract_collaboration_text(request_body: dict[str, object]) -> str | None:
     return None
 
 
-def extract_function_call(request_body: dict[str, object]) -> dict[str, object] | None:
+def extract_function_call(request_body: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
     for item in request_body.get("input", []):
         if not isinstance(item, dict):
             continue
@@ -617,7 +616,7 @@ def extract_function_call(request_body: dict[str, object]) -> dict[str, object] 
     return None
 
 
-def extract_function_call_output(request_body: dict[str, object]) -> dict[str, object] | None:
+def extract_function_call_output(request_body: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
     for item in request_body.get("input", []):
         if not isinstance(item, dict):
             continue
@@ -629,7 +628,7 @@ def extract_function_call_output(request_body: dict[str, object]) -> dict[str, o
     return None
 
 
-def serialize_run_capture(capture: RunCapture) -> dict[str, object]:
+def serialize_run_capture(capture: 'RunCapture') -> 'typing.Dict[str, object]':
     return {
         "label": capture.label,
         "request_paths": [str(path) for path in capture.request_paths],
@@ -639,7 +638,7 @@ def serialize_run_capture(capture: RunCapture) -> dict[str, object]:
     }
 
 
-def wait_for_post_count(capture_root: Path, expected_count: int, timeout_seconds: float) -> None:
+def wait_for_post_count(capture_root: 'Path', expected_count: 'int', timeout_seconds: 'float') -> 'None':
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if len(list(capture_root.glob("*_POST_*.json"))) >= expected_count:
@@ -650,17 +649,17 @@ def wait_for_post_count(capture_root: Path, expected_count: int, timeout_seconds
     )
 
 
-def tmux_send_line(session_name: str, text: str) -> None:
+def tmux_send_line(session_name: 'str', text: 'str') -> 'None':
     tmux_send_keys(session_name, text)
     time.sleep(0.5)
     subprocess.run(["tmux", "send-keys", "-t", f"{session_name}:", "Enter"], check=True)
 
 
-def tmux_send_keys(session_name: str, text: str) -> None:
+def tmux_send_keys(session_name: 'str', text: 'str') -> 'None':
     subprocess.run(["tmux", "send-keys", "-t", f"{session_name}:", text], check=True)
 
 
-def tmux_capture_pane(session_name: str) -> str:
+def tmux_capture_pane(session_name: 'str') -> 'str':
     result = subprocess.run(
         ["tmux", "capture-pane", "-pt", f"{session_name}:"],
         check=True,
@@ -670,7 +669,7 @@ def tmux_capture_pane(session_name: str) -> str:
     return result.stdout
 
 
-def random_suffix(length: int = 8) -> str:
+def random_suffix(length: 'int' = 8) -> 'str':
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(length))
 

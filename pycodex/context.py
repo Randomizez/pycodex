@@ -1,10 +1,10 @@
-from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 import json
 from pathlib import Path
+import typing
 
 try:
     import tomllib
@@ -66,26 +66,26 @@ SKILLS_GUIDANCE = """- Discovery: The list above is the skills available in this
 - Safety and fallback: If a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ContextConfig:
-    base_instructions: str | None = None
-    developer_instructions: str | None = None
-    user_instructions: str | None = None
-    codex_home_instructions: str | None = None
-    model_instructions_file: Path | None = None
-    codex_home: Path | None = None
-    project_doc_max_bytes: int | None = None
-    model: str | None = None
-    personality: str | None = None
-    approval_policy: str | None = None
-    sandbox_mode: str | None = None
+    base_instructions: 'typing.Union[str, None]' = None
+    developer_instructions: 'typing.Union[str, None]' = None
+    user_instructions: 'typing.Union[str, None]' = None
+    codex_home_instructions: 'typing.Union[str, None]' = None
+    model_instructions_file: 'typing.Union[Path, None]' = None
+    codex_home: 'typing.Union[Path, None]' = None
+    project_doc_max_bytes: 'typing.Union[int, None]' = None
+    model: 'typing.Union[str, None]' = None
+    personality: 'typing.Union[str, None]' = None
+    approval_policy: 'typing.Union[str, None]' = None
+    sandbox_mode: 'typing.Union[str, None]' = None
 
     @classmethod
     def from_codex_config(
         cls,
-        config_path: str | Path,
-        profile: str | None = None,
-    ) -> ContextConfig:
+        config_path: 'typing.Union[str, Path]',
+        profile: 'typing.Union[str, None]' = None,
+    ) -> 'ContextConfig':
         path = Path(config_path)
         data = tomllib.loads(path.read_text())
         selected = dict(data)
@@ -123,26 +123,26 @@ class ContextConfig:
         )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class SkillDescriptor:
-    name: str
-    description: str
-    path_to_skill_md: Path
-    scope_rank: int
+    name: 'str'
+    description: 'str'
+    path_to_skill_md: 'Path'
+    scope_rank: 'int'
 
 
 class ContextManager:
     def __init__(
         self,
-        base_instructions_override: str | None = None,
-        config: ContextConfig | None = None,
-        collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE,
-        collaboration_instructions: str | None = None,
-        include_collaboration_instructions: bool = False,
-        include_permissions_instructions: bool = True,
-        include_skills_instructions: bool = True,
-        network_access: str = "enabled",
-    ) -> None:
+        base_instructions_override: 'typing.Union[str, None]' = None,
+        config: 'typing.Union[ContextConfig, None]' = None,
+        collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
+        collaboration_instructions: 'typing.Union[str, None]' = None,
+        include_collaboration_instructions: 'bool' = False,
+        include_permissions_instructions: 'bool' = True,
+        include_skills_instructions: 'bool' = True,
+        network_access: 'str' = "enabled",
+    ) -> 'None':
         self.cwd = Path.cwd().resolve()
         self._shell = get_shell_name()
         self._current_date = datetime.now().date().isoformat()
@@ -160,21 +160,21 @@ class ContextManager:
         self._include_skills_instructions = include_skills_instructions
         self._network_access = network_access
         self._default_base_instructions = DEFAULT_BASE_INSTRUCTIONS_PATH.read_text()
-        self._workspace_metadata_turn_id: str | None = None
-        self._workspace_metadata_cache: JSONDict | None = None
+        self._workspace_metadata_turn_id: 'typing.Union[str, None]' = None
+        self._workspace_metadata_cache: 'typing.Union[JSONDict, None]' = None
 
     @classmethod
     def from_codex_config(
         cls,
-        config_path: str | Path,
-        profile: str | None = None,
-        base_instructions_override: str | None = None,
-        collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE,
-        include_collaboration_instructions: bool = False,
-        include_permissions_instructions: bool = True,
-        include_skills_instructions: bool = True,
-        network_access: str = "enabled",
-    ) -> ContextManager:
+        config_path: 'typing.Union[str, Path]',
+        profile: 'typing.Union[str, None]' = None,
+        base_instructions_override: 'typing.Union[str, None]' = None,
+        collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
+        include_collaboration_instructions: 'bool' = False,
+        include_permissions_instructions: 'bool' = True,
+        include_skills_instructions: 'bool' = True,
+        network_access: 'str' = "enabled",
+    ) -> 'ContextManager':
         config = ContextConfig.from_codex_config(config_path, profile)
         return cls(
             base_instructions_override=base_instructions_override,
@@ -187,11 +187,11 @@ class ContextManager:
         )
 
     @property
-    def collaboration_mode(self) -> CollaborationMode:
+    def collaboration_mode(self) -> 'CollaborationMode':
         return self._collaboration_mode
 
-    def get_turn_metadata(self, turn_id: str) -> JSONDict:
-        metadata: JSONDict = {"turn_id": turn_id}
+    def get_turn_metadata(self, turn_id: 'str') -> 'JSONDict':
+        metadata: 'JSONDict' = {"turn_id": turn_id}
         if self._workspace_metadata_turn_id is None:
             self._workspace_metadata_turn_id = turn_id
             self._workspace_metadata_cache = get_workspace_turn_metadata(self.cwd)
@@ -205,12 +205,12 @@ class ContextManager:
 
     def build_prompt(
         self,
-        history: tuple[ConversationItem, ...] | list[ConversationItem],
-        tools: list[ToolSpec],
-        parallel_tool_calls: bool,
-        turn_id: str | None = None,
-    ) -> Prompt:
-        input_items: list[ConversationItem] = []
+        history: 'typing.Union[typing.Tuple[ConversationItem, ...], typing.List[ConversationItem]]',
+        tools: 'typing.List[ToolSpec]',
+        parallel_tool_calls: 'bool',
+        turn_id: 'typing.Union[str, None]' = None,
+    ) -> 'Prompt':
+        input_items: 'typing.List[ConversationItem]' = []
         turn_metadata = self.get_turn_metadata(turn_id) if turn_id is not None else None
 
         developer_message = self._build_developer_message()
@@ -228,7 +228,7 @@ class ContextManager:
             turn_metadata=turn_metadata,
         )
 
-    def resolve_base_instructions(self) -> str:
+    def resolve_base_instructions(self) -> 'str':
         if self._base_instructions_override is not None:
             return self._base_instructions_override
         if self._config.base_instructions is not None:
@@ -240,7 +240,7 @@ class ContextManager:
             return resolved
         return self._default_base_instructions
 
-    def _resolve_model_instructions(self) -> str | None:
+    def _resolve_model_instructions(self) -> 'typing.Union[str, None]':
         model_slug = self._config.model
         if model_slug is None:
             return None
@@ -264,8 +264,8 @@ class ContextManager:
             return base_instructions
         return None
 
-    def _build_developer_message(self) -> ContextMessage | None:
-        sections: list[str] = []
+    def _build_developer_message(self) -> 'typing.Union[ContextMessage, None]':
+        sections: 'typing.List[str]' = []
         if self._include_permissions_instructions:
             permissions = self._build_permissions_instructions()
             if permissions is not None:
@@ -290,7 +290,7 @@ class ContextManager:
             content_items=tuple(_input_text_item(section) for section in sections),
         )
 
-    def _build_permissions_instructions(self) -> str | None:
+    def _build_permissions_instructions(self) -> 'typing.Union[str, None]':
         sandbox_mode = self._config.sandbox_mode or "danger-full-access"
         approval_policy = self._config.approval_policy or "never"
         sandbox_prompt_name = sandbox_mode.replace("-", "_")
@@ -318,7 +318,7 @@ class ContextManager:
             ]
         )
 
-    def _build_skills_instructions(self) -> str | None:
+    def _build_skills_instructions(self) -> 'typing.Union[str, None]':
         skills = self._discover_skills()
         if not skills:
             return None
@@ -338,15 +338,15 @@ class ContextManager:
         body = "\n".join(lines)
         return f"{SKILLS_OPEN_TAG}\n{body}\n{SKILLS_CLOSE_TAG}"
 
-    def _discover_skills(self) -> list[SkillDescriptor]:
+    def _discover_skills(self) -> 'typing.List[SkillDescriptor]':
         codex_home = self._config.codex_home
         if codex_home is None:
             return []
 
         user_root = codex_home / "skills"
         system_root = user_root / ".system"
-        discovered: list[SkillDescriptor] = []
-        seen: set[Path] = set()
+        discovered: 'typing.List[SkillDescriptor]' = []
+        seen: 'typing.Set[Path]' = set()
 
         user_paths = _discover_skill_files(user_root, excluded_root=system_root)
         system_paths = _discover_skill_files(system_root)
@@ -366,8 +366,8 @@ class ContextManager:
             key=lambda skill: (skill.scope_rank, skill.name, skill.path_to_skill_md),
         )
 
-    def _build_contextual_user_messages(self) -> list[ContextMessage]:
-        sections: list[str] = []
+    def _build_contextual_user_messages(self) -> 'typing.List[ContextMessage]':
+        sections: 'typing.List[str]' = []
         user_instructions = self._merged_user_instructions()
         if user_instructions is not None:
             sections.append(
@@ -386,8 +386,8 @@ class ContextManager:
             )
         ]
 
-    def _merged_user_instructions(self) -> str | None:
-        parts: list[str] = []
+    def _merged_user_instructions(self) -> 'typing.Union[str, None]':
+        parts: 'typing.List[str]' = []
         if self._config.user_instructions is not None:
             parts.append(self._config.user_instructions)
         if self._config.codex_home_instructions is not None:
@@ -402,8 +402,8 @@ class ContextManager:
 
         return "\n\n".join(parts) or None
 
-    def _read_project_docs(self) -> str | None:
-        docs: list[str] = []
+    def _read_project_docs(self) -> 'typing.Union[str, None]':
+        docs: 'typing.List[str]' = []
         remaining = self._config.project_doc_max_bytes
         for path in self._discover_project_doc_paths():
             text = path.read_text()
@@ -421,9 +421,9 @@ class ContextManager:
             return None
         return "\n\n".join(docs)
 
-    def _discover_project_doc_paths(self) -> list[Path]:
-        seen: set[Path] = set()
-        discovered: list[Path] = []
+    def _discover_project_doc_paths(self) -> 'typing.List[Path]':
+        seen: 'typing.Set[Path]' = set()
+        discovered: 'typing.List[Path]' = []
 
         search_dirs = self._project_search_dirs()
         for directory in search_dirs:
@@ -435,9 +435,9 @@ class ContextManager:
                     break
         return discovered
 
-    def _project_search_dirs(self) -> list[Path]:
+    def _project_search_dirs(self) -> 'typing.List[Path]':
         project_root = self._find_project_root()
-        directories: list[Path] = []
+        directories: 'typing.List[Path]' = []
         current = self.cwd
         chain = [current]
         while current != project_root and current.parent != current:
@@ -447,13 +447,13 @@ class ContextManager:
         directories.extend(chain)
         return directories
 
-    def _find_project_root(self) -> Path:
+    def _find_project_root(self) -> 'Path':
         for ancestor in [self.cwd, *self.cwd.parents]:
             if (ancestor / ".git").exists():
                 return ancestor
         return self.cwd
 
-    def _serialize_environment_context(self) -> str:
+    def _serialize_environment_context(self) -> 'str':
         lines = [
             "<environment_context>",
             f"  <cwd>{self.cwd}</cwd>",
@@ -465,30 +465,30 @@ class ContextManager:
         return "\n".join(lines)
 
 
-def _input_text_item(text: str) -> JSONDict:
+def _input_text_item(text: 'str') -> 'JSONDict':
     return {"type": "input_text", "text": text}
 
 
-def _normalize_text(value) -> str | None:
+def _normalize_text(value) -> 'typing.Union[str, None]':
     if value is None:
         return None
     text = str(value).strip()
     return text or None
 
 
-def _normalize_int(value) -> int | None:
+def _normalize_int(value) -> 'typing.Union[int, None]':
     if value is None:
         return None
     return int(value)
 
 
-def _default_collaboration_instructions(mode: CollaborationMode) -> str:
+def _default_collaboration_instructions(mode: 'CollaborationMode') -> 'str':
     if mode == "plan":
         return PLAN_COLLABORATION_INSTRUCTIONS_PATH.read_text()
     return DEFAULT_COLLABORATION_INSTRUCTIONS_PATH.read_text()
 
 
-def _read_first_instruction_file(base: Path) -> str | None:
+def _read_first_instruction_file(base: 'Path') -> 'typing.Union[str, None]':
     for candidate_name in (LOCAL_PROJECT_DOC_FILENAME, DEFAULT_PROJECT_DOC_FILENAME):
         candidate = base / candidate_name
         try:
@@ -502,10 +502,10 @@ def _read_first_instruction_file(base: Path) -> str | None:
 
 
 @lru_cache(maxsize=1)
-def _load_models_by_slug() -> dict[str, JSONDict]:
+def _load_models_by_slug() -> 'typing.Dict[str, JSONDict]':
     payload = json.loads(DEFAULT_MODELS_PATH.read_text())
     models = payload.get("models", [])
-    by_slug: dict[str, JSONDict] = {}
+    by_slug: 'typing.Dict[str, JSONDict]' = {}
     for model in models:
         slug = model.get("slug")
         if isinstance(slug, str):
@@ -513,7 +513,7 @@ def _load_models_by_slug() -> dict[str, JSONDict]:
     return by_slug
 
 
-def _resolve_personality_message(variables, personality: str | None) -> str:
+def _resolve_personality_message(variables, personality: 'typing.Union[str, None]') -> 'str':
     if not isinstance(variables, dict):
         return ""
     normalized = (personality or "").strip().lower()
@@ -532,13 +532,13 @@ def _resolve_personality_message(variables, personality: str | None) -> str:
 
 
 def _discover_skill_files(
-    root: Path,
-    excluded_root: Path | None = None,
-) -> list[Path]:
+    root: 'Path',
+    excluded_root: 'typing.Union[Path, None]' = None,
+) -> 'typing.List[Path]':
     if not root.exists() or not root.is_dir():
         return []
     excluded = excluded_root.resolve() if excluded_root is not None and excluded_root.exists() else None
-    paths: list[Path] = []
+    paths: 'typing.List[Path]' = []
     for path in root.glob("**/SKILL.md"):
         resolved = path.resolve()
         if excluded is not None and (resolved == excluded or excluded in resolved.parents):
@@ -547,7 +547,7 @@ def _discover_skill_files(
     return sorted(paths)
 
 
-def _parse_skill_descriptor(path: Path, scope_rank: int) -> SkillDescriptor | None:
+def _parse_skill_descriptor(path: 'Path', scope_rank: 'int') -> 'typing.Union[SkillDescriptor, None]':
     text = path.read_text()
     if not text.startswith("---\n"):
         return None
@@ -556,7 +556,7 @@ def _parse_skill_descriptor(path: Path, scope_rank: int) -> SkillDescriptor | No
     if end_index == -1:
         return None
     frontmatter = text[4:end_index]
-    fields: dict[str, str] = {}
+    fields: 'typing.Dict[str, str]' = {}
     for line in frontmatter.splitlines():
         if ":" not in line:
             continue
@@ -574,7 +574,7 @@ def _parse_skill_descriptor(path: Path, scope_rank: int) -> SkillDescriptor | No
     )
 
 
-def _strip_yaml_string(value: str) -> str:
+def _strip_yaml_string(value: 'str') -> 'str':
     if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         return value[1:-1]
     return value

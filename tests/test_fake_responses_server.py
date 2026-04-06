@@ -1,23 +1,24 @@
-from __future__ import annotations
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 import urllib.request
 
+from pycodex.http_compat import ThreadingHTTPServer
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
+import typing
 
 
-def test_proxy_handler_forwards_and_captures_response(tmp_path) -> None:
-    upstream_requests: list[dict[str, object]] = []
+def test_proxy_handler_forwards_and_captures_response(tmp_path) -> 'None':
+    upstream_requests: 'typing.List[typing.Dict[str, object]]' = []
 
     class UpstreamHandler(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args) -> None:
+        def log_message(self, format: 'str', *args) -> 'None':
             del format, args
             return
 
-        def do_POST(self) -> None:
+        def do_POST(self) -> 'None':
             length = int(self.headers.get("Content-Length", "0"))
             body_bytes = self.rfile.read(length)
             upstream_requests.append(

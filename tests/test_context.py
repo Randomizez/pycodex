@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 from datetime import datetime
 
@@ -17,7 +16,7 @@ from pycodex import (
 from tests.fakes import ScriptedModelClient
 
 
-def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> None:
+def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> 'None':
     instructions_file = tmp_path / "instructions.md"
     instructions_file.write_text("from model file\n")
 
@@ -42,7 +41,7 @@ def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> None
     assert manager.resolve_base_instructions() == "from model file"
 
 
-def test_context_manager_resolves_model_instructions_from_models_json() -> None:
+def test_context_manager_resolves_model_instructions_from_models_json() -> 'None':
     manager = ContextManager(
         config=ContextConfig(model="gpt-5.4", personality="pragmatic")
     )
@@ -59,7 +58,7 @@ def test_context_manager_resolves_model_instructions_from_models_json() -> None:
 def test_context_manager_builds_official_style_context_messages(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     codex_home = tmp_path / "codex-home"
     skills_root = codex_home / "skills"
     skills_root.mkdir(parents=True)
@@ -172,7 +171,7 @@ def test_context_manager_builds_official_style_context_messages(
     assert "<timezone>Asia/Hong_Kong</timezone>" in user_texts[1]
 
 
-def test_context_manager_builds_plan_mode_collaboration_message(tmp_path, monkeypatch) -> None:
+def test_context_manager_builds_plan_mode_collaboration_message(tmp_path, monkeypatch) -> 'None':
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SHELL", "/bin/bash")
     monkeypatch.setenv("TZ", "Asia/Hong_Kong")
@@ -204,7 +203,7 @@ def test_context_manager_builds_plan_mode_collaboration_message(tmp_path, monkey
 async def test_agent_loop_injects_context_without_polluting_history(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SHELL", "/bin/bash")
@@ -258,7 +257,7 @@ async def test_agent_loop_injects_context_without_polluting_history(
     )
 
 
-def test_context_manager_keeps_workspaces_within_same_turn(monkeypatch, tmp_path) -> None:
+def test_context_manager_keeps_workspaces_within_same_turn(monkeypatch, tmp_path) -> 'None':
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
         "pycodex.context.get_workspace_turn_metadata",

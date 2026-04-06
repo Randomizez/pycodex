@@ -11,8 +11,6 @@ Expected behavior:
   resumed via `wait`.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONValue
 from .base_tool import BaseTool, ToolContext
 from .code_mode_manager import CodeModeManager
@@ -41,8 +39,8 @@ class ExecTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, manager: CodeModeManager) -> None:
+    def __init__(self, manager: 'CodeModeManager') -> 'None':
         self._manager = manager
 
-    async def run(self, context: ToolContext, args: JSONValue) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
         return await self._manager.exec(str(args), context)

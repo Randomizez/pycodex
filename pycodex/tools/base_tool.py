@@ -10,8 +10,6 @@ Expected behavior:
   model, and dispatches `ToolCall` executions back into `ToolResult`s.
 """
 
-from __future__ import annotations
-
 import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -20,6 +18,7 @@ import json
 from pathlib import Path
 
 from ..protocol import ConversationItem, JSONDict, JSONValue, ToolCall, ToolResult, ToolSpec
+import typing
 
 EXEC_TOOLS_SNAPSHOT_PATH = (
     Path(__file__).resolve().parent.parent / "prompts" / "exec_tools.json"
@@ -27,8 +26,8 @@ EXEC_TOOLS_SNAPSHOT_PATH = (
 
 
 @lru_cache(maxsize=1)
-def _load_exec_tool_payloads() -> dict[str, JSONDict]:
-    payloads: dict[str, JSONDict] = {}
+def _load_exec_tool_payloads() -> 'typing.Dict[str, JSONDict]':
+    payloads: 'typing.Dict[str, JSONDict]' = {}
     for payload in json.loads(EXEC_TOOLS_SNAPSHOT_PATH.read_text()):
         if not isinstance(payload, dict):
             continue
@@ -41,36 +40,36 @@ def _load_exec_tool_payloads() -> dict[str, JSONDict]:
     return payloads
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ToolContext:
-    turn_id: str
-    history: tuple[ConversationItem, ...]
-    collaboration_mode: str = "default"
+    turn_id: 'str'
+    history: 'typing.Tuple[ConversationItem, ...]'
+    collaboration_mode: 'str' = "default"
 
 
 class StructuredToolOutput:
     def __init__(
         self,
-        output: JSONValue,
-        content_items: tuple[JSONDict, ...] | list[JSONDict] | None = None,
-        success: bool | None = None,
-    ) -> None:
+        output: 'JSONValue',
+        content_items: 'typing.Union[typing.Union[typing.Tuple[JSONDict, ...], typing.List[JSONDict]], None]' = None,
+        success: 'typing.Union[bool, None]' = None,
+    ) -> 'None':
         self.output = output
         self.content_items = None if content_items is None else tuple(content_items)
         self.success = success
 
 
 class BaseTool(ABC):
-    name: str
-    description: str
-    input_schema: JSONDict | None = None
-    tool_type: str = "function"
-    format: JSONDict | None = None
-    options: JSONDict | None = None
-    output_schema: JSONDict | None = None
-    supports_parallel: bool = True
+    name: 'str'
+    description: 'str'
+    input_schema: 'typing.Union[JSONDict, None]' = None
+    tool_type: 'str' = "function"
+    format: 'typing.Union[JSONDict, None]' = None
+    options: 'typing.Union[JSONDict, None]' = None
+    output_schema: 'typing.Union[JSONDict, None]' = None
+    supports_parallel: 'bool' = True
 
-    def spec(self) -> ToolSpec:
+    def spec(self) -> 'ToolSpec':
         return ToolSpec(
             name=self.name,
             description=self.description,
@@ -83,32 +82,32 @@ class BaseTool(ABC):
             raw_payload=self.raw_payload(),
         )
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         return self.spec().serialize()
 
-    def raw_payload(self) -> JSONDict | None:
+    def raw_payload(self) -> 'typing.Union[JSONDict, None]':
         return _load_exec_tool_payloads().get(self.name)
 
     @abstractmethod
-    async def run(self, context: ToolContext, args: JSONValue) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
         raise NotImplementedError
 
 
 class ToolRegistry:
-    def __init__(self) -> None:
-        self._tools: dict[str, BaseTool] = {}
+    def __init__(self) -> 'None':
+        self._tools: 'typing.Dict[str, BaseTool]' = {}
 
-    def register(self, tool: BaseTool) -> None:
+    def register(self, tool: 'BaseTool') -> 'None':
         self._tools[tool.name] = tool
 
-    def model_visible_specs(self) -> list[ToolSpec]:
+    def model_visible_specs(self) -> 'typing.List[ToolSpec]':
         return [tool.spec() for tool in self._tools.values()]
 
-    def supports_parallel(self, tool_name: str) -> bool:
+    def supports_parallel(self, tool_name: 'str') -> 'bool':
         tool = self._tools.get(tool_name)
         return False if tool is None else tool.supports_parallel
 
-    async def execute(self, call: ToolCall, context: ToolContext) -> ToolResult:
+    async def execute(self, call: 'ToolCall', context: 'ToolContext') -> 'ToolResult':
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(
@@ -149,19 +148,19 @@ class ToolRegistry:
                 tool_type=call.tool_type,
             )
 
-    def __contains__(self, tool_name: str) -> bool:
+    def __contains__(self, tool_name: 'str') -> 'bool':
         return tool_name in self._tools
 
-    def __len__(self) -> int:
+    def __len__(self) -> 'int':
         return len(self._tools)
 
-    def names(self) -> tuple[str, ...]:
+    def names(self) -> 'typing.Tuple[str, ...]':
         return tuple(self._tools)
 
-    def get_tool(self, tool_name: str) -> BaseTool | None:
+    def get_tool(self, tool_name: 'str') -> 'typing.Union[BaseTool, None]':
         return self._tools.get(tool_name)
 
-    def tools(self) -> tuple[BaseTool, ...]:
+    def tools(self) -> 'typing.Tuple[BaseTool, ...]':
         return tuple(self._tools.values())
 
 

@@ -1,11 +1,11 @@
-from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Iterable
+from typing import Awaitable, Callable, Iterable
 
 from pycodex.model import NOOP_MODEL_STREAM_EVENT_HANDLER
 from pycodex.protocol import AssistantMessage, ModelResponse, ModelStreamEvent, Prompt, ToolCall
+import typing
 
-ResponseFactory = Callable[[Prompt, int], ModelResponse | Awaitable[ModelResponse]]
+ResponseFactory = Callable[[Prompt, int], typing.Union[ModelResponse, Awaitable[ModelResponse]]]
 
 
 class ScriptedModelClient:
@@ -13,21 +13,21 @@ class ScriptedModelClient:
 
     def __init__(
         self,
-        responses: Iterable[ModelResponse] | None = None,
-        response_factory: ResponseFactory | None = None,
-    ) -> None:
+        responses: 'typing.Union[Iterable[ModelResponse], None]' = None,
+        response_factory: 'typing.Union[ResponseFactory, None]' = None,
+    ) -> 'None':
         if responses is None and response_factory is None:
             raise ValueError("either responses or response_factory must be provided")
         self._responses = iter(responses or [])
         self._response_factory = response_factory
-        self.prompts: list[Prompt] = []
+        self.prompts: 'typing.List[Prompt]' = []
         self.call_count = 0
 
     async def complete(
         self,
-        prompt: Prompt,
-        event_handler: Callable[[ModelStreamEvent], None] = NOOP_MODEL_STREAM_EVENT_HANDLER,
-    ) -> ModelResponse:
+        prompt: 'Prompt',
+        event_handler: 'Callable[[ModelStreamEvent], None]' = NOOP_MODEL_STREAM_EVENT_HANDLER,
+    ) -> 'ModelResponse':
         self.prompts.append(prompt)
         self.call_count += 1
 

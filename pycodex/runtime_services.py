@@ -1,25 +1,25 @@
-from __future__ import annotations
 
 import asyncio
 import json
 import random
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Awaitable, Callable
 
+from .compat import Literal
 from .protocol import ConversationItem, TurnResult
 from .utils import uuid7_string
+import typing
 
 if TYPE_CHECKING:
     from .runtime import AgentRuntime
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
-PlanListener = Callable[[dict[str, object]], None]
+PlanListener = Callable[[typing.Dict[str, object]], None]
 RuntimeBuilder = Callable[
-    [str | None, str | None, tuple[ConversationItem, ...], str],
+    [typing.Union[str, None], typing.Union[str, None], typing.Tuple[ConversationItem, ...], str],
     "AgentRuntime",
 ]
-AsyncJSONHandler = Callable[[dict[str, object]], Awaitable[dict[str, object] | None]]
+AsyncJSONHandler = Callable[[typing.Dict[str, object]], Awaitable[typing.Union[typing.Dict[str, object], None]]]
 
 DEFAULT_AGENT_NICKNAME_CANDIDATES = (
     "Bacon",
@@ -114,22 +114,22 @@ DEFAULT_AGENT_NICKNAME_CANDIDATES = (
 )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class PlanItem:
-    step: str
-    status: PlanStatus
+    step: 'str'
+    status: 'PlanStatus'
 
 
 class PlanStore:
-    def __init__(self) -> None:
-        self._explanation: str | None = None
-        self._plan: tuple[PlanItem, ...] = ()
-        self._listener: PlanListener = lambda _payload: None
+    def __init__(self) -> 'None':
+        self._explanation: 'typing.Union[str, None]' = None
+        self._plan: 'typing.Tuple[PlanItem, ...]' = ()
+        self._listener: 'PlanListener' = lambda _payload: None
 
-    def set_listener(self, listener: PlanListener | None) -> None:
+    def set_listener(self, listener: 'typing.Union[PlanListener, None]') -> 'None':
         self._listener = listener or (lambda _payload: None)
 
-    def update(self, explanation: str | None, plan: tuple[PlanItem, ...]) -> None:
+    def update(self, explanation: 'typing.Union[str, None]', plan: 'typing.Tuple[PlanItem, ...]') -> 'None':
         in_progress = sum(1 for item in plan if item.status == "in_progress")
         if in_progress > 1:
             raise ValueError("at most one plan step can be in_progress")
@@ -145,7 +145,7 @@ class PlanStore:
             }
         )
 
-    def snapshot(self) -> dict[str, object]:
+    def snapshot(self) -> 'typing.Dict[str, object]':
         return {
             "explanation": self._explanation,
             "plan": [
@@ -156,13 +156,13 @@ class PlanStore:
 
 
 class RequestUserInputManager:
-    def __init__(self) -> None:
-        self._handler: AsyncJSONHandler | None = None
+    def __init__(self) -> 'None':
+        self._handler: 'typing.Union[AsyncJSONHandler, None]' = None
 
-    def set_handler(self, handler: AsyncJSONHandler | None) -> None:
+    def set_handler(self, handler: 'typing.Union[AsyncJSONHandler, None]') -> 'None':
         self._handler = handler
 
-    async def request(self, payload: dict[str, object]) -> dict[str, object] | None:
+    async def request(self, payload: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
         handler = self._handler
         if handler is None:
             return None
@@ -170,52 +170,52 @@ class RequestUserInputManager:
 
 
 class RequestPermissionsManager:
-    def __init__(self) -> None:
-        self._handler: AsyncJSONHandler | None = None
+    def __init__(self) -> 'None':
+        self._handler: 'typing.Union[AsyncJSONHandler, None]' = None
 
-    def set_handler(self, handler: AsyncJSONHandler | None) -> None:
+    def set_handler(self, handler: 'typing.Union[AsyncJSONHandler, None]') -> 'None':
         self._handler = handler
 
-    async def request(self, payload: dict[str, object]) -> dict[str, object] | None:
+    async def request(self, payload: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
         handler = self._handler
         if handler is None:
             return None
         return await handler(payload)
 
 
-@dataclass(slots=True)
+@dataclass
 class ManagedAgent:
-    agent_id: str
-    runtime: "AgentRuntime"
-    worker_task: asyncio.Task[None]
-    nickname: str | None = None
-    state: str = "pending_init"
-    completed_message: str | None = None
-    error_message: str | None = None
-    pending_submission_ids: set[str] = field(default_factory=set)
+    agent_id: 'str'
+    runtime: '"AgentRuntime"'
+    worker_task: 'asyncio.Task[None]'
+    nickname: 'typing.Union[str, None]' = None
+    state: 'str' = "pending_init"
+    completed_message: 'typing.Union[str, None]' = None
+    error_message: 'typing.Union[str, None]' = None
+    pending_submission_ids: 'typing.Set[str]' = field(default_factory=set)
 
 
 class SubAgentManager:
-    def __init__(self) -> None:
-        self._runtime_builder: RuntimeBuilder | None = None
-        self._agents: dict[str, ManagedAgent] = {}
+    def __init__(self) -> 'None':
+        self._runtime_builder: 'typing.Union[RuntimeBuilder, None]' = None
+        self._agents: 'typing.Dict[str, ManagedAgent]' = {}
         self._condition = asyncio.Condition()
-        self._available_nicknames: list[str] = []
+        self._available_nicknames: 'typing.List[str]' = []
         self._nickname_random = random.Random()
 
-    def set_runtime_builder(self, builder: RuntimeBuilder | None) -> None:
+    def set_runtime_builder(self, builder: 'typing.Union[RuntimeBuilder, None]') -> 'None':
         self._runtime_builder = builder
 
     async def spawn_agent(
         self,
-        message: str | None,
-        items: list[dict[str, object]] | None,
-        agent_type: str | None,
-        fork_context: bool,
-        model: str | None,
-        reasoning_effort: str | None,
-        history: tuple[ConversationItem, ...],
-    ) -> dict[str, object]:
+        message: 'typing.Union[str, None]',
+        items: 'typing.Union[typing.List[typing.Dict[str, object]], None]',
+        agent_type: 'typing.Union[str, None]',
+        fork_context: 'bool',
+        model: 'typing.Union[str, None]',
+        reasoning_effort: 'typing.Union[str, None]',
+        history: 'typing.Tuple[ConversationItem, ...]',
+    ) -> 'typing.Dict[str, object]':
         builder = self._runtime_builder
         if builder is None:
             raise RuntimeError("spawn_agent is unavailable before runtime initialization")
@@ -246,10 +246,10 @@ class SubAgentManager:
 
     async def send_input(
         self,
-        agent_id: str,
-        prompt_text: str,
-        interrupt: bool,
-    ) -> dict[str, object]:
+        agent_id: 'str',
+        prompt_text: 'str',
+        interrupt: 'bool',
+    ) -> 'typing.Dict[str, object]':
         managed = self._agents.get(agent_id)
         if managed is None:
             raise RuntimeError(f"unknown agent: {agent_id}")
@@ -269,7 +269,7 @@ class SubAgentManager:
             self._condition.notify_all()
         return {"submission_id": submission_id}
 
-    async def resume_agent(self, agent_id: str) -> dict[str, object]:
+    async def resume_agent(self, agent_id: 'str') -> 'typing.Dict[str, object]':
         managed = self._agents.get(agent_id)
         if managed is None:
             return {"status": "not_found"}
@@ -282,7 +282,7 @@ class SubAgentManager:
             self._condition.notify_all()
         return {"status": self._status_payload(managed)}
 
-    async def close_agent(self, agent_id: str) -> dict[str, object]:
+    async def close_agent(self, agent_id: 'str') -> 'typing.Dict[str, object]':
         managed = self._agents.get(agent_id)
         if managed is None:
             return {"status": "not_found"}
@@ -297,7 +297,7 @@ class SubAgentManager:
             self._condition.notify_all()
         return {"status": previous_status}
 
-    def _next_nickname(self) -> str:
+    def _next_nickname(self) -> 'str':
         if not self._available_nicknames:
             self._available_nicknames = list(DEFAULT_AGENT_NICKNAME_CANDIDATES)
             self._nickname_random.shuffle(self._available_nicknames)
@@ -305,9 +305,9 @@ class SubAgentManager:
 
     async def wait_agents(
         self,
-        agent_ids: list[str],
-        timeout_ms: int = 30_000,
-    ) -> dict[str, object]:
+        agent_ids: 'typing.List[str]',
+        timeout_ms: 'int' = 30_000,
+    ) -> 'typing.Dict[str, object]':
         timeout_seconds = max(timeout_ms, 1) / 1000.0
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_seconds
@@ -332,10 +332,10 @@ class SubAgentManager:
 
     async def _track_submission(
         self,
-        managed: ManagedAgent,
-        submission_id: str,
-        future: asyncio.Future[TurnResult | None],
-    ) -> None:
+        managed: 'ManagedAgent',
+        submission_id: 'str',
+        future: 'asyncio.Future[typing.Union[TurnResult, None]]',
+    ) -> 'None':
         try:
             result = await future
         except Exception as exc:  # pragma: no cover - background safety
@@ -354,10 +354,10 @@ class SubAgentManager:
 
     def _compose_prompt(
         self,
-        message: str | None,
-        items: list[dict[str, object]] | None,
-    ) -> str:
-        parts: list[str] = []
+        message: 'typing.Union[str, None]',
+        items: 'typing.Union[typing.List[typing.Dict[str, object]], None]',
+    ) -> 'str':
+        parts: 'typing.List[str]' = []
         if message:
             parts.append(message.strip())
         for item in items or []:
@@ -374,7 +374,7 @@ class SubAgentManager:
                 parts.append(json.dumps(item, ensure_ascii=False))
         return "\n\n".join(part for part in parts if part)
 
-    def _status_payload(self, managed: ManagedAgent | None) -> object:
+    def _status_payload(self, managed: 'typing.Union[ManagedAgent, None]') -> 'object':
         if managed is None:
             return "not_found"
         if managed.error_message is not None:
@@ -385,7 +385,7 @@ class SubAgentManager:
             return managed.state
         return managed.state
 
-    def _is_final_status(self, status: object) -> bool:
+    def _is_final_status(self, status: 'object') -> 'bool':
         if isinstance(status, str):
             return status in {"shutdown", "not_found"}
         if isinstance(status, dict):
@@ -394,19 +394,19 @@ class SubAgentManager:
 
 
 class RuntimeEnvironment:
-    def __init__(self) -> None:
+    def __init__(self) -> 'None':
         self.plan_store = PlanStore()
         self.subagent_manager = SubAgentManager()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
 
 
-def create_runtime_environment() -> RuntimeEnvironment:
+def create_runtime_environment() -> 'RuntimeEnvironment':
     return RuntimeEnvironment()
 
 
 _RUNTIME_ENV = create_runtime_environment()
 
 
-def get_runtime_environment() -> RuntimeEnvironment:
+def get_runtime_environment() -> 'RuntimeEnvironment':
     return _RUNTIME_ENV

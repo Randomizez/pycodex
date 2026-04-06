@@ -10,8 +10,6 @@ Expected behavior:
 - Never expect a local tool-call round-trip result from the model.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 
@@ -25,6 +23,6 @@ class WebSearchTool(BaseTool):
     }
     supports_parallel = False
 
-    async def run(self, context: ToolContext, args: JSONValue) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
         del context, args
         return "Error: web_search is provider-native and should not be executed locally."

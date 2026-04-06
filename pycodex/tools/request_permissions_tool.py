@@ -9,8 +9,6 @@ Expected behavior:
 - Return the granted permission profile and scope so later tool calls can use it.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import RequestPermissionsManager
 from .base_tool import BaseTool, ToolContext
@@ -73,10 +71,10 @@ class RequestPermissionsTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, request_manager: RequestPermissionsManager) -> None:
+    def __init__(self, request_manager: 'RequestPermissionsManager') -> 'None':
         self._request_manager = request_manager
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         permissions = args.get("permissions")
         if not isinstance(permissions, dict):

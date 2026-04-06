@@ -12,14 +12,13 @@ Expected behavior:
   item that Codex uses when feeding image tool output back to the model.
 """
 
-from __future__ import annotations
-
 import base64
 import mimetypes
 from pathlib import Path
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, StructuredToolOutput, ToolContext
+import typing
 
 VIEW_IMAGE_OUTPUT_SCHEMA = {
     "type": "object",
@@ -62,10 +61,10 @@ class ViewImageTool(BaseTool):
     }
     output_schema = VIEW_IMAGE_OUTPUT_SCHEMA
 
-    def __init__(self, cwd: str | Path | None = None) -> None:
+    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
         self._workspace_root = Path(cwd or Path.cwd()).resolve()
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         path_value = str(args.get("path", "")).strip()
         if not path_value:
@@ -102,7 +101,7 @@ class ViewImageTool(BaseTool):
             "image_url": image_url,
             "detail": detail,
         }
-        image_item: JSONDict = {
+        image_item: 'JSONDict' = {
             "type": "input_image",
             "image_url": image_url,
         }

@@ -9,8 +9,6 @@ Expected behavior:
   parameters rather than delegating to a shell transcript.
 """
 
-from __future__ import annotations
-
 import asyncio
 import fnmatch
 import re
@@ -18,6 +16,7 @@ from pathlib import Path
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
+import typing
 
 DEFAULT_LIMIT = 100
 MAX_LIMIT = 2000
@@ -41,10 +40,10 @@ class GrepFilesTool(BaseTool):
         "required": ["pattern"],
     }
 
-    def __init__(self, cwd: str | Path | None = None) -> None:
+    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
         self._working_directory = Path(cwd or Path.cwd()).resolve()
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         pattern = str(args.get("pattern", "")).strip()
         include = str(args.get("include", "")).strip() or None
@@ -111,13 +110,13 @@ class GrepFilesTool(BaseTool):
 
     def _search_with_python(
         self,
-        pattern: str,
-        include: str | None,
-        search_path: Path,
-        limit: int,
-    ) -> list[str]:
+        pattern: 'str',
+        include: 'typing.Union[str, None]',
+        search_path: 'Path',
+        limit: 'int',
+    ) -> 'typing.List[str]':
         regex = re.compile(pattern)
-        candidates: list[Path] = []
+        candidates: 'typing.List[Path]' = []
 
         if search_path.is_file():
             candidates = [search_path]
@@ -141,7 +140,7 @@ class GrepFilesTool(BaseTool):
         matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         return [str(path) for path in matches[:limit]]
 
-    def _resolve_path(self, path_arg) -> Path:
+    def _resolve_path(self, path_arg) -> 'Path':
         if path_arg in (None, ""):
             return self._working_directory
         path = Path(str(path_arg))

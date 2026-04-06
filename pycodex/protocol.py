@@ -14,35 +14,35 @@
 本文件只定义这些抽象之间传递的数据结构，不包含具体执行逻辑。
 """
 
-from __future__ import annotations
-
 from copy import deepcopy
 import json
 from dataclasses import dataclass, field
-from typing import Any, Literal, TypeAlias
+from typing import Any
+from .compat import Literal, TypeAlias
+import typing
 
-JSONValue: TypeAlias = Any
-JSONDict: TypeAlias = dict[str, Any]
+JSONValue: 'TypeAlias' = Any
+JSONDict: 'TypeAlias' = typing.Dict[str, Any]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ToolSpec:
     """何时：AgentLoop 准备发起一轮模型请求时，随 `Prompt.tools` 一起发送。
     发送方：AgentLoop。
     接收方：ModelClient。
     """
 
-    name: str
-    description: str
-    input_schema: JSONDict | None = None
-    tool_type: Literal["function", "custom", "web_search"] = "function"
-    format: JSONDict | None = None
-    options: JSONDict | None = None
-    output_schema: JSONDict | None = None
-    supports_parallel: bool = True
-    raw_payload: JSONDict | None = None
+    name: 'str'
+    description: 'str'
+    input_schema: 'typing.Union[JSONDict, None]' = None
+    tool_type: 'Literal["function", "custom", "web_search"]' = "function"
+    format: 'typing.Union[JSONDict, None]' = None
+    options: 'typing.Union[JSONDict, None]' = None
+    output_schema: 'typing.Union[JSONDict, None]' = None
+    supports_parallel: 'bool' = True
+    raw_payload: 'typing.Union[JSONDict, None]' = None
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         if self.raw_payload is not None:
             return deepcopy(self.raw_payload)
         if self.tool_type == "web_search":
@@ -76,17 +76,17 @@ class ToolSpec:
         return payload
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class UserMessage:
     """何时：外部发起一个新的用户 turn 时创建，并写入会话历史。
     发送方：外部调用方创建，AgentLoop 转发。
     接收方：AgentLoop 先接收，随后 ModelClient 在 `Prompt.input` 中看到它。
     """
 
-    text: str
-    role: Literal["user"] = "user"
+    text: 'str'
+    role: 'Literal["user"]' = "user"
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         return {
             "type": "message",
             "role": self.role,
@@ -94,17 +94,17 @@ class UserMessage:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class AssistantMessage:
     """何时：模型要直接输出自然语言内容时产生，可作为中间文本或最终回复。
     发送方：ModelClient。
     接收方：AgentLoop。
     """
 
-    text: str
-    role: Literal["assistant"] = "assistant"
+    text: 'str'
+    role: 'Literal["assistant"]' = "assistant"
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         return {
             "type": "message",
             "role": self.role,
@@ -112,18 +112,18 @@ class AssistantMessage:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ContextMessage:
     """何时：ContextManager 为单轮模型请求注入额外上下文时构造。
     发送方：ContextManager。
     接收方：ModelClient。
     """
 
-    text: str | None = None
-    role: Literal["user", "developer"] = "user"
-    content_items: tuple[JSONDict, ...] | None = None
+    text: 'typing.Union[str, None]' = None
+    role: 'Literal["user", "developer"]' = "user"
+    content_items: 'typing.Union[typing.Tuple[JSONDict, ...], None]' = None
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         if self.content_items is not None:
             content = list(self.content_items)
         else:
@@ -137,20 +137,20 @@ class ContextMessage:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ToolCall:
     """何时：模型决定调用工具而不是只输出文本时产生。
     发送方：ModelClient。
     接收方：AgentLoop，随后由它转给 ToolRegistry 执行。
     """
 
-    call_id: str
-    name: str
-    arguments: JSONValue
-    tool_type: Literal["function", "custom"] = "function"
-    kind: Literal["tool_call"] = "tool_call"
+    call_id: 'str'
+    name: 'str'
+    arguments: 'JSONValue'
+    tool_type: 'Literal["function", "custom"]' = "function"
+    kind: 'Literal["tool_call"]' = "tool_call"
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         if self.tool_type == "custom":
             return {
                 "type": "custom_tool_call",
@@ -170,7 +170,7 @@ class ToolCall:
         }
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ReasoningItem:
     """何时：模型在一次 Responses 采样里产出 reasoning item 时产生。
     发送方：ModelClient。
@@ -178,30 +178,30 @@ class ReasoningItem:
     ModelClient。
     """
 
-    payload: JSONDict
-    kind: Literal["reasoning"] = "reasoning"
+    payload: 'JSONDict'
+    kind: 'Literal["reasoning"]' = "reasoning"
 
-    def serialize(self) -> JSONDict:
+    def serialize(self) -> 'JSONDict':
         return deepcopy(self.payload)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ToolResult:
     """何时：某个 `ToolCall` 执行完成后产生，用于喂回下一轮模型调用。
     发送方：ToolRegistry 产出，AgentLoop 追加并转发。
     接收方：AgentLoop 先接收，随后 ModelClient 在下一轮 `Prompt.input` 中看到它。
     """
 
-    call_id: str
-    name: str
-    output: JSONValue
-    content_items: tuple[JSONDict, ...] | None = None
-    success: bool | None = None
-    is_error: bool = False
-    tool_type: Literal["function", "custom"] = "function"
-    kind: Literal["tool_result"] = "tool_result"
+    call_id: 'str'
+    name: 'str'
+    output: 'JSONValue'
+    content_items: 'typing.Union[typing.Tuple[JSONDict, ...], None]' = None
+    success: 'typing.Union[bool, None]' = None
+    is_error: 'bool' = False
+    tool_type: 'Literal["function", "custom"]' = "function"
+    kind: 'Literal["tool_result"]' = "tool_result"
 
-    def output_text(self) -> str:
+    def output_text(self) -> 'str':
         if self.content_items is not None:
             text_parts = [
                 str(item.get("text", ""))
@@ -217,8 +217,8 @@ class ToolResult:
             return self.output
         return json.dumps(self.output, ensure_ascii=False)
 
-    def serialize(self) -> JSONDict:
-        payload_output: JSONValue
+    def serialize(self) -> 'JSONDict':
+        payload_output: 'JSONValue'
         if self.content_items is not None:
             payload_output = list(self.content_items)
         elif isinstance(self.output, str):
@@ -247,86 +247,84 @@ class ToolResult:
         return payload
 
 
-ConversationItem: TypeAlias = (
-    UserMessage | AssistantMessage | ContextMessage | ToolCall | ReasoningItem | ToolResult
-)
-ModelOutputItem: TypeAlias = AssistantMessage | ToolCall | ReasoningItem
-Operation: TypeAlias = "UserTurnOp | ShutdownOp"
+ConversationItem: 'TypeAlias' = typing.Union[typing.Union[typing.Union[typing.Union[typing.Union[UserMessage, AssistantMessage], ContextMessage], ToolCall], ReasoningItem], ToolResult]
+ModelOutputItem: 'TypeAlias' = typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]
+Operation: 'TypeAlias' = "UserTurnOp | ShutdownOp"
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class Prompt:
     """何时：AgentLoop 每发起一轮模型采样前构造。
     发送方：AgentLoop。
     接收方：ModelClient。
     """
 
-    input: list[ConversationItem]
-    tools: list[ToolSpec]
-    parallel_tool_calls: bool = True
-    base_instructions: str | None = None
-    turn_id: str | None = None
-    turn_metadata: JSONDict | None = None
+    input: 'typing.List[ConversationItem]'
+    tools: 'typing.List[ToolSpec]'
+    parallel_tool_calls: 'bool' = True
+    base_instructions: 'typing.Union[str, None]' = None
+    turn_id: 'typing.Union[str, None]' = None
+    turn_metadata: 'typing.Union[JSONDict, None]' = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ModelResponse:
     """何时：ModelClient 完成一轮 `Prompt` 处理后返回。
     发送方：ModelClient。
     接收方：AgentLoop。
     """
 
-    items: list[ModelOutputItem]
+    items: 'typing.List[ModelOutputItem]'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ModelStreamEvent:
     """何时：ModelClient 处理 `Prompt` 的过程中有流式中间结果时产生。
     发送方：ModelClient。
     接收方：AgentLoop。
     """
 
-    kind: str
-    payload: JSONDict = field(default_factory=dict)
+    kind: 'str'
+    payload: 'JSONDict' = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class TurnResult:
     """何时：一个 turn 已经收敛，AgentLoop 决定结束本轮时返回。
     发送方：AgentLoop。
     接收方：外部调用方。
     """
 
-    turn_id: str
-    output_text: str | None
-    iterations: int
-    response_items: tuple[ModelOutputItem, ...]
-    history: tuple[ConversationItem, ...]
+    turn_id: 'str'
+    output_text: 'typing.Union[str, None]'
+    iterations: 'int'
+    response_items: 'typing.Tuple[ModelOutputItem, ...]'
+    history: 'typing.Tuple[ConversationItem, ...]'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class AgentEvent:
     """何时：主循环运行过程中发生阶段性事件时发出，例如模型调用、工具开始/结束。
     发送方：AgentLoop。
     接收方：可选的事件观察者 / 回调。
     """
 
-    kind: str
-    turn_id: str
-    payload: dict[str, object] = field(default_factory=dict)
+    kind: 'str'
+    turn_id: 'str'
+    payload: 'typing.Dict[str, object]' = field(default_factory=dict)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class UserTurnOp:
     """何时：运行时要提交一个新的用户请求时创建。
     发送方：外部运行时调用方。
     接收方：AgentRuntime。
     """
 
-    texts: list[str]
+    texts: 'typing.List[str]'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class ShutdownOp:
     """何时：运行时要停止外层提交循环时创建。
     发送方：外部运行时调用方。
@@ -336,12 +334,12 @@ class ShutdownOp:
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class Submission:
     """何时：任意运行时操作要进入 AgentRuntime 队列时创建。
     发送方：外部运行时调用方。
     接收方：AgentRuntime 的提交队列 / 外层循环。
     """
 
-    id: str
-    op: Operation
+    id: 'str'
+    op: 'Operation'

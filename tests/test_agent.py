@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 
@@ -17,6 +16,7 @@ from pycodex import (
     UserMessage,
 )
 from tests.fakes import ScriptedModelClient
+import typing
 
 
 class EchoTool(BaseTool):
@@ -34,7 +34,7 @@ class SlowTool(BaseTool):
     input_schema = {"type": "object"}
     supports_parallel = True
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: 'str') -> 'None':
         self.name = name
 
     async def run(self, context, args):
@@ -48,7 +48,7 @@ class CoordinatedParallelTool(BaseTool):
     input_schema = {"type": "object"}
     supports_parallel = True
 
-    def __init__(self, name: str, entered: list[str], both_started: asyncio.Event) -> None:
+    def __init__(self, name: 'str', entered: 'typing.List[str]', both_started: 'asyncio.Event') -> 'None':
         self.name = name
         self._entered = entered
         self._both_started = both_started
@@ -80,7 +80,7 @@ class WaitAgentNotificationTool(BaseTool):
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_runs_tool_then_returns_final_message() -> None:
+async def test_agent_loop_runs_tool_then_returns_final_message() -> 'None':
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -113,7 +113,7 @@ async def test_agent_loop_runs_tool_then_returns_final_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_parallel_tools_share_one_model_round() -> None:
+async def test_parallel_tools_share_one_model_round() -> 'None':
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -127,7 +127,7 @@ async def test_parallel_tools_share_one_model_round() -> None:
     )
 
     tools = ToolRegistry()
-    entered: list[str] = []
+    entered: 'typing.List[str]' = []
     both_started = asyncio.Event()
     tools.register(CoordinatedParallelTool("slow_a", entered, both_started))
     tools.register(CoordinatedParallelTool("slow_b", entered, both_started))
@@ -140,7 +140,7 @@ async def test_parallel_tools_share_one_model_round() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_default_has_no_fixed_iteration_cap() -> None:
+async def test_agent_loop_default_has_no_fixed_iteration_cap() -> 'None':
     model = ScriptedModelClient(
         [
             *(
@@ -170,7 +170,7 @@ async def test_agent_loop_default_has_no_fixed_iteration_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wait_agent_injects_subagent_notification_into_history() -> None:
+async def test_wait_agent_injects_subagent_notification_into_history() -> 'None':
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -208,7 +208,7 @@ async def test_wait_agent_injects_subagent_notification_into_history() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_submission_loop_processes_turn_and_shutdown() -> None:
+async def test_runtime_submission_loop_processes_turn_and_shutdown() -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     tools = ToolRegistry()
     agent = AgentLoop(model, tools)
@@ -224,12 +224,12 @@ async def test_runtime_submission_loop_processes_turn_and_shutdown() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_steer_batches_messages_into_next_request() -> None:
+async def test_runtime_steer_batches_messages_into_next_request() -> 'None':
     first_request_started = asyncio.Event()
     release_first_request = asyncio.Event()
 
     class _DelayedModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.prompts = []
             self.call_count = 0
 
@@ -298,7 +298,7 @@ async def test_runtime_steer_batches_messages_into_next_request() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_emits_turn_failed_event_on_model_error() -> None:
+async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
     events = []
 
     class FailingModelClient:

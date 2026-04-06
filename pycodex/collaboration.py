@@ -1,13 +1,13 @@
-from __future__ import annotations
 
-from typing import Literal
+from .compat import Literal
+import typing
 
 CollaborationMode = Literal["default", "plan", "execute", "pair_programming"]
 
-DEFAULT_COLLABORATION_MODE: CollaborationMode = "default"
-PLAN_COLLABORATION_MODE: CollaborationMode = "plan"
+DEFAULT_COLLABORATION_MODE: 'CollaborationMode' = "default"
+PLAN_COLLABORATION_MODE: 'CollaborationMode' = "plan"
 
-_MODE_DISPLAY_NAMES: dict[str, str] = {
+_MODE_DISPLAY_NAMES: 'typing.Dict[str, str]' = {
     "default": "Default",
     "plan": "Plan",
     "execute": "Execute",
@@ -15,7 +15,6 @@ _MODE_DISPLAY_NAMES: dict[str, str] = {
 }
 
 
-def collaboration_mode_display_name(mode: str | None) -> str:
+def collaboration_mode_display_name(mode: 'typing.Union[str, None]') -> 'str':
     normalized = (mode or DEFAULT_COLLABORATION_MODE).strip().lower()
     return _MODE_DISPLAY_NAMES.get(normalized, normalized.replace("_", " ").title())
-

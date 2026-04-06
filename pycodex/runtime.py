@@ -1,44 +1,45 @@
-from __future__ import annotations
 
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from .agent import AgentLoop, EventHandler, NOOP_EVENT_HANDLER, TurnInterrupted
+from .compat import Literal
 from .protocol import AgentEvent, Operation, ShutdownOp, Submission, TurnResult, UserTurnOp
 from .utils import uuid7_string
+import typing
 
 if TYPE_CHECKING:
     from .runtime_services import RuntimeEnvironment
 
 
-@dataclass(slots=True)
+@dataclass
 class _QueuedSubmission:
-    submission: Submission
-    turn_id: str
-    futures: list[asyncio.Future[TurnResult | None]]
+    submission: 'Submission'
+    turn_id: 'str'
+    futures: 'typing.List[asyncio.Future[typing.Union[TurnResult, None]]]'
 
 
 class AgentRuntime:
     """Thin outer queue that mirrors the Rust `submission_loop` shape."""
 
-    def __init__(self, agent_loop: AgentLoop, runtime_environment: RuntimeEnvironment | None = None) -> None:
+    def __init__(self, agent_loop: 'AgentLoop', runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None) -> 'None':
         self._agent_loop = agent_loop
         self.runtime_environment = runtime_environment
-        self._enqueue_queue: deque[_QueuedSubmission] = deque()
-        self._steer_queue: deque[_QueuedSubmission] = deque()
+        self._enqueue_queue: 'deque[_QueuedSubmission]' = deque()
+        self._steer_queue: 'deque[_QueuedSubmission]' = deque()
         self._queue_lock = asyncio.Lock()
         self._queue_event = asyncio.Event()
-        self._current_submission: _QueuedSubmission | None = None
-        self._current_task: asyncio.Task[TurnResult] | None = None
+        self._current_submission: 'typing.Union[_QueuedSubmission, None]' = None
+        self._current_task: 'typing.Union[asyncio.Task[TurnResult], None]' = None
         self._event_handler = NOOP_EVENT_HANDLER
         self._agent_loop.set_event_handler(self._handle_agent_event)
 
-    def set_event_handler(self, event_handler: EventHandler = NOOP_EVENT_HANDLER) -> None:
+    def set_event_handler(self, event_handler: 'EventHandler' = NOOP_EVENT_HANDLER) -> 'None':
         self._event_handler = event_handler
 
-    async def submit_user_turn(self, text: str) -> TurnResult:
+    async def submit_user_turn(self, text: 'str') -> 'TurnResult':
         _submission_id, future = await self.enqueue_user_turn(text, queue="enqueue")
         result = await future
         assert result is not None
@@ -46,19 +47,19 @@ class AgentRuntime:
 
     async def enqueue_user_turn(
         self,
-        text: str,
-        queue: Literal["enqueue", "steer"] = "enqueue",
-    ) -> tuple[str, asyncio.Future[TurnResult | None]]:
-        future: asyncio.Future[TurnResult | None] = asyncio.get_running_loop().create_future()
+        text: 'str',
+        queue: 'Literal["enqueue", "steer"]' = "enqueue",
+    ) -> 'typing.Tuple[str, asyncio.Future[typing.Union[TurnResult, None]]]':
+        future: 'asyncio.Future[typing.Union[TurnResult, None]]' = asyncio.get_running_loop().create_future()
         return await self._enqueue_user_turn_to_queue(
             text,
             future,
             queue=queue,
         )
 
-    async def shutdown(self) -> None:
+    async def shutdown(self) -> 'None':
         submission = Submission(id=uuid7_string(), op=ShutdownOp())
-        future: asyncio.Future[TurnResult | None] = asyncio.get_running_loop().create_future()
+        future: 'asyncio.Future[typing.Union[TurnResult, None]]' = asyncio.get_running_loop().create_future()
         self._enqueue_queue.append(
             _QueuedSubmission(
                 submission=submission,
@@ -69,7 +70,7 @@ class AgentRuntime:
         self._queue_event.set()
         await future
 
-    async def run_forever(self) -> None:
+    async def run_forever(self) -> 'None':
         while True:
             queued = await self._next_submission()
             submission = queued.submission
@@ -114,7 +115,7 @@ class AgentRuntime:
                 self._current_submission = None
 
     @staticmethod
-    def operation_name(op: Operation) -> str:
+    def operation_name(op: 'Operation') -> 'str':
         if isinstance(op, UserTurnOp):
             return "user_turn"
         if isinstance(op, ShutdownOp):
@@ -123,10 +124,10 @@ class AgentRuntime:
 
     async def _enqueue_user_turn_to_queue(
         self,
-        text: str,
-        future: asyncio.Future[TurnResult | None],
-        queue: Literal["enqueue", "steer"],
-    ) -> tuple[str, asyncio.Future[TurnResult | None]]:
+        text: 'str',
+        future: 'asyncio.Future[typing.Union[TurnResult, None]]',
+        queue: 'Literal["enqueue", "steer"]',
+    ) -> 'typing.Tuple[str, asyncio.Future[typing.Union[TurnResult, None]]]':
         if queue == "steer" and self._has_active_turn():
             self._agent_loop.interrupt_asap = True
 
@@ -154,10 +155,10 @@ class AgentRuntime:
             self._queue_event.set()
             return submission.id, future
 
-    async def _next_submission(self) -> _QueuedSubmission:
+    async def _next_submission(self) -> '_QueuedSubmission':
         while True:
             async with self._queue_lock:
-                queued: _QueuedSubmission | None = None
+                queued: 'typing.Union[_QueuedSubmission, None]' = None
                 if self._steer_queue:
                     queued = self._steer_queue.popleft()
                 elif self._enqueue_queue:
@@ -171,27 +172,27 @@ class AgentRuntime:
 
     @staticmethod
     def _finish_submission_result(
-        queued: _QueuedSubmission,
-        result: TurnResult | None,
-    ) -> None:
+        queued: '_QueuedSubmission',
+        result: 'typing.Union[TurnResult, None]',
+    ) -> 'None':
         for future in queued.futures:
             if not future.done():
                 future.set_result(result)
 
     @staticmethod
     def _finish_submission_exception(
-        queued: _QueuedSubmission,
-        exc: Exception,
-    ) -> None:
+        queued: '_QueuedSubmission',
+        exc: 'Exception',
+    ) -> 'None':
         for future in queued.futures:
             if not future.done():
                 future.set_exception(exc)
 
-    def _has_active_turn(self) -> bool:
+    def _has_active_turn(self) -> 'bool':
         current_task = self._current_task
         return current_task is not None and not current_task.done()
 
-    def _handle_agent_event(self, event: AgentEvent) -> None:
+    def _handle_agent_event(self, event: 'AgentEvent') -> 'None':
         queued = self._current_submission
         if queued is None:
             self._event_handler(event)

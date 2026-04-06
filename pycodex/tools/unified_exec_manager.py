@@ -11,8 +11,6 @@ Expected behavior:
 - Return summaries in the same textual shape Codex tools expect.
 """
 
-from __future__ import annotations
-
 import asyncio
 import os
 import shlex
@@ -21,6 +19,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from loguru import logger
+import typing
 
 DEFAULT_EXEC_YIELD_TIME_MS = 10_000
 DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250
@@ -63,33 +62,33 @@ UNIFIED_EXEC_OUTPUT_SCHEMA = {
 }
 
 
-def _approx_token_count(text: str) -> int:
+def _approx_token_count(text: 'str') -> 'int':
     if not text:
         return 0
     byte_length = len(text.encode("utf-8"))
     return max(1, (byte_length + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN)
 
 
-def _approx_bytes_for_tokens(token_count: int) -> int:
+def _approx_bytes_for_tokens(token_count: 'int') -> 'int':
     return max(token_count, 0) * APPROX_BYTES_PER_TOKEN
 
 
-def _approx_tokens_from_byte_count(byte_count: int) -> int:
+def _approx_tokens_from_byte_count(byte_count: 'int') -> 'int':
     if byte_count <= 0:
         return 0
     return (byte_count + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN
 
 
-def _split_budget(byte_budget: int) -> tuple[int, int]:
+def _split_budget(byte_budget: 'int') -> 'typing.Tuple[int, int]':
     left_budget = byte_budget // 2
     return left_budget, byte_budget - left_budget
 
 
 def _split_string(
-    text: str,
-    beginning_bytes: int,
-    end_bytes: int,
-) -> tuple[str, str]:
+    text: 'str',
+    beginning_bytes: 'int',
+    end_bytes: 'int',
+) -> 'typing.Tuple[str, str]':
     if not text:
         return "", ""
 
@@ -122,7 +121,7 @@ def _split_string(
     return text[:prefix_end], text[suffix_start:]
 
 
-def _truncate_text(text: str, max_tokens: int) -> str:
+def _truncate_text(text: 'str', max_tokens: 'int') -> 'str':
     if not text:
         return ""
 
@@ -141,7 +140,7 @@ def _truncate_text(text: str, max_tokens: int) -> str:
     return f"{prefix}{marker}{suffix}"
 
 
-def _formatted_truncate_text(text: str, max_tokens: int) -> str:
+def _formatted_truncate_text(text: 'str', max_tokens: 'int') -> 'str':
     byte_budget = _approx_bytes_for_tokens(max_tokens)
     if len(text.encode("utf-8")) <= byte_budget:
         return text
@@ -150,13 +149,13 @@ def _formatted_truncate_text(text: str, max_tokens: int) -> str:
     return f"Total output lines: {total_lines}\n\n{_truncate_text(text, max_tokens)}"
 
 
-@dataclass(slots=True)
+@dataclass
 class _HeadTailBuffer:
-    max_bytes: int = UNIFIED_EXEC_OUTPUT_MAX_BYTES
-    head: bytearray = field(default_factory=bytearray)
-    tail: bytearray = field(default_factory=bytearray)
+    max_bytes: 'int' = UNIFIED_EXEC_OUTPUT_MAX_BYTES
+    head: 'bytearray' = field(default_factory=bytearray)
+    tail: 'bytearray' = field(default_factory=bytearray)
 
-    def push_chunk(self, chunk: bytes) -> None:
+    def push_chunk(self, chunk: 'bytes') -> 'None':
         if not chunk or self.max_bytes <= 0:
             return
 
@@ -178,45 +177,45 @@ class _HeadTailBuffer:
             excess = len(self.tail) - tail_budget
             del self.tail[:excess]
 
-    def drain_bytes(self) -> bytes:
+    def drain_bytes(self) -> 'bytes':
         combined = bytes(self.head) + bytes(self.tail)
         self.head.clear()
         self.tail.clear()
         return combined
 
-    def has_data(self) -> bool:
+    def has_data(self) -> 'bool':
         return bool(self.head or self.tail)
 
 
-@dataclass(slots=True)
+@dataclass
 class UnifiedExecSession:
-    session_id: int
-    process: asyncio.subprocess.Process
-    start_time: float
-    command_display: str
-    tty: bool
-    unread_output: _HeadTailBuffer = field(default_factory=_HeadTailBuffer)
-    reader_task: asyncio.Task | None = None
-    output_event: asyncio.Event = field(default_factory=asyncio.Event)
+    session_id: 'int'
+    process: 'asyncio.subprocess.Process'
+    start_time: 'float'
+    command_display: 'str'
+    tty: 'bool'
+    unread_output: '_HeadTailBuffer' = field(default_factory=_HeadTailBuffer)
+    reader_task: 'typing.Union[asyncio.Task, None]' = None
+    output_event: 'asyncio.Event' = field(default_factory=asyncio.Event)
 
 
 class UnifiedExecManager:
-    def __init__(self, cwd: str | Path | None = None) -> None:
+    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
         self._default_cwd = Path(cwd or Path.cwd()).resolve()
         self._next_session_id = DEFAULT_SESSION_ID_START
-        self._sessions: dict[int, UnifiedExecSession] = {}
+        self._sessions: 'typing.Dict[int, UnifiedExecSession]' = {}
         self._lock = asyncio.Lock()
 
     async def exec_command(
         self,
-        cmd: str,
-        workdir: str | None = None,
-        shell: str | None = None,
-        login: bool = DEFAULT_LOGIN,
-        tty: bool = DEFAULT_TTY,
-        yield_time_ms: int = DEFAULT_EXEC_YIELD_TIME_MS,
-        max_output_tokens: int | None = None,
-    ) -> str:
+        cmd: 'str',
+        workdir: 'typing.Union[str, None]' = None,
+        shell: 'typing.Union[str, None]' = None,
+        login: 'bool' = DEFAULT_LOGIN,
+        tty: 'bool' = DEFAULT_TTY,
+        yield_time_ms: 'int' = DEFAULT_EXEC_YIELD_TIME_MS,
+        max_output_tokens: 'typing.Union[int, None]' = None,
+    ) -> 'str':
         session_id = await self._allocate_session_id()
         command = self._build_shell_command(cmd, shell, login)
         cwd = self._resolve_workdir(workdir)
@@ -254,11 +253,11 @@ class UnifiedExecManager:
 
     async def write_stdin(
         self,
-        session_id: int,
-        chars: str = "",
-        yield_time_ms: int = DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
-        max_output_tokens: int | None = None,
-    ) -> str:
+        session_id: 'int',
+        chars: 'str' = "",
+        yield_time_ms: 'int' = DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
+        max_output_tokens: 'typing.Union[int, None]' = None,
+    ) -> 'str':
         session = await self._get_session(session_id)
         if session is None:
             return f"Error: session_id {session_id} is not running."
@@ -278,22 +277,22 @@ class UnifiedExecManager:
             max_output_tokens,
         )
 
-    async def _allocate_session_id(self) -> int:
+    async def _allocate_session_id(self) -> 'int':
         async with self._lock:
             session_id = self._next_session_id
             self._next_session_id += 1
             return session_id
 
-    async def _get_session(self, session_id: int) -> UnifiedExecSession | None:
+    async def _get_session(self, session_id: 'int') -> 'typing.Union[UnifiedExecSession, None]':
         async with self._lock:
             return self._sessions.get(session_id)
 
     async def _wait_and_snapshot(
         self,
-        session_id: int,
-        yield_time_ms: int,
-        max_output_tokens: int | None,
-    ) -> str:
+        session_id: 'int',
+        yield_time_ms: 'int',
+        max_output_tokens: 'typing.Union[int, None]',
+    ) -> 'str':
         session = await self._get_session(session_id)
         if session is None:
             return f"Error: session_id {session_id} is not running."
@@ -343,7 +342,7 @@ class UnifiedExecManager:
 
         return "\n".join(lines)
 
-    async def _close_session(self, session_id: int) -> None:
+    async def _close_session(self, session_id: 'int') -> 'None':
         async with self._lock:
             session = self._sessions.pop(session_id, None)
         if session is None:
@@ -351,7 +350,7 @@ class UnifiedExecManager:
         if session.process.stdin is not None and not session.process.stdin.is_closing():
             session.process.stdin.close()
 
-    async def _pump_output(self, session: UnifiedExecSession) -> None:
+    async def _pump_output(self, session: 'UnifiedExecSession') -> 'None':
         stream = session.process.stdout
         if stream is None:
             return
@@ -363,7 +362,7 @@ class UnifiedExecManager:
             session.output_event.set()
         session.output_event.set()
 
-    def _resolve_workdir(self, workdir: str | None) -> Path:
+    def _resolve_workdir(self, workdir: 'typing.Union[str, None]') -> 'Path':
         if not workdir:
             return self._default_cwd
         path = Path(workdir)
@@ -373,10 +372,10 @@ class UnifiedExecManager:
 
     def _build_shell_command(
         self,
-        cmd: str,
-        shell: str | None,
-        login: bool,
-    ) -> list[str]:
+        cmd: 'str',
+        shell: 'typing.Union[str, None]',
+        login: 'bool',
+    ) -> 'typing.List[str]':
         shell_path = shell or os.environ.get("SHELL") or "/bin/bash"
         shell_name = Path(shell_path).name.lower()
         if shell_name in {"cmd", "cmd.exe"}:
@@ -385,13 +384,13 @@ class UnifiedExecManager:
             return [shell_path, "-NoProfile", "-Command", cmd]
         return [shell_path, "-lc" if login else "-c", cmd]
 
-    def _estimate_token_count(self, output: str) -> int | None:
+    def _estimate_token_count(self, output: 'str') -> 'typing.Union[int, None]':
         return _approx_token_count(output)
 
-    def _truncate_output(self, output: str, max_output_tokens: int | None) -> str:
+    def _truncate_output(self, output: 'str', max_output_tokens: 'typing.Union[int, None]') -> 'str':
         token_budget = DEFAULT_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
         return _formatted_truncate_text(output, max(token_budget, 0))
 
-    def _tty_echo(self, chars: str) -> bytes:
+    def _tty_echo(self, chars: 'str') -> 'bytes':
         normalized = chars.replace("\n", "\r\n")
         return normalized.encode("utf-8")

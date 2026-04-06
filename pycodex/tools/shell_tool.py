@@ -11,13 +11,12 @@ Expected behavior:
   stdout, and stderr.
 """
 
-from __future__ import annotations
-
 import asyncio
 from pathlib import Path
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
+import typing
 
 DEFAULT_SHELL_TIMEOUT_MS = 30_000
 MAX_OUTPUT_CHARS = 12_000
@@ -43,10 +42,10 @@ class ShellTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, cwd: str | Path | None = None) -> None:
+    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
         self._working_directory = Path(cwd or Path.cwd()).resolve()
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         command = args.get("command")
         timeout_ms = int(args.get("timeout_ms", DEFAULT_SHELL_TIMEOUT_MS))
@@ -98,7 +97,7 @@ class ShellTool(BaseTool):
 
         return "\n".join(pieces)
 
-    def _resolve_workdir(self, workdir_arg) -> Path:
+    def _resolve_workdir(self, workdir_arg) -> 'Path':
         if workdir_arg in (None, ""):
             return self._working_directory
         workdir = Path(str(workdir_arg))
@@ -106,7 +105,7 @@ class ShellTool(BaseTool):
             workdir = self._working_directory / workdir
         return workdir.resolve()
 
-    def _clip_output(self, text: str) -> str:
+    def _clip_output(self, text: 'str') -> 'str':
         if len(text) <= MAX_OUTPUT_CHARS:
             return text
         return text[:MAX_OUTPUT_CHARS] + "\n...[truncated]..."

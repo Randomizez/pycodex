@@ -9,13 +9,12 @@ Expected behavior:
   commands like `find` or `ls -R`.
 """
 
-from __future__ import annotations
-
 from collections import deque
 from pathlib import Path
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
+import typing
 
 MAX_ENTRY_LENGTH = 500
 INDENTATION_SPACES = 2
@@ -38,7 +37,7 @@ class ListDirTool(BaseTool):
         "required": ["dir_path"],
     }
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         dir_path = Path(str(args.get("dir_path", "")))
         offset = int(args.get("offset", 1))
@@ -74,8 +73,8 @@ class ListDirTool(BaseTool):
             lines.append(f"More than {len(selected)} entries found")
         return "\n".join(lines)
 
-    def _collect_entries(self, root: Path, depth: int) -> list[dict[str, object]]:
-        entries: list[dict[str, object]] = []
+    def _collect_entries(self, root: 'Path', depth: 'int') -> 'typing.List[typing.Dict[str, object]]':
+        entries: 'typing.List[typing.Dict[str, object]]' = []
         queue = deque([(root, Path(), depth)])
 
         while queue:
@@ -106,7 +105,7 @@ class ListDirTool(BaseTool):
         entries.sort(key=lambda entry: entry["name"])
         return entries
 
-    def _entry_kind(self, path: Path) -> str:
+    def _entry_kind(self, path: 'Path') -> 'str':
         if path.is_symlink():
             return "symlink"
         if path.is_dir():
@@ -115,14 +114,14 @@ class ListDirTool(BaseTool):
             return "file"
         return "other"
 
-    def _format_entry_name(self, path: Path) -> str:
+    def _format_entry_name(self, path: 'Path') -> 'str':
         text = path.as_posix()
         return text[:MAX_ENTRY_LENGTH]
 
-    def _format_component(self, name: str) -> str:
+    def _format_component(self, name: 'str') -> 'str':
         return name[:MAX_ENTRY_LENGTH]
 
-    def _format_entry_line(self, entry: dict[str, object]) -> str:
+    def _format_entry_line(self, entry: 'typing.Dict[str, object]') -> 'str':
         indent = " " * (int(entry["depth"]) * INDENTATION_SPACES)
         name = str(entry["display_name"])
         kind = str(entry["kind"])

@@ -12,8 +12,6 @@ The comparison target is the outbound request body shape, especially the second
 request after steer.
 """
 
-from __future__ import annotations
-
 import argparse
 from contextlib import contextmanager
 import json
@@ -41,6 +39,7 @@ from tests.compare_tool_schemas import (
     rewrite_config_base_url,
 )
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
+import typing
 
 DEFAULT_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_OUTPUT_ROOT = Path(".tmp") / "steer_request_body_compare"
@@ -54,22 +53,22 @@ DEFAULT_SECOND_RESPONSE_TEXT = "bye"
 DEFAULT_FIRST_RESPONSE_DELAY_SECONDS = 3.0
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class CapturedRequest:
-    path: Path
-    body: dict[str, object]
-    headers: dict[str, str]
+    path: 'Path'
+    body: 'typing.Dict[str, object]'
+    headers: 'typing.Dict[str, str]'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class RunCapture:
-    label: str
-    first: CapturedRequest
-    second: CapturedRequest
-    terminal_log_path: Path
+    label: 'str'
+    first: 'CapturedRequest'
+    second: 'CapturedRequest'
+    terminal_log_path: 'Path'
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> 'argparse.ArgumentParser':
     parser = argparse.ArgumentParser(
         prog="uv run python tests/compare_steer_request_bodies.py",
         description=(
@@ -111,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
+def main() -> 'None':
     args = build_parser().parse_args()
     config_path = Path(args.config).resolve()
     output_root = Path(args.root).resolve()
@@ -191,10 +190,10 @@ def main() -> None:
 
 def build_steer_response_sequence(
     *,
-    model_id: str,
-    first_text: str,
-    second_text: str,
-) -> tuple[str, str]:
+    model_id: 'str',
+    first_text: 'str',
+    second_text: 'str',
+) -> 'typing.Tuple[str, str]':
     first = "".join(
         [
             "event: response.created\n",
@@ -246,35 +245,35 @@ class ScriptedOriginServer:
     def __init__(
         self,
         *,
-        model_id: str,
-        response_bodies: tuple[str, ...],
-        first_delay_seconds: float,
-    ) -> None:
+        model_id: 'str',
+        response_bodies: 'typing.Tuple[str, ...]',
+        first_delay_seconds: 'float',
+    ) -> 'None':
         self._model_id = model_id
         self._response_bodies = response_bodies
         self._first_delay_seconds = first_delay_seconds
-        self._httpd: ThreadingHTTPServer | None = None
-        self._thread: threading.Thread | None = None
+        self._httpd: 'typing.Union[ThreadingHTTPServer, None]' = None
+        self._thread: 'typing.Union[threading.Thread, None]' = None
         self._request_count = 0
         self._condition = threading.Condition()
 
     @property
-    def base_url(self) -> str:
+    def base_url(self) -> 'str':
         if self._httpd is None:
             raise RuntimeError("origin server has not started")
         return f"http://127.0.0.1:{self._httpd.server_port}/v1"
 
-    def start(self) -> None:
+    def start(self) -> 'None':
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
             counter = 0
 
-            def log_message(self, format: str, *args) -> None:
+            def log_message(self, format: 'str', *args) -> 'None':
                 del format, args
                 return
 
-            def do_GET(self) -> None:
+            def do_GET(self) -> 'None':
                 parsed = urlparse(self.path)
                 if parsed.path.endswith("/models") or parsed.path == "/models":
                     body = json.dumps(
@@ -297,7 +296,7 @@ class ScriptedOriginServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def do_POST(self) -> None:
+            def do_POST(self) -> 'None':
                 length = int(self.headers.get("Content-Length", "0"))
                 if length:
                     self.rfile.read(length)
@@ -321,7 +320,7 @@ class ScriptedOriginServer:
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    def stop(self) -> 'None':
         if self._httpd is not None:
             self._httpd.shutdown()
         if self._thread is not None:
@@ -329,7 +328,7 @@ class ScriptedOriginServer:
         if self._httpd is not None:
             self._httpd.server_close()
 
-    def wait_for_post_count(self, expected_count: int, timeout_seconds: float) -> None:
+    def wait_for_post_count(self, expected_count: 'int', timeout_seconds: 'float') -> 'None':
         deadline = time.monotonic() + timeout_seconds
         with self._condition:
             while self._request_count < expected_count:
@@ -344,9 +343,9 @@ class ScriptedOriginServer:
 @contextmanager
 def scripted_origin_server(
     *,
-    model_id: str,
-    response_bodies: tuple[str, ...],
-    first_delay_seconds: float,
+    model_id: 'str',
+    response_bodies: 'typing.Tuple[str, ...]',
+    first_delay_seconds: 'float',
 ):
     server = ScriptedOriginServer(
         model_id=model_id,
@@ -362,16 +361,16 @@ def scripted_origin_server(
 
 def run_upstream_codex_capture(
     *,
-    config_path: Path,
-    provider_name: str,
-    output_root: Path,
-    timeout_seconds: float,
-    upstream_command: str,
-    origin_base_url: str,
-    initial_prompt: str,
-    steer_prompt: str,
+    config_path: 'Path',
+    provider_name: 'str',
+    output_root: 'Path',
+    timeout_seconds: 'float',
+    upstream_command: 'str',
+    origin_base_url: 'str',
+    initial_prompt: 'str',
+    steer_prompt: 'str',
     upstream_origin_waiter,
-) -> RunCapture:
+) -> 'RunCapture':
     capture_root = output_root / "upstream"
     log_root = output_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
@@ -402,14 +401,14 @@ def run_upstream_codex_capture(
 
 def run_pycodex_capture(
     *,
-    config_path: Path,
-    output_root: Path,
-    timeout_seconds: float,
-    origin_base_url: str,
-    initial_prompt: str,
-    steer_prompt: str,
+    config_path: 'Path',
+    output_root: 'Path',
+    timeout_seconds: 'float',
+    origin_base_url: 'str',
+    initial_prompt: 'str',
+    steer_prompt: 'str',
     pycodex_origin_waiter,
-) -> RunCapture:
+) -> 'RunCapture':
     capture_root = output_root / "pycodex"
     log_root = output_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
@@ -439,16 +438,16 @@ def run_pycodex_capture(
 
 def run_proxy_capture_with_tmux(
     *,
-    capture_root: Path,
-    origin_base_url: str,
-    timeout_seconds: float,
-    command: str,
-    terminal_log_path: Path,
-    initial_prompt: str,
-    steer_prompt: str,
+    capture_root: 'Path',
+    origin_base_url: 'str',
+    timeout_seconds: 'float',
+    command: 'str',
+    terminal_log_path: 'Path',
+    initial_prompt: 'str',
+    steer_prompt: 'str',
     prepare_proxy_url,
     wait_for_origin_post,
-) -> str:
+) -> 'str':
     if capture_root.exists():
         shutil.rmtree(capture_root)
     capture_root.mkdir(parents=True, exist_ok=True)
@@ -487,7 +486,7 @@ def run_proxy_capture_with_tmux(
     return proxy_url
 
 
-def load_steer_capture(label: str, capture_root: Path, terminal_log_path: Path) -> RunCapture:
+def load_steer_capture(label: 'str', capture_root: 'Path', terminal_log_path: 'Path') -> 'RunCapture':
     request_files = sorted(capture_root.glob("*_POST_*.json"))
     if len(request_files) < 2:
         raise RuntimeError(
@@ -512,7 +511,7 @@ def load_steer_capture(label: str, capture_root: Path, terminal_log_path: Path) 
     )
 
 
-def build_comparison(upstream: RunCapture, pycodex: RunCapture) -> dict[str, object]:
+def build_comparison(upstream: 'RunCapture', pycodex: 'RunCapture') -> 'typing.Dict[str, object]':
     upstream_meta = extract_turn_metadata(upstream)
     pycodex_meta = extract_turn_metadata(pycodex)
     first_upstream_body = normalize_body_for_compare(upstream.first.body)
@@ -549,27 +548,27 @@ def build_comparison(upstream: RunCapture, pycodex: RunCapture) -> dict[str, obj
     }
 
 
-def normalize_body_for_compare(body: dict[str, object]) -> dict[str, object]:
+def normalize_body_for_compare(body: 'typing.Dict[str, object]') -> 'typing.Dict[str, object]':
     normalized = json.loads(json.dumps(body))
     normalized.pop("prompt_cache_key", None)
     return normalized
 
 
-def extract_turn_metadata(capture: RunCapture) -> tuple[dict[str, object], dict[str, object]]:
+def extract_turn_metadata(capture: 'RunCapture') -> 'typing.Tuple[typing.Dict[str, object], typing.Dict[str, object]]':
     first = json.loads(capture.first.headers["x-codex-turn-metadata"])
     second = json.loads(capture.second.headers["x-codex-turn-metadata"])
     return first, second
 
 
-def same_turn_id(metadata_pair: tuple[dict[str, object], dict[str, object]]) -> bool:
+def same_turn_id(metadata_pair: 'typing.Tuple[typing.Dict[str, object], typing.Dict[str, object]]') -> 'bool':
     first, second = metadata_pair
     first_turn_id = str(first.get("turn_id", "")).strip()
     second_turn_id = str(second.get("turn_id", "")).strip()
     return bool(first_turn_id) and first_turn_id == second_turn_id
 
 
-def diff_values(left, right, path: str = "body") -> list[str]:
-    diffs: list[str] = []
+def diff_values(left, right, path: 'str' = "body") -> 'typing.List[str]':
+    diffs: 'typing.List[str]' = []
     if type(left) is not type(right):
         return [f"{path}: type {type(left).__name__} != {type(right).__name__}"]
     if isinstance(left, dict):
@@ -593,7 +592,7 @@ def diff_values(left, right, path: str = "body") -> list[str]:
     return diffs
 
 
-def enable_feature_flag(config_path: Path, feature_name: str, enabled: bool) -> None:
+def enable_feature_flag(config_path: 'Path', feature_name: 'str', enabled: 'bool') -> 'None':
     raw_text = config_path.read_text()
     feature_line = f"{feature_name} = {'true' if enabled else 'false'}"
     section_pattern = re.compile(r"(?ms)(^\[features\]\s*$)(.*?)(?=^\[|\Z)")
@@ -613,18 +612,18 @@ def enable_feature_flag(config_path: Path, feature_name: str, enabled: bool) -> 
     config_path.write_text(rewritten)
 
 
-def remove_toplevel_key(config_path: Path, key: str) -> None:
+def remove_toplevel_key(config_path: 'Path', key: 'str') -> 'None':
     raw_text = config_path.read_text()
     pattern = re.compile(rf"(?m)^{re.escape(key)}\s*=.*\n?")
     rewritten, _count = pattern.subn("", raw_text, count=1)
     config_path.write_text(rewritten)
 
 
-def proxy_url_placeholder() -> str:
+def proxy_url_placeholder() -> 'str':
     return "__PYCODEX_PROXY_BASE_URL__"
 
 
-def random_suffix(length: int = 8) -> str:
+def random_suffix(length: 'int' = 8) -> 'str':
     alphabet = string.ascii_lowercase + string.digits
     return "".join(random.choice(alphabet) for _ in range(length))
 

@@ -11,8 +11,6 @@ Expected behavior:
   same success/error text shape Codex expects.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +18,7 @@ from loguru import logger
 
 from ..protocol import JSONValue
 from .base_tool import BaseTool, ToolContext
+import typing
 
 APPLY_PATCH_LARK_GRAMMAR = """start: begin_patch hunk+ end_patch
 begin_patch: \"*** Begin Patch\" LF
@@ -47,28 +46,28 @@ class ApplyPatchError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class _AddFileOp:
-    path: str
-    content: str
+    path: 'str'
+    content: 'str'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class _DeleteFileOp:
-    path: str
+    path: 'str'
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class _UpdateSection:
-    lines: tuple[str, ...]
-    anchor_end_of_file: bool = False
+    lines: 'typing.Tuple[str, ...]'
+    anchor_end_of_file: 'bool' = False
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, )
 class _UpdateFileOp:
-    path: str
-    move_to: str | None
-    sections: tuple[_UpdateSection, ...]
+    path: 'str'
+    move_to: 'typing.Union[str, None]'
+    sections: 'typing.Tuple[_UpdateSection, ...]'
 
 
 class ApplyPatchTool(BaseTool):
@@ -85,10 +84,10 @@ class ApplyPatchTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, cwd: str | Path | None = None) -> None:
+    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
         self._workspace_root = Path(cwd or Path.cwd()).resolve()
 
-    async def run(self, context: ToolContext, args: JSONValue) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
         del context
         patch_text = str(args)
         logger.debug("apply_patch workspace={} bytes={}", self._workspace_root, len(patch_text))
@@ -98,7 +97,7 @@ class ApplyPatchTool(BaseTool):
         except ApplyPatchError as exc:
             return self._format_result(str(exc), exit_code=1)
 
-    def _parse_patch(self, patch_text: str) -> list[_AddFileOp | _DeleteFileOp | _UpdateFileOp]:
+    def _parse_patch(self, patch_text: 'str') -> 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]':
         lines = patch_text.splitlines()
         if not lines:
             raise ApplyPatchError("patch rejected: empty patch")
@@ -107,7 +106,7 @@ class ApplyPatchTool(BaseTool):
                 "apply_patch verification failed: missing '*** Begin Patch' header"
             )
 
-        operations: list[_AddFileOp | _DeleteFileOp | _UpdateFileOp] = []
+        operations: 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]' = []
         index = 1
         while index < len(lines):
             line = lines[index]
@@ -122,9 +121,9 @@ class ApplyPatchTool(BaseTool):
                 return operations
 
             if line.startswith("*** Add File: "):
-                path = line.removeprefix("*** Add File: ")
+                path = line[len("*** Add File: ") :]
                 index += 1
-                content_lines: list[str] = []
+                content_lines: 'typing.List[str]' = []
                 while index < len(lines) and not lines[index].startswith("*** "):
                     entry = lines[index]
                     if not entry.startswith("+"):
@@ -141,21 +140,21 @@ class ApplyPatchTool(BaseTool):
                 continue
 
             if line.startswith("*** Delete File: "):
-                path = line.removeprefix("*** Delete File: ")
+                path = line[len("*** Delete File: ") :]
                 operations.append(_DeleteFileOp(path=path))
                 index += 1
                 continue
 
             if line.startswith("*** Update File: "):
-                path = line.removeprefix("*** Update File: ")
+                path = line[len("*** Update File: ") :]
                 index += 1
                 move_to = None
                 if index < len(lines) and lines[index].startswith("*** Move to: "):
-                    move_to = lines[index].removeprefix("*** Move to: ")
+                    move_to = lines[index][len("*** Move to: ") :]
                     index += 1
 
-                sections: list[_UpdateSection] = []
-                current_lines: list[str] = []
+                sections: 'typing.List[_UpdateSection]' = []
+                current_lines: 'typing.List[str]' = []
                 saw_hunk_header = False
                 anchor_end_of_file = False
                 while index < len(lines):
@@ -221,10 +220,10 @@ class ApplyPatchTool(BaseTool):
 
     def _apply_operations(
         self,
-        operations: list[_AddFileOp | _DeleteFileOp | _UpdateFileOp],
-    ) -> str:
-        preview: dict[Path, str | None] = {}
-        summaries: dict[Path, str] = {}
+        operations: 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]',
+    ) -> 'str':
+        preview: 'typing.Dict[Path, typing.Union[str, None]]' = {}
+        summaries: 'typing.Dict[Path, str]' = {}
 
         for operation in operations:
             if isinstance(operation, _AddFileOp):
@@ -254,7 +253,7 @@ class ApplyPatchTool(BaseTool):
         self._write_preview(preview)
         return self._format_success(summaries)
 
-    def _read_preview_file(self, path: Path, preview: dict[Path, str | None]) -> str:
+    def _read_preview_file(self, path: 'Path', preview: 'typing.Dict[Path, typing.Union[str, None]]') -> 'str':
         if path in preview:
             content = preview[path]
             if content is None:
@@ -271,10 +270,10 @@ class ApplyPatchTool(BaseTool):
 
     def _apply_update(
         self,
-        path: Path,
-        original_text: str,
-        sections: tuple[_UpdateSection, ...],
-    ) -> str:
+        path: 'Path',
+        original_text: 'str',
+        sections: 'typing.Tuple[_UpdateSection, ...]',
+    ) -> 'str':
         lines = original_text.splitlines()
         cursor = 0
         for section in sections:
@@ -295,11 +294,11 @@ class ApplyPatchTool(BaseTool):
 
     def _find_match(
         self,
-        lines: list[str],
-        old_block: list[str],
-        cursor: int,
-        anchor_end_of_file: bool,
-    ) -> int | None:
+        lines: 'typing.List[str]',
+        old_block: 'typing.List[str]',
+        cursor: 'int',
+        anchor_end_of_file: 'bool',
+    ) -> 'typing.Union[int, None]':
         if anchor_end_of_file:
             start = len(lines) - len(old_block)
             if start >= 0 and lines[start : start + len(old_block)] == old_block:
@@ -318,7 +317,7 @@ class ApplyPatchTool(BaseTool):
                 return start
         return None
 
-    def _write_preview(self, preview: dict[Path, str | None]) -> None:
+    def _write_preview(self, preview: 'typing.Dict[Path, typing.Union[str, None]]') -> 'None':
         for path, content in preview.items():
             if content is None:
                 if path.exists():
@@ -327,7 +326,7 @@ class ApplyPatchTool(BaseTool):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
 
-    def _format_success(self, summaries: dict[Path, str]) -> str:
+    def _format_success(self, summaries: 'typing.Dict[Path, str]') -> 'str':
         buckets = {"A": [], "M": [], "D": []}
         for path, status in summaries.items():
             buckets[status].append(path.relative_to(self._workspace_root).as_posix())
@@ -337,7 +336,7 @@ class ApplyPatchTool(BaseTool):
                 lines.append(f"{status} {rel_path}")
         return "\n".join(lines) + "\n"
 
-    def _format_result(self, output: str, exit_code: int) -> str:
+    def _format_result(self, output: 'str', exit_code: 'int') -> 'str':
         return (
             f"Exit code: {exit_code}\n"
             "Wall time: 0 seconds\n"
@@ -345,7 +344,7 @@ class ApplyPatchTool(BaseTool):
             f"{output}"
         )
 
-    def _resolve_workspace_path(self, path_text: str) -> Path:
+    def _resolve_workspace_path(self, path_text: 'str') -> 'Path':
         path = Path(path_text)
         resolved = path if path.is_absolute() else self._workspace_root / path
         resolved = resolved.resolve()
@@ -357,7 +356,7 @@ class ApplyPatchTool(BaseTool):
             ) from exc
         return resolved
 
-    def _join_lines(self, lines: list[str]) -> str:
+    def _join_lines(self, lines: 'typing.List[str]') -> 'str':
         if not lines:
             return ""
         return "\n".join(lines) + "\n"

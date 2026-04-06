@@ -9,8 +9,6 @@ Expected behavior:
   wait times out.
 """
 
-from __future__ import annotations
-
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import AGENT_STATUS_SCHEMA
@@ -60,10 +58,10 @@ class WaitAgentTool(BaseTool):
     output_schema = WAIT_AGENT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: SubAgentManager) -> None:
+    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: ToolContext, args: JSONDict) -> JSONValue:
+    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
         del context
         ids = args.get("ids")
         if not isinstance(ids, list) or not ids:

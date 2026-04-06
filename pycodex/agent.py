@@ -1,8 +1,7 @@
-from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
+from typing import Callable
 
 from .context import ContextManager
 from .model import ModelClient
@@ -19,10 +18,11 @@ from .protocol import (
 )
 from .tools import ToolContext, ToolRegistry
 from .utils import uuid7_string
+import typing
 
 
 EventHandler = Callable[[AgentEvent], None]
-NOOP_EVENT_HANDLER: EventHandler = lambda _event: None
+NOOP_EVENT_HANDLER: 'EventHandler' = lambda _event: None
 
 
 class TurnInterrupted(RuntimeError):
@@ -40,47 +40,47 @@ class AgentLoop:
 
     def __init__(
         self,
-        model_client: ModelClient,
-        tool_registry: ToolRegistry,
-        context_manager: ContextManager | None = None,
-        parallel_tool_calls: bool = True,
-        event_handler: EventHandler = NOOP_EVENT_HANDLER,
-        initial_history: tuple[ConversationItem, ...] = (),
-    ) -> None:
+        model_client: 'ModelClient',
+        tool_registry: 'ToolRegistry',
+        context_manager: 'typing.Union[ContextManager, None]' = None,
+        parallel_tool_calls: 'bool' = True,
+        event_handler: 'EventHandler' = NOOP_EVENT_HANDLER,
+        initial_history: 'typing.Tuple[ConversationItem, ...]' = (),
+    ) -> 'None':
         self._model_client = model_client
         self._tool_registry = tool_registry
         self._context_manager = context_manager or ContextManager()
         self._parallel_tool_calls = parallel_tool_calls
         self._event_handler = event_handler
-        self._history: list[ConversationItem] = list(initial_history)
+        self._history: 'typing.List[ConversationItem]' = list(initial_history)
         self.interrupt_asap = False
 
     @property
-    def history(self) -> tuple[ConversationItem, ...]:
+    def history(self) -> 'typing.Tuple[ConversationItem, ...]':
         return tuple(self._history)
 
     def set_event_handler(
-        self, event_handler: EventHandler = NOOP_EVENT_HANDLER
-    ) -> None:
+        self, event_handler: 'EventHandler' = NOOP_EVENT_HANDLER
+    ) -> 'None':
         self._event_handler = event_handler
 
     def _raise_if_interrupt_requested(
         self,
-        turn_id: str,
-        iteration: int,
-        output_text: str | None = None,
-    ) -> None:
+        turn_id: 'str',
+        iteration: 'int',
+        output_text: 'typing.Union[str, None]' = None,
+    ) -> 'None':
         if self.interrupt_asap:
             self.interrupt_asap = False
-            payload: dict[str, object] = {"iteration": iteration}
+            payload: 'typing.Dict[str, object]' = {"iteration": iteration}
             if output_text is not None:
                 payload["output_text"] = output_text
             self._emit("turn_interrupted", turn_id, **payload)
             raise TurnInterrupted("turn interrupted")
 
     async def run_turn(
-        self, texts: list[str], turn_id: str | None = None
-    ) -> TurnResult:
+        self, texts: 'typing.List[str]', turn_id: 'typing.Union[str, None]' = None
+    ) -> 'TurnResult':
         turn_id = turn_id or uuid7_string()
         self.interrupt_asap = False
         for text in texts:
@@ -93,10 +93,8 @@ class AgentLoop:
             user_texts=list(texts),
         )
 
-        last_assistant_message: str | None = None
-        final_response_items: tuple[
-            AssistantMessage | ToolCall | ReasoningItem, ...
-        ] = ()
+        last_assistant_message: 'typing.Union[str, None]' = None
+        final_response_items: 'typing.Tuple[\n    typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], ...\n]' = ()
 
         iteration = 0
         try:
@@ -132,7 +130,7 @@ class AgentLoop:
                     item_count=len(response.items),
                 )
 
-                tool_calls: list[ToolCall] = []
+                tool_calls: 'typing.List[ToolCall]' = []
                 for item in response.items:
                     self._history.append(item)
                     if isinstance(item, AssistantMessage):
@@ -182,11 +180,11 @@ class AgentLoop:
 
     async def _execute_tool_batch(
         self,
-        turn_id: str,
-        tool_calls: list[ToolCall],
-    ) -> list[ToolResult]:
-        results: list[ToolResult] = []
-        parallel_batch: list[ToolCall] = []
+        turn_id: 'str',
+        tool_calls: 'typing.List[ToolCall]',
+    ) -> 'typing.List[ToolResult]':
+        results: 'typing.List[ToolResult]' = []
+        parallel_batch: 'typing.List[ToolCall]' = []
 
         for call in tool_calls:
             can_run_parallel = (
@@ -224,10 +222,10 @@ class AgentLoop:
 
     async def _run_single_tool(
         self,
-        turn_id: str,
-        call: ToolCall,
-        prior_results: tuple[ToolResult, ...] = (),
-    ) -> ToolResult:
+        turn_id: 'str',
+        call: 'ToolCall',
+        prior_results: 'typing.Tuple[ToolResult, ...]' = (),
+    ) -> 'ToolResult':
         self._emit("tool_started", turn_id, tool_name=call.name, call_id=call.call_id)
         result = await self._tool_registry.execute(
             call,
@@ -237,7 +235,7 @@ class AgentLoop:
                 collaboration_mode=self._context_manager.collaboration_mode,
             ),
         )
-        payload: dict[str, object] = {
+        payload: 'typing.Dict[str, object]' = {
             "tool_name": call.name,
             "call_id": call.call_id,
             "is_error": result.is_error,
@@ -247,12 +245,12 @@ class AgentLoop:
         self._emit("tool_completed", turn_id, **payload)
         return result
 
-    def _emit(self, kind: str, turn_id: str, **payload: object) -> None:
+    def _emit(self, kind: 'str', turn_id: 'str', **payload: 'object') -> 'None':
         self._event_handler(
             AgentEvent(kind=kind, turn_id=turn_id, payload=dict(payload))
         )
 
-    def _handle_model_stream_event(self, turn_id: str, event: ModelStreamEvent) -> None:
+    def _handle_model_stream_event(self, turn_id: 'str', event: 'ModelStreamEvent') -> 'None':
         if event.kind == "assistant_delta":
             self._emit("assistant_delta", turn_id, **event.payload)
         elif event.kind == "tool_call":
@@ -260,9 +258,9 @@ class AgentLoop:
 
     def _build_follow_up_messages(
         self,
-        tool_results: list[ToolResult],
-    ) -> list[UserMessage]:
-        follow_ups: list[UserMessage] = []
+        tool_results: 'typing.List[ToolResult]',
+    ) -> 'typing.List[UserMessage]':
+        follow_ups: 'typing.List[UserMessage]' = []
         for result in tool_results:
             statuses = None
             if (

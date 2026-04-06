@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import atexit
 import argparse
@@ -10,10 +9,11 @@ import sys
 import tempfile
 from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Literal, Sequence
+from typing import Sequence
 
 from .agent import AgentLoop
 from .collaboration import DEFAULT_COLLABORATION_MODE, CollaborationMode
+from .compat import Literal
 from .context import ContextManager
 from .model import ResponsesModelClient, ResponsesProviderConfig
 from .portable import bootstrap_called_home, upload_codex_home
@@ -21,6 +21,7 @@ from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
 from .utils import CliSessionView, load_codex_dotenv
+import typing
 
 EXIT_COMMANDS = {"/exit", "/quit"}
 HISTORY_COMMAND = "/history"
@@ -40,7 +41,7 @@ def launch_chat_completion_compat_server(*args, **kwargs):
     return launch_compat_server(*args, **kwargs)
 
 
-def configure_loguru() -> None:
+def configure_loguru() -> 'None':
     try:
         from loguru import logger
     except ImportError:  # pragma: no cover - dependency may be absent in minimal envs
@@ -61,7 +62,7 @@ def configure_loguru() -> None:
         logger.add(sys.stderr, level="DEBUG")
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser() -> 'argparse.ArgumentParser':
     parser = argparse.ArgumentParser(
         prog="pycodex",
         description="Minimal Codex-style local CLI backed by ~/.codex/config.toml.",
@@ -131,11 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def should_run_interactive(prompt_parts: Sequence[str], stdin_is_tty: bool) -> bool:
+def should_run_interactive(prompt_parts: 'Sequence[str]', stdin_is_tty: 'bool') -> 'bool':
     return not prompt_parts and stdin_is_tty
 
 
-def resolve_prompt_text(prompt_parts: Sequence[str]) -> str:
+def resolve_prompt_text(prompt_parts: 'Sequence[str]') -> 'str':
     if prompt_parts:
         return " ".join(prompt_parts).strip()
 
@@ -148,8 +149,8 @@ def resolve_prompt_text(prompt_parts: Sequence[str]) -> str:
 
 
 def get_tools(
-    runtime_environment: RuntimeEnvironment | None = None,
-    exec_mode: bool = False,
+    runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None,
+    exec_mode: 'bool' = False,
 ):
     from .tools import (
         ApplyPatchTool,
@@ -243,7 +244,7 @@ def get_tools(
     return registry
 
 
-def get_subagent_tools(runtime_environment: RuntimeEnvironment | None = None):
+def get_subagent_tools(runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None):
     from .tools import (
         ApplyPatchTool,
         ExecCommandTool,
@@ -268,13 +269,13 @@ def get_subagent_tools(runtime_environment: RuntimeEnvironment | None = None):
 
 
 def build_runtime(
-    config_path: str,
-    profile: str | None,
-    system_prompt: str | None,
+    config_path: 'str',
+    profile: 'typing.Union[str, None]',
+    system_prompt: 'typing.Union[str, None]',
     client,
-    session_mode: CliSessionMode = "exec",
-    collaboration_mode: CollaborationMode = DEFAULT_COLLABORATION_MODE,
-) -> AgentRuntime:
+    session_mode: 'CliSessionMode' = "exec",
+    collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
+) -> 'AgentRuntime':
     use_tui_context = session_mode == "tui"
     context_manager = ContextManager.from_codex_config(
         config_path,
@@ -295,11 +296,11 @@ def build_runtime(
 
     def make_subagent_runtime_builder(base_client):
         def build_subagent_runtime(
-            model_override: str | None,
-            reasoning_effort_override: str | None,
+            model_override: 'typing.Union[str, None]',
+            reasoning_effort_override: 'typing.Union[str, None]',
             initial_history=(),
-            session_id: str | None = None,
-        ) -> AgentRuntime:
+            session_id: 'typing.Union[str, None]' = None,
+        ) -> 'AgentRuntime':
             nested_client = base_client.with_overrides(
                 model_override,
                 reasoning_effort_override,
@@ -335,19 +336,19 @@ def build_runtime(
     )
 
 
-def format_turn_output(result, json_mode: bool) -> str:
+def format_turn_output(result, json_mode: 'bool') -> 'str':
     if json_mode:
         return json.dumps(asdict(result), ensure_ascii=False, indent=2)
     return result.output_text or ""
 
 
 def _build_model_client(
-    config_path: str,
-    profile: str | None,
-    timeout_seconds: float,
-    managed_responses_base_url: str | None = None,
-    vllm_endpoint: str | None = None,
-    use_chat_completion: bool = False,
+    config_path: 'str',
+    profile: 'typing.Union[str, None]',
+    timeout_seconds: 'float',
+    managed_responses_base_url: 'typing.Union[str, None]' = None,
+    vllm_endpoint: 'typing.Union[str, None]' = None,
+    use_chat_completion: 'bool' = False,
 ):
     load_codex_dotenv(config_path)
     provider_config = ResponsesProviderConfig.from_codex_config(
@@ -393,13 +394,13 @@ def _build_model_client(
 
 
 async def prompt_request_user_input(
-    view: CliSessionView,
-    payload: dict[str, object],
-) -> dict[str, object] | None:
+    view: 'CliSessionView',
+    payload: 'typing.Dict[str, object]',
+) -> 'typing.Union[typing.Dict[str, object], None]':
     view.finish_stream()
     view.pause_spinner()
     view.write_line("[request_user_input] waiting for user response")
-    answers: dict[str, dict[str, list[str]]] = {}
+    answers: 'typing.Dict[str, typing.Dict[str, typing.List[str]]]' = {}
     try:
         for question in payload.get("questions", []):
             if not isinstance(question, dict):
@@ -456,9 +457,9 @@ async def prompt_request_user_input(
 
 
 async def prompt_request_permissions(
-    view: CliSessionView,
-    payload: dict[str, object],
-) -> dict[str, object] | None:
+    view: 'CliSessionView',
+    payload: 'typing.Dict[str, object]',
+) -> 'typing.Union[typing.Dict[str, object], None]':
     view.finish_stream()
     view.pause_spinner()
     view.write_line("[request_permissions] user approval required")
@@ -495,14 +496,14 @@ async def prompt_request_permissions(
 
 
 async def run_interactive_session(
-    runtime: AgentRuntime,
-    json_mode: bool,
-) -> int:
+    runtime: 'AgentRuntime',
+    json_mode: 'bool',
+) -> 'int':
     worker = asyncio.create_task(runtime.run_forever())
     view = CliSessionView()
     model_client = runtime._agent_loop._model_client
     runtime.set_event_handler(view.handle_event)
-    pending_turn_tasks: set[asyncio.Task[None]] = set()
+    pending_turn_tasks: 'typing.Set[asyncio.Task[None]]' = set()
     runtime_environment = runtime.runtime_environment
     if runtime_environment is None:
         runtime_environment = create_runtime_environment()
@@ -517,13 +518,13 @@ async def run_interactive_session(
     view.write_line("Extra commands: /history, /title, /model")
     try:
 
-        def has_pending_turn_tasks() -> bool:
+        def has_pending_turn_tasks() -> 'bool':
             pending_turn_tasks.difference_update(
                 task for task in tuple(pending_turn_tasks) if task.done()
             )
             return bool(pending_turn_tasks)
 
-        async def wait_for_turn_result(future) -> None:
+        async def wait_for_turn_result(future) -> 'None':
             try:
                 result = await future
             except Exception as exc:  # pragma: no cover - defensive surface
@@ -618,7 +619,7 @@ async def run_interactive_session(
     return 0
 
 
-async def run_cli(args: argparse.Namespace) -> int:
+async def run_cli(args: 'argparse.Namespace') -> 'int':
     runtime = None
     worker = None
     try:
@@ -628,7 +629,7 @@ async def run_cli(args: argparse.Namespace) -> int:
             raise ValueError("--put does not accept prompt text")
         configure_loguru()
         if args.put is not None:
-            def emit_put_log(message: str) -> None:
+            def emit_put_log(message: 'str') -> 'None':
                 print(message, flush=True)
 
             call_spec = upload_codex_home(args.put, event_handler=emit_put_log)
@@ -678,7 +679,7 @@ async def run_cli(args: argparse.Namespace) -> int:
             await worker
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: 'typing.Union[Sequence[str], None]' = None) -> 'int':
     raw_args = list(argv) if argv is not None else None
     if raw_args is None:
         raw_args = sys.argv[1:]

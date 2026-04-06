@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 import json
@@ -6,10 +5,11 @@ import os
 from dataclasses import replace
 from pathlib import Path
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 import pytest
 
+from pycodex.http_compat import ThreadingHTTPServer
 from pycodex import (
     AgentEvent,
     AgentLoop,
@@ -47,28 +47,29 @@ from pycodex.portable_server import CodexStorageServer
 from pycodex.utils.visualize import colorize_cli_message
 from tests.fake_responses_server import CaptureStore, build_handler
 from tests.fakes import ScriptedModelClient
+import typing
 
 
-def _normalized_headers(headers: dict[str, str]) -> dict[str, str]:
+def _normalized_headers(headers: 'typing.Dict[str, str]') -> 'typing.Dict[str, str]':
     return {key.lower(): value for key, value in headers.items()}
 
 
 def _configure_cli_view_output(
-    view: CliSessionView,
-    line_output: list[str],
-    stream_chunks: list[str] | None = None,
+    view: 'CliSessionView',
+    line_output: 'typing.List[str]',
+    stream_chunks: 'typing.Union[typing.List[str], None]' = None,
     line_callback=None,
     raw_callback=None,
-) -> CliSessionView:
+) -> 'CliSessionView':
     if stream_chunks is None:
         stream_chunks = []
 
-    def write_line(text: str) -> None:
+    def write_line(text: 'str') -> 'None':
         line_output.append(text)
         if line_callback is not None:
             line_callback(text)
 
-    def raw_write(text: str) -> None:
+    def raw_write(text: 'str') -> 'None':
         stream_chunks.append(text)
         if raw_callback is not None:
             raw_callback(text)
@@ -84,13 +85,13 @@ def _configure_cli_view_output(
 
 
 def _build_cli_view(
-    line_output: list[str],
-    stream_chunks: list[str] | None = None,
-) -> CliSessionView:
+    line_output: 'typing.List[str]',
+    stream_chunks: 'typing.Union[typing.List[str], None]' = None,
+) -> 'CliSessionView':
     return _configure_cli_view_output(CliSessionView(), line_output, stream_chunks)
 
 
-def _write_stored_codex_home(root: Path) -> None:
+def _write_stored_codex_home(root: 'Path') -> 'None':
     (root / "skills" / "demo").mkdir(parents=True)
     (root / "skills" / "demo" / "SKILL.md").write_text(
         "# Demo\n\nStored skill.\n"
@@ -111,20 +112,20 @@ def _write_stored_codex_home(root: Path) -> None:
 
 
 def _install_test_cli_view(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: 'pytest.MonkeyPatch',
     inputs,
-    line_output: list[str],
-    stream_chunks: list[str],
+    line_output: 'typing.List[str]',
+    stream_chunks: 'typing.List[str]',
     prompt_hook=None,
     line_callback=None,
     raw_callback=None,
-    capture_view: dict[str, CliSessionView] | None = None,
-) -> None:
+    capture_view: 'typing.Union[typing.Dict[str, CliSessionView], None]' = None,
+) -> 'None':
     input_iter = iter(inputs)
     real_view_class = CliSessionView
 
     class _TestView(real_view_class):
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             super().__init__()
             _configure_cli_view_output(
                 self,
@@ -136,7 +137,7 @@ def _install_test_cli_view(
             if capture_view is not None:
                 capture_view["view"] = self
 
-        async def prompt_async(self, prompt: str) -> str:
+        async def prompt_async(self, prompt: 'str') -> 'str':
             self.set_input_active(True)
             try:
                 value = next(input_iter)
@@ -155,7 +156,7 @@ class _ScriptedResponsesClient(ScriptedModelClient):
         responses=None,
         response_factory=None,
         override_factory=None,
-    ) -> None:
+    ) -> 'None':
         super().__init__(responses=responses, response_factory=response_factory)
         self._override_factory = (
             override_factory
@@ -182,37 +183,37 @@ class _ScriptedResponsesClient(ScriptedModelClient):
         )
 
 
-def test_resolve_prompt_text_prefers_argv() -> None:
+def test_resolve_prompt_text_prefers_argv() -> 'None':
     assert resolve_prompt_text(["hello", "world"]) == "hello world"
 
 
-def test_resolve_prompt_text_falls_back_to_stdin(monkeypatch) -> None:
+def test_resolve_prompt_text_falls_back_to_stdin(monkeypatch) -> 'None':
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     monkeypatch.setattr("sys.stdin.read", lambda: "  hello from stdin  ")
     assert resolve_prompt_text([]) == "hello from stdin"
 
 
-def test_resolve_prompt_text_rejects_missing_prompt(monkeypatch) -> None:
+def test_resolve_prompt_text_rejects_missing_prompt(monkeypatch) -> 'None':
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     with pytest.raises(ValueError, match="prompt is required"):
         resolve_prompt_text([])
 
 
-def test_build_parser_recognizes_json_flag() -> None:
+def test_build_parser_recognizes_json_flag() -> 'None':
     parser = build_parser()
     args = parser.parse_args(["--json", "hello"])
     assert args.json is True
     assert args.prompt == ["hello"]
 
 
-def test_build_parser_recognizes_vllm_endpoint() -> None:
+def test_build_parser_recognizes_vllm_endpoint() -> 'None':
     parser = build_parser()
     args = parser.parse_args(["--vllm-endpoint", "http://127.0.0.1:18000", "hello"])
     assert args.vllm_endpoint == "http://127.0.0.1:18000"
     assert args.prompt == ["hello"]
 
 
-def test_build_parser_recognizes_put_and_call_flags() -> None:
+def test_build_parser_recognizes_put_and_call_flags() -> 'None':
     parser = build_parser()
     args = parser.parse_args(
         [
@@ -234,13 +235,13 @@ def test_build_parser_recognizes_put_and_call_flags() -> None:
     assert bare_server_args.put == "@127.0.0.1:5577"
 
 
-def test_build_parser_rejects_put_without_argument() -> None:
+def test_build_parser_rejects_put_without_argument() -> 'None':
     parser = build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["--put"])
 
 
-def test_vllm_base_url_normalizes_empty_path_to_v1() -> None:
+def test_vllm_base_url_normalizes_empty_path_to_v1() -> 'None':
     from responses_server import CompatServerConfig
 
     config = CompatServerConfig.from_base_url("http://127.0.0.1:18000")
@@ -248,7 +249,7 @@ def test_vllm_base_url_normalizes_empty_path_to_v1() -> None:
     assert config.outcomming_base_url == "http://127.0.0.1:18000/v1"
 
 
-def test_vllm_base_url_preserves_existing_v1_path() -> None:
+def test_vllm_base_url_preserves_existing_v1_path() -> 'None':
     from responses_server import CompatServerConfig
 
     config = CompatServerConfig.from_base_url("http://127.0.0.1:18000/v1/")
@@ -258,7 +259,7 @@ def test_vllm_base_url_preserves_existing_v1_path() -> None:
 
 def test_launch_chat_completion_compat_server_normalizes_vllm_base_url(
     monkeypatch,
-) -> None:
+) -> 'None':
     seen = {}
 
     class _FakeManagedServer:
@@ -281,7 +282,7 @@ def test_launch_chat_completion_compat_server_normalizes_vllm_base_url(
 def test_build_runtime_overrides_provider_for_managed_vllm_mode(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(
@@ -345,7 +346,7 @@ def test_build_runtime_overrides_provider_for_managed_vllm_mode(
 async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     monkeypatch,
     tmp_path,
-) -> None:
+) -> 'None':
     started = {}
     registered = {}
     config_path = tmp_path / "config.toml"
@@ -453,13 +454,13 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
 async def test_run_cli_put_uploads_codex_home_and_prints_call_spec(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_stored_codex_home(codex_home)
     server = CodexStorageServer(tmp_path / "storage-server", port=0)
     server.start()
-    line_output: list[str] = []
+    line_output: 'typing.List[str]' = []
     monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
     monkeypatch.setattr(
         "builtins.print",
@@ -493,7 +494,7 @@ async def test_run_cli_put_uploads_codex_home_and_prints_call_spec(
 async def test_run_cli_bootstraps_called_home_before_loading_config(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     codex_home = tmp_path / "codex-home"
     codex_home.mkdir()
     _write_stored_codex_home(codex_home)
@@ -602,7 +603,7 @@ async def test_run_cli_bootstraps_called_home_before_loading_config(
     assert captured["provider_config"].api_key_env == "PORTABLE_API_KEY"
 
 
-def test_get_tools_registers_expected_builtin_tools() -> None:
+def test_get_tools_registers_expected_builtin_tools() -> 'None':
     registry = get_tools()
     assert registry.names() == (
         "shell",
@@ -628,7 +629,7 @@ def test_get_tools_registers_expected_builtin_tools() -> None:
     )
 
 
-def test_get_tools_exec_mode_matches_codex_exec_subset() -> None:
+def test_get_tools_exec_mode_matches_codex_exec_subset() -> 'None':
     registry = get_tools(exec_mode=True)
     assert registry.names() == (
         "exec_command",
@@ -646,7 +647,7 @@ def test_get_tools_exec_mode_matches_codex_exec_subset() -> None:
     )
 
 
-def test_get_tools_exec_mode_serialization_matches_upstream_snapshot() -> None:
+def test_get_tools_exec_mode_serialization_matches_upstream_snapshot() -> 'None':
     registry = get_tools(exec_mode=True)
     expected = json.loads(
         (Path(__file__).resolve().parents[1] / "pycodex" / "prompts" / "exec_tools.json").read_text()
@@ -655,7 +656,7 @@ def test_get_tools_exec_mode_serialization_matches_upstream_snapshot() -> None:
     assert [spec.serialize() for spec in registry.model_visible_specs()] == expected
 
 
-def test_get_subagent_tools_matches_upstream_subset() -> None:
+def test_get_subagent_tools_matches_upstream_subset() -> 'None':
     registry = get_subagent_tools()
     assert registry.names() == (
         "exec_command",
@@ -667,7 +668,7 @@ def test_get_subagent_tools_matches_upstream_subset() -> None:
     )
 
 
-def test_get_subagent_tools_serialization_matches_upstream_snapshot() -> None:
+def test_get_subagent_tools_serialization_matches_upstream_snapshot() -> 'None':
     registry = get_subagent_tools()
     expected = json.loads(
         (
@@ -681,7 +682,7 @@ def test_get_subagent_tools_serialization_matches_upstream_snapshot() -> None:
     assert [spec.serialize() for spec in registry.model_visible_specs()] == expected
 
 
-def test_load_codex_dotenv_reads_env_file_and_filters_codex_prefix(tmp_path, monkeypatch) -> None:
+def test_load_codex_dotenv_reads_env_file_and_filters_codex_prefix(tmp_path, monkeypatch) -> 'None':
     config_path = tmp_path / "config.toml"
     config_path.write_text('model = "demo"\nmodel_provider = "demo"\n')
     (tmp_path / ".env").write_text(
@@ -708,7 +709,7 @@ def test_load_codex_dotenv_reads_env_file_and_filters_codex_prefix(tmp_path, mon
     assert "CODEX_INTERNAL_ORIGINATOR_OVERRIDE" not in os.environ
 
 
-def test_should_run_interactive_only_without_prompt_on_tty() -> None:
+def test_should_run_interactive_only_without_prompt_on_tty() -> 'None':
     assert should_run_interactive([], True) is True
     assert should_run_interactive(["hello"], True) is False
     assert should_run_interactive([], False) is False
@@ -717,12 +718,12 @@ def test_should_run_interactive_only_without_prompt_on_tty() -> None:
 @pytest.mark.asyncio
 async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
     monkeypatch,
-) -> None:
+) -> 'None':
     first_turn_started = asyncio.Event()
     release_first_turn = asyncio.Event()
 
     class _DelayedModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.call_count = 0
 
         async def complete(self, prompt, event_handler):
@@ -737,9 +738,9 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
 
     model = _DelayedModelClient()
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "again":
             await first_turn_started.wait()
         if value == "/exit":
@@ -773,11 +774,11 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
 @pytest.mark.asyncio
 async def test_run_interactive_session_queue_command_enqueues_turn(
     monkeypatch,
-) -> None:
+) -> 'None':
     release_first_turn = asyncio.Event()
 
     class _DelayedModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.call_count = 0
 
         async def complete(self, prompt, event_handler):
@@ -791,9 +792,9 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
 
     model = _DelayedModelClient()
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "/exit":
             release_first_turn.set()
 
@@ -823,7 +824,7 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
 @pytest.mark.asyncio
 async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
     monkeypatch,
-) -> None:
+) -> 'None':
     captured_view = {}
     model = ScriptedModelClient(
         [
@@ -833,7 +834,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
     )
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
 
-    async def prompt_hook(_view, _prompt: str, _value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', _value: 'str') -> 'None':
         assert captured_view["view"]._spinner._paused is True
 
     _install_test_cli_view(
@@ -857,7 +858,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
 @pytest.mark.asyncio
 async def test_run_interactive_session_disables_raw_spinner_thread(
     monkeypatch,
-) -> None:
+) -> 'None':
     captured_view = {}
     _install_test_cli_view(
         monkeypatch,
@@ -882,11 +883,11 @@ async def test_run_interactive_session_disables_raw_spinner_thread(
 @pytest.mark.asyncio
 async def test_run_interactive_session_supports_history_and_title_commands(
     monkeypatch,
-) -> None:
+) -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     _install_test_cli_view(
         monkeypatch,
         ["hello there", "/title", "/history", "/exit"],
@@ -910,7 +911,7 @@ async def test_run_interactive_session_supports_history_and_title_commands(
 async def test_run_interactive_session_supports_model_command(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(
@@ -994,12 +995,12 @@ async def test_run_interactive_session_supports_model_command(
         client,
         session_mode="tui",
     )
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     first_turn_completed = asyncio.Event()
     second_turn_completed = asyncio.Event()
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "/model alt-model":
             await first_turn_completed.wait()
         elif value == "/model":
@@ -1035,11 +1036,11 @@ async def test_run_interactive_session_supports_model_command(
 @pytest.mark.asyncio
 async def test_run_interactive_session_rejects_model_switch_while_steer_work_pending(
     monkeypatch,
-) -> None:
+) -> 'None':
     release_turn = asyncio.Event()
 
     class _DelayedResponsesModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.model = "demo-model"
 
         async def complete(self, prompt, event_handler):
@@ -1058,10 +1059,10 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
 
     model = _DelayedResponsesModelClient()
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "/exit":
             release_turn.set()
 
@@ -1092,9 +1093,9 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
 @pytest.mark.asyncio
 async def test_run_interactive_session_continues_after_model_error(
     monkeypatch,
-) -> None:
+) -> 'None':
     class _FailOnceModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.call_count = 0
 
         async def complete(self, prompt, event_handler):
@@ -1105,11 +1106,11 @@ async def test_run_interactive_session_continues_after_model_error(
             return ModelResponse(items=[AssistantMessage(text="done")])
 
     runtime = AgentRuntime(AgentLoop(_FailOnceModelClient(), ToolRegistry()))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     saw_error = asyncio.Event()
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "again":
             await saw_error.wait()
 
@@ -1161,7 +1162,7 @@ class _EchoTool(BaseTool):
 @pytest.mark.asyncio
 async def test_run_interactive_session_shows_tool_progress_without_iteration_noise(
     monkeypatch,
-) -> None:
+) -> 'None':
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -1179,8 +1180,8 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     tools = ToolRegistry()
     tools.register(_EchoTool())
     runtime = AgentRuntime(AgentLoop(model, tools))
-    line_output: list[str] = []
-    stream_chunks: list[str] = []
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     _install_test_cli_view(
         monkeypatch,
         ["use a tool", "/exit"],
@@ -1203,8 +1204,8 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     assert stream_chunks == ["assistant> ", "done", "\n"]
 
 
-def test_cli_session_view_formats_plan_and_exec_messages() -> None:
-    output: list[str] = []
+def test_cli_session_view_formats_plan_and_exec_messages() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.handle_event(
@@ -1266,14 +1267,14 @@ def test_cli_session_view_formats_plan_and_exec_messages() -> None:
     ]
 
 
-def test_colorize_cli_message_wraps_ansi_when_enabled() -> None:
+def test_colorize_cli_message_wraps_ansi_when_enabled() -> 'None':
     colored = colorize_cli_message("[agent] spawned Curie", "agent", True)
     assert colored.startswith("\x1b[1m\x1b[34m")
     assert colored.endswith("\x1b[0m")
 
 
-def test_cli_session_view_shows_web_search_tool_called_message() -> None:
-    output: list[str] = []
+def test_cli_session_view_shows_web_search_tool_called_message() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.handle_event(
@@ -1307,8 +1308,8 @@ def test_cli_session_view_shows_web_search_tool_called_message() -> None:
     ]
 
 
-def test_cli_session_view_turn_failed_clears_pending_prompt() -> None:
-    output: list[str] = []
+def test_cli_session_view_turn_failed_clears_pending_prompt() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
     view.handle_event(
         AgentEvent(
@@ -1331,8 +1332,8 @@ def test_cli_session_view_turn_failed_clears_pending_prompt() -> None:
     assert output == ["Session: hello"]
 
 
-def test_cli_session_view_keeps_spinner_paused_while_input_active() -> None:
-    output: list[str] = []
+def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.set_input_active(True)
@@ -1374,8 +1375,8 @@ def test_cli_session_view_keeps_spinner_paused_while_input_active() -> None:
     assert output == ["Session: hello", "[exec] pwd"]
 
 
-def test_cli_session_view_builds_second_line_input_spinner_prompt() -> None:
-    output: list[str] = []
+def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.handle_event(
@@ -1400,8 +1401,8 @@ def test_cli_session_view_builds_second_line_input_spinner_prompt() -> None:
     assert "waiting model" in rendered
 
 
-def test_cli_session_view_shows_prompt_managed_streaming_text() -> None:
-    output: list[str] = []
+def test_cli_session_view_shows_prompt_managed_streaming_text() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.set_input_active(True)
@@ -1423,8 +1424,8 @@ def test_cli_session_view_shows_prompt_managed_streaming_text() -> None:
     assert view.build_input_prompt("pycodex> ") == "assistant> hi\n"
 
 
-def test_cli_session_view_renders_streaming_text_inside_prompt_when_enabled() -> None:
-    output: list[str] = []
+def test_cli_session_view_renders_streaming_text_inside_prompt_when_enabled() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.set_input_active(True)
@@ -1439,8 +1440,8 @@ def test_cli_session_view_renders_streaming_text_inside_prompt_when_enabled() ->
     assert view.build_input_prompt("pycodex> ") == "assistant> hi\n"
 
 
-def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion() -> None:
-    output: list[str] = []
+def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.set_input_active(True)
@@ -1463,9 +1464,9 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion()
     assert output == ["assistant> hi"]
 
 
-def test_cli_session_view_handoffs_prompt_stream_to_regular_output() -> None:
-    output: list[str] = []
-    stream_chunks: list[str] = []
+def test_cli_session_view_handoffs_prompt_stream_to_regular_output() -> 'None':
+    output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     view = _build_cli_view(output, stream_chunks)
 
     view.set_input_active(True)
@@ -1484,8 +1485,8 @@ def test_cli_session_view_handoffs_prompt_stream_to_regular_output() -> None:
     assert view._streaming_in_prompt is False
 
 
-def test_cli_session_view_can_leave_spinner_paused_after_input_submit() -> None:
-    output: list[str] = []
+def test_cli_session_view_can_leave_spinner_paused_after_input_submit() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.handle_event(
@@ -1509,8 +1510,8 @@ def test_cli_session_view_can_leave_spinner_paused_after_input_submit() -> None:
     assert view._spinner._paused is True
 
 
-def test_cli_session_view_shows_steer_queue_and_insert_messages() -> None:
-    output: list[str] = []
+def test_cli_session_view_shows_steer_queue_and_insert_messages() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.show_steer_queued("turn_2", "follow up prompt")
@@ -1529,8 +1530,8 @@ def test_cli_session_view_shows_steer_queue_and_insert_messages() -> None:
     ]
 
 
-def test_cli_session_view_preserves_prompt_managed_stream_output_on_interrupt() -> None:
-    output: list[str] = []
+def test_cli_session_view_preserves_prompt_managed_stream_output_on_interrupt() -> 'None':
+    output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
     view.set_input_active(True)
@@ -1563,9 +1564,9 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_interrupt() 
     assert view._history == [("say hi", "hi")]
 
 
-def test_cli_session_view_keeps_history_for_reused_turn_id_across_submissions() -> None:
-    output: list[str] = []
-    stream_chunks: list[str] = []
+def test_cli_session_view_keeps_history_for_reused_turn_id_across_submissions() -> 'None':
+    output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     view = _build_cli_view(output, stream_chunks)
 
     view.handle_event(
@@ -1617,9 +1618,9 @@ def test_cli_session_view_keeps_history_for_reused_turn_id_across_submissions() 
     ]
 
 
-def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes() -> None:
-    output: list[str] = []
-    stream_chunks: list[str] = []
+def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes() -> 'None':
+    output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     view = _build_cli_view(output, stream_chunks)
 
     view.handle_event(
@@ -1674,7 +1675,7 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
 async def test_run_cli_non_interactive_uses_tui_context_for_default_cli(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     capture_root = tmp_path / "capture"
     capture_store = CaptureStore(capture_root)
     httpd = ThreadingHTTPServer(
@@ -1760,7 +1761,7 @@ async def test_run_cli_non_interactive_uses_tui_context_for_default_cli(
 async def test_run_interactive_session_preserves_tui_context_across_turns(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     capture_root = tmp_path / "capture_repl"
     capture_store = CaptureStore(capture_root)
     httpd = ThreadingHTTPServer(
@@ -1795,11 +1796,11 @@ async def test_run_interactive_session_preserves_tui_context_across_turns(
     )
     monkeypatch.setenv("NEO_KEY", "dummy-key")
 
-    outputs: list[str] = []
-    stream_chunks: list[str] = []
+    outputs: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     first_turn_completed = asyncio.Event()
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "Reply with TWO only.":
             await first_turn_completed.wait()
 
@@ -1883,18 +1884,18 @@ async def test_run_interactive_session_preserves_tui_context_across_turns(
 async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
     tmp_path,
     monkeypatch,
-) -> None:
-    captured_bodies: list[dict[str, object]] = []
+) -> 'None':
+    captured_bodies: 'typing.List[typing.Dict[str, object]]' = []
     request_count = {"value": 0}
 
     class _DropThenRecoverHandler(BaseHTTPRequestHandler):
         server_version = "DropThenRecover/0.1"
 
-        def log_message(self, format: str, *args) -> None:
+        def log_message(self, format: 'str', *args) -> 'None':
             del format, args
             return
 
-        def do_POST(self) -> None:
+        def do_POST(self) -> 'None':
             if self.path != "/v1/responses":
                 self.send_error(404)
                 return
@@ -1966,11 +1967,11 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
     )
     monkeypatch.setenv("NEO_KEY", "dummy-key")
 
-    outputs: list[str] = []
-    stream_chunks: list[str] = []
+    outputs: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
     saw_error = asyncio.Event()
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "go on":
             await saw_error.wait()
 
@@ -2033,18 +2034,18 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
 async def test_go_on_after_network_drop_does_not_replay_partial_reasoning_or_toolcall(
     tmp_path,
     monkeypatch,
-) -> None:
-    captured_bodies: list[dict[str, object]] = []
+) -> 'None':
+    captured_bodies: 'typing.List[typing.Dict[str, object]]' = []
     request_count = {"value": 0}
 
     class _DropAfterReasoningAndToolHandler(BaseHTTPRequestHandler):
         server_version = "DropAfterReasoningAndTool/0.1"
 
-        def log_message(self, format: str, *args) -> None:
+        def log_message(self, format: 'str', *args) -> 'None':
             del format, args
             return
 
-        def do_POST(self) -> None:
+        def do_POST(self) -> 'None':
             if self.path != "/v1/responses":
                 self.send_error(404)
                 return
@@ -2178,7 +2179,7 @@ async def test_go_on_after_network_drop_does_not_replay_partial_reasoning_or_too
 @pytest.mark.asyncio
 async def test_go_on_after_later_failure_keeps_committed_reasoning_and_tool_results(
     monkeypatch,
-) -> None:
+) -> 'None':
     class _EchoTool(BaseTool):
         name = "echo"
         description = "Echo text."
@@ -2197,7 +2198,7 @@ async def test_go_on_after_later_failure_keeps_committed_reasoning_and_tool_resu
     prompts = []
 
     class _FailOnSecondCallModelClient:
-        def __init__(self) -> None:
+        def __init__(self) -> 'None':
             self.call_count = 0
 
         async def complete(self, prompt, event_handler):
@@ -2235,7 +2236,7 @@ async def test_go_on_after_later_failure_keeps_committed_reasoning_and_tool_resu
     runtime = AgentRuntime(AgentLoop(_FailOnSecondCallModelClient(), tools))
     first_failure_reported = asyncio.Event()
 
-    async def prompt_hook(_view, _prompt: str, value: str) -> None:
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "go on":
             while len(prompts) < 2:
                 await asyncio.sleep(0)
@@ -2287,15 +2288,15 @@ async def test_go_on_after_later_failure_keeps_committed_reasoning_and_tool_resu
     assert tool_result.output == {"text": "hello"}
 
 
-def _prompt_tool_outputs(prompt) -> dict[str, object]:
-    outputs: dict[str, object] = {}
+def _prompt_tool_outputs(prompt) -> 'typing.Dict[str, object]':
+    outputs: 'typing.Dict[str, object]' = {}
     for item in prompt.input:
         if isinstance(item, ToolResult):
             outputs[item.call_id] = item.output
     return outputs
 
 
-def _last_user_message_text(prompt) -> str:
+def _last_user_message_text(prompt) -> 'str':
     for item in reversed(prompt.input):
         if isinstance(item, UserMessage):
             return item.text
@@ -2306,7 +2307,7 @@ def _last_user_message_text(prompt) -> str:
 async def test_build_runtime_subagents_match_upstream_subset_and_context(
     tmp_path,
     monkeypatch,
-) -> None:
+) -> 'None':
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(
@@ -2332,9 +2333,9 @@ async def test_build_runtime_subagents_match_upstream_subset_and_context(
     )
     monkeypatch.setenv("NEO_KEY", "dummy-key")
 
-    sub_clients: list[_ScriptedResponsesClient] = []
+    sub_clients: 'typing.List[_ScriptedResponsesClient]' = []
 
-    def build_subclient() -> _ScriptedResponsesClient:
+    def build_subclient() -> '_ScriptedResponsesClient':
         client = _ScriptedResponsesClient(
             response_factory=lambda prompt, _count: ModelResponse(
                 items=[
@@ -2351,7 +2352,7 @@ async def test_build_runtime_subagents_match_upstream_subset_and_context(
         sub_clients.append(client)
         return client
 
-    def main_response_factory(prompt, _count) -> ModelResponse:
+    def main_response_factory(prompt, _count) -> 'ModelResponse':
         outputs = _prompt_tool_outputs(prompt)
         spawn_output = outputs.get("call_spawn")
         agent_id = None
@@ -2507,8 +2508,8 @@ async def test_build_runtime_subagents_match_upstream_subset_and_context(
 
 
 @pytest.mark.asyncio
-async def test_prompt_request_user_input_collects_choice_labels() -> None:
-    outputs: list[str] = []
+async def test_prompt_request_user_input_collects_choice_labels() -> 'None':
+    outputs: 'typing.List[str]' = []
     inputs = iter(["1"])
     view = type(
         "DummyView",
@@ -2559,8 +2560,8 @@ async def test_prompt_request_user_input_collects_choice_labels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prompt_request_permissions_supports_session_scope() -> None:
-    outputs: list[str] = []
+async def test_prompt_request_permissions_supports_session_scope() -> 'None':
+    outputs: 'typing.List[str]' = []
     inputs = iter(["s"])
     view = type(
         "DummyView",
@@ -2602,10 +2603,10 @@ async def test_prompt_request_permissions_supports_session_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_run_cli_returns_non_zero_on_single_turn_error(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    tmp_path: Path,
-) -> None:
+    monkeypatch: 'pytest.MonkeyPatch',
+    capsys: 'pytest.CaptureFixture[str]',
+    tmp_path: 'Path',
+) -> 'None':
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         "\n".join(

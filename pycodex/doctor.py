@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 import json
@@ -14,31 +13,32 @@ import requests
 from .model import ResponsesModelClient, ResponsesProviderConfig
 from .protocol import AssistantMessage, Prompt, UserMessage
 from .utils.dotenv import DOTENV_FILENAME, load_codex_dotenv
+import typing
 
 
-@dataclass(slots=True)
+@dataclass
 class DoctorCheck:
-    name: str
-    ok: bool
-    detail: str
+    name: 'str'
+    ok: 'bool'
+    detail: 'str'
 
 
-@dataclass(slots=True)
+@dataclass
 class DoctorReport:
-    ok: bool
-    config_path: str
-    dotenv_path: str
-    profile: str | None
-    provider_name: str | None = None
-    model: str | None = None
-    base_url: str | None = None
-    responses_url: str | None = None
-    api_key_env: str | None = None
-    api_key_loaded: bool = False
-    checks: list[DoctorCheck] = field(default_factory=list)
-    live_output_text: str | None = None
+    ok: 'bool'
+    config_path: 'str'
+    dotenv_path: 'str'
+    profile: 'typing.Union[str, None]'
+    provider_name: 'typing.Union[str, None]' = None
+    model: 'typing.Union[str, None]' = None
+    base_url: 'typing.Union[str, None]' = None
+    responses_url: 'typing.Union[str, None]' = None
+    api_key_env: 'typing.Union[str, None]' = None
+    api_key_loaded: 'bool' = False
+    checks: 'typing.List[DoctorCheck]' = field(default_factory=list)
+    live_output_text: 'typing.Union[str, None]' = None
 
-    def to_dict(self) -> dict[str, object]:
+    def to_dict(self) -> 'typing.Dict[str, object]':
         return asdict(self)
 
 
@@ -79,11 +79,11 @@ def build_doctor_parser():
 
 
 async def collect_doctor_report(
-    config_path: str | Path,
-    profile: str | None = None,
-    timeout_seconds: float = 120.0,
-    skip_live: bool = False,
-) -> DoctorReport:
+    config_path: 'typing.Union[str, Path]',
+    profile: 'typing.Union[str, None]' = None,
+    timeout_seconds: 'float' = 120.0,
+    skip_live: 'bool' = False,
+) -> 'DoctorReport':
     config_file = Path(config_path).expanduser().resolve()
     dotenv_file = config_file.parent / DOTENV_FILENAME
     report = DoctorReport(
@@ -227,7 +227,7 @@ async def collect_doctor_report(
     return _finalize_report(report)
 
 
-async def run_doctor_cli(args) -> int:
+async def run_doctor_cli(args) -> 'int':
     report = await collect_doctor_report(
         args.config,
         args.profile,
@@ -243,7 +243,7 @@ async def run_doctor_cli(args) -> int:
     return 0 if report.ok else 1
 
 
-def format_doctor_report(report: DoctorReport) -> str:
+def format_doctor_report(report: 'DoctorReport') -> 'str':
     lines = [
         f"config: {report.config_path}",
         f"dotenv: {report.dotenv_path}",
@@ -267,7 +267,7 @@ def format_doctor_report(report: DoctorReport) -> str:
     return "\n".join(lines)
 
 
-def _loaded_api_key(provider_config: ResponsesProviderConfig) -> str:
+def _loaded_api_key(provider_config: 'ResponsesProviderConfig') -> 'str':
     try:
         return provider_config.api_key()
     except Exception:
@@ -275,11 +275,11 @@ def _loaded_api_key(provider_config: ResponsesProviderConfig) -> str:
 
 
 def _probe_transport(
-    scheme: str,
-    host: str,
-    port: int,
-    timeout_seconds: float,
-) -> tuple[bool, str]:
+    scheme: 'str',
+    host: 'str',
+    port: 'int',
+    timeout_seconds: 'float',
+) -> 'typing.Tuple[bool, str]':
     started = time.perf_counter()
     try:
         with socket.create_connection((host, port), timeout=timeout_seconds) as sock:
@@ -298,7 +298,7 @@ def _probe_transport(
     return True, f"{label} {host}:{port} connected in {elapsed:.2f}s"
 
 
-def _proxy_detail(proxies: dict[str, str]) -> str:
+def _proxy_detail(proxies: 'typing.Dict[str, str]') -> 'str':
     if not proxies:
         return "not configured"
     return ", ".join(
@@ -306,7 +306,7 @@ def _proxy_detail(proxies: dict[str, str]) -> str:
     )
 
 
-def _redact_proxy_url(value: str) -> str:
+def _redact_proxy_url(value: 'str') -> 'str':
     parsed = urllib.parse.urlsplit(value)
     if not parsed.scheme or not parsed.netloc:
         return value
@@ -319,10 +319,10 @@ def _redact_proxy_url(value: str) -> str:
 
 
 async def _run_live_check(
-    config_path: Path,
-    profile: str | None,
-    timeout_seconds: float,
-) -> tuple[bool, str, str | None]:
+    config_path: 'Path',
+    profile: 'typing.Union[str, None]',
+    timeout_seconds: 'float',
+) -> 'typing.Tuple[bool, str, typing.Union[str, None]]':
     client = ResponsesModelClient.from_codex_config(
         config_path,
         profile,
@@ -355,6 +355,6 @@ async def _run_live_check(
     return True, f"completed in {elapsed:.2f}s", output_text
 
 
-def _finalize_report(report: DoctorReport) -> DoctorReport:
+def _finalize_report(report: 'DoctorReport') -> 'DoctorReport':
     report.ok = all(check.ok for check in report.checks)
     return report

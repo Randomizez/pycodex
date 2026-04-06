@@ -1,4 +1,3 @@
-from __future__ import annotations
 
 import asyncio
 import json
@@ -12,6 +11,7 @@ from prompt_toolkit.patch_stdout import StdoutProxy
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from ..protocol import AgentEvent, JSONDict, ToolCall, ToolResult
+import typing
 
 ANSI_RESET = "\x1b[0m"
 ANSI_BOLD = "\x1b[1m"
@@ -25,14 +25,14 @@ ANSI_RED = "\x1b[31m"
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 
-def shorten_title(text: str, limit: int = 48) -> str:
+def shorten_title(text: 'str', limit: 'int' = 48) -> 'str':
     compact = " ".join(text.split())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
 
 
-def cli_color_enabled() -> bool:
+def cli_color_enabled() -> 'bool':
     return os.environ.get("PYCODEX_NO_COLOR", "").strip().lower() not in {
         "1",
         "true",
@@ -41,7 +41,7 @@ def cli_color_enabled() -> bool:
     }
 
 
-def colorize_cli_message(text: str, kind: str, enabled: bool) -> str:
+def colorize_cli_message(text: 'str', kind: 'str', enabled: 'bool') -> 'str':
     if not enabled:
         return text
     palette = {
@@ -61,9 +61,9 @@ def colorize_cli_message(text: str, kind: str, enabled: bool) -> str:
 
 
 def format_cli_plan_messages(
-    summary: str,
-    plan_items: list[JSONDict],
-) -> list[str]:
+    summary: 'str',
+    plan_items: 'typing.List[JSONDict]',
+) -> 'typing.List[str]':
     lines = [f"[plan] {summary}" if summary else "[plan] Plan updated"]
     for item in plan_items:
         step = str(item.get("step", "")).strip()
@@ -79,7 +79,7 @@ def format_cli_plan_messages(
     return lines
 
 
-def build_cli_spinner_frame(index: int, label: str) -> str:
+def build_cli_spinner_frame(index: 'int', label: 'str') -> 'str':
     suffix = f" {label}" if label else ""
     return f"⏳{suffix} {SPINNER_FRAMES[index % len(SPINNER_FRAMES)]}"
 
@@ -89,10 +89,10 @@ class Spinner:
         self,
         raw_write,
         raw_flush,
-        terminal_lock: threading.RLock,
-        color_enabled: bool,
-        enabled: bool,
-    ) -> None:
+        terminal_lock: 'threading.RLock',
+        color_enabled: 'bool',
+        enabled: 'bool',
+    ) -> 'None':
         self._raw_write = raw_write
         self._raw_flush = raw_flush
         self._terminal_lock = terminal_lock
@@ -104,7 +104,7 @@ class Spinner:
         self._index = 0
         self._label = "thinking"
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._thread: 'typing.Union[threading.Thread, None]' = None
         if self._enabled:
             self._thread = threading.Thread(
                 target=self._run,
@@ -113,32 +113,32 @@ class Spinner:
             )
             self._thread.start()
 
-    def start_turn(self, label: str = "thinking") -> None:
+    def start_turn(self, label: 'str' = "thinking") -> 'None':
         with self._terminal_lock:
             self._turn_active = True
             self._paused = False
             self._label = label
 
-    def set_label(self, label: str) -> None:
+    def set_label(self, label: 'str') -> 'None':
         with self._terminal_lock:
             self._label = label
 
-    def finish_turn(self) -> None:
+    def finish_turn(self) -> 'None':
         with self._terminal_lock:
             self._turn_active = False
             self._paused = False
             self.clear()
 
-    def pause(self) -> None:
+    def pause(self) -> 'None':
         with self._terminal_lock:
             self._paused = True
             self.clear()
 
-    def resume(self) -> None:
+    def resume(self) -> 'None':
         with self._terminal_lock:
             self._paused = False
 
-    def clear(self) -> None:
+    def clear(self) -> 'None':
         if not self._enabled or not self._visible:
             return
         with self._terminal_lock:
@@ -146,13 +146,13 @@ class Spinner:
             self._raw_flush()
             self._visible = False
 
-    def close(self) -> None:
+    def close(self) -> 'None':
         self.finish_turn()
         if self._thread is not None:
             self._stop.set()
             self._thread.join(timeout=0.5)
 
-    def prompt_line(self) -> str | None:
+    def prompt_line(self) -> 'typing.Union[str, None]':
         if not self._turn_active:
             return None
         with self._terminal_lock:
@@ -160,7 +160,7 @@ class Spinner:
         frame_index = int(time.monotonic() / 0.12)
         return build_cli_spinner_frame(frame_index, label)
 
-    def _run(self) -> None:
+    def _run(self) -> 'None':
         while not self._stop.wait(0.12):
             if not self._turn_active or self._paused:
                 continue
@@ -178,7 +178,7 @@ class Spinner:
                 self._visible = True
 
 
-def format_cli_tool_call_message(tool_name: str, payload: JSONDict) -> str | None:
+def format_cli_tool_call_message(tool_name: 'str', payload: 'JSONDict') -> 'typing.Union[str, None]':
     if tool_name != "web_search":
         return None
 
@@ -207,7 +207,7 @@ def format_cli_tool_call_message(tool_name: str, payload: JSONDict) -> str | Non
     return "[web] browsing"
 
 
-def short_id(value: str, limit: int = 8) -> str:
+def short_id(value: 'str', limit: 'int' = 8) -> 'str':
     compact = value.strip()
     if len(compact) <= limit + 4:
         return compact
@@ -215,10 +215,10 @@ def short_id(value: str, limit: int = 8) -> str:
 
 
 def format_cli_tool_message(
-    tool_name: str,
-    summary: str,
-    is_error: bool,
-) -> str:
+    tool_name: 'str',
+    summary: 'str',
+    is_error: 'bool',
+) -> 'str':
     if tool_name == "update_plan":
         if is_error:
             return f"[error] plan failed: {summary}" if summary else "[error] plan failed"
@@ -290,13 +290,13 @@ def format_cli_tool_message(
     return f"[tool] {tool_name}: {summary}" if summary else f"[tool] {tool_name}"
 
 
-def extract_plan_items(arguments: object) -> list[JSONDict]:
+def extract_plan_items(arguments: 'object') -> 'typing.List[JSONDict]':
     if not isinstance(arguments, dict):
         return []
     raw_plan = arguments.get("plan")
     if not isinstance(raw_plan, list):
         return []
-    plan_items: list[JSONDict] = []
+    plan_items: 'typing.List[JSONDict]' = []
     for item in raw_plan:
         if not isinstance(item, dict):
             continue
@@ -309,7 +309,7 @@ def extract_plan_items(arguments: object) -> list[JSONDict]:
     return plan_items
 
 
-def summarize_tool_event(call: ToolCall, result: ToolResult) -> str | None:
+def summarize_tool_event(call: 'ToolCall', result: 'ToolResult') -> 'typing.Union[str, None]':
     command_preview = _command_preview(call)
     result_summary = _summarize_tool_result(result)
     if call.name == "update_plan":
@@ -322,8 +322,8 @@ def summarize_tool_event(call: ToolCall, result: ToolResult) -> str | None:
 
 
 def extract_tool_event_display(
-    payload: dict[str, object],
-) -> tuple[str, str, bool]:
+    payload: 'typing.Dict[str, object]',
+) -> 'typing.Tuple[str, str, bool]':
     tool_name = str(payload.get("tool_name", "")).strip()
     is_error = bool(payload.get("is_error"))
     call = payload.get("call")
@@ -334,7 +334,7 @@ def extract_tool_event_display(
     return tool_name, summary, is_error
 
 
-def extract_plan_event_items(payload: dict[str, object]) -> list[JSONDict]:
+def extract_plan_event_items(payload: 'typing.Dict[str, object]') -> 'typing.List[JSONDict]':
     call = payload.get("call")
     if isinstance(call, ToolCall):
         return extract_plan_items(call.arguments)
@@ -344,14 +344,14 @@ def extract_plan_event_items(payload: dict[str, object]) -> list[JSONDict]:
     return []
 
 
-def _truncate_text(text: str, limit: int = 96) -> str:
+def _truncate_text(text: 'str', limit: 'int' = 96) -> 'str':
     compact = " ".join(text.split())
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
 
 
-def _extract_output_preview(text: str) -> str | None:
+def _extract_output_preview(text: 'str') -> 'typing.Union[str, None]':
     lines = [line.strip() for line in text.splitlines()]
     if "Output:" in lines:
         output_index = lines.index("Output:")
@@ -368,7 +368,7 @@ def _extract_output_preview(text: str) -> str | None:
     return None
 
 
-def _summarize_agent_status(status: object) -> str:
+def _summarize_agent_status(status: 'object') -> 'str':
     if isinstance(status, str):
         return status
     if isinstance(status, dict):
@@ -382,7 +382,7 @@ def _summarize_agent_status(status: object) -> str:
     return _truncate_text(json.dumps(status, ensure_ascii=False, separators=(",", ":")))
 
 
-def _summarize_tool_result(result: ToolResult) -> str | None:
+def _summarize_tool_result(result: 'ToolResult') -> 'typing.Union[str, None]':
     if result.name == "spawn_agent" and isinstance(result.output, dict):
         agent_id = str(result.output.get("agent_id", "")).strip()
         nickname = str(result.output.get("nickname", "")).strip()
@@ -399,7 +399,7 @@ def _summarize_tool_result(result: ToolResult) -> str | None:
             return "timed out"
         status = result.output.get("status")
         if isinstance(status, dict):
-            parts: list[str] = []
+            parts: 'typing.List[str]' = []
             for agent_id, agent_status in status.items():
                 if not isinstance(agent_id, str):
                     continue
@@ -425,7 +425,7 @@ def _summarize_tool_result(result: ToolResult) -> str | None:
     return None
 
 
-def _string_arg(arguments: object, key: str) -> str | None:
+def _string_arg(arguments: 'object', key: 'str') -> 'typing.Union[str, None]':
     if not isinstance(arguments, dict):
         return None
     value = arguments.get(key)
@@ -434,7 +434,7 @@ def _string_arg(arguments: object, key: str) -> str | None:
     return str(value)
 
 
-def _int_arg(arguments: object, key: str) -> int | None:
+def _int_arg(arguments: 'object', key: 'str') -> 'typing.Union[int, None]':
     if not isinstance(arguments, dict):
         return None
     value = arguments.get(key)
@@ -443,7 +443,7 @@ def _int_arg(arguments: object, key: str) -> int | None:
     return int(value)
 
 
-def _command_preview(call: ToolCall) -> str | None:
+def _command_preview(call: 'ToolCall') -> 'typing.Union[str, None]':
     if call.name == "exec_command":
         cmd = _string_arg(call.arguments, "cmd")
         if cmd:
@@ -503,7 +503,7 @@ def _command_preview(call: ToolCall) -> str | None:
     return None
 
 
-def _plan_progress_summary(plan: list[object]) -> str:
+def _plan_progress_summary(plan: 'typing.List[object]') -> 'str':
     total = len(plan)
     completed = 0
     in_progress = 0
@@ -562,27 +562,27 @@ class CliSessionView:
       normal terminal stream so the reply is not lost.
     """
 
-    def __init__(self) -> None:
+    def __init__(self) -> 'None':
         import sys
 
         self._line_output = print
         self._raw_write = sys.stdout.write
         self._raw_flush = sys.stdout.flush
         self._terminal_lock = threading.RLock()
-        self._title: str | None = None
-        self._pending_user_prompts: dict[str, str] = {}
-        self._queued_steer_prompts: dict[str, list[str]] = {}
-        self._inserted_steer_prompts: dict[str, list[str]] = {}
-        self._history: list[tuple[str, str]] = []
+        self._title: 'typing.Union[str, None]' = None
+        self._pending_user_prompts: 'typing.Dict[str, str]' = {}
+        self._queued_steer_prompts: 'typing.Dict[str, typing.List[str]]' = {}
+        self._inserted_steer_prompts: 'typing.Dict[str, typing.List[str]]' = {}
+        self._history: 'typing.List[typing.Tuple[str, str]]' = []
         self._streaming = False
         self._prompt_stream_buffer = ""
         self._streaming_in_prompt = False
         self._input_active = False
         self._color_enabled = cli_color_enabled() and sys.stdout.isatty()
-        self._agent_names: dict[str, str] = {}
-        self._prompt_session: PromptSession | None = None
-        self._prompt_task: asyncio.Task[str] | None = None
-        self._stdout_proxy: StdoutProxy | None = None
+        self._agent_names: 'typing.Dict[str, str]' = {}
+        self._prompt_session: 'typing.Union[PromptSession, None]' = None
+        self._prompt_task: 'typing.Union[asyncio.Task[str], None]' = None
+        self._stdout_proxy: 'typing.Union[StdoutProxy, None]' = None
         self._spinner = Spinner(
             self._raw_write,
             self._raw_flush,
@@ -591,7 +591,7 @@ class CliSessionView:
             False,
         )
 
-    def handle_event(self, event: AgentEvent) -> None:
+    def handle_event(self, event: 'AgentEvent') -> 'None':
         if event.kind == "turn_started":
             submission_id = str(event.payload.get("submission_id", event.turn_id)).strip()
             user_texts = event.payload.get("user_texts")
@@ -738,7 +738,7 @@ class CliSessionView:
                 self._history.append((pending_prompt, final_text))
             return
 
-    def show_history(self) -> None:
+    def show_history(self) -> 'None':
         self._finish_stream()
         if not self._history:
             self._print_line("No history yet.")
@@ -749,27 +749,27 @@ class CliSessionView:
             self._print_line(f"[{index}] user> {user_text}")
             self._print_line(f"    assistant> {assistant_text}")
 
-    def show_title(self) -> None:
+    def show_title(self) -> 'None':
         self._finish_stream()
         self._print_line(f"Session: {self._title or 'untitled'}")
 
-    def pause_spinner(self) -> None:
+    def pause_spinner(self) -> 'None':
         self._spinner.pause()
 
-    def resume_spinner(self) -> None:
+    def resume_spinner(self) -> 'None':
         self._spinner.resume()
 
-    def set_input_active(self, active: bool, resume_spinner: bool = True) -> None:
+    def set_input_active(self, active: 'bool', resume_spinner: 'bool' = True) -> 'None':
         self._input_active = active
         if active:
             self._spinner.pause()
         elif resume_spinner:
             self._spinner.resume()
 
-    def is_streaming_output(self) -> bool:
+    def is_streaming_output(self) -> 'bool':
         return self._streaming
 
-    def handoff_prompt_stream_to_output(self) -> None:
+    def handoff_prompt_stream_to_output(self) -> 'None':
         if not self._streaming or not self._streaming_in_prompt:
             return
         buffered = self._prompt_stream_buffer
@@ -782,7 +782,7 @@ class CliSessionView:
             self._raw_write(buffered)
             self._raw_flush()
 
-    async def poll_prompt(self, prompt: str) -> str | None:
+    async def poll_prompt(self, prompt: 'str') -> 'typing.Union[str, None]':
         if self._prompt_task is None:
             if self.is_streaming_output():
                 return None
@@ -807,7 +807,7 @@ class CliSessionView:
         finally:
             self.set_input_active(False, resume_spinner=False)
 
-    def build_input_prompt(self, prompt: str) -> str:
+    def build_input_prompt(self, prompt: 'str') -> 'str':
         if not self._input_active:
             return prompt
         if self._streaming and self._streaming_in_prompt:
@@ -819,7 +819,7 @@ class CliSessionView:
             return prompt
         return f"{prompt_line}\n{prompt}"
 
-    def show_steer_queued(self, turn_id: str, prompt: str) -> None:
+    def show_steer_queued(self, turn_id: 'str', prompt: 'str') -> 'None':
         preview = shorten_title(prompt, limit=72)
         self._queued_steer_prompts.setdefault(turn_id, []).append(preview)
         self._print_line(
@@ -830,12 +830,12 @@ class CliSessionView:
             )
         )
 
-    def schedule_steer_inserted(self, turn_id: str, prompt: str) -> None:
+    def schedule_steer_inserted(self, turn_id: 'str', prompt: 'str') -> 'None':
         self._inserted_steer_prompts.setdefault(turn_id, []).append(
             shorten_title(prompt, limit=72)
         )
 
-    def close(self) -> None:
+    def close(self) -> 'None':
         if self._prompt_task is not None and not self._prompt_task.done():
             self._prompt_task.cancel()
             self._prompt_task = None
@@ -843,13 +843,13 @@ class CliSessionView:
         if self._stdout_proxy is not None:
             self._stdout_proxy.close()
 
-    def finish_stream(self) -> None:
+    def finish_stream(self) -> 'None':
         self._finish_stream()
 
-    def write_line(self, text: str) -> None:
+    def write_line(self, text: 'str') -> 'None':
         self._print_line(text)
 
-    def show_error(self, text: str) -> None:
+    def show_error(self, text: 'str') -> 'None':
         self._spinner.finish_turn()
         self._finish_stream()
         self._print_line(
@@ -860,7 +860,7 @@ class CliSessionView:
             )
         )
 
-    def _finish_stream(self) -> None:
+    def _finish_stream(self) -> 'None':
         with self._terminal_lock:
             self._spinner.clear()
             if self._streaming:
@@ -872,9 +872,9 @@ class CliSessionView:
 
     def _finalize_turn_output(
         self,
-        final_text: str,
-        allow_standalone_output: bool,
-    ) -> None:
+        final_text: 'str',
+        allow_standalone_output: 'bool',
+    ) -> 'None':
         self._spinner.finish_turn()
         if self._streaming and self._streaming_in_prompt:
             streamed_text = self._prompt_stream_buffer
@@ -903,7 +903,7 @@ class CliSessionView:
                 )
             )
 
-    def _colorize_formatted_tool_message(self, message: str) -> str:
+    def _colorize_formatted_tool_message(self, message: 'str') -> 'str':
         if message.startswith("[plan]"):
             return colorize_cli_message(message, "plan", self._color_enabled)
         if message.startswith("[exec]"):
@@ -916,12 +916,12 @@ class CliSessionView:
             return colorize_cli_message(message, "error", self._color_enabled)
         return colorize_cli_message(message, "tool", self._color_enabled)
 
-    def _print_line(self, text: str) -> None:
+    def _print_line(self, text: 'str') -> 'None':
         with self._terminal_lock:
             self._spinner.clear()
             self._line_output(text)
 
-    def _remember_agent_name(self, tool_name: str, summary: str) -> None:
+    def _remember_agent_name(self, tool_name: 'str', summary: 'str') -> 'None':
         if tool_name != "spawn_agent":
             return
         if " (" not in summary or not summary.endswith(")"):
@@ -933,7 +933,7 @@ class CliSessionView:
             return
         self._agent_names[agent_short_id] = nickname
 
-    def _rewrite_agent_summary(self, tool_name: str, summary: str) -> str:
+    def _rewrite_agent_summary(self, tool_name: 'str', summary: 'str') -> 'str':
         if tool_name not in {"wait_agent", "send_input", "resume_agent", "close_agent"}:
             return summary
         rewritten = summary
@@ -945,7 +945,7 @@ class CliSessionView:
             rewritten = rewritten.replace(agent_short_id, nickname)
         return rewritten
 
-    async def prompt_async(self, prompt: str) -> str:
+    async def prompt_async(self, prompt: 'str') -> 'str':
         if self._prompt_session is None:
             self._prompt_session = PromptSession(
                 erase_when_done=True,
@@ -966,7 +966,7 @@ class CliSessionView:
         finally:
             self.set_input_active(False, resume_spinner=False)
 
-    async def _handoff_prompt_task_to_output(self) -> None:
+    async def _handoff_prompt_task_to_output(self) -> 'None':
         if self._prompt_task is None:
             return
         prompt_task = self._prompt_task
