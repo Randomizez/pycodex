@@ -1,7 +1,10 @@
 
 import json
+import socket
+import threading
 
 from fastapi.testclient import TestClient
+import requests
 from responses_server import CompatServerConfig, ManagedResponseServer
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
@@ -539,6 +542,7 @@ def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["messages"] == [
+        {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "hi"},
         {
             "role": "assistant",
@@ -636,6 +640,7 @@ def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> 'None':
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["messages"] == [
+        {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "hi"},
     ]
 
@@ -1385,3 +1390,85 @@ def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None
         "results": [],
         "mock": True,
     }
+
+
+def test_responses_server_turns_truncated_downstream_stream_into_response_failed() -> 'None':
+    def serve_truncated_stream(listener: 'socket.socket') -> 'None':
+        conn, _addr = listener.accept()
+        try:
+            request_bytes = b""
+            while b"\r\n\r\n" not in request_bytes:
+                chunk = conn.recv(65536)
+                if not chunk:
+                    break
+                request_bytes += chunk
+
+            body = (
+                b'data: {"id":"chatcmpl_mock","object":"chat.completion.chunk",'
+                b'"model":"gpt-5.4","choices":[{"index":0,"delta":{"content":"hi"},'
+                b'"finish_reason":null}]}\n\n'
+            )
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Type: text/event-stream\r\n"
+                b"Transfer-Encoding: chunked\r\n"
+                b"Connection: close\r\n\r\n"
+            )
+            conn.sendall(f"{len(body):X}\r\n".encode("ascii"))
+            conn.sendall(body)
+            conn.sendall(b"\r\n")
+        finally:
+            conn.close()
+            listener.close()
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    downstream_port = int(listener.getsockname()[1])
+    downstream_thread = threading.Thread(
+        target=serve_truncated_stream,
+        args=(listener,),
+        daemon=True,
+    )
+    downstream_thread.start()
+
+    server = ManagedResponseServer(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{downstream_port}/v1",
+        )
+    )
+    server.start()
+    try:
+        response = requests.post(
+            f"{server.base_url}/responses",
+            json={
+                "model": "gpt-5.4",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "hi"}],
+                    }
+                ],
+                "stream": True,
+            },
+            headers={"Accept": "text/event-stream"},
+            stream=True,
+            timeout=10,
+        )
+        with response:
+            status = response.status_code
+            body = response.text
+    finally:
+        server.stop()
+        downstream_thread.join(timeout=5)
+
+    assert status == 200
+    assert "event: response.created" in body
+    assert '"type": "response.output_text.delta", "delta": "hi"' in body
+    assert "event: response.failed" in body
+    assert (
+        "outcomming chat stream failed while reading response body" in body
+        or "outcomming chat stream ended before [DONE]" in body
+    )
+    assert "event: response.completed" not in body

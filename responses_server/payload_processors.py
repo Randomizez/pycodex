@@ -52,9 +52,18 @@ def _drop_developer_messages(outcomming_request: 'OutgoingRequest') -> 'Outgoing
     ]
     return outcomming_request
 
+def _replace_developer_messages(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
+    """Replace all developer-role messages to system-role messages"""
+
+    for message in outcomming_request['messages']:
+        if message.get("role") == "developer":
+            message['role'] = "system"
+
+    return outcomming_request
+
 
 PAYLOAD_POST_PROCESSORS: 'typing.Dict[str, PayloadPostProcessor]' = {
-    "stepfun": _drop_developer_messages,
+    "stepfun": _replace_developer_messages,
     "vllm": _identity,
 }
 """Mapping from normalized `model_provider` name to payload rewrite hook."""

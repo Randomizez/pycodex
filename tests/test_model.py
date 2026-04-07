@@ -6,6 +6,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
 import pytest
+import requests
 
 import pycodex.utils.get_env as get_env
 from pycodex.compat import ThreadingHTTPServer
@@ -186,6 +187,37 @@ def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path
     assert provider.reasoning_effort == 'high'
     assert provider.verbosity == 'medium'
     assert provider.beta_features_header == 'guardian_approval'
+
+
+def test_provider_config_allows_provider_without_env_key(tmp_path) -> 'None':
+    config_path = tmp_path / 'config.toml'
+    config_path.write_text(
+        '\n'.join(
+            [
+                'model = "demo-model"',
+                'model_provider = "local"',
+                '',
+                '[profiles.step]',
+                'model = "step-3.5-flash-2603"',
+                'model_provider = "stepfun-chat-zhy"',
+                '',
+                '[model_providers.local]',
+                'base_url = "http://localhost:8000/v1"',
+                'wire_api = "responses"',
+                '',
+                '[model_providers.stepfun-chat-zhy]',
+                'base_url = "http://100.96.255.200:8001/v1"',
+                'wire_api = "responses"',
+            ]
+        )
+    )
+
+    provider = ResponsesProviderConfig.from_codex_config(config_path, 'step')
+
+    assert provider.provider_name == 'stepfun-chat-zhy'
+    assert provider.base_url == 'http://100.96.255.200:8001/v1'
+    assert provider.api_key_env is None
+    assert provider.api_key() is None
 
 
 def test_responses_model_client_builds_responses_payload() -> 'None':
@@ -471,6 +503,28 @@ def test_responses_model_client_builds_codex_headers_and_stable_session_id(monke
     assert subagent_payload['prompt_cache_key'] == 'agent_123'
 
 
+def test_responses_model_client_omits_authorization_when_provider_has_no_env_key() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+    )
+    client = ResponsesModelClient(provider)
+    prompt = Prompt(
+        input=[UserMessage(text='hi')],
+        tools=[],
+        turn_id='turn_123',
+        turn_metadata={'turn_id': 'turn_123', 'sandbox': 'none'},
+    )
+
+    headers = client._build_headers(prompt)
+    model_headers = client._build_model_list_headers()
+
+    assert 'authorization' not in headers
+    assert 'authorization' not in model_headers
+
+
 def test_responses_model_client_wire_headers_and_body_match_builders(
     tmp_path,
     monkeypatch,
@@ -674,6 +728,95 @@ def test_responses_model_client_parses_sse_stream() -> 'None':
     assert response.items[0].arguments == {'text': 'hello'}
     assert isinstance(response.items[1], AssistantMessage)
     assert response.items[1].text == 'done'
+
+
+def test_responses_model_client_formats_transport_stream_errors(monkeypatch) -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='http://127.0.0.1:8000/v1',
+        api_key_env=None,
+    )
+    client = ResponsesModelClient(
+        provider,
+        session_id='00000000-0000-7000-8000-000000000000',
+    )
+
+    class _BrokenResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.created'
+            yield b'data: {"type":"response.created"}'
+            yield b''
+            yield b'event: response.output_text.delta'
+            yield b'data: {"type":"response.output_text.delta","delta":"partial"}'
+            yield b''
+            raise requests.exceptions.ChunkedEncodingError('Response ended prematurely')
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        return _BrokenResponse()
+
+    monkeypatch.setattr(requests.Session, 'send', fake_send)
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client._complete_sync(
+            Prompt(input=[UserMessage(text='hi')], tools=[]),
+            NOOP_MODEL_STREAM_EVENT_HANDLER,
+        )
+
+    message = str(exc_info.value)
+    assert message.startswith('responses request failed while reading the HTTP stream')
+    assert '- provider: demo' in message
+    assert '- model: demo-model' in message
+    assert '- request: POST http://127.0.0.1:8000/v1/responses' in message
+    assert '- session_id: 00000000-0000-7000-8000-000000000000' in message
+    assert '- raw_lines_received: 6' in message
+    assert '- sse_events_received: 2' in message
+    assert '- output_items_received: 0' in message
+    assert '- last_sse_event: response.output_text.delta' in message
+    assert '- last_event_type: response.output_text.delta' in message
+    assert '- last_payload_excerpt: {"type":"response.output_text.delta","delta":"partial"}' in message
+    assert '- exception: ChunkedEncodingError' in message
+    assert '- detail: Response ended prematurely' in message
+    assert 'local `responses_server`' in message
+
+
+def test_responses_model_client_formats_incomplete_stream_errors() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env='DUMMY_KEY',
+    )
+    client = ResponsesModelClient(provider)
+    stream = [
+        b'event: response.output_text.delta\n',
+        b'data: {"type":"response.output_text.delta","delta":"partial"}\n',
+        b'\n',
+    ]
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client._parse_stream(stream, NOOP_MODEL_STREAM_EVENT_HANDLER)
+
+    message = str(exc_info.value)
+    assert message.startswith('responses stream ended before `response.completed`')
+    assert '- provider: demo' in message
+    assert '- model: demo-model' in message
+    assert '- request: POST https://example.com/v1/responses' in message
+    assert '- last_event: response.output_text.delta' in message
+    assert '- output_items_received: 0' in message
+    assert 'the stream ended without a terminal `response.completed` event' in message
 
 
 def test_responses_model_client_parses_reasoning_output_item() -> 'None':

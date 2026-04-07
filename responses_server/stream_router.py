@@ -1,5 +1,6 @@
 
 import json
+import http.client
 import ssl
 import urllib.error
 import urllib.request
@@ -161,12 +162,30 @@ class StreamRouter:
                 context=ssl.create_default_context(),
                 timeout=self._config.timeout_seconds,
             ) as response:
-                for _event_name, data in self._iter_sse_events(response):
-                    if not data:
-                        continue
-                    if data == "[DONE]":
-                        break
-                    yield json.loads(data)
+                try:
+                    saw_done = False
+                    for _event_name, data in self._iter_sse_events(response):
+                        if not data:
+                            continue
+                        if data == "[DONE]":
+                            saw_done = True
+                            break
+                        yield json.loads(data)
+                    if not saw_done:
+                        raise OutcommingChatError(
+                            "outcomming chat stream ended before [DONE]"
+                        )
+                except (
+                    ConnectionError,
+                    EOFError,
+                    OSError,
+                    http.client.HTTPException,
+                    json.JSONDecodeError,
+                ) as exc:
+                    raise OutcommingChatError(
+                        "outcomming chat stream failed while reading response body: "
+                        f"{exc}"
+                    ) from exc
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(

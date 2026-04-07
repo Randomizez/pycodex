@@ -25,6 +25,7 @@
 - vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
 - vLLM streaming `usage` -> final `response.completed.response.usage`
+- 下游 chat stream 如果半路断开，会转成上游可解析的 `response.failed` 事件，而不是直接截断 HTTP body
 - 普通 function tools
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）

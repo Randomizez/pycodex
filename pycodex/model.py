@@ -46,7 +46,7 @@ class ResponsesProviderConfig:
     model: 'str'
     provider_name: 'str'
     base_url: 'str'
-    api_key_env: 'str'
+    api_key_env: 'typing.Union[str, None]'
     wire_api: 'str' = "responses"
     query_params: 'typing.Dict[str, str]' = field(default_factory=dict)
     reasoning_effort: 'typing.Union[str, None]' = None
@@ -76,10 +76,6 @@ class ResponsesProviderConfig:
             raise ValueError(f"unsupported wire_api for Python client: {wire_api}")
 
         api_key_env = provider.get("env_key")
-        if not api_key_env:
-            raise ValueError(
-                f"provider {provider_name} does not define env_key in Codex config"
-            )
 
         query_params = {
             str(key): str(value)
@@ -103,7 +99,9 @@ class ResponsesProviderConfig:
             beta_features_header=",".join(beta_features) or None,
         )
 
-    def api_key(self) -> 'str':
+    def api_key(self) -> 'typing.Union[str, None]':
+        if not self.api_key_env:
+            return None
         value = os.environ.get(self.api_key_env, "")
         if not value:
             raise RuntimeError(
@@ -129,6 +127,16 @@ class ResponsesProviderConfig:
 
 class ResponsesApiError(RuntimeError):
     pass
+
+
+@dataclass
+class _StreamDiagnostics:
+    raw_lines_received: 'int' = 0
+    sse_events_received: 'int' = 0
+    output_items_received: 'int' = 0
+    last_sse_event_name: 'str' = ""
+    last_event_type: 'str' = ""
+    last_payload_excerpt: 'str' = ""
 
 
 class ResponsesModelClient:
@@ -230,6 +238,7 @@ class ResponsesModelClient:
             headers=self._build_headers(prompt),
             data=body,
         )
+        diagnostics = _StreamDiagnostics()
         try:
             with requests.Session() as session:
                 settings = session.merge_environment_settings(
@@ -255,12 +264,19 @@ class ResponsesModelClient:
                             f"responses request failed with status {response.status_code}: "
                             f"{error_body[:500]}"
                         )
-                    return self._parse_stream(
+                    tracked_lines = self._track_stream_lines(
                         response.iter_lines(chunk_size=1, decode_unicode=False),
+                        diagnostics,
+                    )
+                    return self._parse_stream(
+                        tracked_lines,
                         event_handler,
+                        diagnostics=diagnostics,
                     )
         except requests.RequestException as exc:
-            raise ResponsesApiError(f"responses request failed: {exc}") from exc
+            raise ResponsesApiError(
+                self._format_transport_error(url, exc, diagnostics)
+            ) from exc
 
     def _build_payload(self, prompt: 'Prompt') -> 'typing.Dict[str, object]':
         payload: 'typing.Dict[str, object]' = {
@@ -343,12 +359,14 @@ class ResponsesModelClient:
         headers = {
             "content-type": "application/json",
             "accept": "text/event-stream",
-            "authorization": f"Bearer {self._config.api_key()}",
             "x-client-request-id": self._session_id,
             "session_id": self._session_id,
             "originator": self._originator,
             "user-agent": self._user_agent,
         }
+        api_key = self._config.api_key()
+        if api_key is not None:
+            headers["authorization"] = f"Bearer {api_key}"
         if self._config.beta_features_header is not None:
             headers["x-codex-beta-features"] = self._config.beta_features_header
         if self._openai_subagent is not None:
@@ -363,10 +381,12 @@ class ResponsesModelClient:
     def _build_model_list_headers(self) -> 'typing.Dict[str, str]':
         headers = {
             "accept": "application/json",
-            "authorization": f"Bearer {self._config.api_key()}",
             "originator": self._originator,
             "user-agent": self._user_agent,
         }
+        api_key = self._config.api_key()
+        if api_key is not None:
+            headers["authorization"] = f"Bearer {api_key}"
         if self._config.beta_features_header is not None:
             headers["x-codex-beta-features"] = self._config.beta_features_header
         if self._openai_subagent is not None:
@@ -377,15 +397,25 @@ class ResponsesModelClient:
         self,
         response,
         event_handler: 'ModelStreamEventHandler',
+        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
     ) -> 'ModelResponse':
         items: 'typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]' = []
         saw_completed = False
+        last_event_type = ""
 
-        for event_name, data in self._iter_sse_events(response):
+        for event_name, data in self._iter_sse_events(response, diagnostics):
             if not data:
                 continue
-            payload = json.loads(data)
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise ResponsesApiError(
+                    self._format_invalid_event_error(event_name, data, exc)
+                ) from exc
             event_type = payload.get("type", event_name)
+            last_event_type = str(event_type)
+            if diagnostics is not None:
+                diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
                 event_handler(
@@ -445,6 +475,8 @@ class ResponsesModelClient:
                             )
                         )
                     items.append(parsed)
+                    if diagnostics is not None:
+                        diagnostics.output_items_received += 1
                 continue
 
             if event_type == "response.completed":
@@ -454,10 +486,14 @@ class ResponsesModelClient:
             if event_type == "response.failed":
                 error = payload.get("response", {}).get("error") or {}
                 message = error.get("message") or "responses stream failed"
-                raise ResponsesApiError(message)
+                raise ResponsesApiError(
+                    self._format_response_failed_error(str(message))
+                )
 
         if not saw_completed:
-            raise ResponsesApiError("responses stream ended before response.completed")
+            raise ResponsesApiError(
+                self._format_incomplete_stream_error(last_event_type, len(items))
+            )
 
         return ModelResponse(items=items)
 
@@ -500,7 +536,11 @@ class ResponsesModelClient:
 
         return None
 
-    def _iter_sse_events(self, response):
+    def _iter_sse_events(
+        self,
+        response,
+        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
+    ):
         event_name: 'typing.Union[str, None]' = None
         data_lines: 'typing.List[str]' = []
 
@@ -508,7 +548,16 @@ class ResponsesModelClient:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             if line == "":
                 if data_lines:
-                    yield event_name or "message", "\n".join(data_lines)
+                    resolved_event_name = event_name or "message"
+                    payload = "\n".join(data_lines)
+                    if diagnostics is not None:
+                        diagnostics.sse_events_received += 1
+                        diagnostics.last_sse_event_name = resolved_event_name
+                        diagnostics.last_payload_excerpt = self._truncate_excerpt(
+                            payload,
+                            240,
+                        )
+                    yield resolved_event_name, payload
                 event_name = None
                 data_lines = []
                 continue
@@ -522,7 +571,168 @@ class ResponsesModelClient:
                 data_lines.append(line.split(":", 1)[1].lstrip())
 
         if data_lines:
-            yield event_name or "message", "\n".join(data_lines)
+            resolved_event_name = event_name or "message"
+            payload = "\n".join(data_lines)
+            if diagnostics is not None:
+                diagnostics.sse_events_received += 1
+                diagnostics.last_sse_event_name = resolved_event_name
+                diagnostics.last_payload_excerpt = self._truncate_excerpt(
+                    payload,
+                    240,
+                )
+            yield resolved_event_name, payload
+
+    def _track_stream_lines(
+        self,
+        response,
+        diagnostics: '_StreamDiagnostics',
+    ):
+        for raw_line in response:
+            diagnostics.raw_lines_received += 1
+            yield raw_line
+
+    def _base_error_details(
+        self,
+        url: 'str',
+    ) -> 'typing.List[typing.Tuple[str, str]]':
+        return [
+            ("provider", self._config.provider_name),
+            ("model", self.model),
+            ("request", f"POST {url}"),
+            ("session_id", self._session_id),
+        ]
+
+    def _format_error_message(
+        self,
+        summary: 'str',
+        details: 'typing.Iterable[typing.Tuple[str, str]]',
+    ) -> 'str':
+        lines = [summary]
+        for label, value in details:
+            text = str(value).strip()
+            if not text:
+                continue
+            lines.append(f"- {label}: {text}")
+        return "\n".join(lines)
+
+    def _format_transport_error(
+        self,
+        url: 'str',
+        exc: 'BaseException',
+        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
+    ) -> 'str':
+        details = self._base_error_details(url)
+        if diagnostics is not None:
+            details.extend(self._transport_diagnostics_details(diagnostics))
+        details.append(("exception", type(exc).__name__))
+        details.append(("detail", str(exc) or repr(exc)))
+        details.append(
+            (
+                "meaning",
+                "the HTTP response body ended before the SSE stream finished",
+            )
+        )
+        details.append(
+            (
+                "hint",
+                "the server or a proxy likely closed the connection before sending "
+                "`response.completed` or `response.failed`",
+            )
+        )
+        hostname = urllib.parse.urlparse(url).hostname or ""
+        if hostname in {"127.0.0.1", "localhost"}:
+            details.append(
+                (
+                    "hint",
+                    "if this goes through local `responses_server`, inspect that "
+                    "server's stderr/logs for the downstream backend failure",
+                )
+            )
+        return self._format_error_message(
+            "responses request failed while reading the HTTP stream",
+            details,
+        )
+
+    def _format_response_failed_error(self, message: 'str') -> 'str':
+        details = self._base_error_details(self.responses_url())
+        details.append(("detail", message))
+        details.append(
+            (
+                "meaning",
+                "the server accepted the request but emitted a terminal "
+                "`response.failed` event",
+            )
+        )
+        return self._format_error_message(
+            "responses stream failed on the server side",
+            details,
+        )
+
+    def _format_incomplete_stream_error(
+        self,
+        last_event_type: 'str',
+        output_item_count: 'int',
+    ) -> 'str':
+        details = self._base_error_details(self.responses_url())
+        if last_event_type:
+            details.append(("last_event", last_event_type))
+        details.append(("output_items_received", str(output_item_count)))
+        details.append(
+            (
+                "meaning",
+                "the stream ended without a terminal `response.completed` event",
+            )
+        )
+        details.append(
+            (
+                "hint",
+                "the server should emit `response.failed` on mid-stream errors; "
+                "an abrupt end usually points to a backend, proxy, or server bug",
+            )
+        )
+        return self._format_error_message(
+            "responses stream ended before `response.completed`",
+            details,
+        )
+
+    def _format_invalid_event_error(
+        self,
+        event_name: 'str',
+        raw_data: 'str',
+        exc: 'json.JSONDecodeError',
+    ) -> 'str':
+        details = self._base_error_details(self.responses_url())
+        details.append(("event", event_name or "message"))
+        details.append(("exception", type(exc).__name__))
+        details.append(("detail", str(exc)))
+        excerpt = raw_data if len(raw_data) <= 240 else f"{raw_data[:240]}..."
+        details.append(("data_excerpt", excerpt))
+        return self._format_error_message(
+            "responses stream contained an invalid JSON event",
+            details,
+        )
+
+    def _transport_diagnostics_details(
+        self,
+        diagnostics: '_StreamDiagnostics',
+    ) -> 'typing.List[typing.Tuple[str, str]]':
+        details: 'typing.List[typing.Tuple[str, str]]' = [
+            ("raw_lines_received", str(diagnostics.raw_lines_received)),
+            ("sse_events_received", str(diagnostics.sse_events_received)),
+            ("output_items_received", str(diagnostics.output_items_received)),
+        ]
+        if diagnostics.last_sse_event_name:
+            details.append(("last_sse_event", diagnostics.last_sse_event_name))
+        if diagnostics.last_event_type:
+            details.append(("last_event_type", diagnostics.last_event_type))
+        if diagnostics.last_payload_excerpt:
+            details.append(("last_payload_excerpt", diagnostics.last_payload_excerpt))
+        return details
+
+    def _truncate_excerpt(self, text: 'str', limit: 'int') -> 'str':
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
 
 
 def _requests_verify_setting() -> 'typing.Union[typing.Union[str, bool], None]':

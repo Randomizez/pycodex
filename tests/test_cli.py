@@ -111,6 +111,27 @@ def _write_stored_codex_home(root: 'Path') -> 'None':
     )
 
 
+def _write_test_rollout(
+    codex_home: 'Path',
+    thread_id: 'str',
+    items: 'typing.List[typing.Dict[str, object]]',
+) -> 'Path':
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "04"
+        / "07"
+        / f"rollout-2026-04-07T00-00-00-{thread_id}.jsonl"
+    )
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    rollout_path.write_text(
+        "\n".join(json.dumps(item, ensure_ascii=False, indent=2) for item in items)
+        + "\n{\"timestamp\": \"truncated"
+    )
+    return rollout_path
+
+
 def _install_test_cli_view(
     monkeypatch: 'pytest.MonkeyPatch',
     inputs,
@@ -181,6 +202,28 @@ class _ScriptedResponsesClient(ScriptedModelClient):
             session_id,
             openai_subagent,
         )
+
+
+class _DummyProviderConfig:
+    provider_name = "demo"
+
+
+def _build_scripted_tui_runtime(
+    config_path: 'Path',
+    responses,
+) -> 'typing.Tuple[AgentRuntime, _ScriptedResponsesClient]':
+    client = _ScriptedResponsesClient(responses=responses)
+    client._session_id = None
+    client._originator = "codex-tui"
+    client._config = _DummyProviderConfig()
+    runtime = build_runtime(
+        str(config_path),
+        None,
+        None,
+        client,
+        session_mode="tui",
+    )
+    return runtime, client
 
 
 def test_resolve_prompt_text_prefers_argv() -> 'None':
@@ -763,7 +806,7 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
     assert model.call_count == 2
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
     ]
     assert "Session: hello" in line_output
     assert "[steer] inserted: again" in line_output
@@ -908,6 +951,677 @@ async def test_run_interactive_session_supports_history_and_title_commands(
 
 
 @pytest.mark.asyncio
+async def test_run_interactive_session_supports_resume_command(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    thread_id = "11111111-2222-3333-4444-555555555555"
+    thread_name = "saved thread"
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    codex_home.mkdir()
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {
+                "id": thread_id,
+                "thread_name": thread_name,
+                "updated_at": "2026-04-07T00:00:00Z",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    _write_test_rollout(
+        codex_home,
+        thread_id,
+        [
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "timestamp": "2026-04-07T00:00:00Z",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:01Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{"type": "input_text", "text": "ignored"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:02Z",
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/tmp",
+                    "approval_policy": "never",
+                    "sandbox_policy": {"type": "danger-full-access"},
+                    "model": "gpt-5.4",
+                    "summary": "detailed",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:03Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "older prompt"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:04Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "older prompt",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:05Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "summary": [{"type": "summary_text", "text": "inspect"}],
+                    "content": None,
+                    "encrypted_content": "enc",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:06Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "name": "echo",
+                    "arguments": '{"text":"hello"}',
+                    "call_id": "call_saved",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:07Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call_output",
+                    "call_id": "call_saved",
+                    "output": '{"text":"hello"}',
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:08Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "older answer"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:09Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": "<environment_context>ignored</environment_context>",
+                        }
+                    ],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:10Z",
+                "type": "turn_context",
+                "payload": {
+                    "cwd": "/tmp",
+                    "approval_policy": "never",
+                    "sandbox_policy": {"type": "danger-full-access"},
+                    "model": "gpt-5.4",
+                    "summary": "detailed",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:11Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "second prompt"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:12Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "second prompt",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:13Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "second answer"}],
+                },
+            },
+        ],
+    )
+
+    class _ResumableClient(ScriptedModelClient):
+        def __init__(self) -> 'None':
+            super().__init__([ModelResponse(items=[AssistantMessage(text="after resume")])])
+            self._session_id = None
+
+    model = _ResumableClient()
+    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/resume 1", "/title", "continue", "/history", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        runtime,
+        False,
+    )
+
+    assert code == 0
+    assert model._session_id == thread_id
+    assert "Available sessions:" in line_output
+    assert "[1] older prompt" in line_output
+    assert "Resumed session: saved thread" in line_output
+    resumed_index = line_output.index("Resumed session: saved thread")
+    assert line_output[resumed_index + 1] == "Session: saved thread"
+    assert line_output[resumed_index + 2] == "[1] user> older prompt"
+    assert line_output[resumed_index + 3] == "    assistant> older answer"
+    assert line_output[resumed_index + 4] == "[2] user> second prompt"
+    assert line_output[resumed_index + 5] == "    assistant> second answer"
+    assert "Session: saved thread" in line_output
+    assert "[1] user> older prompt" in line_output
+    assert "    assistant> older answer" in line_output
+    assert "[2] user> second prompt" in line_output
+    assert "    assistant> second answer" in line_output
+    assert "[3] user> continue" in line_output
+    assert "    assistant> after resume" in line_output
+
+    resumed_prompt_items = [
+        item
+        for item in model.prompts[0].input
+        if isinstance(
+            item,
+            (
+                UserMessage,
+                AssistantMessage,
+                ReasoningItem,
+                ToolCall,
+                ToolResult,
+            ),
+        )
+    ]
+    assert [type(item).__name__ for item in resumed_prompt_items] == [
+        "UserMessage",
+        "ReasoningItem",
+        "ToolCall",
+        "ToolResult",
+        "AssistantMessage",
+        "UserMessage",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert isinstance(resumed_prompt_items[2], ToolCall)
+    assert resumed_prompt_items[2].name == "echo"
+    assert isinstance(resumed_prompt_items[3], ToolResult)
+    assert resumed_prompt_items[3].output == '{"text":"hello"}'
+    assert isinstance(resumed_prompt_items[-1], UserMessage)
+    assert resumed_prompt_items[-1].text == "continue"
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_session_resume_without_args_lists_sessions(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    named_thread_id = "11111111-2222-3333-4444-555555555555"
+    unnamed_thread_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    codex_home.mkdir()
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {
+                "id": named_thread_id,
+                "thread_name": "named session",
+                "updated_at": "2026-04-07T00:00:00Z",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    named_rollout = _write_test_rollout(
+        codex_home,
+        named_thread_id,
+        [
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": named_thread_id},
+            },
+            {
+                "timestamp": "2026-04-07T00:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "named prompt",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "named answer"}],
+                },
+            },
+        ],
+    )
+    unnamed_rollout = _write_test_rollout(
+        codex_home,
+        unnamed_thread_id,
+        [
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "type": "session_meta",
+                "payload": {"id": unnamed_thread_id},
+            },
+            {
+                "timestamp": "2026-04-07T00:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "unnamed prompt",
+                },
+            },
+        ],
+    )
+    os.utime(named_rollout, (100, 100))
+    os.utime(unnamed_rollout, (200, 200))
+
+    runtime = AgentRuntime(
+        AgentLoop(
+            ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
+            ToolRegistry(),
+        )
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        runtime,
+        False,
+    )
+
+    assert code == 0
+    assert "Available sessions:" in line_output
+    assert "[1] unnamed prompt" in line_output
+    assert "[2] named prompt" in line_output
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_session_resume_rejects_non_numeric_target(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    codex_home = tmp_path / ".codex"
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    codex_home.mkdir()
+
+    runtime = AgentRuntime(
+        AgentLoop(
+            ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
+            ToolRegistry(),
+        )
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume foo", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        runtime,
+        False,
+    )
+
+    assert code == 0
+    assert "Error: Usage: /resume <number>" in line_output
+
+
+@pytest.mark.asyncio
+async def test_interactive_session_resume_restores_prior_history_after_restart(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+    first_runtime, first_client = _build_scripted_tui_runtime(
+        config_path,
+        [
+            ModelResponse(items=[AssistantMessage(text="first answer")]),
+            ModelResponse(items=[AssistantMessage(text="second answer")]),
+        ],
+    )
+    first_line_output: 'typing.List[str]' = []
+    first_stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["hello", "what next", "/exit"],
+        first_line_output,
+        first_stream_chunks,
+    )
+
+    first_code = await run_interactive_session(
+        first_runtime,
+        False,
+        str(config_path),
+    )
+    assert first_code == 0
+    assert first_client._session_id is not None
+    assert list((config_path.parent / "sessions").rglob("rollout-*.jsonl"))
+
+    second_runtime, second_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="unused")])],
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/resume 1", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        second_runtime,
+        False,
+        str(config_path),
+    )
+
+    assert code == 0
+    assert second_client._session_id == first_client._session_id
+    assert "[1] hello" in line_output
+    assert "Resumed session: hello" in line_output
+    resumed_index = line_output.index("Resumed session: hello")
+    assert line_output[resumed_index + 1] == "Session: hello"
+    assert line_output[resumed_index + 2] == "[1] user> hello"
+    assert line_output[resumed_index + 3] == "    assistant> first answer"
+    assert line_output[resumed_index + 4] == "[2] user> what next"
+    assert line_output[resumed_index + 5] == "    assistant> second answer"
+
+
+@pytest.mark.asyncio
+async def test_interactive_session_resume_then_continue_updates_history(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+
+    first_runtime, _first_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="first answer")])],
+    )
+    first_line_output: 'typing.List[str]' = []
+    first_stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["hello", "/exit"],
+        first_line_output,
+        first_stream_chunks,
+    )
+
+    first_code = await run_interactive_session(
+        first_runtime,
+        False,
+        str(config_path),
+    )
+    assert first_code == 0
+
+    second_runtime, _second_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="after resume")])],
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/resume 1", "continue", "/history", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        second_runtime,
+        False,
+        str(config_path),
+    )
+
+    assert code == 0
+    assert "Resumed session: hello" in line_output
+    assert "[1] user> hello" in line_output
+    assert "    assistant> first answer" in line_output
+    assert "[2] user> continue" in line_output
+    assert "    assistant> after resume" in line_output
+
+
+@pytest.mark.asyncio
+async def test_resume_ignores_empty_saved_session(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+
+    first_runtime, _first_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="unused")])],
+    )
+    first_line_output: 'typing.List[str]' = []
+    first_stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/exit"],
+        first_line_output,
+        first_stream_chunks,
+    )
+
+    first_code = await run_interactive_session(
+        first_runtime,
+        False,
+        str(config_path),
+    )
+    assert first_code == 0
+
+    second_runtime, _second_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="unused")])],
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        second_runtime,
+        False,
+        str(config_path),
+    )
+
+    assert code == 0
+    assert "No resumable sessions found." in line_output
+
+
+@pytest.mark.asyncio
+async def test_resume_restores_saved_tool_call_history(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / ".codex" / "config.toml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+
+    first_runtime, _first_client = _build_scripted_tui_runtime(
+        config_path,
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="call_1",
+                        name="update_plan",
+                        arguments={
+                            "explanation": "track work",
+                            "plan": [
+                                {"step": "saved step", "status": "completed"},
+                            ],
+                        },
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="tool-backed answer")]),
+        ],
+    )
+    first_line_output: 'typing.List[str]' = []
+    first_stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["use tool", "/exit"],
+        first_line_output,
+        first_stream_chunks,
+    )
+
+    first_code = await run_interactive_session(
+        first_runtime,
+        False,
+        str(config_path),
+    )
+    assert first_code == 0
+
+    second_runtime, second_client = _build_scripted_tui_runtime(
+        config_path,
+        [ModelResponse(items=[AssistantMessage(text="after resume")])],
+    )
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/resume", "/resume 1", "continue", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        second_runtime,
+        False,
+        str(config_path),
+    )
+
+    assert code == 0
+    assert "Resumed session: use tool" in line_output
+    resumed_prompt_items = [
+        item
+        for item in second_client.prompts[0].input
+        if isinstance(
+            item,
+            (
+                UserMessage,
+                AssistantMessage,
+                ReasoningItem,
+                ToolCall,
+                ToolResult,
+            ),
+        )
+    ]
+    assert [type(item).__name__ for item in resumed_prompt_items] == [
+        "UserMessage",
+        "ToolCall",
+        "ToolResult",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert isinstance(resumed_prompt_items[1], ToolCall)
+    assert resumed_prompt_items[1].name == "update_plan"
+    assert isinstance(resumed_prompt_items[2], ToolResult)
+    assert resumed_prompt_items[2].name == "update_plan"
+    assert isinstance(resumed_prompt_items[-1], UserMessage)
+    assert resumed_prompt_items[-1].text == "continue"
+
+
+@pytest.mark.asyncio
 async def test_run_interactive_session_supports_model_command(
     tmp_path,
     monkeypatch,
@@ -1022,7 +1736,7 @@ async def test_run_interactive_session_supports_model_command(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
         "Session: hello",
         "user> hello",
         "assistant> demo-model",
@@ -1085,7 +1799,7 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
     assert model.model == "demo-model"
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
     ]
     assert "Session: hello" in line_output
     assert "Cannot change model while work is running or queued in steer mode." in line_output
@@ -1137,7 +1851,7 @@ async def test_run_interactive_session_continues_after_model_error(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
         "Session: hello",
         "user> hello",
         "Error: synthetic client error",
@@ -1201,7 +1915,7 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
         "Session: use a tool",
         "user> use a tool",
         '[tool] echo: {"echo":"hello"}',
@@ -1991,7 +2705,7 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
             prompt_hook=prompt_hook,
             line_callback=(
                 lambda text: saw_error.set()
-                if text == "Error: responses stream ended before response.completed"
+                if text.startswith("Error: responses ")
                 else None
             ),
         )
@@ -2019,12 +2733,20 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
 
     assert code == 0
     assert request_count["value"] == 2
-    assert outputs == [
+    assert outputs[:4] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model",
+        "Extra commands: /history, /title, /model, /resume",
         "Session: Analyze current directory",
         "user> Analyze current directory",
-        "Error: responses stream ended before response.completed",
+    ]
+    assert outputs[4].startswith("Error: responses ")
+    assert "\n  - provider: neo" in outputs[4]
+    assert "\n  - model: gpt-5.4" in outputs[4]
+    assert (
+        "\n  - last_event: response.output_text.delta" in outputs[4]
+        or "\n  - last_event_type: response.output_text.delta" in outputs[4]
+    )
+    assert outputs[5:] == [
         "user> go on",
         "assistant> RESUMED",
     ]
