@@ -20,7 +20,13 @@ from .portable import bootstrap_called_home, upload_codex_home
 from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
-from .utils import CliSessionView, load_codex_dotenv
+from .utils import CliSessionView, load_codex_dotenv, uuid7_string
+from .utils.session_persist import (
+    SessionRolloutRecorder,
+    list_resumable_sessions,
+    load_resumed_session,
+    resolve_codex_home,
+)
 import typing
 
 EXIT_COMMANDS = {"/exit", "/quit"}
@@ -28,6 +34,7 @@ HISTORY_COMMAND = "/history"
 TITLE_COMMAND = "/title"
 MODEL_COMMAND = "/model"
 QUEUE_COMMAND = "/queue"
+RESUME_COMMAND = "/resume"
 CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
@@ -284,6 +291,9 @@ def build_runtime(
         collaboration_mode=collaboration_mode,
         include_collaboration_instructions=use_tui_context,
     )
+    session_id = getattr(client, "_session_id", None) or uuid7_string()
+    if hasattr(client, "_session_id"):
+        client._session_id = session_id
     subagent_context_manager = ContextManager.from_codex_config(
         config_path,
         profile,
@@ -293,6 +303,14 @@ def build_runtime(
     runtime_environment = create_runtime_environment()
     runtime_environment.request_user_input_manager.set_handler(None)
     runtime_environment.request_permissions_manager.set_handler(None)
+    rollout_recorder = SessionRolloutRecorder.create(
+        resolve_codex_home(config_path),
+        session_id,
+        context_manager.cwd,
+        getattr(client, "_originator", CLI_ORIGINATOR),
+        getattr(getattr(client, "_config", None), "provider_name", None),
+        context_manager.resolve_base_instructions(),
+    )
 
     def make_subagent_runtime_builder(base_client):
         def build_subagent_runtime(
@@ -330,7 +348,10 @@ def build_runtime(
     )
     return AgentRuntime(
         AgentLoop(
-            client, get_tools(runtime_environment, exec_mode=True), context_manager
+            client,
+            get_tools(runtime_environment, exec_mode=True),
+            context_manager,
+            rollout_recorder=rollout_recorder,
         ),
         runtime_environment=runtime_environment,
     )
@@ -498,10 +519,12 @@ async def prompt_request_permissions(
 async def run_interactive_session(
     runtime: 'AgentRuntime',
     json_mode: 'bool',
+    config_path: 'typing.Union[str, None]' = None,
 ) -> 'int':
     worker = asyncio.create_task(runtime.run_forever())
     view = CliSessionView()
     model_client = runtime._agent_loop._model_client
+    codex_home = resolve_codex_home(config_path)
     runtime.set_event_handler(view.handle_event)
     pending_turn_tasks: 'typing.Set[asyncio.Task[None]]' = set()
     runtime_environment = runtime.runtime_environment
@@ -515,7 +538,7 @@ async def run_interactive_session(
         lambda payload: prompt_request_permissions(view, payload)
     )
     view.write_line("pycodex interactive mode. Type /exit to quit.")
-    view.write_line("Extra commands: /history, /title, /model")
+    view.write_line("Extra commands: /history, /title, /model, /resume")
     try:
 
         def has_pending_turn_tasks() -> 'bool':
@@ -555,6 +578,39 @@ async def run_interactive_session(
                 continue
             if prompt_text == TITLE_COMMAND:
                 view.show_title()
+                continue
+            if prompt_text == RESUME_COMMAND:
+                sessions = list_resumable_sessions(codex_home)
+                if not sessions:
+                    view.write_line("No resumable sessions found.")
+                    continue
+                view.write_line("Available sessions:")
+                for index, session in enumerate(sessions, start=1):
+                    view.write_line(f"[{index}] {session['preview']}")
+                continue
+            if prompt_text.startswith(f"{RESUME_COMMAND} "):
+                if has_pending_turn_tasks():
+                    view.write_line(
+                        "Cannot resume while work is running or queued."
+                    )
+                    continue
+                resume_target = prompt_text[len(RESUME_COMMAND) :].strip()
+                try:
+                    resumed = load_resumed_session(codex_home, resume_target)
+                    runtime._agent_loop.replace_history(resumed["history"])
+                    if hasattr(model_client, "_session_id"):
+                        model_client._session_id = str(resumed["session_id"])
+                    runtime._agent_loop.set_rollout_recorder(
+                        SessionRolloutRecorder.resume(resumed["rollout_path"])
+                    )
+                    view.load_session_history(
+                        str(resumed["title"]),
+                        tuple(resumed["turns"]),
+                    )
+                    view.write_line(f"Resumed session: {resumed['title']}")
+                    view.show_history()
+                except Exception as exc:  # pragma: no cover - defensive surface
+                    view.show_error(str(exc))
                 continue
             if prompt_text.startswith(f"{QUEUE_COMMAND} "):
                 queued_text = prompt_text[len(QUEUE_COMMAND) :].strip()
@@ -663,6 +719,7 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             return await run_interactive_session(
                 runtime,
                 args.json,
+                args.config,
             )
         else:
             prompt_text = resolve_prompt_text(args.prompt)

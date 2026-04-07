@@ -20,6 +20,9 @@ from .tools import ToolContext, ToolRegistry
 from .utils import uuid7_string
 import typing
 
+if typing.TYPE_CHECKING:
+    from .utils.session_persist import SessionRolloutRecorder
+
 
 EventHandler = Callable[[AgentEvent], None]
 NOOP_EVENT_HANDLER: 'EventHandler' = lambda _event: None
@@ -46,6 +49,7 @@ class AgentLoop:
         parallel_tool_calls: 'bool' = True,
         event_handler: 'EventHandler' = NOOP_EVENT_HANDLER,
         initial_history: 'typing.Tuple[ConversationItem, ...]' = (),
+        rollout_recorder: 'typing.Union[SessionRolloutRecorder, None]' = None,
     ) -> 'None':
         self._model_client = model_client
         self._tool_registry = tool_registry
@@ -53,6 +57,7 @@ class AgentLoop:
         self._parallel_tool_calls = parallel_tool_calls
         self._event_handler = event_handler
         self._history: 'typing.List[ConversationItem]' = list(initial_history)
+        self._rollout_recorder = rollout_recorder
         self.interrupt_asap = False
 
     @property
@@ -63,6 +68,18 @@ class AgentLoop:
         self, event_handler: 'EventHandler' = NOOP_EVENT_HANDLER
     ) -> 'None':
         self._event_handler = event_handler
+
+    def replace_history(
+        self,
+        history: 'typing.Iterable[ConversationItem]',
+    ) -> 'None':
+        self._history = list(history)
+
+    def set_rollout_recorder(
+        self,
+        rollout_recorder: 'typing.Union[SessionRolloutRecorder, None]',
+    ) -> 'None':
+        self._rollout_recorder = rollout_recorder
 
     def _raise_if_interrupt_requested(
         self,
@@ -83,8 +100,9 @@ class AgentLoop:
     ) -> 'TurnResult':
         turn_id = turn_id or uuid7_string()
         self.interrupt_asap = False
-        for text in texts:
-            self._history.append(UserMessage(text=text))
+        new_user_messages = [UserMessage(text=text) for text in texts]
+        self._history.extend(new_user_messages)
+        self._persist_history_items(new_user_messages)
 
         self._emit(
             "turn_started",
@@ -131,12 +149,15 @@ class AgentLoop:
                 )
 
                 tool_calls: 'typing.List[ToolCall]' = []
+                persisted_response_items: 'typing.List[ConversationItem]' = []
                 for item in response.items:
                     self._history.append(item)
+                    persisted_response_items.append(item)
                     if isinstance(item, AssistantMessage):
                         last_assistant_message = item.text
                     elif isinstance(item, ToolCall):
                         tool_calls.append(item)
+                self._persist_history_items(persisted_response_items)
 
                 if not tool_calls:
                     self._raise_if_interrupt_requested(
@@ -160,7 +181,10 @@ class AgentLoop:
 
                 tool_results = await self._execute_tool_batch(turn_id, tool_calls)
                 self._history.extend(tool_results)
-                self._history.extend(self._build_follow_up_messages(tool_results))
+                self._persist_history_items(tool_results)
+                follow_up_messages = self._build_follow_up_messages(tool_results)
+                self._history.extend(follow_up_messages)
+                self._persist_history_items(follow_up_messages)
                 self._raise_if_interrupt_requested(
                     turn_id,
                     iteration,
@@ -249,6 +273,18 @@ class AgentLoop:
         self._event_handler(
             AgentEvent(kind=kind, turn_id=turn_id, payload=dict(payload))
         )
+
+    def _persist_history_items(
+        self,
+        items: 'typing.Iterable[ConversationItem]',
+    ) -> 'None':
+        recorder = self._rollout_recorder
+        if recorder is None:
+            return
+        try:
+            recorder.append_history_items(items)
+        except Exception:  # pragma: no cover - persistence should not break turns
+            return
 
     def _handle_model_stream_event(self, turn_id: 'str', event: 'ModelStreamEvent') -> 'None':
         if event.kind == "assistant_delta":

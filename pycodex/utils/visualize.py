@@ -541,7 +541,7 @@ class CliSessionView:
       source has closed and the caller should end the session loop.
     - `write_line(text)`, `finish_stream()`, `show_error(text)`: imperative output
       helpers for CLI-side messages that do not come from `AgentEvent`.
-    - `show_history()`, `show_title()`, `show_steer_queued(...)`,
+    - `show_history()`, `show_title()`, `load_session_history(...)`, `show_steer_queued(...)`,
       `schedule_steer_inserted(...)`: small session UI helpers used by the
       interactive command loop.
     - `close()`: release prompt/spinner resources at shutdown.
@@ -755,6 +755,19 @@ class CliSessionView:
         self._finish_stream()
         self._print_line(f"Session: {self._title or 'untitled'}")
 
+    def load_session_history(
+        self,
+        title: 'typing.Union[str, None]',
+        history: 'typing.Tuple[typing.Tuple[str, str], ...]',
+    ) -> 'None':
+        self._spinner.finish_turn()
+        self._finish_stream()
+        self._title = title or None
+        self._history = list(history)
+        self._pending_user_prompts.clear()
+        self._queued_steer_prompts.clear()
+        self._inserted_steer_prompts.clear()
+
     def pause_spinner(self) -> 'None':
         self._spinner.pause()
 
@@ -854,9 +867,15 @@ class CliSessionView:
     def show_error(self, text: 'str') -> 'None':
         self._spinner.finish_turn()
         self._finish_stream()
+        lines = str(text).splitlines() or [""]
+        formatted = [f"Error: {lines[0]}"]
+        formatted.extend(
+            f"  {line}" if line else ""
+            for line in lines[1:]
+        )
         self._print_line(
             colorize_cli_message(
-                f"Error: {text}",
+                "\n".join(formatted),
                 "error",
                 self._color_enabled,
             )
