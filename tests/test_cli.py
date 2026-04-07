@@ -1024,8 +1024,10 @@ async def test_run_interactive_session_supports_model_command(
         "pycodex interactive mode. Type /exit to quit.",
         "Extra commands: /history, /title, /model",
         "Session: hello",
+        "user> hello",
         "assistant> demo-model",
         "Switched model to alt-model.",
+        "user> again",
         "assistant> alt-model",
         "Current model: alt-model",
         "Available models: demo-model, alt-model, third-model",
@@ -1137,7 +1139,9 @@ async def test_run_interactive_session_continues_after_model_error(
         "pycodex interactive mode. Type /exit to quit.",
         "Extra commands: /history, /title, /model",
         "Session: hello",
+        "user> hello",
         "Error: synthetic client error",
+        "user> again",
         "assistant> done",
     ]
     assert stream_chunks == []
@@ -1199,6 +1203,7 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
         "pycodex interactive mode. Type /exit to quit.",
         "Extra commands: /history, /title, /model",
         "Session: use a tool",
+        "user> use a tool",
         '[tool] echo: {"echo":"hello"}',
     ]
     assert stream_chunks == ["assistant> ", "done", "\n"]
@@ -1329,7 +1334,7 @@ def test_cli_session_view_turn_failed_clears_pending_prompt() -> 'None':
 
     assert view._pending_user_prompts == {}
     assert view._spinner._turn_active is False
-    assert output == ["Session: hello"]
+    assert output == ["Session: hello", "user> hello"]
 
 
 def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
@@ -1372,7 +1377,7 @@ def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
 
     assert view._spinner._turn_active is True
     assert view._spinner._paused is True
-    assert output == ["Session: hello", "[exec] pwd"]
+    assert output == ["Session: hello", "user> hello", "[exec] pwd"]
 
 
 def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
@@ -1527,6 +1532,7 @@ def test_cli_session_view_shows_steer_queue_and_insert_messages() -> 'None':
         "[steer] queued: follow up prompt",
         "Session: follow up prompt",
         "[steer] inserted: follow up prompt",
+        "user> follow up prompt",
     ]
 
 
@@ -1559,6 +1565,7 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_interrupt() 
 
     assert output == [
         "Session: say hi",
+        "user> say hi",
         "assistant> hi",
     ]
     assert view._history == [("say hi", "hi")]
@@ -1653,7 +1660,7 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
         )
     )
 
-    assert output == ["Session: hello"]
+    assert output == ["Session: hello", "user> hello"]
     assert stream_chunks == ["assistant> ", "Hel", "lo"]
     assert view._spinner._paused is True
     assert view._streaming is True
@@ -2016,7 +2023,9 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
         "pycodex interactive mode. Type /exit to quit.",
         "Extra commands: /history, /title, /model",
         "Session: Analyze current directory",
+        "user> Analyze current directory",
         "Error: responses stream ended before response.completed",
+        "user> go on",
         "assistant> RESUMED",
     ]
     assert stream_chunks == ["\n"]

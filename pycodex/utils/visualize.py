@@ -627,6 +627,8 @@ class CliSessionView:
                         self._color_enabled,
                     )
                 )
+            if user_text:
+                self._print_user_turn(user_text)
             self._spinner.start_turn("thinking")
             if self._input_active:
                 self._spinner.pause()
@@ -920,6 +922,9 @@ class CliSessionView:
         with self._terminal_lock:
             self._spinner.clear()
             self._line_output(text)
+
+    def _print_user_turn(self, text: 'str') -> 'None':
+        self._print_line(f"user> {text}")
 
     def _remember_agent_name(self, tool_name: 'str', summary: 'str') -> 'None':
         if tool_name != "spawn_agent":
