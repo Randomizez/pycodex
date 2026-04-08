@@ -83,7 +83,7 @@ def format_cli_plan_messages(
 
 def build_cli_spinner_frame(index: 'int', label: 'str') -> 'str':
     suffix = f" {label}" if label else ""
-    return f"⏳{suffix} {SPINNER_FRAMES[index % len(SPINNER_FRAMES)]}"
+    return f"{SPINNER_FRAMES[index % len(SPINNER_FRAMES)]}{suffix}"
 
 
 def percent_of_context_window_remaining(
@@ -740,7 +740,7 @@ class CliSessionView:
             else:
                 self._spinner.resume()
                 if tool_name and args is not None:
-                    self._spinner.set_label(f"running {tool_name}({args})")
+                    self._spinner.set_label(shorten_title(f"running {tool_name}({args})", limit=72))
                 elif tool_name:
                     self._spinner.set_label(f"running {tool_name}")
                 else:

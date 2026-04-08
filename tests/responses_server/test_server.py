@@ -1396,12 +1396,45 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
     def serve_truncated_stream(listener: 'socket.socket') -> 'None':
         conn, _addr = listener.accept()
         try:
+            # Read request headers (up to the empty line)
             request_bytes = b""
             while b"\r\n\r\n" not in request_bytes:
                 chunk = conn.recv(65536)
                 if not chunk:
                     break
                 request_bytes += chunk
+
+            # Separate headers and any body bytes already read
+            sep_idx = request_bytes.find(b"\r\n\r\n")
+            if sep_idx == -1:
+                header_bytes = request_bytes
+                body_so_far = b""
+            else:
+                header_bytes = request_bytes[:sep_idx]
+                body_so_far = request_bytes[sep_idx + 4:]
+
+            # Parse Content-Length to consume the exact request body
+            content_length = 0
+            try:
+                header_text = header_bytes.decode("latin-1")
+                for line in header_text.split("\r\n"):
+                    if ":" in line:
+                        key, value = line.split(":", 1)
+                        if key.strip().lower() == "content-length":
+                            content_length = int(value.strip())
+                            break
+            except Exception:
+                content_length = 0
+
+            # Already read some body bytes? Consume the rest if needed
+            already = len(body_so_far)
+            remaining = content_length - already
+            if remaining > 0:
+                while remaining > 0:
+                    chunk = conn.recv(min(65536, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
 
             body = (
                 b'data: {"id":"chatcmpl_mock","object":"chat.completion.chunk",'
