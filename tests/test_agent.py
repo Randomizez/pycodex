@@ -317,3 +317,33 @@ async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
         "turn_failed",
     ]
     assert events[-1].payload["error"] == "synthetic client error"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_relays_stream_error_events() -> 'None':
+    events = []
+
+    class RetryingModelClient:
+        async def complete(self, prompt, event_handler):
+            del prompt
+            event_handler(
+                ModelStreamEvent(
+                    kind="stream_error",
+                    payload={"message": "Reconnecting... 1/5"},
+                )
+            )
+            return ModelResponse(items=[AssistantMessage(text="done")])
+
+    agent = AgentLoop(RetryingModelClient(), ToolRegistry(), event_handler=events.append)
+
+    result = await agent.run_turn(["hello"])
+
+    assert result.output_text == "done"
+    assert [event.kind for event in events] == [
+        "turn_started",
+        "model_called",
+        "stream_error",
+        "model_completed",
+        "turn_completed",
+    ]
+    assert events[2].payload["message"] == "Reconnecting... 1/5"

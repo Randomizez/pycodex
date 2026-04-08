@@ -549,3 +549,29 @@ Those are the next alignment target after the prompt/context pass.
 - 因此，下一次请求体里的 `input` 现在可以把多个 steer 文本按顺序并到 history 尾部，并且继续沿用同一个 `turn_id`；这一点已经明显比旧版 `cancel + 单条新 turn` 更接近 upstream
 - 通过 `tests/compare_steer_request_bodies.py` 的 fake/proxy capture 对比，当前 steer 首轮/次轮 request body 在忽略 `prompt_cache_key` 后已与本机 installed `codex-cli 0.115.0` 对齐；这里比较的是“默认 steer”路径，因此脚本会先去掉本机用户配置里的顶层 `service_tier`，避免把本地 fast-mode 设置误记成 steer 差异。同一 steer turn 的 follow-up request 仍需继续带 `workspaces`
 - 仍未完全一致的点主要是内部控制流：本地实现仍是在 runtime 层结束一次 `run_turn(...)` 再启动下一次；upstream 则更倾向于在同一个 active turn 里继续 follow-up
+
+## timeout / interrupt 对齐现状
+
+- `pycodex` 现在已经补上最小的 provider 级 stream retry：`ResponsesProviderConfig`
+  支持 `stream_max_retries` / `stream_idle_timeout_ms`，默认值对齐 upstream 的
+  `5` 次重试和 `300_000 ms` SSE idle timeout；代码在 `pycodex/model.py`
+- 当前实现会把 `response.failed`、stream 在 `response.completed` 前断开、以及
+  `requests` 侧的读流异常统一视为 retryable stream error，并在
+  `ResponsesModelClient.complete(...)` 里按 backoff 重试；重试前会向外发
+  `ModelStreamEvent(kind="stream_error")`，CLI 会显示 `[status] Reconnecting...`
+- 这一点已经明显更接近 upstream 在 `run_sampling_request(...)` 里对
+  `CodexErr::Stream(...)` / `CodexErr::Timeout` 的 backoff retry + `StreamError`
+  前端通知语义；对应参考仍在 `core/src/model_provider_info.rs`、
+  `codex-api/src/sse/responses.rs`、`core/src/codex.rs`
+- 还没对齐的点主要有两类：
+  - retry 目前是在 Python `ResponsesModelClient` 内部完成，不像 upstream 那样放在更外层的
+    sampling loop，并复用统一的 `CodexErr::is_retryable()` 分类
+  - 还没有 upstream 的 WebSocket transport / HTTP fallback，因此也没有
+    “超过 WS retry 预算后切到 HTTP” 的那层行为
+- 中断语义也还不一样：upstream 普通“steer/user input”优先走
+  `inject_input(...)` -> `pending_input`，只有显式 interrupt 才会真正取消当前 task；
+  取消时会通过 `CancellationToken` 中止活跃请求/工具，终止 unified-exec 进程，并把
+  `<turn_aborted>` marker 持久化到 history
+- `pycodex` 当前 steer 仍主要靠 `AgentLoop.interrupt_asap` 在 loop 边界抛
+  `TurnInterrupted`；它不会主动打断正在阻塞的模型流读取或正在运行的 tool，也不会写
+  `<turn_aborted>` marker，因此 interrupt 语义仍明显弱于 upstream

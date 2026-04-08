@@ -819,6 +819,87 @@ def test_responses_model_client_formats_incomplete_stream_errors() -> 'None':
     assert 'the stream ended without a terminal `response.completed` event' in message
 
 
+@pytest.mark.asyncio
+async def test_responses_model_client_retries_retryable_stream_failures() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        stream_max_retries=1,
+    )
+    client = ResponsesModelClient(provider)
+    send_calls: 'typing.List[int]' = []
+
+    class _RetryableFailureResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.failed'
+            yield (
+                b'data: {"type":"response.failed","response":{"error":{"code":"rate_limit_exceeded",'
+                b'"message":"Please try again in 0ms."}}}'
+            )
+            yield b''
+
+    class _SuccessfulResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.output_item.done'
+            yield (
+                b'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant",'
+                b'"content":[{"type":"output_text","text":"done"}]}}'
+            )
+            yield b''
+            yield b'event: response.completed'
+            yield b'data: {"type":"response.completed"}'
+            yield b''
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        send_calls.append(1)
+        if len(send_calls) == 1:
+            return _RetryableFailureResponse()
+        return _SuccessfulResponse()
+
+    requests.Session.send = fake_send
+    try:
+        events: 'typing.List[ModelStreamEvent]' = []
+        response = await client.complete(
+            Prompt(input=[UserMessage(text='hi')], tools=[]),
+            events.append,
+        )
+    finally:
+        requests.Session.send = original_send
+
+    assert [item.text for item in response.items if isinstance(item, AssistantMessage)] == ['done']
+    assert len(send_calls) == 2
+    assert len(events) == 1
+    assert events[0].kind == 'stream_error'
+    assert events[0].payload['message'] == 'Reconnecting... 1/1'
+
+
 def test_responses_model_client_parses_reasoning_output_item() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',

@@ -642,6 +642,23 @@ class CliSessionView:
                 self._spinner.set_label("waiting model")
             return
 
+        if event.kind == "stream_error":
+            self._finish_stream()
+            message = str(event.payload.get("message", "")).strip() or "Reconnecting..."
+            self._print_line(
+                colorize_cli_message(
+                    f"[status] {message}",
+                    "status",
+                    self._color_enabled,
+                )
+            )
+            if self._input_active:
+                self._spinner.pause()
+            else:
+                self._spinner.resume()
+                self._spinner.set_label("reconnecting")
+            return
+
         if event.kind == "assistant_delta":
             delta = str(event.payload.get("delta", ""))
             if not delta:

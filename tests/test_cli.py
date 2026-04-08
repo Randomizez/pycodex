@@ -2051,6 +2051,33 @@ def test_cli_session_view_turn_failed_clears_pending_prompt() -> 'None':
     assert output == ["Session: hello", "user> hello"]
 
 
+def test_cli_session_view_shows_stream_error_message() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="turn_started",
+            turn_id="turn_1",
+            payload={"user_text": "hello"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="stream_error",
+            turn_id="turn_1",
+            payload={"message": "Reconnecting... 1/5"},
+        )
+    )
+
+    assert output == [
+        "Session: hello",
+        "user> hello",
+        "[status] Reconnecting... 1/5",
+    ]
+    assert view._spinner._label == "reconnecting"
+
+
 def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)

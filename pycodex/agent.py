@@ -291,6 +291,8 @@ class AgentLoop:
             self._emit("assistant_delta", turn_id, **event.payload)
         elif event.kind == "tool_call":
             self._emit("tool_called", turn_id, **event.payload)
+        elif event.kind == "stream_error":
+            self._emit("stream_error", turn_id, **event.payload)
 
     def _build_follow_up_messages(
         self,

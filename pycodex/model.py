@@ -2,6 +2,7 @@
 import asyncio
 import json
 import os
+import re
 import urllib.parse
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -30,6 +31,13 @@ DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 ModelStreamEventHandler = Callable[[ModelStreamEvent], None]
 NOOP_MODEL_STREAM_EVENT_HANDLER: 'ModelStreamEventHandler' = lambda _event: None
+DEFAULT_STREAM_MAX_RETRIES = 5
+DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+INITIAL_RETRY_DELAY_SECONDS = 0.2
+RETRY_BACKOFF_FACTOR = 2.0
+RATE_LIMIT_RETRY_AFTER_RE = re.compile(
+    r"(?i)try again in\s*(\d+(?:\.\d+)?)\s*(s|ms|seconds?)"
+)
 
 
 class ModelClient(Protocol):
@@ -54,6 +62,8 @@ class ResponsesProviderConfig:
     verbosity: 'typing.Union[str, None]' = None
     sandbox_mode: 'typing.Union[str, None]' = None
     beta_features_header: 'typing.Union[str, None]' = None
+    stream_max_retries: 'typing.Union[int, None]' = None
+    stream_idle_timeout_ms: 'typing.Union[int, None]' = None
 
     @classmethod
     def from_codex_config(
@@ -97,6 +107,8 @@ class ResponsesProviderConfig:
             verbosity=selected.get("model_verbosity"),
             sandbox_mode=selected.get("sandbox_mode"),
             beta_features_header=",".join(beta_features) or None,
+            stream_max_retries=_optional_int(provider.get("stream_max_retries")),
+            stream_idle_timeout_ms=_optional_int(provider.get("stream_idle_timeout_ms")),
         )
 
     def api_key(self) -> 'typing.Union[str, None]':
@@ -124,9 +136,29 @@ class ResponsesProviderConfig:
             ),
         )
 
+    def effective_stream_max_retries(self) -> 'int':
+        if self.stream_max_retries is None:
+            return DEFAULT_STREAM_MAX_RETRIES
+        return max(int(self.stream_max_retries), 0)
+
+    def effective_stream_idle_timeout_seconds(self) -> 'float':
+        if self.stream_idle_timeout_ms is None:
+            return DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000.0
+        return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
+
 
 class ResponsesApiError(RuntimeError):
     pass
+
+
+class ResponsesRetryableError(ResponsesApiError):
+    def __init__(
+        self,
+        message: 'str',
+        retry_delay_seconds: 'typing.Union[float, None]' = None,
+    ) -> 'None':
+        super().__init__(message)
+        self.retry_delay_seconds = retry_delay_seconds
 
 
 @dataclass
@@ -221,7 +253,36 @@ class ResponsesModelClient:
         prompt: 'Prompt',
         event_handler: 'ModelStreamEventHandler' = NOOP_MODEL_STREAM_EVENT_HANDLER,
     ) -> 'ModelResponse':
-        return await asyncio.to_thread(self._complete_sync, prompt, event_handler)
+        retries = 0
+        max_retries = self._config.effective_stream_max_retries()
+        while True:
+            try:
+                return await asyncio.to_thread(
+                    self._complete_sync,
+                    prompt,
+                    event_handler,
+                )
+            except ResponsesRetryableError as exc:
+                if retries >= max_retries:
+                    raise
+                retries += 1
+                delay_seconds = exc.retry_delay_seconds
+                if delay_seconds is None:
+                    delay_seconds = self._retry_delay_seconds(retries)
+                event_handler(
+                    ModelStreamEvent(
+                        kind="stream_error",
+                        payload={
+                            "message": f"Reconnecting... {retries}/{max_retries}",
+                            "attempt": retries,
+                            "max_retries": max_retries,
+                            "delay_seconds": delay_seconds,
+                            "error": str(exc),
+                        },
+                    )
+                )
+                if delay_seconds > 0:
+                    await asyncio.sleep(delay_seconds)
 
     def _complete_sync(
         self,
@@ -251,19 +312,26 @@ class ResponsesModelClient:
                 verify = _requests_verify_setting()
                 if verify is not None:
                     settings["verify"] = verify
+                timeout = (
+                    max(self._timeout_seconds, 1.0),
+                    self._config.effective_stream_idle_timeout_seconds(),
+                )
                 response = session.send(
                     prepared,
-                    timeout=self._timeout_seconds,
+                    timeout=timeout,
                     allow_redirects=False,
                     **settings,
                 )
                 with response:
                     if response.status_code >= 400:
                         error_body = response.text
-                        raise ResponsesApiError(
+                        message = (
                             f"responses request failed with status {response.status_code}: "
                             f"{error_body[:500]}"
                         )
+                        if response.status_code >= 500:
+                            raise ResponsesRetryableError(message)
+                        raise ResponsesApiError(message)
                     tracked_lines = self._track_stream_lines(
                         response.iter_lines(chunk_size=1, decode_unicode=False),
                         diagnostics,
@@ -274,7 +342,7 @@ class ResponsesModelClient:
                         diagnostics=diagnostics,
                     )
         except requests.RequestException as exc:
-            raise ResponsesApiError(
+            raise ResponsesRetryableError(
                 self._format_transport_error(url, exc, diagnostics)
             ) from exc
 
@@ -409,7 +477,7 @@ class ResponsesModelClient:
             try:
                 payload = json.loads(data)
             except json.JSONDecodeError as exc:
-                raise ResponsesApiError(
+                raise ResponsesRetryableError(
                     self._format_invalid_event_error(event_name, data, exc)
                 ) from exc
             event_type = payload.get("type", event_name)
@@ -484,14 +552,10 @@ class ResponsesModelClient:
                 break
 
             if event_type == "response.failed":
-                error = payload.get("response", {}).get("error") or {}
-                message = error.get("message") or "responses stream failed"
-                raise ResponsesApiError(
-                    self._format_response_failed_error(str(message))
-                )
+                self._raise_response_failed_error(payload)
 
         if not saw_completed:
-            raise ResponsesApiError(
+            raise ResponsesRetryableError(
                 self._format_incomplete_stream_error(last_event_type, len(items))
             )
 
@@ -668,6 +732,29 @@ class ResponsesModelClient:
             details,
         )
 
+    def _raise_response_failed_error(self, payload: 'typing.Dict[str, object]') -> 'None':
+        response = payload.get("response")
+        error = response.get("error") if isinstance(response, dict) else None
+        if not isinstance(error, dict):
+            raise ResponsesRetryableError(
+                self._format_response_failed_error("responses stream failed")
+            )
+
+        message = str(error.get("message") or "responses stream failed")
+        code = str(error.get("code") or "").strip()
+        if code in {
+            "context_length_exceeded",
+            "insufficient_quota",
+            "invalid_prompt",
+            "usage_not_included",
+        }:
+            raise ResponsesApiError(self._format_response_failed_error(message))
+
+        raise ResponsesRetryableError(
+            self._format_response_failed_error(message),
+            retry_delay_seconds=self._try_parse_retry_after_seconds(code, message),
+        )
+
     def _format_incomplete_stream_error(
         self,
         last_event_type: 'str',
@@ -733,6 +820,33 @@ class ResponsesModelClient:
         if len(text) <= limit:
             return text
         return f"{text[:limit]}..."
+
+    def _retry_delay_seconds(self, attempt: 'int') -> 'float':
+        return INITIAL_RETRY_DELAY_SECONDS * (
+            RETRY_BACKOFF_FACTOR ** max(attempt - 1, 0)
+        )
+
+    def _try_parse_retry_after_seconds(
+        self,
+        code: 'str',
+        message: 'str',
+    ) -> 'typing.Union[float, None]':
+        if code != "rate_limit_exceeded":
+            return None
+        match = RATE_LIMIT_RETRY_AFTER_RE.search(message)
+        if match is None:
+            return None
+        value = float(match.group(1))
+        unit = match.group(2).lower()
+        if unit == "ms":
+            return value / 1000.0
+        return value
+
+
+def _optional_int(value: 'object') -> 'typing.Union[int, None]':
+    if value is None:
+        return None
+    return int(value)
 
 
 def _requests_verify_setting() -> 'typing.Union[typing.Union[str, bool], None]':
