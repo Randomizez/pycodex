@@ -190,6 +190,29 @@ def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path
     assert provider.beta_features_header == 'guardian_approval'
 
 
+def test_build_payload_omits_tool_choice_when_no_tools() -> 'None':
+    client = ResponsesModelClient(
+        ResponsesProviderConfig(
+            model="gpt-test",
+            provider_name="demo",
+            base_url="https://example.com/v1",
+            api_key_env=None,
+        ),
+        session_id="00000000-0000-7000-8000-000000000000",
+    )
+
+    payload = client._build_payload(
+        Prompt(
+            input=[UserMessage(text="hello")],
+            tools=[],
+            parallel_tool_calls=False,
+            base_instructions="Be concise.",
+        )
+    )
+
+    assert "tool_choice" not in payload
+
+
 def test_provider_config_allows_provider_without_env_key(tmp_path) -> 'None':
     config_path = tmp_path / 'config.toml'
     config_path.write_text(
@@ -456,7 +479,7 @@ def test_responses_model_client_payload_matches_hardcoded_reference() -> 'None':
 
     payload = client._build_payload(prompt)
 
-    assert json.dumps(payload, ensure_ascii=False, indent=2) == EXPECTED_RESPONSES_REQUEST_BODY_JSON
+    assert payload == json.loads(EXPECTED_RESPONSES_REQUEST_BODY_JSON)
 
 
 def test_responses_model_client_builds_codex_headers_and_stable_session_id(monkeypatch) -> 'None':

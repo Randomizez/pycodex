@@ -153,13 +153,16 @@ Current behavior:
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
 - assistant text is printed from streaming deltas directly
-- interactive mode supports `/history`, `/title`, `/model`, and `/resume`
+- interactive mode supports `/history`, `/title`, `/model`, `/resume`, and `/compact`
 - `/model <name>` switches the model used by later turns in the current
   interactive session; `/model` shows the current model and available choices
 - `/resume` with no argument lists the currently resumable sessions by their
   first user-message preview; `/resume 1` resumes the first listed session
 - `/resume <number>` replaces the in-memory history with the selected recorded
   Codex rollout from `CODEX_HOME/sessions`
+- `/compact` synthesizes a local handoff summary, replaces the in-memory
+  conversation history with the compacted view, and appends a compacted-history
+  entry to the rollout so later `/resume` sees the same state
 - new sessions are now recorded under `CODEX_HOME/sessions/.../rollout-*.jsonl`
   with a stable session/thread id and per-item append+flush semantics so
   `/resume` reads back the same rollout format

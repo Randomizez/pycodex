@@ -44,6 +44,8 @@ from pycodex.cli import (
 )
 from pycodex.portable import DEFAULT_ENTRY_CONFIG, upload_codex_home
 from pycodex.portable_server import CodexStorageServer
+from pycodex.utils.compactor import SUMMARY_PREFIX
+from pycodex.utils.session_persist import load_resumed_session
 from pycodex.utils.visualize import colorize_cli_message
 from tests.fake_responses_server import CaptureStore, build_handler
 from tests.fakes import ScriptedModelClient
@@ -806,7 +808,7 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
     assert model.call_count == 2
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
     ]
     assert "Session: hello" in line_output
     assert "[steer] inserted: again" in line_output
@@ -948,6 +950,95 @@ async def test_run_interactive_session_supports_history_and_title_commands(
     assert "[1] user> hello there" in line_output
     assert "    assistant> done" in line_output
     assert stream_chunks == ["assistant> ", "done", "\n"]
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_session_supports_compact_command(
+    monkeypatch,
+) -> 'None':
+    model = ScriptedModelClient(
+        [
+            ModelResponse(items=[AssistantMessage(text="done")]),
+            ModelResponse(items=[AssistantMessage(text="checkpoint summary")]),
+            ModelResponse(items=[AssistantMessage(text="after compact")]),
+        ]
+    )
+    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value == "/compact":
+            while runtime._has_active_turn():
+                await asyncio.sleep(0.01)
+            await asyncio.sleep(0)
+
+    _install_test_cli_view(
+        monkeypatch,
+        ["hello", "/compact", "continue", "/exit"],
+        line_output,
+        stream_chunks,
+        prompt_hook=prompt_hook,
+    )
+
+    code = await run_interactive_session(
+        runtime,
+        False,
+    )
+
+    assert code == 0
+    assert "Compacting conversation history..." in line_output
+    assert "compact(2 items) -> 1 item + [summary]" in line_output
+    assert "checkpoint summary" not in "".join(stream_chunks)
+    assert "after compact" in "".join(stream_chunks)
+
+    compact_prompt_items = [
+        item
+        for item in model.prompts[1].input
+        if isinstance(
+            item,
+            (
+                UserMessage,
+                AssistantMessage,
+                ReasoningItem,
+                ToolCall,
+                ToolResult,
+            ),
+        )
+    ]
+    assert [type(item).__name__ for item in compact_prompt_items] == [
+        "UserMessage",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert compact_prompt_items[0].text == "hello"
+    assert compact_prompt_items[1].text == "done"
+    assert "CONTEXT CHECKPOINT COMPACTION" in compact_prompt_items[2].text
+    assert model.prompts[1].tools == []
+    assert model.prompts[1].parallel_tool_calls is False
+
+    follow_up_prompt_items = [
+        item
+        for item in model.prompts[2].input
+        if isinstance(
+            item,
+            (
+                UserMessage,
+                AssistantMessage,
+                ReasoningItem,
+                ToolCall,
+                ToolResult,
+            ),
+        )
+    ]
+    assert [type(item).__name__ for item in follow_up_prompt_items] == [
+        "UserMessage",
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert follow_up_prompt_items[0].text == "hello"
+    assert "checkpoint summary" in follow_up_prompt_items[1].text
+    assert follow_up_prompt_items[2].text == "continue"
 
 
 @pytest.mark.asyncio
@@ -1182,6 +1273,116 @@ async def test_run_interactive_session_supports_resume_command(
     assert resumed_prompt_items[3].output == '{"text":"hello"}'
     assert isinstance(resumed_prompt_items[-1], UserMessage)
     assert resumed_prompt_items[-1].text == "continue"
+
+
+def test_load_resumed_session_applies_compacted_replacement_history(
+    tmp_path,
+) -> 'None':
+    thread_id = "11111111-2222-3333-4444-555555555555"
+    codex_home = tmp_path / ".codex"
+    codex_home.mkdir()
+    (codex_home / "session_index.jsonl").write_text(
+        json.dumps(
+            {
+                "id": thread_id,
+                "thread_name": "saved thread",
+                "updated_at": "2026-04-07T00:00:00Z",
+            },
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
+    _write_test_rollout(
+        codex_home,
+        thread_id,
+        [
+            {
+                "timestamp": "2026-04-07T00:00:00Z",
+                "type": "session_meta",
+                "payload": {
+                    "id": thread_id,
+                    "timestamp": "2026-04-07T00:00:00Z",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:01Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "old prompt",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:02Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "old answer"}],
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:03Z",
+                "type": "compacted",
+                "payload": {
+                    "replacement_history": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "kept user"}],
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": f"{SUMMARY_PREFIX}\ncheckpoint summary",
+                                }
+                            ],
+                        },
+                    ]
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:04Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "user_message",
+                    "message": "after compact",
+                },
+            },
+            {
+                "timestamp": "2026-04-07T00:00:05Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "after answer"}],
+                },
+            },
+        ],
+    )
+
+    resumed = load_resumed_session(codex_home, "1")
+
+    assert [type(item).__name__ for item in resumed["history"]] == [
+        "UserMessage",
+        "UserMessage",
+        "UserMessage",
+        "AssistantMessage",
+    ]
+    assert [item.text for item in resumed["history"][:3]] == [
+        "kept user",
+        f"{SUMMARY_PREFIX}\ncheckpoint summary",
+        "after compact",
+    ]
+    assert resumed["history"][3].text == "after answer"
+    assert resumed["turns"] == (
+        ("kept user", ""),
+        (f"{SUMMARY_PREFIX}\ncheckpoint summary", ""),
+        ("after compact", "after answer"),
+    )
 
 
 @pytest.mark.asyncio
@@ -1736,7 +1937,7 @@ async def test_run_interactive_session_supports_model_command(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
         "Session: hello",
         "user> hello",
         "assistant> demo-model",
@@ -1799,7 +2000,7 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
     assert model.model == "demo-model"
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
     ]
     assert "Session: hello" in line_output
     assert "Cannot change model while work is running or queued in steer mode." in line_output
@@ -1851,7 +2052,7 @@ async def test_run_interactive_session_continues_after_model_error(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
         "Session: hello",
         "user> hello",
         "Error: synthetic client error",
@@ -1915,7 +2116,7 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
         "Session: use a tool",
         "user> use a tool",
         '[tool] echo: {"echo":"hello"}',
@@ -2815,7 +3016,7 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
     assert request_count["value"] == 2
     assert outputs[:4] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume",
+        "Extra commands: /history, /title, /model, /resume, /compact",
         "Session: Analyze current directory",
         "user> Analyze current directory",
     ]

@@ -21,8 +21,10 @@ from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
 from .utils import CliSessionView, load_codex_dotenv, uuid7_string
+from .utils.compactor import compact_agent_loop
 from .utils.session_persist import (
     SessionRolloutRecorder,
+    conversation_history_to_turns,
     list_resumable_sessions,
     load_resumed_session,
     resolve_codex_home,
@@ -35,6 +37,7 @@ TITLE_COMMAND = "/title"
 MODEL_COMMAND = "/model"
 QUEUE_COMMAND = "/queue"
 RESUME_COMMAND = "/resume"
+COMPACT_COMMAND = "/compact"
 CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
@@ -540,7 +543,7 @@ async def run_interactive_session(
         lambda payload: prompt_request_permissions(view, payload)
     )
     view.write_line("pycodex interactive mode. Type /exit to quit.")
-    view.write_line("Extra commands: /history, /title, /model, /resume")
+    view.write_line("Extra commands: /history, /title, /model, /resume, /compact")
     try:
 
         def has_pending_turn_tasks() -> 'bool':
@@ -548,6 +551,39 @@ async def run_interactive_session(
                 task for task in tuple(pending_turn_tasks) if task.done()
             )
             return bool(pending_turn_tasks)
+
+        async def run_manual_compact() -> 'None':
+            agent_loop = runtime._agent_loop
+            if not agent_loop.history:
+                view.write_line("Nothing to compact.")
+                return
+
+            compact_turn_id = uuid7_string()
+
+            def handle_compact_stream_event(event) -> 'None':
+                if event.kind not in {"token_count", "stream_error"}:
+                    return
+                view.handle_event(
+                    AgentEvent(
+                        kind=event.kind,
+                        turn_id=compact_turn_id,
+                        payload=dict(event.payload),
+                    )
+                )
+
+            view.write_line("Compacting conversation history...")
+            compact_result = await compact_agent_loop(
+                agent_loop,
+                handle_compact_stream_event,
+            )
+            if compact_result is None:
+                view.write_line("Nothing to compact.")
+                return
+            view.load_session_history(
+                getattr(view, "_title", None),
+                conversation_history_to_turns(compact_result.history),
+            )
+            view.write_line(compact_result.display_text())
 
         async def wait_for_turn_result(future) -> 'None':
             try:
@@ -611,6 +647,17 @@ async def run_interactive_session(
                     )
                     view.write_line(f"Resumed session: {resumed['title']}")
                     view.show_history()
+                except Exception as exc:  # pragma: no cover - defensive surface
+                    view.show_error(str(exc))
+                continue
+            if prompt_text == COMPACT_COMMAND:
+                if has_pending_turn_tasks():
+                    view.write_line(
+                        "Cannot compact while work is running or queued."
+                    )
+                    continue
+                try:
+                    await run_manual_compact()
                 except Exception as exc:  # pragma: no cover - defensive surface
                     view.show_error(str(exc))
                 continue

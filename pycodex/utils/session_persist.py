@@ -114,6 +114,20 @@ class SessionRolloutRecorder:
         if isinstance(serialized, dict):
             self._append_line("response_item", serialized)
 
+    def append_compacted_history(
+        self,
+        history: 'typing.Iterable[ConversationItem]',
+    ) -> 'None':
+        serialized_items = []
+        for item in history:
+            serialized = item.serialize()
+            if isinstance(serialized, dict):
+                serialized_items.append(serialized)
+        self._append_line(
+            "compacted",
+            {"replacement_history": serialized_items},
+        )
+
     def _append_line(self, item_type: 'str', payload: 'typing.Dict[str, object]') -> 'None':
         self.rollout_path.parent.mkdir(parents=True, exist_ok=True)
         line = {
@@ -186,9 +200,6 @@ def load_resumed_session(
     thread_name = _latest_thread_names_by_id(codex_home).get(thread_id)
     session_id = thread_id
     history: 'typing.List[ConversationItem]' = []
-    turns: 'typing.List[typing.Tuple[str, str]]' = []
-    current_user_text: 'typing.Union[str, None]' = None
-    current_assistant_text = ""
     saw_user_turn = False
     tool_names_by_call_id: 'typing.Dict[str, str]' = {}
 
@@ -200,109 +211,40 @@ def load_resumed_session(
             session_id = str(payload.get("id", "")).strip() or session_id
             continue
 
+        if item_type == "compacted" and isinstance(payload, dict):
+            replacement_history = payload.get("replacement_history")
+            if isinstance(replacement_history, list):
+                history = _deserialize_compacted_history(replacement_history)
+                saw_user_turn = any(
+                    isinstance(item, UserMessage) for item in history
+                )
+                tool_names_by_call_id = {
+                    item.call_id: item.name
+                    for item in history
+                    if isinstance(item, ToolCall)
+                }
+            continue
+
         if item_type == "event_msg" and isinstance(payload, dict):
             if payload.get("type") == "user_message":
-                if current_user_text is not None:
-                    turns.append((current_user_text, current_assistant_text))
-                current_user_text = str(payload.get("message", ""))
-                current_assistant_text = ""
-                history.append(UserMessage(text=current_user_text))
+                history.append(UserMessage(text=str(payload.get("message", ""))))
                 saw_user_turn = True
             continue
 
         if item_type != "response_item" or not saw_user_turn or not isinstance(payload, dict):
             continue
 
-        response_item_type = str(payload.get("type", "")).strip()
-        if response_item_type == "message":
-            if str(payload.get("role", "")).strip() != "assistant":
-                continue
-            text = _extract_response_message_text(payload)
-            history.append(AssistantMessage(text=text))
-            current_assistant_text = text
-            continue
-
-        if response_item_type == "reasoning":
-            history.append(ReasoningItem(payload=dict(payload)))
-            continue
-
-        if response_item_type == "function_call":
-            raw_arguments = payload.get("arguments", "{}")
-            if isinstance(raw_arguments, str):
-                try:
-                    arguments = json.loads(raw_arguments or "{}")
-                except json.JSONDecodeError:
-                    continue
-            elif isinstance(raw_arguments, dict):
-                arguments = dict(raw_arguments)
-            else:
-                continue
-            if not isinstance(arguments, dict):
-                continue
-            call_id = str(payload.get("call_id", "")).strip()
-            name = str(payload.get("name", "")).strip()
-            if not call_id or not name:
-                continue
-            history.append(ToolCall(call_id=call_id, name=name, arguments=arguments))
-            tool_names_by_call_id[call_id] = name
-            continue
-
-        if response_item_type == "custom_tool_call":
-            call_id = str(payload.get("call_id", "")).strip()
-            name = str(payload.get("name", "")).strip()
-            if not call_id or not name:
-                continue
-            history.append(
-                ToolCall(
-                    call_id=call_id,
-                    name=name,
-                    arguments=str(payload.get("input", "")),
-                    tool_type="custom",
-                )
-            )
-            tool_names_by_call_id[call_id] = name
-            continue
-
-        if response_item_type in {"function_call_output", "custom_tool_call_output"}:
-            call_id = str(payload.get("call_id", "")).strip()
-            if not call_id:
-                continue
-            raw_output = payload.get("output", "")
-            content_items = None
-            if isinstance(raw_output, list) and all(
-                isinstance(item, dict) for item in raw_output
-            ):
-                content_items = tuple(dict(item) for item in raw_output)
-                output = json.dumps(raw_output, ensure_ascii=False)
-            elif isinstance(raw_output, (dict, list, str, int, float, bool)) or raw_output is None:
-                output = raw_output
-            else:
-                output = str(raw_output)
-            history.append(
-                ToolResult(
-                    call_id=call_id,
-                    name=tool_names_by_call_id.get(call_id, ""),
-                    output=output,
-                    content_items=content_items,
-                    success=(
-                        payload.get("success")
-                        if isinstance(payload.get("success"), bool)
-                        else None
-                    ),
-                    tool_type=(
-                        "custom"
-                        if response_item_type == "custom_tool_call_output"
-                        else "function"
-                    ),
-                )
-            )
-
-    if current_user_text is not None:
-        turns.append((current_user_text, current_assistant_text))
+        _append_deserialized_response_item(
+            history,
+            payload,
+            tool_names_by_call_id,
+            include_user_messages=False,
+        )
 
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
 
+    turns = conversation_history_to_turns(history)
     title = thread_name or (shorten_title(turns[0][0]) if turns else thread_id)
     return {
         "session_id": session_id,
@@ -312,6 +254,26 @@ def load_resumed_session(
         "turns": tuple(turns),
         "rollout_path": rollout_path,
     }
+
+
+def conversation_history_to_turns(
+    history: 'typing.Iterable[ConversationItem]',
+) -> 'typing.Tuple[typing.Tuple[str, str], ...]':
+    turns: 'typing.List[typing.Tuple[str, str]]' = []
+    current_user_text: 'typing.Union[str, None]' = None
+    current_assistant_text = ""
+    for item in history:
+        if isinstance(item, UserMessage):
+            if current_user_text is not None:
+                turns.append((current_user_text, current_assistant_text))
+            current_user_text = item.text
+            current_assistant_text = ""
+            continue
+        if isinstance(item, AssistantMessage) and current_user_text is not None:
+            current_assistant_text = item.text
+    if current_user_text is not None:
+        turns.append((current_user_text, current_assistant_text))
+    return tuple(turns)
 
 
 def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
@@ -387,9 +349,120 @@ def _iter_rollout_entries(rollout_path: 'Path') -> 'typing.Iterable[typing.Dict[
 def _extract_response_message_text(payload: 'typing.Dict[str, object]') -> 'str':
     text_parts: 'typing.List[str]' = []
     for item in payload.get("content") or []:
-        if isinstance(item, dict) and item.get("type") == "output_text":
+        if isinstance(item, dict) and item.get("type") in {"input_text", "output_text"}:
             text_parts.append(str(item.get("text", "")))
     return "".join(text_parts)
+
+
+def _deserialize_compacted_history(
+    replacement_history: 'typing.Iterable[object]',
+) -> 'typing.List[ConversationItem]':
+    history: 'typing.List[ConversationItem]' = []
+    tool_names_by_call_id: 'typing.Dict[str, str]' = {}
+    for payload in replacement_history:
+        if not isinstance(payload, dict):
+            continue
+        _append_deserialized_response_item(
+            history,
+            payload,
+            tool_names_by_call_id,
+            include_user_messages=True,
+        )
+    return history
+
+
+def _append_deserialized_response_item(
+    history: 'typing.List[ConversationItem]',
+    payload: 'typing.Dict[str, object]',
+    tool_names_by_call_id: 'typing.Dict[str, str]',
+    include_user_messages: 'bool',
+) -> 'None':
+    response_item_type = str(payload.get("type", "")).strip()
+    if response_item_type == "message":
+        role = str(payload.get("role", "")).strip()
+        if role == "assistant":
+            history.append(AssistantMessage(text=_extract_response_message_text(payload)))
+            return
+        if include_user_messages and role == "user":
+            history.append(UserMessage(text=_extract_response_message_text(payload)))
+        return
+
+    if response_item_type == "reasoning":
+        history.append(ReasoningItem(payload=dict(payload)))
+        return
+
+    if response_item_type == "function_call":
+        raw_arguments = payload.get("arguments", "{}")
+        if isinstance(raw_arguments, str):
+            try:
+                arguments = json.loads(raw_arguments or "{}")
+            except json.JSONDecodeError:
+                return
+        elif isinstance(raw_arguments, dict):
+            arguments = dict(raw_arguments)
+        else:
+            return
+        if not isinstance(arguments, dict):
+            return
+        call_id = str(payload.get("call_id", "")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not call_id or not name:
+            return
+        history.append(ToolCall(call_id=call_id, name=name, arguments=arguments))
+        tool_names_by_call_id[call_id] = name
+        return
+
+    if response_item_type == "custom_tool_call":
+        call_id = str(payload.get("call_id", "")).strip()
+        name = str(payload.get("name", "")).strip()
+        if not call_id or not name:
+            return
+        history.append(
+            ToolCall(
+                call_id=call_id,
+                name=name,
+                arguments=str(payload.get("input", "")),
+                tool_type="custom",
+            )
+        )
+        tool_names_by_call_id[call_id] = name
+        return
+
+    if response_item_type not in {"function_call_output", "custom_tool_call_output"}:
+        return
+
+    call_id = str(payload.get("call_id", "")).strip()
+    if not call_id:
+        return
+    raw_output = payload.get("output", "")
+    content_items = None
+    if isinstance(raw_output, list) and all(
+        isinstance(item, dict) for item in raw_output
+    ):
+        content_items = tuple(dict(item) for item in raw_output)
+        output = json.dumps(raw_output, ensure_ascii=False)
+    elif isinstance(raw_output, (dict, list, str, int, float, bool)) or raw_output is None:
+        output = raw_output
+    else:
+        output = str(raw_output)
+    history.append(
+        ToolResult(
+            call_id=call_id,
+            name=tool_names_by_call_id.get(call_id, ""),
+            output=output,
+            content_items=content_items,
+            success=(
+                payload.get("success")
+                if isinstance(payload.get("success"), bool)
+                else None
+            ),
+            tool_type=(
+                "custom"
+                if response_item_type == "custom_tool_call_output"
+                else "function"
+            ),
+        )
+    )
 
 
 def _rollout_path_for_session(codex_home: 'Path', session_id: 'str') -> 'Path':

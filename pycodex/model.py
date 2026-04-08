@@ -352,13 +352,14 @@ class ResponsesModelClient:
             "instructions": prompt.base_instructions or "",
             "input": [item.serialize() for item in prompt.input],
             "tools": [tool.serialize() for tool in prompt.tools],
-            "tool_choice": "auto",
             "parallel_tool_calls": prompt.parallel_tool_calls,
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": self._session_id,
         }
+        if prompt.tools:
+            payload["tool_choice"] = "auto"
 
         reasoning: 'typing.Dict[str, str]' = {}
         if self._config.reasoning_effort is not None:
