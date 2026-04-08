@@ -1450,6 +1450,9 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
             conn.sendall(f"{len(body):X}\r\n".encode("ascii"))
             conn.sendall(body)
             conn.sendall(b"\r\n")
+            # Proper chunked termination so clients on older Python (e.g. 3.8)
+            # don't raise ChunkedEncodingError before we can read the partial body.
+            conn.sendall(b"0\r\n\r\n")
         finally:
             conn.close()
             listener.close()
