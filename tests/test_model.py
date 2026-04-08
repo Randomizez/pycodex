@@ -13,6 +13,7 @@ from pycodex.compat import ThreadingHTTPServer
 from pycodex import (
     AssistantMessage,
     ContextMessage,
+    ModelStreamEvent,
     NOOP_MODEL_STREAM_EVENT_HANDLER,
     Prompt,
     ReasoningItem,
@@ -706,6 +707,7 @@ def test_responses_model_client_parses_sse_stream() -> 'None':
         api_key_env='DUMMY_KEY',
     )
     client = ResponsesModelClient(provider)
+    events: 'typing.List[ModelStreamEvent]' = []
     stream = [
         b'event: response.created\n',
         b'data: {"type":"response.created"}\n',
@@ -717,17 +719,27 @@ def test_responses_model_client_parses_sse_stream() -> 'None':
         b'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}\n',
         b'\n',
         b'event: response.completed\n',
-        b'data: {"type":"response.completed"}\n',
+        b'data: {"type":"response.completed","response":{"usage":{"input_tokens":11,"output_tokens":7,"total_tokens":18}}}\n',
         b'\n',
     ]
 
-    response = client._parse_stream(stream, NOOP_MODEL_STREAM_EVENT_HANDLER)
+    response = client._parse_stream(stream, events.append)
 
     assert len(response.items) == 2
     assert isinstance(response.items[0], ToolCall)
     assert response.items[0].arguments == {'text': 'hello'}
     assert isinstance(response.items[1], AssistantMessage)
     assert response.items[1].text == 'done'
+    assert events[-1] == ModelStreamEvent(
+        kind='token_count',
+        payload={
+            'usage': {
+                'input_tokens': 11,
+                'output_tokens': 7,
+                'total_tokens': 18,
+            }
+        },
+    )
 
 
 def test_responses_model_client_formats_transport_stream_errors(monkeypatch) -> 'None':
@@ -895,9 +907,13 @@ async def test_responses_model_client_retries_retryable_stream_failures() -> 'No
 
     assert [item.text for item in response.items if isinstance(item, AssistantMessage)] == ['done']
     assert len(send_calls) == 2
-    assert len(events) == 1
+    assert len(events) == 2
     assert events[0].kind == 'stream_error'
     assert events[0].payload['message'] == 'Reconnecting... 1/1'
+    assert events[1] == ModelStreamEvent(
+        kind='token_count',
+        payload={'usage': None},
+    )
 
 
 def test_responses_model_client_parses_reasoning_output_item() -> 'None':

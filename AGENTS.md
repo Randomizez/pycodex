@@ -15,6 +15,8 @@
 - `pycodex` 默认是最小交互 CLI；无 prompt 时进入 REPL，并通过 `AgentRuntime` 跑外层提交循环。当前会显示最小事件流、assistant 流式输出、简单 title/history（`/title`, `/history`），并默认注册一组与原版一一对应的本地工具子集。
 - 交互 CLI 的事件流展示优先表达用户可感知的阶段（例如工具开始/完成、模型回看工具结果），不要直接把内部 `iteration` 计数暴露成主要状态文案；`iterations` 应继续保留在 `TurnResult` 等程序化结果里。
 - prompt/context 相关逻辑统一放在 `pycodex/context.py`：`AgentLoop` 只维护真实会话历史；每轮请求前由 `ContextManager` 注入 base instructions、developer message、`AGENTS.md` 指令和 `<environment_context>`，且这些注入项不写回 history。
+- 交互 REPL 的 context 用量提示也应尽量贴近上游语义：展示“剩余 context 百分比”而不是原始 token 数；计算时按上游同款 `BASELINE_TOKENS=12000` 做归一化，并在模型元数据只有 `context_window` 时默认按 `95%` effective window 处理。只要当前模型能解析出 context window，初始 prompt 就先显示 `100%`，等首个 usage 回来后再刷新成真实值。
+- 对交互 REPL 的 context 指示器，`model_context_window` 的取值优先级也要贴近上游：先吃 `config.toml` / profile 里的 `model_context_window` override，再回退到 vendored `models.json` 的 `context_window`；effective percent 继续沿用模型元数据，没有时默认 `95%`。
 - `AgentLoop` 的 turn-loop 语义要跟上游 `codex-rs/core/src/codex.rs` 一致：按 follow-up / tool handoff 自然收敛，不要加固定 12 轮之类的 hard cap，也不要保留本地专用的 iteration-limit 参数。
 - `README.md` 和 `docs/` 属于对齐工作的一部分：只要实现状态、对齐结论或使用方式发生实质变化，就应及时更新，不要让文档滞后于当前代码。
 - 新工具必须继承 `BaseTool`，然后通过 `ToolRegistry.register(tool_instance)` 接入；不要再给 registry 传散装 name/description/handler 参数。

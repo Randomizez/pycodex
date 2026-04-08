@@ -23,6 +23,8 @@ ANSI_YELLOW = "\x1b[33m"
 ANSI_MAGENTA = "\x1b[35m"
 ANSI_RED = "\x1b[31m"
 SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
+DEFAULT_MAIN_PROMPT = "pycodex> "
 
 
 def shorten_title(text: 'str', limit: 'int' = 48) -> 'str':
@@ -82,6 +84,23 @@ def format_cli_plan_messages(
 def build_cli_spinner_frame(index: 'int', label: 'str') -> 'str':
     suffix = f" {label}" if label else ""
     return f"⏳{suffix} {SPINNER_FRAMES[index % len(SPINNER_FRAMES)]}"
+
+
+def percent_of_context_window_remaining(
+    total_tokens: 'int',
+    context_window_tokens: 'int',
+) -> 'int':
+    if context_window_tokens <= PROMPT_CONTEXT_BASELINE_TOKENS:
+        return 0
+
+    effective_window = context_window_tokens - PROMPT_CONTEXT_BASELINE_TOKENS
+    used = max(total_tokens - PROMPT_CONTEXT_BASELINE_TOKENS, 0)
+    remaining = max(effective_window - used, 0)
+    return int(
+        round(
+            max(0.0, min(100.0, (remaining / effective_window) * 100.0))
+        )
+    )
 
 
 class Spinner:
@@ -562,7 +581,10 @@ class CliSessionView:
       normal terminal stream so the reply is not lost.
     """
 
-    def __init__(self) -> 'None':
+    def __init__(
+        self,
+        context_window_tokens: 'typing.Union[int, None]' = None,
+    ) -> 'None':
         import sys
 
         self._line_output = print
@@ -578,6 +600,10 @@ class CliSessionView:
         self._prompt_stream_buffer = ""
         self._streaming_in_prompt = False
         self._input_active = False
+        self._context_window_tokens = context_window_tokens
+        self._context_remaining_percent: 'typing.Union[int, None]' = (
+            100 if context_window_tokens is not None else None
+        )
         self._color_enabled = cli_color_enabled() and sys.stdout.isatty()
         self._agent_names: 'typing.Dict[str, str]' = {}
         self._prompt_session: 'typing.Union[PromptSession, None]' = None
@@ -640,6 +666,10 @@ class CliSessionView:
             else:
                 self._spinner.resume()
                 self._spinner.set_label("waiting model")
+            return
+
+        if event.kind == "token_count":
+            self._update_context_window(event.payload.get("usage"))
             return
 
         if event.kind == "stream_error":
@@ -850,6 +880,7 @@ class CliSessionView:
             self.set_input_active(False, resume_spinner=False)
 
     def build_input_prompt(self, prompt: 'str') -> 'str':
+        prompt = self._format_main_prompt(prompt)
         if not self._input_active:
             return prompt
         if self._streaming and self._streaming_in_prompt:
@@ -860,6 +891,29 @@ class CliSessionView:
         if not prompt_line:
             return prompt
         return f"{prompt_line}\n{prompt}"
+
+    def _update_context_window(self, usage: 'object') -> 'None':
+        if self._context_window_tokens is None:
+            return
+        if not isinstance(usage, dict):
+            self._context_remaining_percent = None
+            return
+        try:
+            total_tokens = int(usage["total_tokens"])
+        except (KeyError, TypeError, ValueError):
+            self._context_remaining_percent = None
+            return
+        self._context_remaining_percent = percent_of_context_window_remaining(
+            total_tokens,
+            self._context_window_tokens,
+        )
+
+    def _format_main_prompt(self, prompt: 'str') -> 'str':
+        if prompt != DEFAULT_MAIN_PROMPT:
+            return prompt
+        if self._context_remaining_percent is None:
+            return prompt
+        return f"pyco({self._context_remaining_percent}%)> "
 
     def show_steer_queued(self, turn_id: 'str', prompt: 'str') -> 'None':
         preview = shorten_title(prompt, limit=72)
@@ -884,6 +938,15 @@ class CliSessionView:
         self._spinner.close()
         if self._stdout_proxy is not None:
             self._stdout_proxy.close()
+
+    def set_context_window_tokens(
+        self,
+        context_window_tokens: 'typing.Union[int, None]',
+    ) -> 'None':
+        self._context_window_tokens = context_window_tokens
+        self._context_remaining_percent = (
+            100 if context_window_tokens is not None else None
+        )
 
     def finish_stream(self) -> 'None':
         self._finish_stream()

@@ -548,6 +548,20 @@ class ResponsesModelClient:
                 continue
 
             if event_type == "response.completed":
+                response_payload = payload.get("response")
+                usage = None
+                if isinstance(response_payload, dict):
+                    response_usage = response_payload.get("usage")
+                    if isinstance(response_usage, dict):
+                        usage = dict(response_usage)
+                elif isinstance(payload.get("usage"), dict):
+                    usage = dict(payload["usage"])
+                event_handler(
+                    ModelStreamEvent(
+                        kind="token_count",
+                        payload={"usage": usage},
+                    )
+                )
                 saw_completed = True
                 break
 

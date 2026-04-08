@@ -291,6 +291,8 @@ class AgentLoop:
             self._emit("assistant_delta", turn_id, **event.payload)
         elif event.kind == "tool_call":
             self._emit("tool_called", turn_id, **event.payload)
+        elif event.kind == "token_count":
+            self._emit("token_count", turn_id, **event.payload)
         elif event.kind == "stream_error":
             self._emit("stream_error", turn_id, **event.payload)
 

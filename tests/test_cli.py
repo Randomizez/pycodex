@@ -2170,6 +2170,35 @@ def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
     assert "waiting model" in rendered
 
 
+def test_cli_session_view_formats_prompt_with_context_remaining_percent() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _configure_cli_view_output(
+        CliSessionView(context_window_tokens=100_000),
+        output,
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="token_count",
+            turn_id="turn_1",
+            payload={"usage": {"total_tokens": 20_800}},
+        )
+    )
+    view.set_input_active(True)
+
+    assert view.build_input_prompt("pycodex> ") == "pyco(90%)> "
+
+
+def test_cli_session_view_shows_full_context_on_initial_prompt() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _configure_cli_view_output(
+        CliSessionView(context_window_tokens=100_000),
+        output,
+    )
+    view.set_input_active(True)
+
+    assert view.build_input_prompt("pycodex> ") == "pyco(100%)> "
+
+
 def test_cli_session_view_shows_prompt_managed_streaming_text() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)

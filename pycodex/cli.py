@@ -522,7 +522,9 @@ async def run_interactive_session(
     config_path: 'typing.Union[str, None]' = None,
 ) -> 'int':
     worker = asyncio.create_task(runtime.run_forever())
+    context_window_tokens = runtime._agent_loop._context_manager.resolve_model_context_window()
     view = CliSessionView()
+    view.set_context_window_tokens(context_window_tokens)
     model_client = runtime._agent_loop._model_client
     codex_home = resolve_codex_home(config_path)
     runtime.set_event_handler(view.handle_event)
