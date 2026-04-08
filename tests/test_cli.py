@@ -2121,6 +2121,29 @@ def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
     assert output == ["Session: hello", "user> hello", "[exec] pwd"]
 
 
+def test_cli_session_view_tool_started_uses_call_arguments_in_spinner_label() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="tool_started",
+            turn_id="turn_1",
+            payload={
+                "tool_name": "exec_command",
+                "call_id": "call_1",
+                "call": ToolCall(
+                    call_id="call_1",
+                    name="exec_command",
+                    arguments={"cmd": "pwd"},
+                ),
+            },
+        )
+    )
+
+    assert view._spinner._label == "running exec_command({'cmd': 'pwd'})"
+
+
 def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)

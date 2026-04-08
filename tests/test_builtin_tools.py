@@ -804,10 +804,7 @@ async def test_apply_patch_tool_applies_multiple_operations_atomically(tmp_path)
         "Exit code: 0\n"
         "Wall time: 0 seconds\n"
         "Output:\n"
-        "Success. Updated the following files:\n"
-        "A nested/new.txt\n"
-        "M modify.txt\n"
-        "D delete.txt\n"
+        "Success: A nested/new.txt M modify.txt D delete.txt\n"
     )
     assert (tmp_path / "nested" / "new.txt").read_text() == "created\n"
     assert target.read_text() == "line1\nchanged\n"

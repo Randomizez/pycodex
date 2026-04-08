@@ -250,7 +250,12 @@ class AgentLoop:
         call: 'ToolCall',
         prior_results: 'typing.Tuple[ToolResult, ...]' = (),
     ) -> 'ToolResult':
-        self._emit("tool_started", turn_id, tool_name=call.name, call_id=call.call_id)
+        payload: 'typing.Dict[str, object]' = {
+            "tool_name": call.name,
+            "call_id": call.call_id,
+            "call": call,
+        }
+        self._emit("tool_started", turn_id, **payload)
         result = await self._tool_registry.execute(
             call,
             ToolContext(
@@ -259,13 +264,8 @@ class AgentLoop:
                 collaboration_mode=self._context_manager.collaboration_mode,
             ),
         )
-        payload: 'typing.Dict[str, object]' = {
-            "tool_name": call.name,
-            "call_id": call.call_id,
-            "is_error": result.is_error,
-            "call": call,
-            "result": result,
-        }
+        payload["result"] = result
+        payload["is_error"] = result.is_error
         self._emit("tool_completed", turn_id, **payload)
         return result
 

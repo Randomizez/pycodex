@@ -330,11 +330,11 @@ class ApplyPatchTool(BaseTool):
         buckets = {"A": [], "M": [], "D": []}
         for path, status in summaries.items():
             buckets[status].append(path.relative_to(self._workspace_root).as_posix())
-        lines = ["Success. Updated the following files:"]
+        lines = ["Success:"]
         for status in ("A", "M", "D"):
             for rel_path in sorted(buckets[status]):
                 lines.append(f"{status} {rel_path}")
-        return "\n".join(lines) + "\n"
+        return " ".join(lines) + "\n"
 
     def _format_result(self, output: 'str', exit_code: 'int') -> 'str':
         return (

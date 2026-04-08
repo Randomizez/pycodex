@@ -34,13 +34,15 @@ def _stream_events(response_server: 'ResponseServer', request_body: 'typing.Dict
         for event_name, payload in event_iter:
             yield _format_sse_event(event_name, payload)
     except OutcommingChatError as exc:
+        
+        import traceback
         yield _format_sse_event(
             "response.failed",
             {
                 "type": "response.failed",
                 "response": {
                     "error": {
-                        "message": str(exc),
+                        "message": '\n'.join(traceback.format_exception(exc)),
                     }
                 },
             },

@@ -695,16 +695,26 @@ class CliSessionView:
                     self._spinner.pause()
                 else:
                     self._spinner.resume()
-                    self._spinner.set_label("running tools")
+                    self._spinner.set_label("running provider tools")
             return
 
         if event.kind == "tool_started":
             self._finish_stream()
+            tool_name = str(event.payload.get("tool_name", "")).strip()
+            call = event.payload.get("call")
+            args = None
+            if isinstance(call, ToolCall):
+                args = call.arguments
             if self._input_active:
                 self._spinner.pause()
             else:
                 self._spinner.resume()
-                self._spinner.set_label("running tools")
+                if tool_name and args is not None:
+                    self._spinner.set_label(f"running {tool_name}({args})")
+                elif tool_name:
+                    self._spinner.set_label(f"running {tool_name}")
+                else:
+                    self._spinner.set_label("running provider tools")
             return
 
         if event.kind == "tool_completed":
