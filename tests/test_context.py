@@ -55,6 +55,22 @@ def test_context_manager_resolves_model_instructions_from_models_json() -> 'None
     assert "Always use apply_patch for manual code edits." in instructions
 
 
+@pytest.mark.parametrize("model", ["step-3.5-flash", "step-3.5-flash-2603"])
+def test_context_manager_resolves_model_instructions_from_step_models_json_entry(model) -> 'None':
+    manager = ContextManager(
+        config=ContextConfig(model=model, personality="pragmatic")
+    )
+
+    instructions = manager.resolve_base_instructions()
+
+    assert instructions.startswith(
+        "You are Codex, a coding agent based on Step-3.5 Flash."
+    )
+    assert "GPT-5" not in instructions
+    assert "You are a deeply pragmatic, effective software engineer." in instructions
+    assert "Always use apply_patch for manual code edits." in instructions
+
+
 def test_context_manager_builds_official_style_context_messages(
     tmp_path,
     monkeypatch,
