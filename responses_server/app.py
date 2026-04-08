@@ -36,13 +36,14 @@ def _stream_events(response_server: 'ResponseServer', request_body: 'typing.Dict
     except OutcommingChatError as exc:
         
         import traceback
+        exc_info = traceback.format_exception(type(exc), exc, exc.__traceback__)
         yield _format_sse_event(
             "response.failed",
             {
                 "type": "response.failed",
                 "response": {
                     "error": {
-                        "message": '\n'.join(traceback.format_exception(exc)),
+                        "message": '\n'.join(exc_info),
                     }
                 },
             },

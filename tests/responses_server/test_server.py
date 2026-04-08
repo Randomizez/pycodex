@@ -1494,7 +1494,16 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
         )
         with response:
             status = response.status_code
-            body = response.text
+            # Collect SSE lines manually to avoid ChunkedEncodingError on Python 3.8
+            # when the downstream stream is truncated. requests may raise after we've
+            # already consumed some chunks, so we read iter_lines() and stop on error.
+            lines = []
+            try:
+                for line in response.iter_lines(decode_unicode=True):
+                    lines.append(line)
+            except requests.exceptions.ChunkedEncodingError:
+                pass  # Expected on truncated stream, partial lines already collected
+            body = "\n".join(lines)
     finally:
         server.stop()
         downstream_thread.join(timeout=5)
