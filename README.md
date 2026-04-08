@@ -51,7 +51,7 @@ Intentionally not included yet:
 
 - TUI / streaming incremental rendering
 - MCP / connectors / sandbox / approvals
-- memory / compact / hooks / review mode
+- memory / compact / review mode
 - a full production OpenAI adapter surface
 
 All of those can be layered on later. For now, the project is focused on
@@ -153,9 +153,21 @@ Current behavior:
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
 - assistant text is printed from streaming deltas directly
-- interactive mode supports `/history`, `/title`, and `/model`
+- interactive mode supports `/history`, `/title`, `/model`, and `/resume`
 - `/model <name>` switches the model used by later turns in the current
   interactive session; `/model` shows the current model and available choices
+- `/resume` with no argument lists the currently resumable sessions by their
+  first user-message preview; `/resume 1` resumes the first listed session
+- `/resume <number>` replaces the in-memory history with the selected recorded
+  Codex rollout from `CODEX_HOME/sessions`
+- new sessions are now recorded under `CODEX_HOME/sessions/.../rollout-*.jsonl`
+  with a stable session/thread id and per-item append+flush semantics so
+  `/resume` reads back the same rollout format
+- if `TURN_HOOK.md` exists in the workspace root and is non-empty, each
+  completed turn also forks the just-finished history into a temporary,
+  non-persisted follow-up session and submits the file contents as the next
+  user instruction; this is intended for side-effect follow-ups such as
+  Feishu notifications
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;
