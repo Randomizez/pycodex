@@ -2762,6 +2762,7 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
                 f'base_url = "http://127.0.0.1:{httpd.server_port}/v1"',
                 'env_key = "NEO_KEY"',
                 'wire_api = "responses"',
+                'stream_max_retries = 0',
             ]
         )
     )
@@ -2924,6 +2925,7 @@ async def test_go_on_after_network_drop_does_not_replay_partial_reasoning_or_too
                 f'base_url = "http://127.0.0.1:{httpd.server_port}/v1"',
                 'env_key = "NEO_KEY"',
                 'wire_api = "responses"',
+                'stream_max_retries = 0',
             ]
         )
     )

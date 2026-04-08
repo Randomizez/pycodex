@@ -9,6 +9,7 @@
 - 会话协议先收敛到 4 类 item：`UserMessage`、`AssistantMessage`、`ToolCall`、`ToolResult`；只有这层稳定后再扩 richer event model。
 - 优先保持主循环可测试、可替换：模型侧通过 `ModelClient` 协议接入；测试专用的 `ScriptedModelClient` 放在 `tests/fakes.py`，不要放进运行时包。
 - `ResponsesModelClient` 直接复用 `~/.codex/config.toml` 的 provider 配置；当前已验证这里的 responses provider 需要 `stream = true`，否则会返回 `400` 和 `Stream must be set to true`。
+- 现在 `ResponsesModelClient` 默认会对流式断连做 provider 级自动重试（`stream_max_retries` 默认 5）；写 CLI/REPL 测试时如果断言“先向用户报错，再靠下一句 `go on` 继续”，必须在测试 provider 配置里显式设 `stream_max_retries = 0`，否则测试可能一直等不到预期错误而卡住。
 - `responses_server` compat 层应透传请求里的 `model`；不要再做 “取 downstream /models 第一个 id 并强制覆盖请求模型” 这种兜底兼容。
 - 对 `model_provider = "vllm"`，`responses_server` 仍然走 `/v1/chat/completions` compat 路径，但要保留 reasoning：把 chat chunk 里的 `reasoning` / `reasoning_content` 翻回 Responses `reasoning` item，并把历史里的 Responses `reasoning` item 回放成下游 assistant message 的 `reasoning` 字段。
 - `responses_server` 的 provider-specific chat payload 定制统一放在 `responses_server/payload_processors.py`：使用 `CompatServerConfig.model_provider` 选择 `provider_name -> proc_fn(outcomming_request)` 映射，并且只在真正发出 downstream `/v1/chat/completions` 前 post-process；`StreamRouter` 内部继续保留 canonical payload，避免 tool hydration / mock web_search follow-up 被 provider 改写污染。
