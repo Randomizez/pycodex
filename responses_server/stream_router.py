@@ -6,6 +6,12 @@ import urllib.error
 import urllib.request
 
 from .config import CompatServerConfig
+from .messages_api import (
+    MessagesAPIAdapterError,
+    build_messages_request,
+    iter_chat_chunks as iter_chat_chunks_from_messages,
+    saw_message_stop as messages_saw_message_stop,
+)
 from .session_store import StoredResponse
 from .tools import WebSearchTool, collect_custom_tool_names
 from .tools.custom_adapter import (
@@ -130,6 +136,13 @@ class StreamRouter:
             ),
             "stream": True,
         }
+        max_tokens = self._coerce_positive_int(
+            incomming_request.get("max_output_tokens")
+        )
+        if max_tokens is None:
+            max_tokens = self._coerce_positive_int(incomming_request.get("max_tokens"))
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if self._supports_stream_usage():
             payload["stream_options"] = {"include_usage": True}
 
@@ -150,6 +163,19 @@ class StreamRouter:
         return payload
 
     def open_outcomming_stream(self, outcomming_request: 'typing.Dict[str, object]'):
+        outcomming_api = self._config.normalized_outcomming_api()
+        if outcomming_api == "messages":
+            return self._open_outcomming_messages_stream(outcomming_request)
+        if outcomming_api != "chat_completions":
+            raise OutcommingChatError(
+                f"unsupported outcomming API: {self._config.outcomming_api!r}"
+            )
+        return self._open_outcomming_chat_stream(outcomming_request)
+
+    def _open_outcomming_chat_stream(
+        self,
+        outcomming_request: 'typing.Dict[str, object]',
+    ):
         request = urllib.request.Request(
             self._config.outcomming_chat_completions_url(),
             data=json.dumps(outcomming_request).encode("utf-8"),
@@ -194,6 +220,67 @@ class StreamRouter:
         except urllib.error.URLError as exc:
             raise OutcommingChatError(
                 f"outcomming chat request failed: {exc.reason}"
+            ) from exc
+
+    def _open_outcomming_messages_stream(
+        self,
+        outcomming_request: 'typing.Dict[str, object]',
+    ):
+        try:
+            messages_request = build_messages_request(outcomming_request)
+        except MessagesAPIAdapterError as exc:
+            raise OutcommingChatError(str(exc)) from exc
+
+        request = urllib.request.Request(
+            self._config.outcomming_messages_url(),
+            data=json.dumps(messages_request).encode("utf-8"),
+            headers=self._build_headers(accept="text/event-stream"),
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(
+                request,
+                context=ssl.create_default_context(),
+                timeout=self._config.timeout_seconds,
+            ) as response:
+                try:
+                    stream_state: 'typing.Dict[str, object]' = {}
+                    for event_name, data in self._iter_sse_events(response):
+                        if not data:
+                            continue
+                        payload = json.loads(data)
+                        if not isinstance(payload, dict):
+                            continue
+                        for chunk in iter_chat_chunks_from_messages(
+                            event_name,
+                            payload,
+                            stream_state,
+                        ):
+                            yield chunk
+                    if not messages_saw_message_stop(stream_state):
+                        raise OutcommingChatError(
+                            "outcomming messages stream ended before `message_stop`"
+                        )
+                except (
+                    ConnectionError,
+                    EOFError,
+                    OSError,
+                    http.client.HTTPException,
+                    json.JSONDecodeError,
+                    MessagesAPIAdapterError,
+                ) as exc:
+                    raise OutcommingChatError(
+                        "outcomming messages stream failed while reading response body: "
+                        f"{exc}"
+                    ) from exc
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            raise OutcommingChatError(
+                f"outcomming messages request failed with status {exc.code}: {body[:500]}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise OutcommingChatError(
+                f"outcomming messages request failed: {exc.reason}"
             ) from exc
 
     def route_stream(
@@ -438,6 +525,13 @@ class StreamRouter:
 
         flush_pending_assistant()
         return messages
+
+    def _coerce_positive_int(self, raw_value: 'object') -> 'typing.Union[int, None]':
+        if isinstance(raw_value, bool):
+            return None
+        if isinstance(raw_value, int) and raw_value > 0:
+            return raw_value
+        return None
 
     def _coalesce_content_text(self, raw_content: 'object') -> 'str':
         if raw_content is None:

@@ -55,12 +55,18 @@ def build_parser() -> 'argparse.ArgumentParser':
         prog="python -m responses_server",
         description=(
             "Standalone localhost `/v1/responses` server that translates the "
-            "Codex/Responses subset onto an outcomming `/v1/chat/completions` backend."
+            "Codex/Responses subset onto an outcomming `/v1/chat/completions` "
+            "or `/v1/messages` backend."
         ),
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8001)
     parser.add_argument("--outcomming-base-url", required=True)
+    parser.add_argument(
+        "--outcomming-api",
+        default="chat_completions",
+        choices=["chat_completions", "messages"],
+    )
     parser.add_argument("--outcomming-api-key-env", default=None)
     parser.add_argument("--model-provider", default=None)
     parser.add_argument("--timeout-seconds", type=float, default=120.0)
@@ -80,10 +86,12 @@ def launch_chat_completion_compat_server(
     base_url: 'str',
     api_key_env: 'typing.Union[str, None]' = None,
     model_provider: 'typing.Union[str, None]' = None,
+    outcomming_api: 'str' = "chat_completions",
 ):
     config = CompatServerConfig.from_base_url(
         base_url,
         api_key_env,
+        outcomming_api=outcomming_api,
         model_provider=model_provider,
     )
     server = ManagedResponseServer(config)
@@ -209,6 +217,7 @@ def main() -> 'None':
             host=args.host,
             port=args.port,
             outcomming_base_url=args.outcomming_base_url,
+            outcomming_api=args.outcomming_api,
             outcomming_api_key_env=args.outcomming_api_key_env,
             model_provider=args.model_provider,
             timeout_seconds=args.timeout_seconds,

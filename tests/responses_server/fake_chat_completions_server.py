@@ -182,13 +182,162 @@ def build_tool_call_chunks(
     return chunks
 
 
+def build_messages_text_events(
+    text: 'str',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'typing.List[typing.Dict[str, object]]':
+    return [
+        {
+            "event": "message_start",
+            "data": {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_mock",
+                    "type": "message",
+                    "model": model_id,
+                    "role": "assistant",
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 11},
+                },
+            },
+        },
+        {
+            "event": "content_block_start",
+            "data": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "text",
+                    "text": "",
+                },
+            },
+        },
+        {
+            "event": "content_block_delta",
+            "data": {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "text_delta",
+                    "text": text,
+                },
+            },
+        },
+        {
+            "event": "content_block_stop",
+            "data": {
+                "type": "content_block_stop",
+                "index": 0,
+            },
+        },
+        {
+            "event": "message_delta",
+            "data": {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "end_turn",
+                    "stop_sequence": None,
+                },
+                "usage": {"output_tokens": max(len(text), 1)},
+            },
+        },
+        {
+            "event": "message_stop",
+            "data": {
+                "type": "message_stop",
+            },
+        },
+    ]
+
+
+def build_messages_tool_use_events(
+    call_id: 'str',
+    tool_name: 'str',
+    arguments_parts: 'typing.List[str]',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'typing.List[typing.Dict[str, object]]':
+    return [
+        {
+            "event": "message_start",
+            "data": {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_mock",
+                    "type": "message",
+                    "model": model_id,
+                    "role": "assistant",
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {"input_tokens": 11},
+                },
+            },
+        },
+        {
+            "event": "content_block_start",
+            "data": {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": call_id,
+                    "name": tool_name,
+                    "input": {},
+                },
+            },
+        },
+        *[
+            {
+                "event": "content_block_delta",
+                "data": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": part,
+                    },
+                },
+            }
+            for part in arguments_parts
+        ],
+        {
+            "event": "content_block_stop",
+            "data": {
+                "type": "content_block_stop",
+                "index": 0,
+            },
+        },
+        {
+            "event": "message_delta",
+            "data": {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": "tool_use",
+                    "stop_sequence": None,
+                },
+                "usage": {"output_tokens": max(len(arguments_parts), 1)},
+            },
+        },
+        {
+            "event": "message_stop",
+            "data": {
+                "type": "message_stop",
+            },
+        },
+    ]
+
+
 def build_test_app(
     capture_store: 'CaptureStore',
     stream_chunks: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]]]',
     model_id: 'str' = DEFAULT_MODEL_ID,
+    messages_events: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]], None]' = None,
 ) -> 'FastAPI':
     app = FastAPI(title="FakeChat", version="0.1.0")
     chat_completion_count = 0
+    messages_count = 0
 
     async def write_capture(request: 'Request', body: 'object') -> 'None':
         request_id = capture_store.next_request_id()
@@ -238,6 +387,38 @@ def build_test_app(
             },
         )
 
+    @app.post("/messages")
+    @app.post("/v1/messages")
+    async def messages(request: 'Request'):
+        nonlocal messages_count
+        try:
+            decoded_body: 'object' = await request.json()
+        except Exception:
+            decoded_body = (await request.body()).decode("utf-8", errors="replace")
+        await write_capture(request, decoded_body)
+        messages_count += 1
+        selected_events = _select_stream_chunks(messages_events or [], messages_count)
+
+        def event_stream():
+            for raw_event in selected_events:
+                if not isinstance(raw_event, dict):
+                    continue
+                payload = raw_event.get("data", raw_event)
+                event_name = str(raw_event.get("event", "message")).strip() or "message"
+                yield (
+                    f"event: {event_name}\n"
+                    f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                ).encode("utf-8")
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "close",
+            },
+        )
+
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def fallback(path: 'str', request: 'Request'):
         body: 'object' = None
@@ -259,6 +440,21 @@ def build_test_server(
 ) -> 'RunningFastAPITestServer':
     return RunningFastAPITestServer(
         build_test_app(capture_store, stream_chunks, model_id=model_id)
+    )
+
+
+def build_messages_server(
+    capture_store: 'CaptureStore',
+    messages_events: 'typing.Union[typing.List[typing.Dict[str, object]], typing.List[typing.List[typing.Dict[str, object]]]]',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+) -> 'RunningFastAPITestServer':
+    return RunningFastAPITestServer(
+        build_test_app(
+            capture_store,
+            [],
+            model_id=model_id,
+            messages_events=messages_events,
+        )
     )
 
 

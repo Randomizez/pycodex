@@ -21,6 +21,7 @@
 - incomming `POST /v1/responses`
 - incomming `GET /v1/models`
 - outcomming `POST /v1/chat/completions`
+- outcomming `POST /v1/messages`（通过边界适配复用同一套 canonical chat request / stream routing）
 - 流式 assistant 文本
 - vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
@@ -42,13 +43,13 @@
 ## Incomming / Outcomming 分层
 
 - incomming：面向 Codex 的 Responses 子集
-- outcomming：面向 backend 的 chat completions 子集
+- outcomming：面向 backend 的 chat-completions / messages 兼容子集
 
 当前职责拆分：
 
 - `responses_server/app.py`：FastAPI app 和 CLI 入口
 - `responses_server/server.py`：`ResponseServer`，负责持有 `SessionStore` 和 `StreamRouter`
-- `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming chat 请求和流路由；对 `model_provider = "vllm"` 额外适配 chat-level reasoning
+- `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming request 和流路由；对 `model_provider = "vllm"` 额外适配 chat-level reasoning
 - `responses_server/payload_processors.py`：按 `CompatServerConfig.model_provider` 选择 provider-specific payload `post_process`
 - `responses_server/tools/`：provider 侧工具适配层；当前放 mock `web_search` 和 custom-tool function wrapper
 - `responses_server/session_store.py`：最小隐藏状态存储
@@ -63,6 +64,15 @@ uv run python -m responses_server \
   --model-provider vllm
 ```
 
+如果下游不是 `/v1/chat/completions`，而是 Anthropic/Claude 风格的
+`/v1/messages`，再额外加：
+
+```bash
+uv run python -m responses_server \
+  --outcomming-base-url http://127.0.0.1:8000/v1 \
+  --outcomming-api messages
+```
+
 默认会在本地启动一个 incomming Responses 服务；真正监听地址由 `--host` 和 `--port`
 控制。
 
@@ -72,6 +82,15 @@ uv run python -m responses_server \
 对 canonical `outcomming_request` 调一次这个 hook，默认按 `vllm` 处理。
 当前内置规则里，`vllm` 仍走 chat-completions compat 路径，但会额外保留
 reasoning；`stepfun` 会删除所有 `developer` role。
+
+`messages` compat 则故意不改这层 canonical request：仍然先构造 chat 风格
+`outcomming_request`，只有在真正发请求和读 SSE 时，才在边界把它翻译成
+messages request / event。这样 tool hydration、mock `web_search`
+follow-up、provider payload post-process 仍然复用同一套主逻辑。
+
+当前 messages 边界还会补一个兼容性细节：下游如果像 vLLM `0.19.0` 一样要求
+`max_tokens`，则优先透传上游请求里的 `max_output_tokens` / `max_tokens`；
+如果上游没给，当前默认补 `32000`，避免直接被下游 `400` 拒绝。
 
 ## 验证
 

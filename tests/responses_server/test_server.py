@@ -13,6 +13,9 @@ from responses_server.tools.custom_adapter import (
 )
 from tests.responses_server.fake_chat_completions_server import (
     CaptureStore,
+    build_messages_server as build_fake_messages_server,
+    build_messages_text_events,
+    build_messages_tool_use_events,
     build_test_server as build_fake_chat_server,
     build_text_chunks,
     build_tool_call_chunks,
@@ -77,6 +80,76 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> 'None':
         {"role": "developer", "content": "Be concise."},
         {"role": "user", "content": "hi"},
     ]
+
+
+def test_responses_server_streams_text_from_messages_backend(tmp_path) -> 'None':
+    capture_store = CaptureStore(tmp_path / "messages_capture")
+    fake_messages_server = build_fake_messages_server(
+        capture_store,
+        build_messages_text_events("Hello"),
+    )
+    fake_messages_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=(
+                f"http://127.0.0.1:{fake_messages_server.server_port}/v1"
+            ),
+            outcomming_api="messages",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "max_output_tokens": 7,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_messages_server.stop()
+
+    assert status == 200
+    assert "event: response.created" in body
+    assert '"type": "response.output_text.delta", "delta": "Hello"' in body
+    assert '"type": "response.output_item.done"' in body
+    assert '"type": "message"' in body
+    assert '"text": "Hello"' in body
+    assert "event: response.completed" in body
+
+    request_files = sorted((tmp_path / "messages_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["path"] == "/v1/messages"
+    assert request["body"] == {
+        "model": "gpt-5.4",
+        "messages": [
+            {
+                "role": "user",
+                "content": [{"type": "text", "text": "hi"}],
+            }
+        ],
+        "system": [{"type": "text", "text": "Be concise."}],
+        "max_tokens": 7,
+        "stream": True,
+    }
 
 
 def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
@@ -1083,6 +1156,88 @@ def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> 'Non
     ]
 
 
+def test_responses_server_adapts_custom_tools_for_messages_backend(tmp_path) -> 'None':
+    capture_store = CaptureStore(tmp_path / "messages_capture")
+    fake_messages_server = build_fake_messages_server(
+        capture_store,
+        build_messages_text_events("done"),
+    )
+    fake_messages_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=(
+                f"http://127.0.0.1:{fake_messages_server.server_port}/v1"
+            ),
+            outcomming_api="messages",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "patch it"}],
+                        }
+                    ],
+                    "tools": [
+                        {
+                            "type": "custom",
+                            "name": "apply_patch",
+                            "description": "Use apply_patch.",
+                            "format": {
+                                "type": "grammar",
+                                "syntax": "lark",
+                                "definition": "start: PATCH",
+                            },
+                        }
+                    ],
+                    "tool_choice": {"type": "custom", "name": "apply_patch"},
+                    "parallel_tool_calls": False,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_messages_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "messages_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["tool_choice"] == {
+        "type": "tool",
+        "name": "apply_patch",
+        "disable_parallel_tool_use": True,
+    }
+    assert request["body"]["max_tokens"] == 32000
+    assert request["body"]["tools"] == [
+        {
+            "name": "apply_patch",
+            "description": APPLY_PATCH_CHAT_DESCRIPTION,
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "input": {
+                        "type": "string",
+                        "description": APPLY_PATCH_CHAT_INPUT_DESCRIPTION,
+                    }
+                },
+                "required": ["input"],
+                "additionalProperties": False,
+            },
+        }
+    ]
+
+
 def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
     tmp_path,
 ) -> 'None':
@@ -1385,6 +1540,128 @@ def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None
     assert second_request["body"]["messages"][-1]["role"] == "tool"
     assert second_request["body"]["messages"][-1]["tool_call_id"] == "ws_1"
     assert json.loads(second_request["body"]["messages"][-1]["content"]) == {
+        "query": "github codex",
+        "queries": ["github codex"],
+        "results": [],
+        "mock": True,
+    }
+
+
+def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
+    tmp_path,
+) -> 'None':
+    capture_store = CaptureStore(tmp_path / "messages_capture")
+    fake_messages_server = build_fake_messages_server(
+        capture_store,
+        [
+            build_messages_tool_use_events(
+                "ws_1",
+                "web_search",
+                ['{"query":"github codex"}'],
+            ),
+            build_messages_text_events("done"),
+        ],
+    )
+    fake_messages_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=(
+                f"http://127.0.0.1:{fake_messages_server.server_port}/v1"
+            ),
+            outcomming_api="messages",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Search the web, then answer.",
+                                }
+                            ],
+                        }
+                    ],
+                    "tools": [
+                        {
+                            "type": "web_search",
+                            "external_web_access": True,
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_messages_server.stop()
+
+    assert status == 200
+    assert '"type": "web_search_call"' in body
+    assert '"id": "ws_1"' in body
+    assert '"query": "github codex"' in body
+    assert '"text": "done"' in body
+
+    request_files = sorted((tmp_path / "messages_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 2
+    first_request = json.loads(request_files[0].read_text())
+    second_request = json.loads(request_files[1].read_text())
+
+    assert first_request["body"]["tools"] == [
+        {
+            "name": "web_search",
+            "description": (
+                "Mock web search tool for Responses compatibility. "
+                "Returns empty results."
+            ),
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Primary search query.",
+                    },
+                    "queries": {
+                        "type": "array",
+                        "description": "Optional batch of search queries.",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": ["query"],
+            },
+        }
+    ]
+    assert first_request["body"]["max_tokens"] == 32000
+    assert second_request["body"]["messages"][-2] == {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": "ws_1",
+                "name": "web_search",
+                "input": {"query": "github codex"},
+            }
+        ],
+    }
+    assert second_request["body"]["messages"][-1]["role"] == "user"
+    assert second_request["body"]["messages"][-1]["content"][0]["type"] == "tool_result"
+    assert (
+        second_request["body"]["messages"][-1]["content"][0]["tool_use_id"] == "ws_1"
+    )
+    assert json.loads(second_request["body"]["messages"][-1]["content"][0]["content"]) == {
         "query": "github codex",
         "queries": ["github codex"],
         "results": [],

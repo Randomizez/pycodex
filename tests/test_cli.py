@@ -258,6 +258,13 @@ def test_build_parser_recognizes_vllm_endpoint() -> 'None':
     assert args.prompt == ["hello"]
 
 
+def test_build_parser_recognizes_use_messages_flag() -> 'None':
+    parser = build_parser()
+    args = parser.parse_args(["--use-messages", "hello"])
+    assert args.use_messages is True
+    assert args.prompt == ["hello"]
+
+
 def test_build_parser_recognizes_put_and_call_flags() -> 'None':
     parser = build_parser()
     args = parser.parse_args(
@@ -445,10 +452,12 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
         base_url,
         api_key_env=None,
         model_provider=None,
+        outcomming_api="chat_completions",
     ):
         started["endpoint"] = base_url
         started["api_key_env"] = api_key_env
         started["model_provider"] = model_provider
+        started["outcomming_api"] = outcomming_api
         return _FakeManagedServer()
 
     def fake_build_runtime(
@@ -490,6 +499,122 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     assert started["session_mode"] == "tui"
     assert started["prompt_text"] == "Reply with exactly OK."
     assert started["base_url_override"] == "http://127.0.0.1:18001/v1"
+    assert callable(registered["callback"])
+    registered["callback"]()
+    assert started["stopped"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_cli_launches_managed_responses_server_for_messages_backend(
+    monkeypatch,
+    tmp_path,
+) -> 'None':
+    started = {}
+    registered = {}
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "claude-opus-4-6"',
+                'model_provider = "opus"',
+                '[profiles.opus]',
+                'model = "claude-opus-4-6"',
+                'model_provider = "opus"',
+                '[model_providers.opus]',
+                'base_url = "https://models-proxy.stepfun-inc.com/v1"',
+                'env_key = "MODELS_PROXY_API_KEY"',
+            ]
+        )
+    )
+    monkeypatch.setenv("MODELS_PROXY_API_KEY", "test-key")
+
+    class _FakeManagedServer:
+        base_url = "http://127.0.0.1:18082/v1"
+
+        def stop(self):
+            started["stopped"] = True
+
+    class _FakeRuntime:
+        def __init__(self):
+            self._stopped = asyncio.Event()
+
+        def set_event_handler(self, _handler=None):
+            return None
+
+        async def run_forever(self):
+            await self._stopped.wait()
+
+        async def submit_user_turn(self, prompt_text):
+            started["prompt_text"] = prompt_text
+            return type(
+                "_Result",
+                (),
+                {
+                    "output_text": "OK",
+                    "turn_id": "turn_1",
+                    "iterations": 1,
+                    "response_items": (),
+                    "history": (),
+                },
+            )()
+
+        async def shutdown(self):
+            self._stopped.set()
+
+    def fake_launch(
+        base_url,
+        api_key_env=None,
+        model_provider=None,
+        outcomming_api="chat_completions",
+    ):
+        started["endpoint"] = base_url
+        started["api_key_env"] = api_key_env
+        started["model_provider"] = model_provider
+        started["outcomming_api"] = outcomming_api
+        return _FakeManagedServer()
+
+    def fake_build_runtime(
+        config_path,
+        profile,
+        system_prompt,
+        client,
+        session_mode="exec",
+        collaboration_mode="default",
+    ):
+        del config_path, profile, system_prompt, collaboration_mode
+        started["session_mode"] = session_mode
+        started["base_url_override"] = client._config.base_url
+        return _FakeRuntime()
+
+    monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
+    monkeypatch.setattr("pycodex.cli.build_runtime", fake_build_runtime)
+    monkeypatch.setattr(
+        "pycodex.cli.atexit.register",
+        lambda callback: registered.setdefault("callback", callback),
+    )
+    monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
+    monkeypatch.setattr("sys.stdin.read", lambda: "")
+
+    args = build_parser().parse_args(
+        [
+            "--config",
+            str(config_path),
+            "--profile",
+            "opus",
+            "--use-messages",
+            "Reply with exactly OK.",
+        ]
+    )
+    exit_code = await run_cli(args)
+
+    assert exit_code == 0
+    assert started["endpoint"] == "https://models-proxy.stepfun-inc.com/v1"
+    assert started["api_key_env"] == "MODELS_PROXY_API_KEY"
+    assert started["model_provider"] == "opus"
+    assert started["outcomming_api"] == "messages"
+    assert started["session_mode"] == "tui"
+    assert started["prompt_text"] == "Reply with exactly OK."
+    assert started["base_url_override"] == "http://127.0.0.1:18082/v1"
     assert callable(registered["callback"])
     registered["callback"]()
     assert started["stopped"] is True

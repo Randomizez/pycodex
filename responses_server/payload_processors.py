@@ -28,6 +28,7 @@ class OutgoingRequest(TypedDict):
     model: 'str'
     messages: 'typing.List[ChatMessage]'
     stream: 'bool'
+    max_tokens: 'Optional[int]'
     tools: 'Optional[typing.List[typing.Dict[str, object]]]'
     tool_choice: 'Optional[object]'
     parallel_tool_calls: 'Optional[bool]'

@@ -42,7 +42,6 @@ CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
 
-
 def launch_chat_completion_compat_server(*args, **kwargs):
     from responses_server import (
         launch_chat_completion_compat_server as launch_compat_server,
@@ -121,6 +120,15 @@ def build_parser() -> 'argparse.ArgumentParser':
         action="store_true",
         help=(
             "When set, pycodex starts a local responses compat server for this session."
+        ),
+    )
+    parser.add_argument(
+        "--use-messages",
+        default=False,
+        action="store_true",
+        help=(
+            "When set, pycodex starts a local responses compat server and routes "
+            "to a downstream /v1/messages backend for this session."
         ),
     )
     parser.add_argument(
@@ -373,12 +381,17 @@ def _build_model_client(
     managed_responses_base_url: 'typing.Union[str, None]' = None,
     vllm_endpoint: 'typing.Union[str, None]' = None,
     use_chat_completion: 'bool' = False,
+    use_messages: 'bool' = False,
 ):
     load_codex_dotenv(config_path)
     provider_config = ResponsesProviderConfig.from_codex_config(
         config_path,
         profile,
     )
+    if use_chat_completion and use_messages:
+        raise ValueError("--use-chat-completion and --use-messages cannot be combined")
+    if vllm_endpoint and use_messages:
+        raise ValueError("--vllm-endpoint and --use-messages cannot be combined")
     url, key_env = provider_config.base_url, provider_config.api_key_env
     if managed_responses_base_url is not None:
         url, key_env = (
@@ -386,7 +399,7 @@ def _build_model_client(
             LOCAL_RESPONSES_SERVER_API_KEY_ENV,
         )
         os.environ.setdefault(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
-    elif vllm_endpoint or use_chat_completion:
+    elif vllm_endpoint or use_chat_completion or use_messages:
         if vllm_endpoint:
             managed_server = launch_chat_completion_compat_server(
                 vllm_endpoint,
@@ -397,6 +410,9 @@ def _build_model_client(
                 provider_config.base_url,
                 provider_config.api_key_env,
                 model_provider=provider_config.provider_name,
+                outcomming_api=(
+                    "messages" if use_messages else "chat_completions"
+                ),
             )
         atexit.register(managed_server.stop)
         url, key_env = (
@@ -755,6 +771,7 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion,
+            use_messages=args.use_messages,
         )
 
         runtime = build_runtime(

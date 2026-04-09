@@ -138,6 +138,7 @@ pycodex "Summarize this repo in one sentence."
 printf 'Reply with exactly OK.' | pycodex
 pycodex --json "Reply with exactly OK."
 pycodex --profile model_proxy "Reply with exactly OK."
+pycodex --profile opus --use-messages "Reply with exactly OK."
 pycodex --vllm-endpoint http://127.0.0.1:18000 "Reply with exactly OK."
 pycodex --put @127.0.0.1:5577
 pycodex --put /data/.codex/@127.0.0.1:5577
@@ -190,6 +191,9 @@ Current behavior:
   historical `reasoning` items are replayed into downstream assistant messages
   via the `reasoning` field. Streaming token usage is also requested from vLLM
   and forwarded to the final `response.completed.response.usage`
+- standalone `responses_server` now also supports downstream `/v1/messages`
+  backends via `--outcomming-api messages`, while keeping the internal
+  canonical request/route logic in chat-completions shape
 - `pycodex doctor` checks config, `.env`, API keys, DNS, TCP/TLS, and an
   optional live Responses API request
 
