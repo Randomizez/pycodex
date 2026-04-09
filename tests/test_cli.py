@@ -2121,7 +2121,9 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
         "user> use a tool",
         '[tool] echo: {"echo":"hello"}',
     ]
-    assert stream_chunks == ["assistant> ", "done", "\n"]
+    assert stream_chunks[0].endswith("running echo({'text': 'hello'})")
+    assert stream_chunks[2].endswith("thinking")
+    assert stream_chunks[-3:] == ["assistant> ", "done", "\n"]
 
 
 def test_cli_session_view_formats_plan_and_exec_messages() -> 'None':
@@ -2667,7 +2669,8 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
         )
     )
 
-    assert stream_chunks == ["assistant> ", "Hel", "lo", "\n"]
+    assert stream_chunks[:4] == ["assistant> ", "Hel", "lo", "\n"]
+    assert stream_chunks[4].endswith("running exec_command")
     assert view._spinner._paused is False
     assert view._streaming is False
 

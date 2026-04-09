@@ -158,12 +158,28 @@ class Spinner:
             self._paused = False
 
     def clear(self) -> 'None':
-        if not self._enabled or not self._visible:
-            return
         with self._terminal_lock:
+            if not self._visible:
+                return
             self._raw_write("\r\x1b[2K")
             self._raw_flush()
             self._visible = False
+
+    def render_now(self) -> 'None':
+        if not self._turn_active or self._paused:
+            return
+        frame = colorize_cli_message(
+            build_cli_spinner_frame(self._index, self._label),
+            "status",
+            self._color_enabled,
+        )
+        self._index += 1
+        with self._terminal_lock:
+            if not self._turn_active or self._paused:
+                return
+            self._raw_write(f"\r\x1b[2K{frame}")
+            self._raw_flush()
+            self._visible = True
 
     def close(self) -> 'None':
         self.finish_turn()
@@ -726,6 +742,7 @@ class CliSessionView:
                 else:
                     self._spinner.resume()
                     self._spinner.set_label("running provider tools")
+                    self._spinner.render_now()
             return
 
         if event.kind == "tool_started":
@@ -745,15 +762,11 @@ class CliSessionView:
                     self._spinner.set_label(f"running {tool_name}")
                 else:
                     self._spinner.set_label("running provider tools")
+                self._spinner.render_now()
             return
 
         if event.kind == "tool_completed":
             self._finish_stream()
-            if self._input_active:
-                self._spinner.pause()
-            else:
-                self._spinner.resume()
-                self._spinner.set_label("thinking")
             tool_name, summary, is_error = extract_tool_event_display(event.payload)
             summary = self._rewrite_agent_summary(tool_name, summary)
             if tool_name == "update_plan" and not is_error:
@@ -762,6 +775,12 @@ class CliSessionView:
                     self._print_line(
                         colorize_cli_message(line, "plan", self._color_enabled)
                     )
+                if self._input_active:
+                    self._spinner.pause()
+                else:
+                    self._spinner.resume()
+                    self._spinner.set_label("thinking")
+                    self._spinner.render_now()
                 return
             message = format_cli_tool_message(
                 tool_name,
@@ -770,6 +789,12 @@ class CliSessionView:
             )
             self._remember_agent_name(tool_name, summary)
             self._print_line(self._colorize_formatted_tool_message(message))
+            if self._input_active:
+                self._spinner.pause()
+            else:
+                self._spinner.resume()
+                self._spinner.set_label("thinking")
+                self._spinner.render_now()
             return
 
         if event.kind == "turn_completed":
@@ -830,6 +855,8 @@ class CliSessionView:
 
     def resume_spinner(self) -> 'None':
         self._spinner.resume()
+        if not self._input_active:
+            self._spinner.render_now()
 
     def set_input_active(self, active: 'bool', resume_spinner: 'bool' = True) -> 'None':
         self._input_active = active
