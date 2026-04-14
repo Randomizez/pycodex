@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-codex"
-version = "0.1.6"
+version = "0.1.7"
 description = "A minimal Python extraction of Codex's main agent loop"
 readme = "README.md"
 requires-python = ">=3.6.2"
