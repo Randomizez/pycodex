@@ -16,8 +16,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 import json
 from pathlib import Path
+import traceback
 
 from ..protocol import ConversationItem, JSONDict, JSONValue, ToolCall, ToolResult, ToolSpec
+from ..utils import get_debug_dir
 import typing
 
 EXEC_TOOLS_SNAPSHOT_PATH = (
@@ -140,6 +142,20 @@ class ToolRegistry:
                 tool_type=call.tool_type,
             )
         except Exception as exc:  # pragma: no cover - defensive wrapper
+            if (debug_dir := get_debug_dir()) is not None:
+                with (debug_dir / "tool_errors.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(
+                        json.dumps(
+                            {
+                                "tool": call.name,
+                                "call_id": call.call_id,
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "traceback": traceback.format_exc(),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    handle.write("\n")
             return ToolResult(
                 call_id=call.call_id,
                 name=call.name,

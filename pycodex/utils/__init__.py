@@ -1,4 +1,5 @@
 from .dotenv import DOTENV_FILENAME, load_codex_dotenv, parse_dotenv, parse_dotenv_value
+from .debug import get_debug_dir
 from .get_env import build_user_agent, get_shell_name, get_timezone_name
 from .random_ids import uuid7_string
 from .compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
@@ -31,6 +32,7 @@ __all__ = [
     "format_cli_plan_messages",
     "format_cli_tool_call_message",
     "format_cli_tool_message",
+    "get_debug_dir",
     "get_shell_name",
     "get_timezone_name",
     "load_codex_dotenv",

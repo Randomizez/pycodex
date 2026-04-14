@@ -7,6 +7,7 @@ import os
 import shlex
 import sys
 import tempfile
+import traceback
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
@@ -20,7 +21,7 @@ from .portable import bootstrap_called_home, upload_codex_home
 from .protocol import AgentEvent
 from .runtime import AgentRuntime
 from .runtime_services import RuntimeEnvironment, create_runtime_environment
-from .utils import CliSessionView, load_codex_dotenv, uuid7_string
+from .utils import CliSessionView, get_debug_dir, load_codex_dotenv, uuid7_string
 from .utils.compactor import compact_agent_loop
 from .utils.session_persist import (
     SessionRolloutRecorder,
@@ -57,9 +58,9 @@ def configure_loguru() -> 'None':
         return
 
     logger.remove()
-    log_path = os.environ.get("PYCODEX_DEBUG_LOG", "").strip()
-    if log_path:
-        logger.add(log_path, level="DEBUG")
+    debug_dir = get_debug_dir()
+    if debug_dir is not None:
+        logger.add(str(debug_dir / "loguru.log"), level="DEBUG")
         return
 
     if os.environ.get("PYCODEX_DEBUG_STDERR", "").strip().lower() in {
@@ -743,6 +744,8 @@ async def run_interactive_session(
 async def run_cli(args: 'argparse.Namespace') -> 'int':
     runtime = None
     worker = None
+    debug_dir = get_debug_dir()
+    phase_handle = None if debug_dir is None else (debug_dir / "phase.log").open("a", encoding="utf-8")
     try:
         if args.put is not None and args.call:
             raise ValueError("--put and --call cannot be combined")
@@ -762,9 +765,18 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             print(f"pycodex --call {shlex.quote(call_spec)}", flush=True)
             return 0
         if args.call:
+            if phase_handle is not None:
+                phase_handle.write("bootstrap_called_home:start\n")
+                phase_handle.flush()
             config_path = bootstrap_called_home(args.call)
+            if phase_handle is not None:
+                phase_handle.write("bootstrap_called_home:done\n")
+                phase_handle.flush()
             args.config = str(config_path)
             os.environ["CODEX_HOME"] = str(config_path.parent)
+        if phase_handle is not None:
+            phase_handle.write("build_model_client:start\n")
+            phase_handle.flush()
         client = _build_model_client(
             args.config,
             args.profile,
@@ -773,7 +785,13 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             use_chat_completion=args.use_chat_completion,
             use_messages=args.use_messages,
         )
+        if phase_handle is not None:
+            phase_handle.write("build_model_client:done\n")
+            phase_handle.flush()
 
+        if phase_handle is not None:
+            phase_handle.write("build_runtime:start\n")
+            phase_handle.flush()
         runtime = build_runtime(
             args.config,
             args.profile,
@@ -781,6 +799,9 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             client,
             session_mode="tui",
         )
+        if phase_handle is not None:
+            phase_handle.write("build_runtime:done\n")
+            phase_handle.flush()
         if should_run_interactive(args.prompt, sys.stdin.isatty()):
             return await run_interactive_session(
                 runtime,
@@ -790,13 +811,28 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
         else:
             prompt_text = resolve_prompt_text(args.prompt)
             worker = asyncio.create_task(runtime.run_forever())
+            if phase_handle is not None:
+                phase_handle.write("submit_user_turn:start\n")
+                phase_handle.flush()
             result = await runtime.submit_user_turn(prompt_text)
+            if phase_handle is not None:
+                phase_handle.write("submit_user_turn:done\n")
+                phase_handle.flush()
             print(format_turn_output(result, args.json))
             return 0
     except Exception as exc:
+        if phase_handle is not None:
+            phase_handle.write("fatal_exception\n")
+            phase_handle.flush()
+        if debug_dir is not None:
+            (debug_dir / "fatal_error.txt").write_text(
+                traceback.format_exc(), encoding="utf-8"
+            )
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     finally:
+        if phase_handle is not None:
+            phase_handle.close()
         if runtime is not None and worker is not None:
             await runtime.shutdown()
             await worker
