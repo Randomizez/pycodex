@@ -35,6 +35,7 @@
 - 当前 `exec` / `wait` 已有一个最小 code-mode 实现：底层通过 Node 子进程运行 JavaScript，自带 `text` / `image` / `store` / `load` / `exit` / `notify` / `yield_control` helper，并允许通过 `tools.<name>(...)` 调回本地已注册工具；`web_search` 当前作为 Responses API provider-native tool declaration 暴露给模型，不经过本地 ToolRegistry 执行。
 - 我们支持的 tools 必须和原版 Codex 内置 tools 一一对应：名称、定位、参数形状、交互模型、输出语义都应尽量对齐；不要混合多个原版工具的语义做一个“折中工具”。
 - 代码风格上不要使用 `*` 定义 keyword-only 参数；接口默认允许位置参数。
+- runtime 包和会在 import 阶段执行的测试辅助代码需要保持 Python 3.6.2 语法兼容；不要引入 walrus `:=`、`match` 等仅 3.8+/3.10+ 可解析的新语法，哪怕分支在运行时不会走到。
 - 本仓库使用 `uv`；本地默认没有预装测试依赖，开始工作前先跑 `uv sync --dev`，验证用 `uv run pytest`。
 - 上游 Codex 的 `steer` 目前是 TUI 交互层能力：开启后 `Enter` 会立即提交，`Tab` 才是排队。对齐时优先盯“下一次发出去的请求体”而不是内部控制流；当前 `pycodex` 已把 steer/queue 语义下沉到 `AgentRuntime`，并让 `AgentLoop.run_turn(texts)` 一次接收一批 user texts，这样下一次请求的 `input` 可以把多个 steer 文本按顺序并到 history 尾部。`CliSessionView.handle_event()` 把 spinner 再次拉起。要保证输入不被遮挡，需要让 view 知道“当前正在输入”，并在 input-active 期间抑制这些事件对 spinner 的 resume。
 - steer 的最小交互反馈已经约定为两条显式状态文案：入队时打印 `[steer] queued: <prompt>`，该条 queued turn 真正开始执行时打印 `[steer] inserted: <prompt>`。后续如果补更复杂的 queue UI，也应保留这两个核心状态语义。

@@ -142,7 +142,8 @@ class ToolRegistry:
                 tool_type=call.tool_type,
             )
         except Exception as exc:  # pragma: no cover - defensive wrapper
-            if (debug_dir := get_debug_dir()) is not None:
+            debug_dir = get_debug_dir()
+            if debug_dir is not None:
                 with (debug_dir / "tool_errors.jsonl").open("a", encoding="utf-8") as handle:
                     handle.write(
                         json.dumps(
