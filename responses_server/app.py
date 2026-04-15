@@ -177,6 +177,7 @@ class ManagedResponseServer:
             self._app,
             host=self._config.host,
             port=self._config.port,
+            loop="asyncio",
             log_level="error",
             access_log=False,
         )

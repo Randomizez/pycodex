@@ -1794,3 +1794,12 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
         or "outcomming chat stream ended before [DONE]" in body
     )
     assert "event: response.completed" not in body
+
+
+def test_managed_response_server_forces_asyncio_loop() -> 'None':
+    server = ManagedResponseServer(
+        CompatServerConfig(
+            outcomming_base_url="http://127.0.0.1:8000/v1",
+        )
+    )
+    assert server._uvicorn_config.loop == "asyncio"
