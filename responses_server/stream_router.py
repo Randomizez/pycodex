@@ -27,6 +27,7 @@ from .tools.web_search import (
     hydrate_tool_call_names,
     partition_tool_calls,
 )
+from .trajectory_dump import TrajectoryDumpWriter
 import typing
 
 
@@ -285,10 +286,10 @@ class StreamRouter:
 
     def route_stream(
         self,
-        incomming_stream,
         stored_response: 'StoredResponse',
         outcomming_request: 'typing.Dict[str, object]',
         custom_tool_names: 'typing.Union[typing.Set[str], None]' = None,
+        trajectory_dump: 'typing.Union[TrajectoryDumpWriter, None]' = None,
     ):
         yield (
             "response.created",
@@ -307,7 +308,10 @@ class StreamRouter:
         reasoning_parts: 'typing.List[str]' = []
         latest_usage: 'typing.Dict[str, object]' = {}
         current_request = json.loads(json.dumps(outcomming_request))
-        current_stream = incomming_stream
+        current_stream = self._open_tracked_outcomming_stream(
+            current_request,
+            trajectory_dump,
+        )
 
         while True:
             tool_calls: 'typing.Dict[int, typing.Dict[str, object]]' = {}
@@ -352,7 +356,10 @@ class StreamRouter:
                     )
                 except ValueError as exc:
                     raise OutcommingChatError(str(exc)) from exc
-                current_stream = self.open_outcomming_stream(current_request)
+                current_stream = self._open_tracked_outcomming_stream(
+                    current_request,
+                    trajectory_dump,
+                )
                 continue
 
             for item in self._build_output_items(
@@ -393,6 +400,16 @@ class StreamRouter:
                 },
             },
         )
+
+    def _open_tracked_outcomming_stream(
+        self,
+        outcomming_request: 'typing.Dict[str, object]',
+        trajectory_dump: 'typing.Union[TrajectoryDumpWriter, None]' = None,
+    ):
+        outcomming_stream = self.open_outcomming_stream(outcomming_request)
+        if trajectory_dump is None:
+            return outcomming_stream
+        return trajectory_dump.wrap_stream(outcomming_stream)
 
     def _responses_input_to_chat_messages(
         self,

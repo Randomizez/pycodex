@@ -15,6 +15,7 @@
 - `responses_server` 的 provider-specific chat payload 定制统一放在 `responses_server/payload_processors.py`：使用 `CompatServerConfig.model_provider` 选择 `provider_name -> proc_fn(outcomming_request)` 映射，并且只在真正发出 downstream `/v1/chat/completions` 前 post-process；`StreamRouter` 内部继续保留 canonical payload，避免 tool hydration / mock web_search follow-up 被 provider 改写污染。
 - `responses_server` 如果要兼容下游 `/v1/messages`，也优先保持这条边界：内部继续用 canonical chat request / chat-like chunk 流，只有真正发请求和读取 SSE 时才做 messages 适配，这样 tool hydration、mock `web_search` follow-up、provider payload post-process 都能复用。
 - 真实 vLLM `0.19.0` 的 `/v1/messages` 会对缺失 `max_tokens` 直接返回 `400`；messages 适配层必须总是补这个字段。当前约定是优先透传请求里的 `max_output_tokens`/`max_tokens`，否则回退到默认 `32000`。
+- 对 vLLM chat-completions 打开 `return_token_ids=true` 时，streaming `prompt_token_ids` 只出现在首个 chunk，后续每个 chunk 的 `choices[*].token_ids` 都是 decode delta；要在 `responses_server` 侧导出 trajectory 时，按“首个 `prompt_token_ids` + 按序拼接所有 chunk 的 `token_ids`”重建即可。
 - `pycodex` 默认是最小交互 CLI；无 prompt 时进入 REPL，并通过 `AgentRuntime` 跑外层提交循环。当前会显示最小事件流、assistant 流式输出、简单 title/history（`/title`, `/history`），并默认注册一组与原版一一对应的本地工具子集。
 - 交互 CLI 的事件流展示优先表达用户可感知的阶段（例如工具开始/完成、模型回看工具结果），不要直接把内部 `iteration` 计数暴露成主要状态文案；`iterations` 应继续保留在 `TurnResult` 等程序化结果里。
 - prompt/context 相关逻辑统一放在 `pycodex/context.py`：`AgentLoop` 只维护真实会话历史；每轮请求前由 `ContextManager` 注入 base instructions、developer message、`AGENTS.md` 指令和 `<environment_context>`，且这些注入项不写回 history。

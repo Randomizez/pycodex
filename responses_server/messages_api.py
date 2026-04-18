@@ -66,6 +66,8 @@ def build_messages_request(
         "max_tokens": _resolve_max_tokens(outcomming_request),
         "stream": bool(outcomming_request.get("stream", True)),
     }
+    if isinstance(outcomming_request.get("return_token_ids"), bool):
+        payload["return_token_ids"] = bool(outcomming_request.get("return_token_ids"))
     if system_blocks:
         payload["system"] = system_blocks
 

@@ -102,20 +102,31 @@ class RunningFastAPITestServer:
             raise RuntimeError("timed out waiting for fake FastAPI server to stop")
 
 
-def build_text_chunks(text: 'str', model_id: 'str' = DEFAULT_MODEL_ID) -> 'typing.List[typing.Dict[str, object]]':
+def build_text_chunks(
+    text: 'str',
+    model_id: 'str' = DEFAULT_MODEL_ID,
+    prompt_token_ids: 'typing.Union[typing.List[int], None]' = None,
+    decode_token_ids: 'typing.Union[typing.List[int], None]' = None,
+) -> 'typing.List[typing.Dict[str, object]]':
+    first_chunk: 'typing.Dict[str, object]' = {
+        "id": "chatcmpl_mock",
+        "object": "chat.completion.chunk",
+        "model": model_id,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"role": "assistant", "content": text},
+                "finish_reason": None,
+            }
+        ],
+    }
+    if prompt_token_ids is not None:
+        first_chunk["prompt_token_ids"] = list(prompt_token_ids)
+    if decode_token_ids is not None:
+        first_chunk["choices"][0]["token_ids"] = list(decode_token_ids)
+
     return [
-        {
-            "id": "chatcmpl_mock",
-            "object": "chat.completion.chunk",
-            "model": model_id,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant", "content": text},
-                    "finish_reason": None,
-                }
-            ],
-        },
+        first_chunk,
         {
             "id": "chatcmpl_mock",
             "object": "chat.completion.chunk",

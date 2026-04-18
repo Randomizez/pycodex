@@ -32,6 +32,7 @@ class OutgoingRequest(TypedDict):
     tools: 'Optional[typing.List[typing.Dict[str, object]]]'
     tool_choice: 'Optional[object]'
     parallel_tool_calls: 'Optional[bool]'
+    return_token_ids: 'Optional[bool]'
 
 
 PayloadPostProcessor = Callable[[OutgoingRequest], OutgoingRequest]

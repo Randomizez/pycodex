@@ -26,6 +26,7 @@
 - vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
 - vLLM streaming `usage` -> final `response.completed.response.usage`
+- 当环境变量 `PYCODEX_DUMP` 存在时，为每条 outcomming 请求附加 `return_token_ids = true`，并把抓到的 `prompt_token_ids` / `token_ids` 以 JSONL 追加到 `{PYCODEX_DUMP}/dump.jsonl`
 - 下游 chat stream 如果半路断开，会转成上游可解析的 `response.failed` 事件，而不是直接截断 HTTP body
 - 普通 function tools
 - custom tools 的 function-wrapper 兼容适配
@@ -75,6 +76,19 @@ uv run python -m responses_server \
 
 默认会在本地启动一个 incomming Responses 服务；真正监听地址由 `--host` 和 `--port`
 控制。
+
+如果要导出下游 trajectory token id，可以在启动前设置：
+
+```bash
+export PYCODEX_DUMP=/tmp/pycodex-dump
+```
+
+server 会为每条实际转发到下游的请求附上 `return_token_ids = true`，并把
+trajectory 追加到 `${PYCODEX_DUMP}/dump.jsonl`，当前记录格式是：
+
+```json
+{"tokens":{"prefill":[1,2,3],"decode":[4,5,6]},"send_timestamp":2222.0}
+```
 
 如果下游 provider 需要对 chat payload 做定制化改写，可以在
 `responses_server/payload_processors.py` 里注册对应 `model_provider -> proc_fn`

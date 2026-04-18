@@ -3,6 +3,7 @@ from .config import CompatServerConfig
 from .payload_processors import post_process_outcomming_request
 from .session_store import SessionStore
 from .stream_router import StreamRouter
+from .trajectory_dump import TrajectoryDumpWriter
 import typing
 
 
@@ -16,6 +17,7 @@ class ResponseServer:
         self._config = config
         self._session_store = session_store or SessionStore()
         self._stream_router = stream_router or StreamRouter(config)
+        self._trajectory_dump = TrajectoryDumpWriter.from_env()
 
     @property
     def config(self) -> 'CompatServerConfig':
@@ -38,6 +40,9 @@ class ResponseServer:
         request_headers: 'typing.Dict[str, str]',
     ):
         outcomming_request = self._stream_router.build_outcomming_request(request_body)
+        if self._trajectory_dump is not None:
+            # vLLM surfaces prompt/decode token IDs only when this flag is set.
+            outcomming_request["return_token_ids"] = True
         outcomming_request = post_process_outcomming_request(
             outcomming_request,
             self._config.model_provider,
@@ -52,12 +57,9 @@ class ResponseServer:
             session_id=session_id,
             model=str(outcomming_request["model"]),
         )
-        incomming_stream = self._stream_router.open_outcomming_stream(
-            outcomming_request
-        )
         return self._stream_router.route_stream(
-            incomming_stream,
             stored_response,
             outcomming_request,
             custom_tool_names,
+            self._trajectory_dump,
         )

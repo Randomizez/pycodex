@@ -82,6 +82,80 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> 'None':
     ]
 
 
+def test_responses_server_dumps_forwarded_chat_token_trajectory(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    dump_root = tmp_path / "dump"
+    monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks(
+            "Hello",
+            prompt_token_ids=[101, 102, 103],
+            decode_token_ids=[201, 202],
+        ),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["return_token_ids"] is True
+
+    dump_file = dump_root / "dump.jsonl"
+    assert dump_file.exists()
+    dump_records = [
+        json.loads(line)
+        for line in dump_file.read_text().splitlines()
+        if line.strip()
+    ]
+    assert dump_records == [
+        {
+            "tokens": {
+                "prefill": [101, 102, 103],
+                "decode": [201, 202],
+            },
+            "send_timestamp": dump_records[0]["send_timestamp"],
+        }
+    ]
+    assert isinstance(dump_records[0]["send_timestamp"], float)
+
+
 def test_responses_server_streams_text_from_messages_backend(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "messages_capture")
     fake_messages_server = build_fake_messages_server(
@@ -1545,6 +1619,130 @@ def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None
         "results": [],
         "mock": True,
     }
+
+
+def test_responses_server_dumps_all_forwarded_requests_for_mock_web_search(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    dump_root = tmp_path / "dump"
+    monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            [
+                {
+                    "id": "chatcmpl_mock",
+                    "object": "chat.completion.chunk",
+                    "model": "gpt-5.4",
+                    "prompt_token_ids": [11, 12],
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "ws_1",
+                                        "type": "function",
+                                        "function": {
+                                            "arguments": '{"query":"github codex"}'
+                                        },
+                                    }
+                                ]
+                            },
+                            "token_ids": [21, 22],
+                            "finish_reason": None,
+                        }
+                    ],
+                },
+                {
+                    "id": "chatcmpl_mock",
+                    "object": "chat.completion.chunk",
+                    "model": "gpt-5.4",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                },
+            ],
+            build_text_chunks(
+                "done",
+                prompt_token_ids=[31, 32, 33],
+                decode_token_ids=[41, 42],
+            ),
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_text",
+                                    "text": "Search the web, then answer.",
+                                }
+                            ],
+                        }
+                    ],
+                    "tools": [
+                        {
+                            "type": "web_search",
+                            "external_web_access": True,
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": False,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 2
+    for request_file in request_files:
+        request = json.loads(request_file.read_text())
+        assert request["body"]["return_token_ids"] is True
+
+    dump_records = [
+        json.loads(line)
+        for line in (dump_root / "dump.jsonl").read_text().splitlines()
+        if line.strip()
+    ]
+    assert len(dump_records) == 2
+    assert dump_records[0]["tokens"] == {
+        "prefill": [11, 12],
+        "decode": [21, 22],
+    }
+    assert dump_records[1]["tokens"] == {
+        "prefill": [31, 32, 33],
+        "decode": [41, 42],
+    }
+    assert dump_records[0]["send_timestamp"] <= dump_records[1]["send_timestamp"]
 
 
 def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
