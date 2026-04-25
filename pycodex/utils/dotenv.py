@@ -18,7 +18,9 @@ def load_codex_dotenv(config_path: 'typing.Union[str, Path]') -> 'None':
         _LOADED_CODEX_DOTENV_HOMES.add(codex_home)
         return
 
-    for key, value in parse_dotenv(dotenv_path.read_text()).items():
+    for key, value in parse_dotenv(
+        dotenv_path.read_text(encoding="utf-8", errors="replace")
+    ).items():
         if key.upper().startswith(ILLEGAL_ENV_VAR_PREFIX):
             continue
         os.environ[key] = value

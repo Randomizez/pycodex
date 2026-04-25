@@ -50,5 +50,6 @@
 - `--put` 的 CLI UX 现在约定为“先打印打包文件清单和上传目标，再打印结果”，并且最后一行保留为可直接执行的 `pycodex --call SECRET-CALLID@<host:port>` 一键启动命令；后续如果再改输出，尽量保留这个末行语义。
 - `--put` 现在不是“只上传就结束”：上传成功后还会立刻跑一次真实的 `--call` 下载/解包 round-trip 测试，只有这个测试也成功才算整个 `--put` 成功。排障时如果上传成功但 CLI 仍退出非零，要继续看 call 路径而不只看 put 端。
 - `--put` 现在会先做 `/healthz` preflight，再开始扫描/压缩目录；如果用户报“卡死”，先看目标 `host:port` 是否真有 storage server 在监听。默认打包策略也已经切到白名单：只带 `config.toml`、`.env`、`AGENTS.md`、`AGENTS.override.md`、`skills/**`，以及 config 里相对引用的 `model_instructions_file`，所以像 `sessions/` 这类运行态目录不会再靠黑名单排除。
+- `--call` / portable storage paths must not rely on the process default text encoding. Always pass `encoding="utf-8"` when reading config, prompts, AGENTS files, skills, dotenv, and session history; for user-authored instructions/history, prefer `errors="replace"` so a Windows GBK locale cannot crash on UTF-8 punctuation such as U+2264 or em dash.
 - 对接真实 `~/.codex/sessions/.../rollout-*.jsonl` 时，不要假设它一定是严格的一行一个 JSON object：本机样本可能包含 pretty-printed 多行对象，且文件尾部偶尔带未完成记录。恢复历史时用 concatenated-JSON 方式读取，并容忍尾部残缺。
 - `pycodex` 本地 session 保存现在也按上游思路走：新 session 一开始就分配稳定的 uuidv7 thread/session id，并把历史增量追加到 `CODEX_HOME/sessions/.../rollout-*.jsonl`；`/resume` 列表应只展示至少有真实 user message 的 rollout，避免空白新 session 污染恢复列表。

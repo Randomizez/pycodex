@@ -89,7 +89,7 @@ class ContextConfig:
         profile: 'typing.Union[str, None]' = None,
     ) -> 'ContextConfig':
         path = Path(config_path)
-        data = tomllib.loads(path.read_text())
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
         selected = dict(data)
         if profile is not None:
             overrides = data.get("profiles", {}).get(profile)
@@ -162,7 +162,9 @@ class ContextManager:
         self._include_permissions_instructions = include_permissions_instructions
         self._include_skills_instructions = include_skills_instructions
         self._network_access = network_access
-        self._default_base_instructions = DEFAULT_BASE_INSTRUCTIONS_PATH.read_text()
+        self._default_base_instructions = DEFAULT_BASE_INSTRUCTIONS_PATH.read_text(
+            encoding="utf-8"
+        )
         self._workspace_metadata_turn_id: 'typing.Union[str, None]' = None
         self._workspace_metadata_cache: 'typing.Union[JSONDict, None]' = None
 
@@ -237,7 +239,10 @@ class ContextManager:
         if self._config.base_instructions is not None:
             return self._config.base_instructions
         if self._config.model_instructions_file is not None:
-            return self._config.model_instructions_file.read_text().strip()
+            return self._config.model_instructions_file.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).strip()
         resolved = self._resolve_model_instructions()
         if resolved is not None:
             return resolved
@@ -327,11 +332,11 @@ class ContextManager:
             return None
 
         sandbox_text = (
-            sandbox_prompt_path.read_text().strip().replace(
+            sandbox_prompt_path.read_text(encoding="utf-8").strip().replace(
                 "{network_access}", self._network_access
             )
         )
-        approval_text = approval_prompt_path.read_text().strip()
+        approval_text = approval_prompt_path.read_text(encoding="utf-8").strip()
         return "\n".join(
             [
                 PERMISSIONS_OPEN_TAG,
@@ -429,7 +434,7 @@ class ContextManager:
         docs: 'typing.List[str]' = []
         remaining = self._config.project_doc_max_bytes
         for path in self._discover_project_doc_paths():
-            text = path.read_text()
+            text = path.read_text(encoding="utf-8", errors="replace")
             if not text.strip():
                 continue
             if remaining is None:
@@ -437,7 +442,7 @@ class ContextManager:
                 continue
             if remaining <= 0:
                 break
-            encoded = text.encode()
+            encoded = text.encode("utf-8")
             docs.append(encoded[:remaining].decode(errors="ignore"))
             remaining -= min(len(encoded), remaining)
         if not docs:
@@ -507,15 +512,15 @@ def _normalize_int(value) -> 'typing.Union[int, None]':
 
 def _default_collaboration_instructions(mode: 'CollaborationMode') -> 'str':
     if mode == "plan":
-        return PLAN_COLLABORATION_INSTRUCTIONS_PATH.read_text()
-    return DEFAULT_COLLABORATION_INSTRUCTIONS_PATH.read_text()
+        return PLAN_COLLABORATION_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
+    return DEFAULT_COLLABORATION_INSTRUCTIONS_PATH.read_text(encoding="utf-8")
 
 
 def _read_first_instruction_file(base: 'Path') -> 'typing.Union[str, None]':
     for candidate_name in (LOCAL_PROJECT_DOC_FILENAME, DEFAULT_PROJECT_DOC_FILENAME):
         candidate = base / candidate_name
         try:
-            contents = candidate.read_text()
+            contents = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
         trimmed = contents.strip()
@@ -526,7 +531,7 @@ def _read_first_instruction_file(base: 'Path') -> 'typing.Union[str, None]':
 
 @lru_cache(maxsize=1)
 def _load_models_by_slug() -> 'typing.Dict[str, JSONDict]':
-    payload = json.loads(DEFAULT_MODELS_PATH.read_text())
+    payload = json.loads(DEFAULT_MODELS_PATH.read_text(encoding="utf-8"))
     models = payload.get("models", [])
     by_slug: 'typing.Dict[str, JSONDict]' = {}
     for model in models:
@@ -571,7 +576,7 @@ def _discover_skill_files(
 
 
 def _parse_skill_descriptor(path: 'Path', scope_rank: 'int') -> 'typing.Union[SkillDescriptor, None]':
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8", errors="replace")
     if not text.startswith("---\n"):
         return None
     end_marker = "\n---\n"

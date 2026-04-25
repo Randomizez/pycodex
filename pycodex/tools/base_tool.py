@@ -30,7 +30,8 @@ EXEC_TOOLS_SNAPSHOT_PATH = (
 @lru_cache(maxsize=1)
 def _load_exec_tool_payloads() -> 'typing.Dict[str, JSONDict]':
     payloads: 'typing.Dict[str, JSONDict]' = {}
-    for payload in json.loads(EXEC_TOOLS_SNAPSHOT_PATH.read_text()):
+    raw_payloads = EXEC_TOOLS_SNAPSHOT_PATH.read_text(encoding="utf-8")
+    for payload in json.loads(raw_payloads):
         if not isinstance(payload, dict):
             continue
         name = payload.get("name")

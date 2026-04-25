@@ -123,7 +123,8 @@ def bootstrap_called_home(
             },
             ensure_ascii=False,
             indent=2,
-        )
+        ),
+        encoding="utf-8",
     )
     return home_dir / DEFAULT_ENTRY_CONFIG
 
@@ -199,7 +200,7 @@ def _collect_config_referenced_files(root: 'Path') -> 'typing.Set[str]':
     config_path = root / DEFAULT_ENTRY_CONFIG
     if not config_path.is_file():
         return set()
-    data = tomllib.loads(config_path.read_text())
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     referenced: 'typing.Set[str]' = set()
     candidates = [data]
     profiles = data.get("profiles")
@@ -352,7 +353,7 @@ def _load_cached_metadata(metadata_path: 'Path') -> 'typing.Dict[str, object]':
     if not metadata_path.is_file():
         return {}
     try:
-        payload = json.loads(metadata_path.read_text())
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (ValueError, OSError):
         return {}
     return payload if isinstance(payload, dict) else {}

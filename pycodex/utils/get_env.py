@@ -98,7 +98,11 @@ def get_os_info() -> 'typing.Tuple[str, str]':
     os_release = Path("/etc/os-release")
     if os_release.is_file():
         values: 'typing.Dict[str, str]' = {}
-        for line in os_release.read_text().splitlines():
+        os_release_text = os_release.read_text(
+            encoding="utf-8",
+            errors="replace",
+        )
+        for line in os_release_text.splitlines():
             if "=" not in line:
                 continue
             key, value = line.split("=", 1)

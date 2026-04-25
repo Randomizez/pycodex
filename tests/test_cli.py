@@ -773,6 +773,73 @@ async def test_run_cli_bootstraps_called_home_before_loading_config(
     assert captured["provider_config"].api_key_env == "PORTABLE_API_KEY"
 
 
+@pytest.mark.asyncio
+async def test_run_cli_call_reads_called_home_text_as_utf8(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    _write_stored_codex_home(codex_home)
+    (codex_home / "AGENTS.md").write_text(
+        "stored rules with unicode: \u22645 min \u2014 \u4e2d\u6587\n",
+        encoding="utf-8",
+    )
+    (codex_home / "skills" / "demo" / "SKILL.md").write_text(
+        "---\n"
+        "name: demo\n"
+        "description: unicode \u2264 \u2014 \u4e2d\u6587\n"
+        "---\n"
+        "Stored skill.\n",
+        encoding="utf-8",
+    )
+    server = CodexStorageServer(tmp_path / "storage-server", port=0)
+    server.start()
+
+    original_read_text = Path.read_text
+
+    def read_text_as_gbk_by_default(path, *args, **kwargs):
+        encoding = kwargs.get("encoding")
+        if args:
+            encoding = args[0]
+        if encoding is None:
+            return path.read_bytes().decode("gbk")
+        return original_read_text(path, *args, **kwargs)
+
+    class _FakeResponsesModelClient(_ScriptedResponsesClient):
+        def __init__(
+            self,
+            config,
+            timeout_seconds,
+            session_id=None,
+            originator=None,
+            user_agent=None,
+            openai_subagent=None,
+        ) -> 'None':
+            del timeout_seconds, user_agent, openai_subagent
+            super().__init__([ModelResponse(items=[AssistantMessage(text="OK")])])
+            self._config = config
+            self.model = config.model
+            self._session_id = session_id
+            self._originator = originator or "pycodex"
+
+    monkeypatch.setattr(Path, "read_text", read_text_as_gbk_by_default)
+    monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
+    monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
+    monkeypatch.setattr("sys.stdin.read", lambda: "")
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    monkeypatch.delenv("PORTABLE_API_KEY", raising=False)
+
+    try:
+        stored_call = upload_codex_home(f"{codex_home}@{server.server_address}")
+        args = build_parser().parse_args(["--call", stored_call, "say ok"])
+        exit_code = await run_cli(args)
+    finally:
+        server.stop()
+
+    assert exit_code == 0
+
+
 def test_get_tools_registers_expected_builtin_tools() -> 'None':
     registry = get_tools()
     assert registry.names() == (

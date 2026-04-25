@@ -282,7 +282,9 @@ def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
         return {}
 
     names_by_id: 'typing.Dict[str, str]' = {}
-    for raw_line in reversed(index_path.read_text().splitlines()):
+    for raw_line in reversed(
+        index_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    ):
         line = raw_line.strip()
         if not line:
             continue
@@ -321,7 +323,7 @@ def _extract_first_user_message_preview(rollout_path: 'Path') -> 'typing.Union[s
 
 
 def _iter_rollout_entries(rollout_path: 'Path') -> 'typing.Iterable[typing.Dict[str, object]]':
-    text = rollout_path.read_text()
+    text = rollout_path.read_text(encoding="utf-8", errors="replace")
     decoder = json.JSONDecoder()
     index = 0
     parsed_entries = 0

@@ -71,7 +71,7 @@ class ResponsesProviderConfig:
         config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
         profile: 'typing.Union[str, None]' = None,
     ) -> 'ResponsesProviderConfig':
-        data = tomllib.loads(Path(config_path).read_text())
+        data = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
         selected = dict(data)
         if profile is not None:
             overrides = data.get("profiles", {}).get(profile)
