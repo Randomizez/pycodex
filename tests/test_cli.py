@@ -394,6 +394,62 @@ def test_build_runtime_overrides_provider_for_managed_vllm_mode(
     assert os.environ[LOCAL_RESPONSES_SERVER_API_KEY_ENV] == "dummy"
 
 
+def test_build_model_client_respects_use_chat_completion_from_config(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+                'use_chat_completion = true',
+            ]
+        )
+    )
+    seen = {}
+
+    class _FakeManagedServer:
+        base_url = "http://127.0.0.1:18083/v1"
+
+        def stop(self):
+            seen["stopped"] = True
+
+    def fake_launch(
+        base_url,
+        api_key_env=None,
+        model_provider=None,
+        outcomming_api="chat_completions",
+    ):
+        seen["endpoint"] = base_url
+        seen["api_key_env"] = api_key_env
+        seen["model_provider"] = model_provider
+        seen["outcomming_api"] = outcomming_api
+        return _FakeManagedServer()
+
+    monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
+    monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
+    monkeypatch.setenv("DUMMY_KEY", "test-key")
+
+    client = _build_model_client(
+        str(config_path),
+        None,
+        60.0,
+        use_chat_completion=None,
+    )
+
+    assert seen["endpoint"] == "https://example.com/v1"
+    assert seen["api_key_env"] == "DUMMY_KEY"
+    assert seen["model_provider"] == "demo"
+    assert seen["outcomming_api"] == "chat_completions"
+    assert client._config.base_url == "http://127.0.0.1:18083/v1"
+    assert client._config.api_key_env == "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
+
+
 @pytest.mark.asyncio
 async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     monkeypatch,

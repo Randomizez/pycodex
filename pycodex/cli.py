@@ -381,7 +381,7 @@ def _build_model_client(
     timeout_seconds: 'float',
     managed_responses_base_url: 'typing.Union[str, None]' = None,
     vllm_endpoint: 'typing.Union[str, None]' = None,
-    use_chat_completion: 'bool' = False,
+    use_chat_completion: 'typing.Union[bool, None]' = None,
     use_messages: 'bool' = False,
 ):
     load_codex_dotenv(config_path)
@@ -389,6 +389,8 @@ def _build_model_client(
         config_path,
         profile,
     )
+    if use_chat_completion is None:
+        use_chat_completion = bool(provider_config.use_chat_completion)
     if use_chat_completion and use_messages:
         raise ValueError("--use-chat-completion and --use-messages cannot be combined")
     if vllm_endpoint and use_messages:
@@ -782,7 +784,7 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             args.profile,
             args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
-            use_chat_completion=args.use_chat_completion,
+            use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
         )
         if phase_handle is not None:

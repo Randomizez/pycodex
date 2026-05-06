@@ -43,6 +43,7 @@
 - 在当前 `pycodex` CLI 里，普通输入与 `/queue <message>` 只负责选择 runtime queue；真正的 steer/queue 差别由 `AgentRuntime.enqueue_user_turn(..., queue=...)` 决定。runtime 内部也应保持成两个同构 queue，而不是一个普通 queue 再叠一个 steer 专用旁路状态机。
 - 对上游 steer 语义要非常谨慎：正常 active-turn steer 首先走的是 `inject_input(...)` + `pending_input`，不是立刻 `spawn_task(...)` / `TurnAbortReason::Replaced`。更准确的理解是“在最近一次 sampling 边界插入”，而不是“任意时刻硬打断当前模型/工具调用”。
 - 用 `tests/fake_responses_server.py` 做 steer 时序对比时，不要把 proxy capture 文件的生成时刻当成“请求已到达 upstream”的信号；`build_proxy_handler(...)` 会等整条 upstream response 读完后才 `write_capture(...)`。如果要在第一条 request 仍未完成时注入 steer，应该同步等待 fake origin 自己收到第 1 条 POST。
+- `--use-chat-completion` 已废弃为 CLI flag，改为从 `~/.codex/config.toml` 的 provider 段读取持久配置：在对应 `[model_providers.<name>]` 下加 `use_chat_completion = true` 即可对该 provider 默认启用本地 `responses_server` compat 层；CLI 仍可显式传 `--use-chat-completion` 覆盖配置值。
 - 在本机做 steer fake-server 对比时，不要把用户本地 `config.toml` 里的 `service_tier` / fast-mode 设置混进“默认 steer”结论。`tests/compare_steer_request_bodies.py` 现在会给 upstream 和 `pycodex` 都生成临时 config，并去掉顶层 `service_tier` 后再比较 request body。
 - `x-codex-turn-metadata.workspaces` 的时机不是“整个 session 只发第一条请求”。当前对齐结论是：首个 turn 的后续 steer/follow-up request 也继续带 `workspaces`；切到后续新 turn 才省略。
 - 远端 Codex home 存储模式当前仍刻意只挂在 `pycodex/cli.py` 启动前：`--put`/`--call` 只负责上传或落本地 `CODEX_HOME` 并重写 `args.config`，`model/context/runtime` 继续完全按 `config_path.parent` 读取 `.env`、`AGENTS.md`、`skills/`；后续扩展时优先保持这个隔离边界，不要把分支判断散到运行时各模块里。

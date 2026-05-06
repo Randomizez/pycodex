@@ -55,6 +55,7 @@ class ResponsesProviderConfig:
     provider_name: 'str'
     base_url: 'str'
     api_key_env: 'typing.Union[str, None]'
+    use_chat_completion: 'bool' = False
     wire_api: 'str' = "responses"
     query_params: 'typing.Dict[str, str]' = field(default_factory=dict)
     reasoning_effort: 'typing.Union[str, None]' = None
@@ -95,11 +96,15 @@ class ResponsesProviderConfig:
         beta_features: 'typing.List[str]' = []
         if isinstance(features, dict) and features.get("guardian_approval") is True:
             beta_features.append("guardian_approval")
+        use_chat_completion = _optional_bool(
+            selected.get("use_chat_completion")
+        )
         return cls(
             model=selected["model"],
             provider_name=provider_name,
             base_url=provider["base_url"],
             api_key_env=api_key_env,
+            use_chat_completion=use_chat_completion,
             wire_api=wire_api,
             query_params=query_params,
             reasoning_effort=selected.get("model_reasoning_effort"),
@@ -145,6 +150,19 @@ class ResponsesProviderConfig:
         if self.stream_idle_timeout_ms is None:
             return DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000.0
         return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
+
+
+def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union[bool, None]':
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid boolean config value: {value!r}")
 
 
 class ResponsesApiError(RuntimeError):
