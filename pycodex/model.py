@@ -99,6 +99,12 @@ class ResponsesProviderConfig:
         use_chat_completion = _optional_bool(
             selected.get("use_chat_completion")
         )
+        if use_chat_completion is None:
+            use_chat_completion = _optional_bool(
+                provider.get("use_chat_completion")
+            )
+        if use_chat_completion is None:
+            use_chat_completion = False
         return cls(
             model=selected["model"],
             provider_name=provider_name,
