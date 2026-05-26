@@ -594,6 +594,7 @@ async def run_interactive_session(
             compact_result = await compact_agent_loop(
                 agent_loop,
                 handle_compact_stream_event,
+                True,
             )
             if compact_result is None:
                 view.write_line("Nothing to compact.")

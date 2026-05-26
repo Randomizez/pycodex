@@ -1,6 +1,13 @@
 from dataclasses import dataclass
 
-from ..protocol import AssistantMessage, ConversationItem, ModelStreamEvent, UserMessage
+from ..protocol import (
+    AssistantMessage,
+    ConversationItem,
+    ModelStreamEvent,
+    ToolCall,
+    ToolResult,
+    UserMessage,
+)
 from .random_ids import uuid7_string
 import typing
 
@@ -35,6 +42,7 @@ _SUBAGENT_NOTIFICATION_PREFIX = "<subagent_notification>\n"
 class CompactResult:
     history: 'typing.Tuple[ConversationItem, ...]'
     original_item_count: 'int'
+    pruned_tool_results: 'int' = 0
 
     @property
     def retained_item_count(self) -> 'int':
@@ -43,10 +51,14 @@ class CompactResult:
     def display_text(self) -> 'str':
         retained_label = _pluralize("item", self.retained_item_count)
         original_label = _pluralize("item", self.original_item_count)
-        return (
+        text = (
             f"compact({self.original_item_count} {original_label}) -> "
             f"{self.retained_item_count} {retained_label} + [summary]"
         )
+        if self.pruned_tool_results:
+            tool_label = _pluralize("tool response", self.pruned_tool_results)
+            text += f" (dropped {self.pruned_tool_results} old {tool_label})"
+        return text
 
 
 def compact(
@@ -60,24 +72,42 @@ def compact(
 async def compact_agent_loop(
     agent_loop: 'AgentLoop',
     stream_event_handler: 'typing.Union[typing.Callable[[ModelStreamEvent], None], None]' = None,
+    prune_tool_results_on_context_error: 'bool' = False,
 ) -> 'typing.Union[CompactResult, None]':
     history = agent_loop.history
     if not history:
         return None
     original_item_count = len(history)
+    pruned_tool_results = 0
 
-    compact_prompt = UserMessage(text=DEFAULT_COMPACT_PROMPT)
-    prompt = agent_loop._context_manager.build_prompt(
-        list(history) + [compact_prompt],
-        [],
-        False,
-        turn_id=uuid7_string(),
-    )
     noop_stream_event_handler = lambda _event: None
-    response = await agent_loop._model_client.complete(
-        prompt,
-        stream_event_handler or noop_stream_event_handler,
-    )
+    while True:
+        compact_prompt = UserMessage(text=DEFAULT_COMPACT_PROMPT)
+        prompt = agent_loop._context_manager.build_prompt(
+            list(history) + [compact_prompt],
+            [],
+            False,
+            turn_id=uuid7_string(),
+        )
+        try:
+            response = await agent_loop._model_client.complete(
+                prompt,
+                stream_event_handler or noop_stream_event_handler,
+            )
+            break
+        except Exception as exc:
+            if (
+                not prune_tool_results_on_context_error
+                or not _is_context_length_error(str(exc))
+            ):
+                raise
+            pruned_history = prune_oldest_tool_response(history)
+            if pruned_history is None:
+                raise
+            history = pruned_history
+            pruned_tool_results += 1
+            agent_loop.replace_history(history)
+
     compacted_history = compact(
         list(history) + [compact_prompt] + list(response.items)
     )
@@ -88,6 +118,32 @@ async def compact_agent_loop(
     return CompactResult(
         history=compacted_history,
         original_item_count=original_item_count,
+        pruned_tool_results=pruned_tool_results,
+    )
+
+
+def prune_oldest_tool_response(
+    history: 'typing.Sequence[ConversationItem]',
+) -> 'typing.Union[typing.Tuple[ConversationItem, ...], None]':
+    items = list(history)
+    tool_result_index = None
+    call_id = None
+    for index, item in enumerate(items):
+        if isinstance(item, ToolResult):
+            tool_result_index = index
+            call_id = item.call_id
+            break
+    if tool_result_index is None:
+        return None
+
+    indexes_to_remove = {tool_result_index}
+    for index, item in enumerate(items[:tool_result_index]):
+        if isinstance(item, ToolCall) and item.call_id == call_id:
+            indexes_to_remove.add(index)
+            break
+
+    return tuple(
+        item for index, item in enumerate(items) if index not in indexes_to_remove
     )
 
 
@@ -187,3 +243,11 @@ def _pluralize(noun: 'str', count: 'int') -> 'str':
 
 def _is_synthetic_user_message(text: 'str') -> 'bool':
     return text.startswith(_SUBAGENT_NOTIFICATION_PREFIX)
+
+
+def _is_context_length_error(message: 'str') -> 'bool':
+    lower = message.lower()
+    return (
+        "context_length_exceeded" in lower
+        or "maximum context length" in lower
+    )

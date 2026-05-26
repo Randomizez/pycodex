@@ -167,6 +167,11 @@ Current behavior:
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
   compaction path automatically when the latest reported usage reaches that
   threshold before a follow-up sampling request or the next user turn
+- if a model request fails with `context_length_exceeded`, pycodex now treats
+  the provider-reported requested token count as a failed-request usage sample,
+  triggers the same compact path immediately, and retries the request once; if
+  the compact request is also over the limit, it repeatedly drops the oldest
+  tool response plus its matching tool call before retrying compact
 - new sessions are now recorded under `CODEX_HOME/sessions/.../rollout-*.jsonl`
   with a stable session/thread id and per-item append+flush semantics so
   `/resume` reads back the same rollout format
@@ -193,7 +198,12 @@ Current behavior:
   `reasoning_content` are translated back into Responses `reasoning` items, and
   historical `reasoning` items are replayed into downstream assistant messages
   via the `reasoning` field. Streaming token usage is also requested from vLLM
-  and forwarded to the final `response.completed.response.usage`
+  and forwarded to the final `response.completed.response.usage`. If a
+  downstream chat stream terminates after emitting only reasoning, with no
+  assistant content and no tool call, the compat layer discards that partial
+  reasoning, retries the same downstream request once, and only then emits
+  `response.failed` with `type = "model_output_invalid"` if the retry is still
+  reasoning-only
 - standalone `responses_server` now also supports downstream `/v1/messages`
   backends via `--outcomming-api messages`, while keeping the internal
   canonical request/route logic in chat-completions shape

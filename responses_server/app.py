@@ -37,14 +37,18 @@ def _stream_events(response_server: 'ResponseServer', request_body: 'typing.Dict
         
         import traceback
         exc_info = traceback.format_exception(type(exc), exc, exc.__traceback__)
+        error = {
+            "message": '\n'.join(exc_info),
+        }
+        error_type = getattr(exc, "error_type", None)
+        if error_type:
+            error["type"] = error_type
         yield _format_sse_event(
             "response.failed",
             {
                 "type": "response.failed",
                 "response": {
-                    "error": {
-                        "message": '\n'.join(exc_info),
-                    }
+                    "error": error,
                 },
             },
         )

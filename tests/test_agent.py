@@ -126,6 +126,20 @@ def _conversation_items(prompt) -> 'typing.List[typing.Union[UserMessage, Assist
     ]
 
 
+def _context_length_error_message(
+    requested_tokens: 'int' = 264568,
+    max_tokens: 'int' = 262144,
+) -> 'str':
+    return (
+        "responses_server.stream_router.OutcommingChatError: outcomming chat "
+        "request failed with status 400: {\"error\":{\"message\":\"This model's "
+        f"maximum context length is {max_tokens} tokens. However, you requested "
+        f"{requested_tokens} tokens ({requested_tokens} in the messages, 0 in "
+        "the completion). Please reduce the length of the messages or "
+        "completion.\",\"type\":\"context_length_exceeded\"}}"
+    )
+
+
 @pytest.mark.asyncio
 async def test_agent_loop_runs_tool_then_returns_final_message() -> 'None':
     model = ScriptedModelClient(
@@ -503,6 +517,142 @@ async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
         "turn_failed",
     ]
     assert events[-1].payload["error"] == "synthetic client error"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_emits_token_count_for_context_length_error() -> 'None':
+    events = []
+    error_message = _context_length_error_message()
+
+    class FailingModelClient:
+        async def complete(self, prompt, event_handler):
+            del prompt, event_handler
+            raise RuntimeError(error_message)
+
+    agent = AgentLoop(FailingModelClient(), ToolRegistry(), event_handler=events.append)
+
+    with pytest.raises(RuntimeError, match="context_length_exceeded"):
+        await agent.run_turn(["hello"])
+
+    assert [event.kind for event in events] == [
+        "turn_started",
+        "model_called",
+        "token_count",
+        "auto_compact_started",
+        "auto_compact_failed",
+        "token_count",
+        "turn_failed",
+    ]
+    assert events[2].payload["usage"] == {
+        "total_tokens": 264568,
+        "input_tokens": 264568,
+        "output_tokens": 0,
+    }
+    assert events[3].payload["phase"] == "context_length_exceeded"
+    assert events[3].payload["total_tokens"] == 264568
+    assert events[3].payload["token_limit"] == 262144
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_auto_compacts_and_retries_on_context_length_error() -> 'None':
+    events = []
+
+    def response_factory(prompt, call_count):
+        if call_count == 1:
+            raise RuntimeError(_context_length_error_message())
+        if call_count == 2:
+            return ModelResponse(items=[AssistantMessage(text="checkpoint summary")])
+        if call_count == 3:
+            return ModelResponse(items=[AssistantMessage(text="final answer")])
+        raise AssertionError(f"unexpected call_count={call_count}")
+
+    model = ScriptedModelClient(response_factory=response_factory)
+    agent = AgentLoop(model, ToolRegistry(), event_handler=events.append)
+
+    result = await agent.run_turn(["hello"])
+
+    assert result.output_text == "final answer"
+    assert model.call_count == 3
+
+    compact_prompt_items = _conversation_items(model.prompts[1])
+    assert [type(item).__name__ for item in compact_prompt_items] == [
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert compact_prompt_items[0].text == "hello"
+    assert compact_prompt_items[1].text == DEFAULT_COMPACT_PROMPT
+
+    retry_prompt_items = _conversation_items(model.prompts[2])
+    assert [type(item).__name__ for item in retry_prompt_items] == [
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert retry_prompt_items[0].text == "hello"
+    assert retry_prompt_items[1].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
+
+    assert "turn_failed" not in [event.kind for event in events]
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_completed",
+    ]
+    assert auto_events[0].payload["phase"] == "context_length_exceeded"
+    assert auto_events[1].payload["summary"] == (
+        "compact(1 item) -> 1 item + [summary]"
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_prunes_old_tool_responses_when_context_compact_overflows() -> 'None':
+    events = []
+    initial_history = (
+        UserMessage(text="old prompt"),
+        ToolCall(call_id="call_old", name="echo", arguments={"text": "large"}),
+        ToolResult(call_id="call_old", name="echo", output="large output"),
+        AssistantMessage(text="old answer"),
+    )
+
+    def response_factory(prompt, call_count):
+        if call_count == 1:
+            raise RuntimeError(_context_length_error_message())
+        if call_count == 2:
+            compact_items = _conversation_items(prompt)
+            assert any(isinstance(item, ToolResult) for item in compact_items)
+            raise RuntimeError(_context_length_error_message())
+        if call_count == 3:
+            compact_items = _conversation_items(prompt)
+            assert not any(isinstance(item, ToolCall) for item in compact_items)
+            assert not any(isinstance(item, ToolResult) for item in compact_items)
+            return ModelResponse(items=[AssistantMessage(text="summary without tools")])
+        if call_count == 4:
+            retry_items = _conversation_items(prompt)
+            assert not any(isinstance(item, ToolCall) for item in retry_items)
+            assert not any(isinstance(item, ToolResult) for item in retry_items)
+            return ModelResponse(items=[AssistantMessage(text="final after prune")])
+        raise AssertionError(f"unexpected call_count={call_count}")
+
+    model = ScriptedModelClient(response_factory=response_factory)
+    agent = AgentLoop(
+        model,
+        ToolRegistry(),
+        event_handler=events.append,
+        initial_history=initial_history,
+    )
+
+    result = await agent.run_turn(["new prompt"])
+
+    assert result.output_text == "final after prune"
+    assert model.call_count == 4
+    assert not any(isinstance(item, ToolCall) for item in result.history)
+    assert not any(isinstance(item, ToolResult) for item in result.history)
+    auto_completed = [
+        event for event in events if event.kind == "auto_compact_completed"
+    ][0]
+    assert auto_completed.payload["pruned_tool_results"] == 1
+    assert auto_completed.payload["summary"] == (
+        "compact(5 items) -> 2 items + [summary] "
+        "(dropped 1 old tool response)"
+    )
 
 
 @pytest.mark.asyncio

@@ -939,6 +939,118 @@ async def test_responses_model_client_retries_retryable_stream_failures() -> 'No
     )
 
 
+@pytest.mark.asyncio
+async def test_responses_model_client_does_not_retry_context_length_failed_stream() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        stream_max_retries=5,
+    )
+    client = ResponsesModelClient(provider)
+    send_calls: 'typing.List[int]' = []
+
+    class _ContextLengthFailureResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.failed'
+            yield (
+                b'data: {"type":"response.failed","response":{"error":{"message":'
+                b'"This model\\\'s maximum context length is 262144 tokens. However, '
+                b'you requested 264568 tokens (264568 in the messages, 0 in the '
+                b'completion). Please reduce the length of the messages or completion.",'
+                b'"type":"context_length_exceeded"}}}'
+            )
+            yield b''
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        send_calls.append(1)
+        return _ContextLengthFailureResponse()
+
+    requests.Session.send = fake_send
+    try:
+        events: 'typing.List[ModelStreamEvent]' = []
+        with pytest.raises(RuntimeError, match='maximum context length'):
+            await client.complete(
+                Prompt(input=[UserMessage(text='hi')], tools=[]),
+                events.append,
+            )
+    finally:
+        requests.Session.send = original_send
+
+    assert len(send_calls) == 1
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_responses_model_client_does_not_retry_invalid_model_output_stream() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        stream_max_retries=5,
+    )
+    client = ResponsesModelClient(provider)
+    send_calls: 'typing.List[int]' = []
+
+    class _InvalidModelOutputFailureResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.failed'
+            yield (
+                b'data: {"type":"response.failed","response":{"error":{"message":'
+                b'"outcomming chat completion ended without assistant content",'
+                b'"type":"model_output_invalid"}}}'
+            )
+            yield b''
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        send_calls.append(1)
+        return _InvalidModelOutputFailureResponse()
+
+    requests.Session.send = fake_send
+    try:
+        events: 'typing.List[ModelStreamEvent]' = []
+        with pytest.raises(RuntimeError, match='without assistant content'):
+            await client.complete(
+                Prompt(input=[UserMessage(text='hi')], tools=[]),
+                events.append,
+            )
+    finally:
+        requests.Session.send = original_send
+
+    assert len(send_calls) == 1
+    assert events == []
+
+
 def test_responses_model_client_parses_reasoning_output_item() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',

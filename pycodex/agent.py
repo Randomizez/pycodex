@@ -1,6 +1,7 @@
 
 import asyncio
 import json
+import re
 from typing import Callable
 
 from .context import ContextManager
@@ -26,6 +27,18 @@ if typing.TYPE_CHECKING:
 
 EventHandler = Callable[[AgentEvent], None]
 NOOP_EVENT_HANDLER: 'EventHandler' = lambda _event: None
+_REQUESTED_TOKENS_RE = re.compile(
+    r"requested\s+([0-9,]+)\s+tokens",
+    re.IGNORECASE,
+)
+_REQUESTED_TOKEN_SPLIT_RE = re.compile(
+    r"\(([0-9,]+)\s+in\s+the\s+messages,\s+([0-9,]+)\s+in\s+the\s+completion\)",
+    re.IGNORECASE,
+)
+_MAX_CONTEXT_TOKENS_RE = re.compile(
+    r"maximum\s+context\s+length\s+is\s+([0-9,]+)\s+tokens",
+    re.IGNORECASE,
+)
 
 
 class TurnInterrupted(RuntimeError):
@@ -129,22 +142,9 @@ class AgentLoop:
                 )
                 await self._maybe_auto_compact(turn_id, phase="mid_turn")
                 iteration += 1
-                prompt = self._context_manager.build_prompt(
-                    self._history,
-                    self._tool_registry.model_visible_specs(),
-                    self._parallel_tool_calls,
-                    turn_id=turn_id,
-                )
-                self._emit(
-                    "model_called",
+                response = await self._complete_model_request(
                     turn_id,
-                    iteration=iteration,
-                    history_size=len(prompt.input),
-                    tool_count=len(prompt.tools),
-                )
-                response = await self._model_client.complete(
-                    prompt,
-                    lambda event: self._handle_model_stream_event(turn_id, event),
+                    iteration,
                 )
                 final_response_items = tuple(response.items)
                 self._emit(
@@ -199,6 +199,10 @@ class AgentLoop:
         except TurnInterrupted:
             raise
         except Exception as exc:
+            context_usage = _usage_from_context_length_error(str(exc))
+            if context_usage is not None:
+                self._remember_token_usage(context_usage)
+                self._emit("token_count", turn_id, usage=context_usage)
             self._emit(
                 "turn_failed",
                 turn_id,
@@ -312,6 +316,47 @@ class AgentLoop:
         except (KeyError, TypeError, ValueError):
             return
 
+    async def _complete_model_request(
+        self,
+        turn_id: 'str',
+        iteration: 'int',
+    ) -> 'typing.Any':
+        attempted_context_compact = False
+        while True:
+            prompt = self._context_manager.build_prompt(
+                self._history,
+                self._tool_registry.model_visible_specs(),
+                self._parallel_tool_calls,
+                turn_id=turn_id,
+            )
+            self._emit(
+                "model_called",
+                turn_id,
+                iteration=iteration,
+                history_size=len(prompt.input),
+                tool_count=len(prompt.tools),
+            )
+            try:
+                return await self._model_client.complete(
+                    prompt,
+                    lambda event: self._handle_model_stream_event(turn_id, event),
+                )
+            except Exception as exc:
+                context_usage = _usage_from_context_length_error(str(exc))
+                if context_usage is None or attempted_context_compact:
+                    raise
+                attempted_context_compact = True
+                self._remember_token_usage(context_usage)
+                self._emit("token_count", turn_id, usage=context_usage)
+                await self._run_auto_compact(
+                    turn_id,
+                    phase="context_length_exceeded",
+                    total_tokens=context_usage.get("total_tokens"),
+                    token_limit=_context_length_error_token_limit(str(exc)),
+                    prune_tool_results_on_context_error=True,
+                )
+                self._raise_if_interrupt_requested(turn_id, iteration)
+
     async def _maybe_auto_compact(
         self,
         turn_id: 'str',
@@ -324,14 +369,33 @@ class AgentLoop:
         if total_tokens < limit or not self._history:
             return
 
-        from .utils.compactor import compact_agent_loop
-
-        self._emit(
-            "auto_compact_started",
+        await self._run_auto_compact(
             turn_id,
             phase=phase,
             total_tokens=total_tokens,
             token_limit=limit,
+            prune_tool_results_on_context_error=True,
+        )
+
+    async def _run_auto_compact(
+        self,
+        turn_id: 'str',
+        phase: 'str',
+        total_tokens: 'typing.Union[int, None]' = None,
+        token_limit: 'typing.Union[int, None]' = None,
+        prune_tool_results_on_context_error: 'bool' = False,
+    ) -> 'None':
+        from .utils.compactor import compact_agent_loop
+
+        payload: 'typing.Dict[str, object]' = {"phase": phase}
+        if total_tokens is not None:
+            payload["total_tokens"] = total_tokens
+        if token_limit is not None:
+            payload["token_limit"] = token_limit
+        self._emit(
+            "auto_compact_started",
+            turn_id,
+            **payload,
         )
 
         def handle_compact_stream_event(event: 'ModelStreamEvent') -> 'None':
@@ -342,31 +406,40 @@ class AgentLoop:
             compact_result = await compact_agent_loop(
                 self,
                 handle_compact_stream_event,
+                prune_tool_results_on_context_error,
             )
         except Exception as exc:
+            failed_payload = dict(payload)
+            failed_payload.update(
+                {
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                }
+            )
             self._emit(
                 "auto_compact_failed",
                 turn_id,
-                phase=phase,
-                total_tokens=total_tokens,
-                token_limit=limit,
-                error=str(exc),
-                error_type=type(exc).__name__,
+                **failed_payload,
             )
             raise
 
         self._last_total_usage_tokens = None
         if compact_result is None:
             return
+        completed_payload = dict(payload)
+        completed_payload.update(
+            {
+                "original_item_count": compact_result.original_item_count,
+                "retained_item_count": compact_result.retained_item_count,
+                "summary": compact_result.display_text(),
+            }
+        )
+        if compact_result.pruned_tool_results:
+            completed_payload["pruned_tool_results"] = compact_result.pruned_tool_results
         self._emit(
             "auto_compact_completed",
             turn_id,
-            phase=phase,
-            total_tokens=total_tokens,
-            token_limit=limit,
-            original_item_count=compact_result.original_item_count,
-            retained_item_count=compact_result.retained_item_count,
-            summary=compact_result.display_text(),
+            **completed_payload,
         )
 
     def _build_follow_up_messages(
@@ -399,3 +472,38 @@ class AgentLoop:
                             )
                         )
         return follow_ups
+
+
+def _usage_from_context_length_error(
+    message: 'str',
+) -> 'typing.Union[typing.Dict[str, int], None]':
+    lower = message.lower()
+    if (
+        "context_length_exceeded" not in lower
+        and "maximum context length" not in lower
+    ):
+        return None
+
+    requested_match = _REQUESTED_TOKENS_RE.search(message)
+    if requested_match is None:
+        return None
+
+    usage = {"total_tokens": _parse_token_count(requested_match.group(1))}
+    split_match = _REQUESTED_TOKEN_SPLIT_RE.search(message)
+    if split_match is not None:
+        usage["input_tokens"] = _parse_token_count(split_match.group(1))
+        usage["output_tokens"] = _parse_token_count(split_match.group(2))
+    else:
+        usage["input_tokens"] = usage["total_tokens"]
+    return usage
+
+
+def _context_length_error_token_limit(message: 'str') -> 'typing.Union[int, None]':
+    limit_match = _MAX_CONTEXT_TOKENS_RE.search(message)
+    if limit_match is None:
+        return None
+    return _parse_token_count(limit_match.group(1))
+
+
+def _parse_token_count(value: 'str') -> 'int':
+    return int(value.replace(",", ""))

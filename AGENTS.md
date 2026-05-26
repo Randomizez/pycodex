@@ -12,6 +12,7 @@
 - 现在 `ResponsesModelClient` 默认会对流式断连做 provider 级自动重试（`stream_max_retries` 默认 5）；写 CLI/REPL 测试时如果断言“先向用户报错，再靠下一句 `go on` 继续”，必须在测试 provider 配置里显式设 `stream_max_retries = 0`，否则测试可能一直等不到预期错误而卡住。
 - `responses_server` compat 层应透传请求里的 `model`；不要再做 “取 downstream /models 第一个 id 并强制覆盖请求模型” 这种兜底兼容。
 - 对 `model_provider = "vllm"`，`responses_server` 仍然走 `/v1/chat/completions` compat 路径，但要保留 reasoning：把 chat chunk 里的 `reasoning` / `reasoning_content` 翻回 Responses `reasoning` item，并把历史里的 Responses `reasoning` item 回放成下游 assistant message 的 `reasoning` 字段。
+- `responses_server` 不能把 terminal reasoning-only chat output 当成成功回复：如果 downstream 一轮结束时只返回 `reasoning` / `reasoning_content`，没有 assistant `content` 且没有 tool call，先丢弃本次 partial reasoning 并用原样 downstream request 静默重试一次；若仍然 reasoning-only，再发 `response.failed(type=model_output_invalid)`，避免把 partial reasoning 写进 rollout 后在下一轮变成 chat 后端拒绝的裸 assistant message。
 - `responses_server` 的 provider-specific chat payload 定制统一放在 `responses_server/payload_processors.py`：使用 `CompatServerConfig.model_provider` 选择 `provider_name -> proc_fn(outcomming_request)` 映射，并且只在真正发出 downstream `/v1/chat/completions` 前 post-process；`StreamRouter` 内部继续保留 canonical payload，避免 tool hydration / mock web_search follow-up 被 provider 改写污染。
 - `responses_server` 如果要兼容下游 `/v1/messages`，也优先保持这条边界：内部继续用 canonical chat request / chat-like chunk 流，只有真正发请求和读取 SSE 时才做 messages 适配，这样 tool hydration、mock `web_search` follow-up、provider payload post-process 都能复用。
 - 真实 vLLM `0.19.0` 的 `/v1/messages` 会对缺失 `max_tokens` 直接返回 `400`；messages 适配层必须总是补这个字段。当前约定是优先透传请求里的 `max_output_tokens`/`max_tokens`，否则回退到默认 `32000`。
@@ -22,6 +23,7 @@
 - 对需要 model-specific prompt 的本地 model slug，直接在 vendored `pycodex/prompts/models.json` 补条目；当前 `step-3.5-flash` / `step-3.5-flash-2603` / `step-3.6` 已按这个方式接入。
 - 交互 REPL 的 context 用量提示也应尽量贴近上游语义：展示“剩余 context 百分比”而不是原始 token 数；计算时按上游同款 `BASELINE_TOKENS=12000` 做归一化，并在模型元数据只有 `context_window` 时默认按 `95%` effective window 处理。只要当前模型能解析出 context window，初始 prompt 就先显示 `100%`，等首个 usage 回来后再刷新成真实值。
 - 对交互 REPL 的 context 指示器，`model_context_window` 的取值优先级也要贴近上游：先吃 `config.toml` / profile 里的 `model_context_window` override，再回退到 vendored `models.json` 的 `context_window`；effective percent 继续沿用模型元数据，没有时默认 `95%`。
+- `pyco(<percent>)` 正常只来自模型流里最近一次 `response.completed.response.usage.total_tokens`；如果大 tool output 之后的下一次请求被下游 `context_length_exceeded` 拒绝，rollout 不会单独记录 usage。遇到这类错误时应从错误文案的 `requested ... tokens (... in the messages, ... in the completion)` 提取真实请求 token，作为失败请求的 `token_count` 事件回灌，并立即触发 compact 后重试一次。若 compact 请求本身也超长，先循环删除最旧的 `ToolResult` 及其配对 `ToolCall` 再重试 compact。
 - `AgentLoop` 的 turn-loop 语义要跟上游 `codex-rs/core/src/codex.rs` 一致：按 follow-up / tool handoff 自然收敛，不要加固定 12 轮之类的 hard cap，也不要保留本地专用的 iteration-limit 参数。
 - `README.md` 和 `docs/` 属于对齐工作的一部分：只要实现状态、对齐结论或使用方式发生实质变化，就应及时更新，不要让文档滞后于当前代码。
 - 新工具必须继承 `BaseTool`，然后通过 `ToolRegistry.register(tool_instance)` 接入；不要再给 registry 传散装 name/description/handler 参数。

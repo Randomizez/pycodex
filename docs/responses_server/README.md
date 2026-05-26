@@ -97,6 +97,13 @@ trajectory 追加到 `${PYCODEX_DUMP}/dump.jsonl`，当前记录格式是：
 当前内置规则里，`vllm` 仍走 chat-completions compat 路径，但会额外保留
 reasoning；`stepfun` 会删除所有 `developer` role。
 
+如果下游 chat stream 一轮结束时只给了 `reasoning` / `reasoning_content`，
+没有 assistant `content` 且没有 tool call，server 会丢弃这次 partial reasoning 并用
+原样 downstream request 静默重试一次。若 retry 后仍是 reasoning-only，才发
+`response.failed(type=model_output_invalid)`。这样可以避免 interrupted 或
+length-stopped thinking 被持久化成 terminal reasoning-only history，并在下一轮转换成
+下游 chat 后端不接受的裸 assistant message。
+
 `messages` compat 则故意不改这层 canonical request：仍然先构造 chat 风格
 `outcomming_request`，只有在真正发请求和读 SSE 时，才在边界把它翻译成
 messages request / event。这样 tool hydration、mock `web_search`

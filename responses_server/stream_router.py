@@ -36,7 +36,13 @@ class UnsupportedIncommingFeature(ValueError):
 
 
 class OutcommingChatError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: 'str',
+        error_type: 'typing.Union[str, None]' = None,
+    ) -> 'None':
+        super().__init__(message)
+        self.error_type = error_type
 
 
 class StreamRouter:
@@ -312,10 +318,14 @@ class StreamRouter:
             current_request,
             trajectory_dump,
         )
+        retried_reasoning_only_output = False
 
         while True:
             tool_calls: 'typing.Dict[int, typing.Dict[str, object]]' = {}
+            finish_reasons: 'typing.List[str]' = []
             current_usage: 'typing.Dict[str, object]' = {}
+            reasoning_start = len(reasoning_parts)
+            text_start = len(text_parts)
             for chunk in current_stream:
                 for event_name, payload in self._consume_chat_chunk(
                     chunk,
@@ -323,6 +333,7 @@ class StreamRouter:
                     text_parts,
                     tool_calls,
                     current_usage,
+                    finish_reasons,
                 ):
                     yield event_name, payload
             if current_usage:
@@ -361,6 +372,29 @@ class StreamRouter:
                     trajectory_dump,
                 )
                 continue
+
+            if (
+                len(reasoning_parts) > reasoning_start
+                and len(text_parts) == text_start
+                and not ordinary_tool_calls
+            ):
+                if not retried_reasoning_only_output:
+                    retried_reasoning_only_output = True
+                    del reasoning_parts[reasoning_start:]
+                    del text_parts[text_start:]
+                    current_request = json.loads(json.dumps(current_request))
+                    current_stream = self._open_tracked_outcomming_stream(
+                        current_request,
+                        trajectory_dump,
+                    )
+                    continue
+                finish_reason = finish_reasons[-1] if finish_reasons else "<unknown>"
+                raise OutcommingChatError(
+                    "outcomming chat completion ended without assistant content "
+                    "or tool calls after emitting only reasoning "
+                    f"(finish_reason={finish_reason!r})",
+                    error_type="model_output_invalid",
+                )
 
             for item in self._build_output_items(
                 reasoning_parts,
@@ -676,6 +710,7 @@ class StreamRouter:
         text_parts: 'typing.List[str]',
         tool_calls: 'typing.Dict[int, typing.Dict[str, object]]',
         current_usage: 'typing.Dict[str, object]',
+        finish_reasons: 'typing.List[str]',
     ) -> 'typing.List[typing.Tuple[str, typing.Dict[str, object]]]':
         events: 'typing.List[typing.Tuple[str, typing.Dict[str, object]]]' = []
         usage = payload.get("usage")
@@ -689,6 +724,9 @@ class StreamRouter:
         for choice in choices:
             if not isinstance(choice, dict):
                 continue
+            finish_reason = choice.get("finish_reason")
+            if isinstance(finish_reason, str) and finish_reason:
+                finish_reasons.append(finish_reason)
             delta = choice.get("delta") or {}
             if not isinstance(delta, dict):
                 continue

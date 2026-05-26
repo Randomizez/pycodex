@@ -1,8 +1,9 @@
-from pycodex.protocol import AssistantMessage, UserMessage
+from pycodex.protocol import AssistantMessage, ToolCall, ToolResult, UserMessage
 from pycodex.utils.compactor import (
     DEFAULT_COMPACT_PROMPT,
     SUMMARY_PREFIX,
     compact,
+    prune_oldest_tool_response,
 )
 
 
@@ -62,3 +63,28 @@ def test_compact_filters_synthetic_subagent_notifications() -> 'None':
         "real user",
         f"{SUMMARY_PREFIX}\nnew summary",
     ]
+
+
+def test_prune_oldest_tool_response_removes_matching_call_pair() -> 'None':
+    history = (
+        UserMessage(text="first"),
+        ToolCall(call_id="call_1", name="echo", arguments={}),
+        ToolResult(call_id="call_1", name="echo", output="old large output"),
+        AssistantMessage(text="after first"),
+        ToolCall(call_id="call_2", name="echo", arguments={}),
+        ToolResult(call_id="call_2", name="echo", output="new output"),
+    )
+
+    pruned = prune_oldest_tool_response(history)
+
+    assert pruned is not None
+    assert [type(item).__name__ for item in pruned] == [
+        "UserMessage",
+        "AssistantMessage",
+        "ToolCall",
+        "ToolResult",
+    ]
+    assert isinstance(pruned[2], ToolCall)
+    assert pruned[2].call_id == "call_2"
+    assert isinstance(pruned[3], ToolResult)
+    assert pruned[3].call_id == "call_2"

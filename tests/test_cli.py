@@ -2639,6 +2639,37 @@ def test_cli_session_view_formats_prompt_with_context_remaining_percent() -> 'No
     assert view.build_input_prompt("pycodex> ") == "pyco(90%)> "
 
 
+def test_cli_session_view_keeps_failed_context_usage() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _configure_cli_view_output(
+        CliSessionView(context_window_tokens=262_144),
+        output,
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="token_count",
+            turn_id="turn_1",
+            payload={
+                "usage": {
+                    "total_tokens": 264_568,
+                    "input_tokens": 264_568,
+                    "output_tokens": 0,
+                }
+            },
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="turn_failed",
+            turn_id="turn_1",
+            payload={"error": "context_length_exceeded"},
+        )
+    )
+    view.set_input_active(True)
+
+    assert view.build_input_prompt("pycodex> ") == "pyco(0%)> "
+
+
 def test_cli_session_view_shows_auto_compact_events() -> 'None':
     output: 'typing.List[str]' = []
     view = _configure_cli_view_output(CliSessionView(), output)

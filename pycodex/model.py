@@ -287,6 +287,8 @@ class ResponsesModelClient:
                     event_handler,
                 )
             except ResponsesRetryableError as exc:
+                if _is_context_length_error_message(str(exc)):
+                    raise ResponsesApiError(str(exc)) from exc
                 if retries >= max_retries:
                     raise
                 retries += 1
@@ -780,11 +782,14 @@ class ResponsesModelClient:
             )
 
         message = str(error.get("message") or "responses stream failed")
-        code = str(error.get("code") or "").strip()
+        code = str(error.get("code") or error.get("type") or "").strip()
+        if _is_context_length_error_message(message):
+            raise ResponsesApiError(self._format_response_failed_error(message))
         if code in {
             "context_length_exceeded",
             "insufficient_quota",
             "invalid_prompt",
+            "model_output_invalid",
             "usage_not_included",
         }:
             raise ResponsesApiError(self._format_response_failed_error(message))
@@ -886,6 +891,14 @@ def _optional_int(value: 'object') -> 'typing.Union[int, None]':
     if value is None:
         return None
     return int(value)
+
+
+def _is_context_length_error_message(message: 'str') -> 'bool':
+    lower = message.lower()
+    return (
+        "context_length_exceeded" in lower
+        or "maximum context length" in lower
+    )
 
 
 def _requests_verify_setting() -> 'typing.Union[typing.Union[str, bool], None]':

@@ -700,6 +700,173 @@ def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_
     ]
 
 
+def test_responses_server_retries_terminal_reasoning_only_chat_output_once(
+    tmp_path,
+) -> 'None':
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    reasoning_only_chunks = [
+        {
+            "id": "chatcmpl_reasoning_only",
+            "object": "chat.completion.chunk",
+            "model": "gpt-5.4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "role": "assistant",
+                        "reasoning": "inspect repo",
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        },
+        {
+            "id": "chatcmpl_reasoning_only",
+            "object": "chat.completion.chunk",
+            "model": "gpt-5.4",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {},
+                    "finish_reason": "length",
+                }
+            ],
+        },
+    ]
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            reasoning_only_chunks,
+            build_text_chunks("done"),
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="stepfun",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        },
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    assert '"type": "reasoning"' not in body
+    assert '"text": "done"' in body
+    assert "event: response.completed" in body
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 2
+    first_request = json.loads(request_files[0].read_text())
+    second_request = json.loads(request_files[1].read_text())
+    assert "max_tokens" not in first_request["body"]
+    assert second_request["body"] == first_request["body"]
+
+
+def test_responses_server_fails_terminal_reasoning_only_chat_output_after_retry(
+    tmp_path,
+) -> 'None':
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        [
+            {
+                "id": "chatcmpl_reasoning_only",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "role": "assistant",
+                            "reasoning": "inspect repo",
+                        },
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl_reasoning_only",
+                "object": "chat.completion.chunk",
+                "model": "gpt-5.4",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "finish_reason": "length",
+                    }
+                ],
+            },
+        ],
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+            model_provider="stepfun",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "hi"}],
+                        },
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+            body = response.text
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    assert "event: response.failed" in body
+    assert "model_output_invalid" in body
+    assert "ended without assistant content or tool calls" in body
+    assert "event: response.completed" not in body
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 2
+
+
 def test_responses_server_preserves_request_model_without_default_override(
     tmp_path,
 ) -> 'None':
