@@ -164,6 +164,9 @@ Current behavior:
 - `/compact` synthesizes a local handoff summary, replaces the in-memory
   conversation history with the compacted view, and appends a compacted-history
   entry to the rollout so later `/resume` sees the same state
+- `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
+  compaction path automatically when the latest reported usage reaches that
+  threshold before a follow-up sampling request or the next user turn
 - new sessions are now recorded under `CODEX_HOME/sessions/.../rollout-*.jsonl`
   with a stable session/thread id and per-item append+flush semantics so
   `/resume` reads back the same rollout format

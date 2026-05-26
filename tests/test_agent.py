@@ -8,6 +8,8 @@ from pycodex import (
     AgentRuntime,
     AssistantMessage,
     BaseTool,
+    ContextConfig,
+    ContextManager,
     ModelResponse,
     ModelStreamEvent,
     ToolCall,
@@ -15,6 +17,7 @@ from pycodex import (
     ToolResult,
     UserMessage,
 )
+from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX
 from tests.fakes import ScriptedModelClient
 import typing
 
@@ -77,6 +80,50 @@ class WaitAgentNotificationTool(BaseTool):
             },
             "timed_out": False,
         }
+
+
+class UsageModelClient:
+    def __init__(
+        self,
+        responses: 'typing.Iterable[ModelResponse]',
+        usage_by_call: 'typing.Union[typing.Dict[int, int], None]' = None,
+    ) -> 'None':
+        self._responses = iter(responses)
+        self._usage_by_call = usage_by_call or {}
+        self.prompts: 'typing.List[object]' = []
+        self.call_count = 0
+
+    async def complete(self, prompt, event_handler):
+        self.prompts.append(prompt)
+        self.call_count += 1
+        total_tokens = self._usage_by_call.get(self.call_count)
+        if total_tokens is not None:
+            event_handler(
+                ModelStreamEvent(
+                    kind="token_count",
+                    payload={"usage": {"total_tokens": total_tokens}},
+                )
+            )
+        try:
+            return next(self._responses)
+        except StopIteration as exc:
+            raise RuntimeError("usage model ran out of responses") from exc
+
+
+def _auto_compact_context(limit: 'typing.Union[int, None]') -> 'ContextManager':
+    return ContextManager(
+        config=ContextConfig(model_auto_compact_token_limit=limit),
+        include_permissions_instructions=False,
+        include_skills_instructions=False,
+    )
+
+
+def _conversation_items(prompt) -> 'typing.List[typing.Union[UserMessage, AssistantMessage, ToolCall, ToolResult]]':
+    return [
+        item
+        for item in prompt.input
+        if isinstance(item, (UserMessage, AssistantMessage, ToolCall, ToolResult))
+    ]
 
 
 @pytest.mark.asyncio
@@ -167,6 +214,145 @@ async def test_agent_loop_default_has_no_fixed_iteration_cap() -> 'None':
 
     assert result.output_text == "超过 12 轮后也收敛了"
     assert result.iterations == 13
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_auto_compacts_before_next_turn_when_usage_reaches_limit() -> 'None':
+    model = UsageModelClient(
+        [
+            ModelResponse(items=[AssistantMessage(text="first answer")]),
+            ModelResponse(items=[AssistantMessage(text="checkpoint summary")]),
+            ModelResponse(items=[AssistantMessage(text="second answer")]),
+        ],
+        usage_by_call={1: 12},
+    )
+    events = []
+    agent = AgentLoop(
+        model,
+        ToolRegistry(),
+        _auto_compact_context(10),
+        event_handler=events.append,
+    )
+
+    first = await agent.run_turn(["first prompt"])
+    second = await agent.run_turn(["second prompt"])
+
+    assert first.output_text == "first answer"
+    assert second.output_text == "second answer"
+    assert model.call_count == 3
+
+    compact_prompt_items = _conversation_items(model.prompts[1])
+    assert [type(item).__name__ for item in compact_prompt_items] == [
+        "UserMessage",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert compact_prompt_items[0].text == "first prompt"
+    assert compact_prompt_items[1].text == "first answer"
+    assert compact_prompt_items[2].text == DEFAULT_COMPACT_PROMPT
+
+    second_prompt_items = _conversation_items(model.prompts[2])
+    assert [type(item).__name__ for item in second_prompt_items] == [
+        "UserMessage",
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert second_prompt_items[0].text == "first prompt"
+    assert second_prompt_items[1].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
+    assert second_prompt_items[2].text == "second prompt"
+
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_completed",
+    ]
+    assert auto_events[0].payload["phase"] == "pre_turn"
+    assert auto_events[0].payload["total_tokens"] == 12
+    assert auto_events[0].payload["token_limit"] == 10
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_auto_compacts_before_tool_follow_up_when_usage_reaches_limit() -> 'None':
+    model = UsageModelClient(
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="call_1",
+                        name="echo",
+                        arguments={"text": "tool output"},
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="summary after tool")]),
+            ModelResponse(items=[AssistantMessage(text="final answer")]),
+        ],
+        usage_by_call={1: 12},
+    )
+    tools = ToolRegistry()
+    tools.register(EchoTool())
+    events = []
+    agent = AgentLoop(
+        model,
+        tools,
+        _auto_compact_context(10),
+        event_handler=events.append,
+    )
+
+    result = await agent.run_turn(["use the tool"])
+
+    assert result.output_text == "final answer"
+    assert model.call_count == 3
+    compact_prompt_items = _conversation_items(model.prompts[1])
+    assert [type(item).__name__ for item in compact_prompt_items] == [
+        "UserMessage",
+        "ToolCall",
+        "ToolResult",
+        "UserMessage",
+    ]
+    assert compact_prompt_items[0].text == "use the tool"
+    assert compact_prompt_items[1].name == "echo"
+    assert compact_prompt_items[2].output == "tool output"
+    assert compact_prompt_items[3].text == DEFAULT_COMPACT_PROMPT
+
+    follow_up_items = _conversation_items(model.prompts[2])
+    assert [type(item).__name__ for item in follow_up_items] == [
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert follow_up_items[0].text == "use the tool"
+    assert follow_up_items[1].text == f"{SUMMARY_PREFIX}\nsummary after tool"
+
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_completed",
+    ]
+    assert auto_events[0].payload["phase"] == "mid_turn"
+
+
+@pytest.mark.asyncio
+async def test_agent_loop_does_not_auto_compact_without_token_limit() -> 'None':
+    model = UsageModelClient(
+        [
+            ModelResponse(items=[AssistantMessage(text="first answer")]),
+            ModelResponse(items=[AssistantMessage(text="second answer")]),
+        ],
+        usage_by_call={1: 1_000_000},
+    )
+    events = []
+    agent = AgentLoop(
+        model,
+        ToolRegistry(),
+        _auto_compact_context(None),
+        event_handler=events.append,
+    )
+
+    await agent.run_turn(["first prompt"])
+    await agent.run_turn(["second prompt"])
+
+    assert model.call_count == 2
+    assert not [event for event in events if event.kind.startswith("auto_compact_")]
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,37 @@ def test_context_manager_resolves_model_instructions_from_models_json() -> 'None
     assert "Always use apply_patch for manual code edits." in instructions
 
 
+def test_context_manager_resolves_auto_compact_limit_from_config() -> 'None':
+    manager = ContextManager(
+        config=ContextConfig(model_auto_compact_token_limit=12345)
+    )
+
+    assert manager.resolve_auto_compact_token_limit() == 12345
+
+
+def test_context_manager_reads_auto_compact_limit_from_codex_config(tmp_path) -> 'None':
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                "model_auto_compact_token_limit = 12345",
+                "[model_providers.demo]",
+                'base_url = "https://example.com/v1"',
+            ]
+        )
+    )
+
+    manager = ContextManager.from_codex_config(
+        config_path,
+        include_permissions_instructions=False,
+        include_skills_instructions=False,
+    )
+
+    assert manager.resolve_auto_compact_token_limit() == 12345
+
+
 @pytest.mark.parametrize(
     "model",
     ["step-3.5-flash", "step-3.5-flash-2603", "step-3.6"],

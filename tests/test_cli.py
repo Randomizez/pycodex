@@ -2639,6 +2639,31 @@ def test_cli_session_view_formats_prompt_with_context_remaining_percent() -> 'No
     assert view.build_input_prompt("pycodex> ") == "pyco(90%)> "
 
 
+def test_cli_session_view_shows_auto_compact_events() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _configure_cli_view_output(CliSessionView(), output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="auto_compact_started",
+            turn_id="turn_1",
+            payload={"total_tokens": 90, "token_limit": 100},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="auto_compact_completed",
+            turn_id="turn_1",
+            payload={"summary": "compact(4 items) -> 2 items + [summary]"},
+        )
+    )
+
+    assert output == [
+        "[status] auto-compact: 90/100 tokens",
+        "[status] compact(4 items) -> 2 items + [summary]",
+    ]
+
+
 def test_cli_session_view_shows_full_context_on_initial_prompt() -> 'None':
     output: 'typing.List[str]' = []
     view = _configure_cli_view_output(

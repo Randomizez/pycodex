@@ -58,6 +58,10 @@ class AgentLoop:
         self._event_handler = event_handler
         self._history: 'typing.List[ConversationItem]' = list(initial_history)
         self._rollout_recorder = rollout_recorder
+        self._auto_compact_token_limit = (
+            self._context_manager.resolve_auto_compact_token_limit()
+        )
+        self._last_total_usage_tokens: 'typing.Union[int, None]' = None
         self.interrupt_asap = False
 
     @property
@@ -101,8 +105,6 @@ class AgentLoop:
         turn_id = turn_id or uuid7_string()
         self.interrupt_asap = False
         new_user_messages = [UserMessage(text=text) for text in texts]
-        self._history.extend(new_user_messages)
-        self._persist_history_items(new_user_messages)
 
         self._emit(
             "turn_started",
@@ -110,6 +112,9 @@ class AgentLoop:
             user_text="\n".join(texts),
             user_texts=list(texts),
         )
+        await self._maybe_auto_compact(turn_id, phase="pre_turn")
+        self._history.extend(new_user_messages)
+        self._persist_history_items(new_user_messages)
 
         last_assistant_message: 'typing.Union[str, None]' = None
         final_response_items: 'typing.Tuple[\n    typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], ...\n]' = ()
@@ -122,6 +127,7 @@ class AgentLoop:
                     iteration,
                     output_text=last_assistant_message,
                 )
+                await self._maybe_auto_compact(turn_id, phase="mid_turn")
                 iteration += 1
                 prompt = self._context_manager.build_prompt(
                     self._history,
@@ -287,6 +293,8 @@ class AgentLoop:
             return
 
     def _handle_model_stream_event(self, turn_id: 'str', event: 'ModelStreamEvent') -> 'None':
+        if event.kind == "token_count":
+            self._remember_token_usage(event.payload.get("usage"))
         if event.kind == "assistant_delta":
             self._emit("assistant_delta", turn_id, **event.payload)
         elif event.kind == "tool_call":
@@ -295,6 +303,71 @@ class AgentLoop:
             self._emit("token_count", turn_id, **event.payload)
         elif event.kind == "stream_error":
             self._emit("stream_error", turn_id, **event.payload)
+
+    def _remember_token_usage(self, usage: 'object') -> 'None':
+        if not isinstance(usage, dict):
+            return
+        try:
+            self._last_total_usage_tokens = int(usage["total_tokens"])
+        except (KeyError, TypeError, ValueError):
+            return
+
+    async def _maybe_auto_compact(
+        self,
+        turn_id: 'str',
+        phase: 'str',
+    ) -> 'None':
+        limit = self._auto_compact_token_limit
+        total_tokens = self._last_total_usage_tokens
+        if limit is None or total_tokens is None:
+            return
+        if total_tokens < limit or not self._history:
+            return
+
+        from .utils.compactor import compact_agent_loop
+
+        self._emit(
+            "auto_compact_started",
+            turn_id,
+            phase=phase,
+            total_tokens=total_tokens,
+            token_limit=limit,
+        )
+
+        def handle_compact_stream_event(event: 'ModelStreamEvent') -> 'None':
+            if event.kind == "stream_error":
+                self._emit("stream_error", turn_id, **event.payload)
+
+        try:
+            compact_result = await compact_agent_loop(
+                self,
+                handle_compact_stream_event,
+            )
+        except Exception as exc:
+            self._emit(
+                "auto_compact_failed",
+                turn_id,
+                phase=phase,
+                total_tokens=total_tokens,
+                token_limit=limit,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            raise
+
+        self._last_total_usage_tokens = None
+        if compact_result is None:
+            return
+        self._emit(
+            "auto_compact_completed",
+            turn_id,
+            phase=phase,
+            total_tokens=total_tokens,
+            token_limit=limit,
+            original_item_count=compact_result.original_item_count,
+            retained_item_count=compact_result.retained_item_count,
+            summary=compact_result.display_text(),
+        )
 
     def _build_follow_up_messages(
         self,

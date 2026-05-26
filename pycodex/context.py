@@ -78,6 +78,7 @@ class ContextConfig:
     project_doc_max_bytes: 'typing.Union[int, None]' = None
     model: 'typing.Union[str, None]' = None
     model_context_window: 'typing.Union[int, None]' = None
+    model_auto_compact_token_limit: 'typing.Union[int, None]' = None
     personality: 'typing.Union[str, None]' = None
     approval_policy: 'typing.Union[str, None]' = None
     sandbox_mode: 'typing.Union[str, None]' = None
@@ -120,6 +121,9 @@ class ContextConfig:
             project_doc_max_bytes=_normalize_int(selected.get("project_doc_max_bytes")),
             model=_normalize_text(selected.get("model")),
             model_context_window=_normalize_int(selected.get("model_context_window")),
+            model_auto_compact_token_limit=_normalize_int(
+                selected.get("model_auto_compact_token_limit")
+            ),
             personality=_normalize_text(selected.get("personality")),
             approval_policy=_normalize_text(selected.get("approval_policy")),
             sandbox_mode=_normalize_text(selected.get("sandbox_mode")),
@@ -267,6 +271,18 @@ class ContextManager:
         if effective_percent is None:
             effective_percent = DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
         return context_window * max(effective_percent, 0) // 100
+
+    def resolve_auto_compact_token_limit(self) -> 'typing.Union[int, None]':
+        if self._config.model_auto_compact_token_limit is not None:
+            return self._config.model_auto_compact_token_limit
+
+        model_slug = self._config.model
+        if model_slug is None:
+            return None
+        model_metadata = _load_models_by_slug().get(model_slug)
+        if model_metadata is None:
+            return None
+        return _normalize_int(model_metadata.get("auto_compact_token_limit"))
 
     def _resolve_model_instructions(self) -> 'typing.Union[str, None]':
         model_slug = self._config.model

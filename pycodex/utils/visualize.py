@@ -705,6 +705,59 @@ class CliSessionView:
                 self._spinner.set_label("reconnecting")
             return
 
+        if event.kind == "auto_compact_started":
+            self._finish_stream()
+            total_tokens = event.payload.get("total_tokens")
+            token_limit = event.payload.get("token_limit")
+            if total_tokens is not None and token_limit is not None:
+                message = f"[status] auto-compact: {total_tokens}/{token_limit} tokens"
+            else:
+                message = "[status] auto-compact"
+            self._print_line(
+                colorize_cli_message(message, "status", self._color_enabled)
+            )
+            if self._input_active:
+                self._spinner.pause()
+            else:
+                self._spinner.resume()
+                self._spinner.set_label("compacting context")
+                self._spinner.render_now()
+            return
+
+        if event.kind == "auto_compact_completed":
+            self._finish_stream()
+            summary = str(event.payload.get("summary", "")).strip()
+            message = f"[status] {summary}" if summary else "[status] context compacted"
+            self._print_line(
+                colorize_cli_message(message, "status", self._color_enabled)
+            )
+            if self._input_active:
+                self._spinner.pause()
+            else:
+                self._spinner.resume()
+                self._spinner.set_label("thinking")
+                self._spinner.render_now()
+            return
+
+        if event.kind == "auto_compact_failed":
+            self._finish_stream()
+            error = str(event.payload.get("error", "")).strip()
+            message = (
+                f"[error] auto-compact failed: {error}"
+                if error
+                else "[error] auto-compact failed"
+            )
+            self._print_line(
+                colorize_cli_message(message, "error", self._color_enabled)
+            )
+            if self._input_active:
+                self._spinner.pause()
+            else:
+                self._spinner.resume()
+                self._spinner.set_label("thinking")
+                self._spinner.render_now()
+            return
+
         if event.kind == "assistant_delta":
             delta = str(event.payload.get("delta", ""))
             if not delta:
