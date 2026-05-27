@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from pycodex import AgentLoop, AgentRuntime, AssistantMessage, ModelResponse
-from pycodex.protocol import ToolCall
+from pycodex.protocol import ToolCall, ToolResult, UserMessage
 from pycodex.runtime_services import (
     PlanStore,
     RequestPermissionsManager,
@@ -958,6 +958,81 @@ async def test_spawn_agent_requires_message_or_items() -> 'None':
 
     assert spawned.is_error is False
     assert spawned.output == "Provide one of: message or items"
+
+
+@pytest.mark.asyncio
+async def test_spawn_agent_fork_context_drops_unpaired_tool_calls() -> 'None':
+    captured_history = []
+    manager = SubAgentManager()
+
+    def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
+        captured_history.append(tuple(initial_history))
+        client = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
+        agent = AgentLoop(
+            client,
+            ToolRegistry(),
+            initial_history=tuple(initial_history),
+        )
+        return AgentRuntime(agent)
+
+    manager.set_runtime_builder(runtime_builder)
+    registry = ToolRegistry()
+    registry.register(SpawnAgentTool(manager))
+    registry.register(WaitAgentTool(manager))
+
+    paired_call = ToolCall(
+        call_id="call_paired",
+        name="exec_command",
+        arguments={"cmd": "true"},
+    )
+    paired_result = ToolResult(
+        call_id="call_paired",
+        name="exec_command",
+        output="ok",
+    )
+    current_spawn_call = ToolCall(
+        call_id="call_current_spawn",
+        name="spawn_agent",
+        arguments={"message": "child"},
+    )
+
+    spawned = await registry.execute(
+        ToolCall(
+            call_id="call_spawn_filter",
+            name="spawn_agent",
+            arguments={"message": "initial", "fork_context": True},
+        ),
+        ToolContext(
+            turn_id="turn_spawn_filter",
+            history=(
+                UserMessage(text="parent"),
+                paired_call,
+                paired_result,
+                current_spawn_call,
+            ),
+        ),
+    )
+    agent_id = spawned.output["agent_id"]
+    waited = await registry.execute(
+        ToolCall(
+            call_id="call_wait_filter",
+            name="wait_agent",
+            arguments={"ids": [agent_id], "timeout_ms": 1000},
+        ),
+        ToolContext(turn_id="turn_wait_filter", history=()),
+    )
+
+    assert waited.output == {
+        "status": {agent_id: {"completed": "done"}},
+        "timed_out": False,
+    }
+    assert captured_history == [
+        (
+            UserMessage(text="parent"),
+            paired_call,
+            paired_result,
+        )
+    ]
 
 
 @pytest.mark.asyncio

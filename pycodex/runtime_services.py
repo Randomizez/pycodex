@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .compat import Literal
-from .protocol import ConversationItem, TurnResult
+from .protocol import ConversationItem, ToolCall, ToolResult, TurnResult
 from .utils import uuid7_string
 import typing
 
@@ -220,7 +220,7 @@ class SubAgentManager:
         if builder is None:
             raise RuntimeError("spawn_agent is unavailable before runtime initialization")
 
-        initial_history = history if fork_context else ()
+        initial_history = _fork_context_history(history) if fork_context else ()
         agent_id = uuid7_string()
         runtime = builder(model, reasoning_effort, initial_history, agent_id)
         worker_task = asyncio.create_task(runtime.run_forever())
@@ -391,6 +391,28 @@ class SubAgentManager:
         if isinstance(status, dict):
             return "completed" in status or "errored" in status
         return False
+
+
+def _fork_context_history(
+    history: 'typing.Tuple[ConversationItem, ...]',
+) -> 'typing.Tuple[ConversationItem, ...]':
+    call_ids = set()
+    result_ids = set()
+    for item in history:
+        if isinstance(item, ToolCall):
+            call_ids.add(item.call_id)
+        elif isinstance(item, ToolResult):
+            result_ids.add(item.call_id)
+
+    paired_call_ids = call_ids & result_ids
+    filtered = []
+    for item in history:
+        if isinstance(item, ToolCall) and item.call_id not in paired_call_ids:
+            continue
+        if isinstance(item, ToolResult) and item.call_id not in paired_call_ids:
+            continue
+        filtered.append(item)
+    return tuple(filtered)
 
 
 class RuntimeEnvironment:
