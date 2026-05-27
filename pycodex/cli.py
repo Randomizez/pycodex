@@ -441,62 +441,58 @@ async def prompt_request_user_input(
     payload: 'typing.Dict[str, object]',
 ) -> 'typing.Union[typing.Dict[str, object], None]':
     view.finish_stream()
-    view.pause_spinner()
     view.write_line("[request_user_input] waiting for user response")
     answers: 'typing.Dict[str, typing.Dict[str, typing.List[str]]]' = {}
-    try:
-        for question in payload.get("questions", []):
-            if not isinstance(question, dict):
-                continue
-            header = str(question.get("header", "")).strip()
-            question_text = str(question.get("question", "")).strip()
-            question_id = str(question.get("id", "")).strip()
-            if header:
-                view.write_line(f"[{header}] {question_text}")
-            else:
-                view.write_line(question_text)
+    for question in payload.get("questions", []):
+        if not isinstance(question, dict):
+            continue
+        header = str(question.get("header", "")).strip()
+        question_text = str(question.get("question", "")).strip()
+        question_id = str(question.get("id", "")).strip()
+        if header:
+            view.write_line(f"[{header}] {question_text}")
+        else:
+            view.write_line(question_text)
 
-            options = question.get("options") or []
-            if isinstance(options, list):
-                for index, option in enumerate(options, start=1):
-                    if not isinstance(option, dict):
-                        continue
-                    label = str(option.get("label", "")).strip()
-                    description = str(option.get("description", "")).strip()
-                    view.write_line(f"  {index}. {label} - {description}")
-            view.write_line("  0. Other")
+        options = question.get("options") or []
+        if isinstance(options, list):
+            for index, option in enumerate(options, start=1):
+                if not isinstance(option, dict):
+                    continue
+                label = str(option.get("label", "")).strip()
+                description = str(option.get("description", "")).strip()
+                view.write_line(f"  {index}. {label} - {description}")
+        view.write_line("  0. Other")
 
-            try:
-                raw_answer = await view.prompt_async("answer> ")
-            except EOFError:
-                return None
-            answer_text = raw_answer.strip()
-            if not answer_text:
-                return None
+        try:
+            raw_answer = await view.prompt_async("answer> ")
+        except EOFError:
+            return None
+        answer_text = raw_answer.strip()
+        if not answer_text:
+            return None
 
-            selected_answer = answer_text
-            if answer_text.isdigit() and isinstance(options, list):
-                choice = int(answer_text)
-                if 1 <= choice <= len(options):
-                    option = options[choice - 1]
-                    if isinstance(option, dict):
-                        selected_answer = (
-                            str(option.get("label", "")).strip() or answer_text
-                        )
-                elif choice == 0:
-                    try:
-                        raw_answer = await view.prompt_async("other> ")
-                    except EOFError:
-                        return None
-                    selected_answer = raw_answer.strip()
-                    if not selected_answer:
-                        return None
+        selected_answer = answer_text
+        if answer_text.isdigit() and isinstance(options, list):
+            choice = int(answer_text)
+            if 1 <= choice <= len(options):
+                option = options[choice - 1]
+                if isinstance(option, dict):
+                    selected_answer = (
+                        str(option.get("label", "")).strip() or answer_text
+                    )
+            elif choice == 0:
+                try:
+                    raw_answer = await view.prompt_async("other> ")
+                except EOFError:
+                    return None
+                selected_answer = raw_answer.strip()
+                if not selected_answer:
+                    return None
 
-            answers[question_id] = {"answers": [selected_answer]}
+        answers[question_id] = {"answers": [selected_answer]}
 
-        return {"answers": answers}
-    finally:
-        view.resume_spinner()
+    return {"answers": answers}
 
 
 async def prompt_request_permissions(
@@ -504,7 +500,6 @@ async def prompt_request_permissions(
     payload: 'typing.Dict[str, object]',
 ) -> 'typing.Union[typing.Dict[str, object], None]':
     view.finish_stream()
-    view.pause_spinner()
     view.write_line("[request_permissions] user approval required")
     reason = payload.get("reason")
     if reason:
@@ -518,8 +513,6 @@ async def prompt_request_permissions(
         raw_answer = await view.prompt_async("permissions> ")
     except EOFError:
         return None
-    finally:
-        view.resume_spinner()
 
     answer = raw_answer.strip().lower()
     if answer in {"t", "turn", "y", "yes"}:
@@ -619,7 +612,7 @@ async def run_interactive_session(
 
         while True:
             try:
-                raw_line = await view.poll_prompt("pycodex> ")
+                raw_line = await view.prompt_async()
             except EOFError:
                 break
             if raw_line is None:

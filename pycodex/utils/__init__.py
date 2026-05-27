@@ -6,7 +6,6 @@ from .compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
 from .visualize import (
     CliSessionView,
     Spinner,
-    build_cli_spinner_frame,
     cli_color_enabled,
     colorize_cli_message,
     extract_plan_items,
@@ -25,7 +24,6 @@ __all__ = [
     "SUMMARY_PREFIX",
     "Spinner",
     "build_user_agent",
-    "build_cli_spinner_frame",
     "cli_color_enabled",
     "colorize_cli_message",
     "extract_plan_items",
