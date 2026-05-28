@@ -106,8 +106,7 @@ def _install_agent_shortcut(shell):
             return [f"{indent}print('Usage: @{agent_name} <prompt>')\n"]
 
         return [
-            f"{indent}print((await {agent_name}.run_turn([{prompt!r}]))"
-            f".output_text)\n"
+            f"{indent}print({agent_name}.ask({prompt!r}).output_text)\n"
         ]
 
     shell.input_transformers_cleanup.append(transform)
@@ -128,7 +127,7 @@ def attach_ipython_event_printer(agent, color=True):
 
 
 def attach_ipython_tool(
-    agent, name="ipython", shortcut=True, print_tool_events=True, color=True
+    agent, name="current_ipython", shortcut=True, print_tool_events=True, color=True
 ):
     from IPython import get_ipython
 
