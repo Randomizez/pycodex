@@ -13,7 +13,7 @@ class FakeAgent:
         self.event_handler = event_handler
 
 
-def test_ipython_event_printer_prints_tool_events(capsys) -> 'None':
+def test_ipython_event_printer_prints_completed_tool_events(capsys) -> 'None':
     agent = FakeAgent()
 
     handler = attach_ipython_event_printer(agent, color=False)
@@ -55,10 +55,7 @@ def test_ipython_event_printer_prints_tool_events(capsys) -> 'None':
         )
     )
 
-    assert capsys.readouterr().out == (
-        "[exec_command] running\n"
-        "[exec_command] pwd -> /data/pycodex\n"
-    )
+    assert capsys.readouterr().out == "[exec_command] pwd -> /data/pycodex\n"
 
 
 async def test_ipython_tool_prints_io_without_storing_history(monkeypatch) -> 'None':

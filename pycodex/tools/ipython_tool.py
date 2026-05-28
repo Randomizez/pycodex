@@ -117,15 +117,6 @@ def _install_agent_shortcut(shell):
 
 def attach_ipython_event_printer(agent, color=True):
     def handle_event(event):
-        if event.kind == "tool_started":
-            tool_name = str(event.payload.get("tool_name", "")).strip()
-            if tool_name:
-                message = f"[{tool_name}] running"
-            else:
-                message = "[tool] running"
-            print(colorize_tool_message(message, color, tool_name), flush=True)
-            return
-
         if event.kind == "tool_completed":
             tool_name = str(event.payload.get("tool_name", "")).strip()
             message = tool_summary(event.payload)

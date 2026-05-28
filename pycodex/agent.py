@@ -101,6 +101,11 @@ class Agent:
     ) -> 'None':
         self._rollout_recorder = rollout_recorder
 
+    def ask(self, text: 'str') -> 'TurnResult':
+        from .utils.async_bridge import run_async
+
+        return run_async(self.run_turn([text]))
+
     def _raise_if_interrupt_requested(
         self,
         turn_id: 'str',

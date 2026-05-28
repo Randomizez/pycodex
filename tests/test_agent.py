@@ -140,6 +140,19 @@ def _context_length_error_message(
     )
 
 
+def test_agent_ask_runs_turn_from_sync_context() -> 'None':
+    model = ScriptedModelClient(
+        [ModelResponse(items=[AssistantMessage(text="sync answer")])]
+    )
+    agent = Agent(model, ToolRegistry())
+
+    result = agent.ask("sync prompt")
+
+    assert result.output_text == "sync answer"
+    assert result.iterations == 1
+    assert model.call_count == 1
+
+
 @pytest.mark.asyncio
 async def test_agent_runs_tool_then_returns_final_message() -> 'None':
     model = ScriptedModelClient(
