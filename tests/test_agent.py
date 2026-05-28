@@ -616,6 +616,39 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> 'Non
 
 
 @pytest.mark.asyncio
+async def test_agent_auto_compacts_on_context_window_error_without_token_counts() -> 'None':
+    events = []
+    error_message = (
+        "ResponsesApiError: responses stream failed on the server side\n"
+        "- detail: Your input exceeds the context window of this model. "
+        "Please adjust your input and try again."
+    )
+
+    def response_factory(prompt, call_count):
+        if call_count == 1:
+            raise RuntimeError(error_message)
+        if call_count == 2:
+            return ModelResponse(items=[AssistantMessage(text="checkpoint summary")])
+        if call_count == 3:
+            return ModelResponse(items=[AssistantMessage(text="final answer")])
+        raise AssertionError(f"unexpected call_count={call_count}")
+
+    model = ScriptedModelClient(response_factory=response_factory)
+    agent = Agent(model, ToolRegistry(), event_handler=events.append)
+
+    result = await agent.run_turn(["hello"])
+
+    assert result.output_text == "final answer"
+    assert [event.kind for event in events if event.kind == "token_count"] == []
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_completed",
+    ]
+    assert auto_events[0].payload == {"phase": "context_length_exceeded"}
+
+
+@pytest.mark.asyncio
 async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() -> 'None':
     events = []
     initial_history = (

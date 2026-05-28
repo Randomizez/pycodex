@@ -997,6 +997,57 @@ async def test_responses_model_client_does_not_retry_context_length_failed_strea
 
 
 @pytest.mark.asyncio
+async def test_responses_model_client_preserves_response_failed_error_code() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        stream_max_retries=5,
+    )
+    client = ResponsesModelClient(provider)
+
+    class _ContextWindowFailureResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.failed'
+            yield (
+                b'data: {"type":"response.failed","response":{"error":{"message":'
+                b'"Your input exceeds the context window of this model. Please adjust '
+                b'your input and try again.","type":"context_length_exceeded"}}}'
+            )
+            yield b''
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        return _ContextWindowFailureResponse()
+
+    requests.Session.send = fake_send
+    try:
+        with pytest.raises(RuntimeError) as excinfo:
+            await client.complete(
+                Prompt(input=[UserMessage(text='hi')], tools=[]),
+                NOOP_MODEL_STREAM_EVENT_HANDLER,
+            )
+    finally:
+        requests.Session.send = original_send
+
+    assert "- code: context_length_exceeded" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
 async def test_responses_model_client_does_not_retry_invalid_model_output_stream() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',

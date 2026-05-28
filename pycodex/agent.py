@@ -40,6 +40,12 @@ _MAX_CONTEXT_TOKENS_RE = re.compile(
     r"maximum\s+context\s+length\s+is\s+([0-9,]+)\s+tokens",
     re.IGNORECASE,
 )
+_CONTEXT_LENGTH_ERROR_MARKERS = (
+    "context_length_exceeded",
+    "maximum context length",
+    "exceeds the context window",
+    "exceeded the context window",
+)
 
 
 class TurnInterrupted(RuntimeError):
@@ -350,17 +356,26 @@ class Agent:
                     lambda event: self._handle_model_stream_event(turn_id, event),
                 )
             except Exception as exc:
-                context_usage = _usage_from_context_length_error(str(exc))
-                if context_usage is None or attempted_context_compact:
+                error_message = str(exc)
+                if (
+                    not _is_context_length_error_message(error_message)
+                    or attempted_context_compact
+                ):
                     raise
                 attempted_context_compact = True
-                self._remember_token_usage(context_usage)
-                self._emit("token_count", turn_id, usage=context_usage)
+                context_usage = _usage_from_context_length_error(error_message)
+                if context_usage is not None:
+                    self._remember_token_usage(context_usage)
+                    self._emit("token_count", turn_id, usage=context_usage)
                 await self._run_auto_compact(
                     turn_id,
                     phase="context_length_exceeded",
-                    total_tokens=context_usage.get("total_tokens"),
-                    token_limit=_context_length_error_token_limit(str(exc)),
+                    total_tokens=(
+                        context_usage.get("total_tokens")
+                        if context_usage is not None
+                        else None
+                    ),
+                    token_limit=_context_length_error_token_limit(error_message),
                     prune_tool_results_on_context_error=True,
                 )
                 self._raise_if_interrupt_requested(turn_id, iteration)
@@ -485,11 +500,7 @@ class Agent:
 def _usage_from_context_length_error(
     message: 'str',
 ) -> 'typing.Union[typing.Dict[str, int], None]':
-    lower = message.lower()
-    if (
-        "context_length_exceeded" not in lower
-        and "maximum context length" not in lower
-    ):
+    if not _is_context_length_error_message(message):
         return None
 
     requested_match = _REQUESTED_TOKENS_RE.search(message)
@@ -504,6 +515,11 @@ def _usage_from_context_length_error(
     else:
         usage["input_tokens"] = usage["total_tokens"]
     return usage
+
+
+def _is_context_length_error_message(message: 'str') -> 'bool':
+    lower = message.lower()
+    return any(marker in lower for marker in _CONTEXT_LENGTH_ERROR_MARKERS)
 
 
 def _context_length_error_token_limit(message: 'str') -> 'typing.Union[int, None]':

@@ -250,4 +250,6 @@ def _is_context_length_error(message: 'str') -> 'bool':
     return (
         "context_length_exceeded" in lower
         or "maximum context length" in lower
+        or "exceeds the context window" in lower
+        or "exceeded the context window" in lower
     )

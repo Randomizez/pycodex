@@ -758,9 +758,15 @@ class ResponsesModelClient:
             details,
         )
 
-    def _format_response_failed_error(self, message: 'str') -> 'str':
+    def _format_response_failed_error(
+        self,
+        message: 'str',
+        code: 'str' = "",
+    ) -> 'str':
         details = self._base_error_details(self.responses_url())
         details.append(("detail", message))
+        if code:
+            details.append(("code", code))
         details.append(
             (
                 "meaning",
@@ -784,7 +790,7 @@ class ResponsesModelClient:
         message = str(error.get("message") or "responses stream failed")
         code = str(error.get("code") or error.get("type") or "").strip()
         if _is_context_length_error_message(message):
-            raise ResponsesApiError(self._format_response_failed_error(message))
+            raise ResponsesApiError(self._format_response_failed_error(message, code))
         if code in {
             "context_length_exceeded",
             "insufficient_quota",
@@ -792,10 +798,10 @@ class ResponsesModelClient:
             "model_output_invalid",
             "usage_not_included",
         }:
-            raise ResponsesApiError(self._format_response_failed_error(message))
+            raise ResponsesApiError(self._format_response_failed_error(message, code))
 
         raise ResponsesRetryableError(
-            self._format_response_failed_error(message),
+            self._format_response_failed_error(message, code),
             retry_delay_seconds=self._try_parse_retry_after_seconds(code, message),
         )
 
@@ -898,6 +904,8 @@ def _is_context_length_error_message(message: 'str') -> 'bool':
     return (
         "context_length_exceeded" in lower
         or "maximum context length" in lower
+        or "exceeds the context window" in lower
+        or "exceeded the context window" in lower
     )
 
 
