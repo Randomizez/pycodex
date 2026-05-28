@@ -12,14 +12,15 @@ import pytest
 from pycodex.compat import ThreadingHTTPServer
 from pycodex import (
     AgentEvent,
-    AgentLoop,
-    AgentRuntime,
+    Agent,
+    CliSubmissionQueue,
     AssistantMessage,
     BaseTool,
     ContextMessage,
     ModelResponse,
     ModelStreamEvent,
     ReasoningItem,
+    ResponsesProviderConfig,
     ToolCall,
     ToolResult,
     ToolRegistry,
@@ -28,9 +29,10 @@ from pycodex import (
 from pycodex.cli import (
     CliSessionView,
     LOCAL_RESPONSES_SERVER_API_KEY_ENV,
-    _build_model_client,
+    build_agent,
+    build_model,
     build_parser,
-    build_runtime,
+    build_cli_queue,
     get_subagent_tools,
     get_tools,
     launch_chat_completion_compat_server,
@@ -225,18 +227,17 @@ class _DummyProviderConfig:
 def _build_scripted_tui_runtime(
     config_path: 'Path',
     responses,
-) -> 'typing.Tuple[AgentRuntime, _ScriptedResponsesClient]':
+) -> 'typing.Tuple[CliSubmissionQueue, _ScriptedResponsesClient]':
     client = _ScriptedResponsesClient(responses=responses)
     client._session_id = None
     client._originator = "codex-tui"
     client._config = _DummyProviderConfig()
-    runtime = build_runtime(
-        str(config_path),
-        None,
-        None,
+    agent = build_agent(
         client,
+        config_path=str(config_path),
         session_mode="tui",
     )
+    runtime = build_cli_queue(agent)
     return runtime, client
 
 
@@ -343,7 +344,7 @@ def test_launch_chat_completion_compat_server_normalizes_vllm_base_url(
     assert seen["started"] is True
 
 
-def test_build_runtime_overrides_provider_for_managed_vllm_mode(
+def test_build_agent_overrides_provider_for_managed_responses_url(
     tmp_path,
     monkeypatch,
 ) -> 'None':
@@ -380,23 +381,17 @@ def test_build_runtime_overrides_provider_for_managed_vllm_mode(
 
     monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
 
-    args = build_parser().parse_args(
-        [
-            "--config",
-            str(config_path),
-        ]
-    )
-    client = _build_model_client(
-        args.config,
-        args.profile,
-        args.timeout_seconds,
+    model = build_model(
+        config_path=str(config_path),
+        profile=None,
+        timeout_seconds=120.0,
         managed_responses_base_url="http://127.0.0.1:18001/v1",
     )
-    build_runtime(
-        args.config,
-        args.profile,
-        args.system_prompt,
-        client,
+    build_agent(
+        model,
+        config_path=str(config_path),
+        profile=None,
+        system_prompt=None,
         session_mode="tui",
     )
 
@@ -404,6 +399,50 @@ def test_build_runtime_overrides_provider_for_managed_vllm_mode(
     assert seen["config"].base_url == "http://127.0.0.1:18001/v1"
     assert seen["config"].api_key_env == LOCAL_RESPONSES_SERVER_API_KEY_ENV
     assert os.environ[LOCAL_RESPONSES_SERVER_API_KEY_ENV] == "dummy"
+
+
+def test_build_model_can_be_called_without_arguments(monkeypatch) -> 'None':
+    captured = {}
+    fake_client = object()
+
+    def fake_from_codex_config(config_path, profile=None):
+        captured["provider_args"] = {
+            "config_path": str(config_path),
+            "profile": profile,
+        }
+        return ResponsesProviderConfig(
+            model="demo-model",
+            provider_name="demo",
+            base_url="https://example.com/v1",
+            api_key_env="DUMMY_KEY",
+        )
+
+    class _FakeResponsesModelClient:
+        def __new__(cls, config, timeout_seconds, originator=None):
+            captured["client_args"] = {
+                "config": config,
+                "timeout_seconds": timeout_seconds,
+                "originator": originator,
+            }
+            return fake_client
+
+    monkeypatch.setattr("pycodex.cli.load_codex_dotenv", lambda _config_path: None)
+    monkeypatch.setattr(
+        "pycodex.cli.ResponsesProviderConfig.from_codex_config",
+        fake_from_codex_config,
+    )
+    monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
+
+    model = build_model()
+
+    default_config_path = str(Path.home() / ".codex" / "config.toml")
+    assert model is fake_client
+    assert captured["provider_args"] == {
+        "config_path": default_config_path,
+        "profile": None,
+    }
+    assert captured["client_args"]["timeout_seconds"] == 120.0
+    assert captured["client_args"]["originator"] == "codex-tui"
 
 
 def test_build_model_client_respects_use_chat_completion_from_config(
@@ -447,7 +486,7 @@ def test_build_model_client_respects_use_chat_completion_from_config(
     monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
     monkeypatch.setenv("DUMMY_KEY", "test-key")
 
-    client = _build_model_client(
+    client = build_model(
         str(config_path),
         None,
         60.0,
@@ -528,21 +567,13 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
         started["outcomming_api"] = outcomming_api
         return _FakeManagedServer()
 
-    def fake_build_runtime(
-        config_path,
-        profile,
-        system_prompt,
-        client,
-        session_mode="exec",
-        collaboration_mode="default",
-    ):
-        del config_path, profile, system_prompt, collaboration_mode
-        started["session_mode"] = session_mode
-        started["base_url_override"] = client._config.base_url
+    def fake_build_cli_queue(agent):
+        started["session_mode"] = "tui"
+        started["base_url_override"] = agent._model_client._config.base_url
         return _FakeRuntime()
 
     monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
-    monkeypatch.setattr("pycodex.cli.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("pycodex.cli.build_cli_queue", fake_build_cli_queue)
     monkeypatch.setattr(
         "pycodex.cli.atexit.register",
         lambda callback: registered.setdefault("callback", callback),
@@ -641,21 +672,13 @@ async def test_run_cli_launches_managed_responses_server_for_messages_backend(
         started["outcomming_api"] = outcomming_api
         return _FakeManagedServer()
 
-    def fake_build_runtime(
-        config_path,
-        profile,
-        system_prompt,
-        client,
-        session_mode="exec",
-        collaboration_mode="default",
-    ):
-        del config_path, profile, system_prompt, collaboration_mode
-        started["session_mode"] = session_mode
-        started["base_url_override"] = client._config.base_url
+    def fake_build_cli_queue(agent):
+        started["session_mode"] = "tui"
+        started["base_url_override"] = agent._model_client._config.base_url
         return _FakeRuntime()
 
     monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
-    monkeypatch.setattr("pycodex.cli.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("pycodex.cli.build_cli_queue", fake_build_cli_queue)
     monkeypatch.setattr(
         "pycodex.cli.atexit.register",
         lambda callback: registered.setdefault("callback", callback),
@@ -797,22 +820,14 @@ async def test_run_cli_bootstraps_called_home_before_loading_config(
         async def shutdown(self):
             self._stopped.set()
 
-    def fake_build_runtime(
-        config_path,
-        profile,
-        system_prompt,
-        client,
-        session_mode="exec",
-        collaboration_mode="default",
-    ):
-        del profile, system_prompt, collaboration_mode
-        captured["config_path"] = config_path
-        captured["client_base_url"] = client._config.base_url
-        captured["session_mode"] = session_mode
+    def fake_build_cli_queue(agent):
+        captured["config_path"] = str(agent._context_manager._config.codex_home / "config.toml")
+        captured["client_base_url"] = agent._model_client._config.base_url
+        captured["session_mode"] = "tui"
         return _FakeRuntime()
 
     monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
-    monkeypatch.setattr("pycodex.cli.build_runtime", fake_build_runtime)
+    monkeypatch.setattr("pycodex.cli.build_cli_queue", fake_build_cli_queue)
     monkeypatch.setattr("pycodex.cli.configure_loguru", lambda: None)
     monkeypatch.setattr("sys.stdin.read", lambda: "")
     monkeypatch.delenv("CODEX_HOME", raising=False)
@@ -1042,7 +1057,7 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
             return ModelResponse(items=[AssistantMessage(text=text)])
 
     model = _DelayedModelClient()
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
@@ -1098,7 +1113,7 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
             return ModelResponse(items=[AssistantMessage(text=text)])
 
     model = _DelayedModelClient()
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
@@ -1141,7 +1156,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
             ModelResponse(items=[AssistantMessage(text="second")]),
         ]
     )
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
 
     async def prompt_hook(_view, _prompt: 'str', _value: 'str') -> 'None':
         assert captured_view["view"].prompter.spinner._paused is True
@@ -1178,7 +1193,7 @@ async def test_run_interactive_session_disables_raw_spinner_thread(
     )
 
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
 
     code = await run_interactive_session(
         runtime,
@@ -1194,7 +1209,7 @@ async def test_run_interactive_session_supports_history_and_title_commands(
     monkeypatch,
 ) -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
 
@@ -1234,7 +1249,7 @@ async def test_run_interactive_session_supports_compact_command(
             ModelResponse(items=[AssistantMessage(text="after compact")]),
         ]
     )
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
 
@@ -1482,7 +1497,7 @@ async def test_run_interactive_session_supports_resume_command(
             self._session_id = None
 
     model = _ResumableClient()
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
 
@@ -1730,8 +1745,8 @@ async def test_run_interactive_session_resume_without_args_lists_sessions(
     os.utime(named_rollout, (100, 100))
     os.utime(unnamed_rollout, (200, 200))
 
-    runtime = AgentRuntime(
-        AgentLoop(
+    runtime = CliSubmissionQueue(
+        Agent(
             ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
             ToolRegistry(),
         )
@@ -1765,8 +1780,8 @@ async def test_run_interactive_session_resume_rejects_non_numeric_target(
     monkeypatch.setenv("CODEX_HOME", str(codex_home))
     codex_home.mkdir()
 
-    runtime = AgentRuntime(
-        AgentLoop(
+    runtime = CliSubmissionQueue(
+        Agent(
             ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
             ToolRegistry(),
         )
@@ -2184,18 +2199,19 @@ async def test_run_interactive_session_supports_model_command(
     monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
 
     args = build_parser().parse_args(["--config", str(config_path)])
-    client = _build_model_client(
+    client = build_model(
         args.config,
         args.profile,
         args.timeout_seconds,
     )
-    runtime = build_runtime(
-        args.config,
-        args.profile,
-        args.system_prompt,
+    agent = build_agent(
         client,
+        config_path=args.config,
+        profile=args.profile,
+        system_prompt=args.system_prompt,
         session_mode="tui",
     )
+    runtime = build_cli_queue(agent)
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
@@ -2260,7 +2276,7 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
             return ["demo-model", "alt-model"]
 
     model = _DelayedResponsesModelClient()
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
 
@@ -2311,7 +2327,7 @@ async def test_run_interactive_session_continues_after_model_error(
             )
             return ModelResponse(items=[AssistantMessage(text="done")])
 
-    runtime = AgentRuntime(AgentLoop(_FailOnceModelClient(), ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(_FailOnceModelClient(), ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     saw_error = asyncio.Event()
@@ -2387,7 +2403,7 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     )
     tools = ToolRegistry()
     tools.register(_EchoTool())
-    runtime = AgentRuntime(AgentLoop(model, tools))
+    runtime = CliSubmissionQueue(Agent(model, tools))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     _install_test_cli_view(
@@ -3198,18 +3214,19 @@ async def test_run_interactive_session_preserves_tui_context_across_turns(
             prompt_hook=prompt_hook,
         )
         args = build_parser().parse_args(["--config", str(config_path)])
-        client = _build_model_client(
+        client = build_model(
             args.config,
             args.profile,
             args.timeout_seconds,
         )
-        runtime = build_runtime(
-            args.config,
-            args.profile,
-            args.system_prompt,
+        agent = build_agent(
             client,
+            config_path=args.config,
+            profile=args.profile,
+            system_prompt=args.system_prompt,
             session_mode="tui",
         )
+        runtime = build_cli_queue(agent)
         code = await run_interactive_session(
             runtime,
             False,
@@ -3370,18 +3387,19 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
             ),
         )
         args = build_parser().parse_args(["--config", str(config_path)])
-        client = _build_model_client(
+        client = build_model(
             args.config,
             args.profile,
             args.timeout_seconds,
         )
-        runtime = build_runtime(
-            args.config,
-            args.profile,
-            args.system_prompt,
+        agent = build_agent(
             client,
+            config_path=args.config,
+            profile=args.profile,
+            system_prompt=args.system_prompt,
             session_mode="tui",
         )
+        runtime = build_cli_queue(agent)
         code = await run_interactive_session(
             runtime,
             False,
@@ -3534,18 +3552,19 @@ async def test_go_on_after_network_drop_does_not_replay_partial_reasoning_or_too
             ),
         )
         args = build_parser().parse_args(["--config", str(config_path)])
-        client = _build_model_client(
+        client = build_model(
             args.config,
             args.profile,
             args.timeout_seconds,
         )
-        runtime = build_runtime(
-            args.config,
-            args.profile,
-            args.system_prompt,
+        agent = build_agent(
             client,
+            config_path=args.config,
+            profile=args.profile,
+            system_prompt=args.system_prompt,
             session_mode="tui",
         )
+        runtime = build_cli_queue(agent)
         code = await run_interactive_session(
             runtime,
             False,
@@ -3640,7 +3659,7 @@ async def test_go_on_after_later_failure_keeps_committed_reasoning_and_tool_resu
 
     tools = ToolRegistry()
     tools.register(_EchoTool())
-    runtime = AgentRuntime(AgentLoop(_FailOnSecondCallModelClient(), tools))
+    runtime = CliSubmissionQueue(Agent(_FailOnSecondCallModelClient(), tools))
     first_failure_reported = asyncio.Event()
 
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
@@ -3711,7 +3730,7 @@ def _last_user_message_text(prompt) -> 'str':
 
 
 @pytest.mark.asyncio
-async def test_build_runtime_subagents_match_upstream_subset_and_context(
+async def test_build_cli_queue_subagents_match_upstream_subset_and_context(
     tmp_path,
     monkeypatch,
 ) -> 'None':
@@ -3849,18 +3868,19 @@ async def test_build_runtime_subagents_match_upstream_subset_and_context(
     monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeResponsesModelClient)
 
     args = build_parser().parse_args(["--config", str(config_path)])
-    client = _build_model_client(
+    client = build_model(
         args.config,
         args.profile,
         args.timeout_seconds,
     )
-    runtime = build_runtime(
-        args.config,
-        args.profile,
-        args.system_prompt,
+    agent = build_agent(
         client,
+        config_path=args.config,
+        profile=args.profile,
+        system_prompt=args.system_prompt,
         session_mode="tui",
     )
+    runtime = build_cli_queue(agent)
     worker = asyncio.create_task(runtime.run_forever())
     try:
         result = await runtime.submit_user_turn("drive the subagent flow")
@@ -4041,7 +4061,7 @@ async def test_run_cli_returns_non_zero_on_single_turn_error(
             self._stopped.set()
 
     monkeypatch.setattr("pycodex.cli.should_run_interactive", lambda *_args: False)
-    monkeypatch.setattr("pycodex.cli.build_runtime", lambda *args, **kwargs: _FakeRuntime())
+    monkeypatch.setattr("pycodex.cli.build_cli_queue", lambda *args, **kwargs: _FakeRuntime())
     monkeypatch.setattr("sys.stdin.read", lambda: "")
 
     args = build_parser().parse_args(["--config", str(config_path), "hello"])

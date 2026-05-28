@@ -4,8 +4,8 @@ import asyncio
 import pytest
 
 from pycodex import (
-    AgentLoop,
-    AgentRuntime,
+    Agent,
+    CliSubmissionQueue,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -141,7 +141,7 @@ def _context_length_error_message(
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_runs_tool_then_returns_final_message() -> 'None':
+async def test_agent_runs_tool_then_returns_final_message() -> 'None':
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -157,7 +157,7 @@ async def test_agent_loop_runs_tool_then_returns_final_message() -> 'None':
     tools = ToolRegistry()
     tools.register(EchoTool())
 
-    agent = AgentLoop(model, tools)
+    agent = Agent(model, tools)
     result = await agent.run_turn(["请回声 hello"])
 
     assert result.output_text == "工具返回了 hello"
@@ -193,7 +193,7 @@ async def test_parallel_tools_share_one_model_round() -> 'None':
     tools.register(CoordinatedParallelTool("slow_a", entered, both_started))
     tools.register(CoordinatedParallelTool("slow_b", entered, both_started))
 
-    agent = AgentLoop(model, tools)
+    agent = Agent(model, tools)
     result = await agent.run_turn(["并行跑两个工具"])
 
     assert result.output_text == "两个工具都执行完了"
@@ -201,7 +201,7 @@ async def test_parallel_tools_share_one_model_round() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_default_has_no_fixed_iteration_cap() -> 'None':
+async def test_agent_default_has_no_fixed_iteration_cap() -> 'None':
     model = ScriptedModelClient(
         [
             *(
@@ -223,7 +223,7 @@ async def test_agent_loop_default_has_no_fixed_iteration_cap() -> 'None':
     tools = ToolRegistry()
     tools.register(EchoTool())
 
-    agent = AgentLoop(model, tools)
+    agent = Agent(model, tools)
     result = await agent.run_turn(["连续调用工具直到结束"])
 
     assert result.output_text == "超过 12 轮后也收敛了"
@@ -231,7 +231,7 @@ async def test_agent_loop_default_has_no_fixed_iteration_cap() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_auto_compacts_before_next_turn_when_usage_reaches_limit() -> 'None':
+async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit() -> 'None':
     model = UsageModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="first answer")]),
@@ -241,7 +241,7 @@ async def test_agent_loop_auto_compacts_before_next_turn_when_usage_reaches_limi
         usage_by_call={1: 12},
     )
     events = []
-    agent = AgentLoop(
+    agent = Agent(
         model,
         ToolRegistry(),
         _auto_compact_context(10),
@@ -286,7 +286,7 @@ async def test_agent_loop_auto_compacts_before_next_turn_when_usage_reaches_limi
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_auto_compacts_before_tool_follow_up_when_usage_reaches_limit() -> 'None':
+async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limit() -> 'None':
     model = UsageModelClient(
         [
             ModelResponse(
@@ -306,7 +306,7 @@ async def test_agent_loop_auto_compacts_before_tool_follow_up_when_usage_reaches
     tools = ToolRegistry()
     tools.register(EchoTool())
     events = []
-    agent = AgentLoop(
+    agent = Agent(
         model,
         tools,
         _auto_compact_context(10),
@@ -346,7 +346,7 @@ async def test_agent_loop_auto_compacts_before_tool_follow_up_when_usage_reaches
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_does_not_auto_compact_without_token_limit() -> 'None':
+async def test_agent_does_not_auto_compact_without_token_limit() -> 'None':
     model = UsageModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="first answer")]),
@@ -355,7 +355,7 @@ async def test_agent_loop_does_not_auto_compact_without_token_limit() -> 'None':
         usage_by_call={1: 1_000_000},
     )
     events = []
-    agent = AgentLoop(
+    agent = Agent(
         model,
         ToolRegistry(),
         _auto_compact_context(None),
@@ -389,7 +389,7 @@ async def test_wait_agent_injects_subagent_notification_into_history() -> 'None'
     tools = ToolRegistry()
     tools.register(WaitAgentNotificationTool())
 
-    agent = AgentLoop(model, tools)
+    agent = Agent(model, tools)
     result = await agent.run_turn(["check subagent"])
 
     assert result.output_text == "done"
@@ -411,8 +411,8 @@ async def test_wait_agent_injects_subagent_notification_into_history() -> 'None'
 async def test_runtime_submission_loop_processes_turn_and_shutdown() -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     tools = ToolRegistry()
-    agent = AgentLoop(model, tools)
-    runtime = AgentRuntime(agent)
+    agent = Agent(model, tools)
+    runtime = CliSubmissionQueue(agent)
 
     worker = asyncio.create_task(runtime.run_forever())
     try:
@@ -450,7 +450,7 @@ async def test_runtime_steer_batches_messages_into_next_request() -> 'None':
             return ModelResponse(items=[AssistantMessage(text="second")])
 
     model = _DelayedModelClient()
-    runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
 
     worker = asyncio.create_task(runtime.run_forever())
     first_turn = asyncio.create_task(runtime.submit_user_turn("hello"))
@@ -498,7 +498,7 @@ async def test_runtime_steer_batches_messages_into_next_request() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
+async def test_agent_emits_turn_failed_event_on_model_error() -> 'None':
     events = []
 
     class FailingModelClient:
@@ -506,7 +506,7 @@ async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
             del prompt, event_handler
             raise RuntimeError("synthetic client error")
 
-    agent = AgentLoop(FailingModelClient(), ToolRegistry(), event_handler=events.append)
+    agent = Agent(FailingModelClient(), ToolRegistry(), event_handler=events.append)
 
     with pytest.raises(RuntimeError, match="synthetic client error"):
         await agent.run_turn(["hello"])
@@ -520,7 +520,7 @@ async def test_agent_loop_emits_turn_failed_event_on_model_error() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_emits_token_count_for_context_length_error() -> 'None':
+async def test_agent_emits_token_count_for_context_length_error() -> 'None':
     events = []
     error_message = _context_length_error_message()
 
@@ -529,7 +529,7 @@ async def test_agent_loop_emits_token_count_for_context_length_error() -> 'None'
             del prompt, event_handler
             raise RuntimeError(error_message)
 
-    agent = AgentLoop(FailingModelClient(), ToolRegistry(), event_handler=events.append)
+    agent = Agent(FailingModelClient(), ToolRegistry(), event_handler=events.append)
 
     with pytest.raises(RuntimeError, match="context_length_exceeded"):
         await agent.run_turn(["hello"])
@@ -554,7 +554,7 @@ async def test_agent_loop_emits_token_count_for_context_length_error() -> 'None'
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_auto_compacts_and_retries_on_context_length_error() -> 'None':
+async def test_agent_auto_compacts_and_retries_on_context_length_error() -> 'None':
     events = []
 
     def response_factory(prompt, call_count):
@@ -567,7 +567,7 @@ async def test_agent_loop_auto_compacts_and_retries_on_context_length_error() ->
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = AgentLoop(model, ToolRegistry(), event_handler=events.append)
+    agent = Agent(model, ToolRegistry(), event_handler=events.append)
 
     result = await agent.run_turn(["hello"])
 
@@ -603,7 +603,7 @@ async def test_agent_loop_auto_compacts_and_retries_on_context_length_error() ->
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_prunes_old_tool_responses_when_context_compact_overflows() -> 'None':
+async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() -> 'None':
     events = []
     initial_history = (
         UserMessage(text="old prompt"),
@@ -632,7 +632,7 @@ async def test_agent_loop_prunes_old_tool_responses_when_context_compact_overflo
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = AgentLoop(
+    agent = Agent(
         model,
         ToolRegistry(),
         event_handler=events.append,
@@ -656,7 +656,7 @@ async def test_agent_loop_prunes_old_tool_responses_when_context_compact_overflo
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_relays_stream_error_events() -> 'None':
+async def test_agent_relays_stream_error_events() -> 'None':
     events = []
 
     class RetryingModelClient:
@@ -670,7 +670,7 @@ async def test_agent_loop_relays_stream_error_events() -> 'None':
             )
             return ModelResponse(items=[AssistantMessage(text="done")])
 
-    agent = AgentLoop(RetryingModelClient(), ToolRegistry(), event_handler=events.append)
+    agent = Agent(RetryingModelClient(), ToolRegistry(), event_handler=events.append)
 
     result = await agent.run_turn(["hello"])
 

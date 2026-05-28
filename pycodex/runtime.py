@@ -2,16 +2,12 @@
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-from .agent import AgentLoop, EventHandler, NOOP_EVENT_HANDLER, TurnInterrupted
+from .agent import Agent, EventHandler, BASE_EVENT_HANDLER, TurnInterrupted
 from .compat import Literal
 from .protocol import AgentEvent, Operation, ShutdownOp, Submission, TurnResult, UserTurnOp
 from .utils import uuid7_string
 import typing
-
-if TYPE_CHECKING:
-    from .runtime_services import RuntimeEnvironment
 
 
 @dataclass
@@ -21,22 +17,21 @@ class _QueuedSubmission:
     futures: 'typing.List[asyncio.Future[typing.Union[TurnResult, None]]]'
 
 
-class AgentRuntime:
+class CliSubmissionQueue:
     """Thin outer queue that mirrors the Rust `submission_loop` shape."""
 
-    def __init__(self, agent_loop: 'AgentLoop', runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None) -> 'None':
-        self._agent_loop = agent_loop
-        self.runtime_environment = runtime_environment
+    def __init__(self, agent: 'Agent') -> 'None':
+        self._agent = agent
         self._enqueue_queue: 'deque[_QueuedSubmission]' = deque()
         self._steer_queue: 'deque[_QueuedSubmission]' = deque()
         self._queue_lock = asyncio.Lock()
         self._queue_event = asyncio.Event()
         self._current_submission: 'typing.Union[_QueuedSubmission, None]' = None
         self._current_task: 'typing.Union[asyncio.Task[TurnResult], None]' = None
-        self._event_handler = NOOP_EVENT_HANDLER
-        self._agent_loop.set_event_handler(self._handle_agent_event)
+        self._event_handler = BASE_EVENT_HANDLER
+        self._agent.set_event_handler(self._handle_agent_event)
 
-    def set_event_handler(self, event_handler: 'EventHandler' = NOOP_EVENT_HANDLER) -> 'None':
+    def set_event_handler(self, event_handler: 'EventHandler' = BASE_EVENT_HANDLER) -> 'None':
         self._event_handler = event_handler
 
     async def submit_user_turn(self, text: 'str') -> 'TurnResult':
@@ -78,7 +73,7 @@ class AgentRuntime:
             try:
                 if isinstance(submission.op, UserTurnOp):
                     self._current_task = asyncio.create_task(
-                        self._agent_loop.run_turn(
+                        self._agent.run_turn(
                             list(submission.op.texts),
                             turn_id=queued.turn_id,
                         )
@@ -129,7 +124,7 @@ class AgentRuntime:
         queue: 'Literal["enqueue", "steer"]',
     ) -> 'typing.Tuple[str, asyncio.Future[typing.Union[TurnResult, None]]]':
         if queue == "steer" and self._has_active_turn():
-            self._agent_loop.interrupt_asap = True
+            self._agent.interrupt_asap = True
 
         async with self._queue_lock:
             if queue == "steer" and self._steer_queue:

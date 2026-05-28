@@ -4,7 +4,7 @@ from datetime import datetime
 import pytest
 
 from pycodex import (
-    AgentLoop,
+    Agent,
     AssistantMessage,
     ContextConfig,
     ContextManager,
@@ -248,7 +248,7 @@ def test_context_manager_builds_plan_mode_collaboration_message(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_agent_loop_injects_context_without_polluting_history(
+async def test_agent_injects_context_without_polluting_history(
     tmp_path,
     monkeypatch,
 ) -> 'None':
@@ -267,7 +267,7 @@ async def test_agent_loop_injects_context_without_polluting_history(
         include_skills_instructions=False,
     )
 
-    agent = AgentLoop(model, ToolRegistry(), manager)
+    agent = Agent(model, ToolRegistry(), manager)
     result = await agent.run_turn(["hello"])
 
     prompt = model.prompts[0]

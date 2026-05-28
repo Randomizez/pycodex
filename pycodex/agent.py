@@ -23,10 +23,11 @@ import typing
 
 if typing.TYPE_CHECKING:
     from .utils.session_persist import SessionRolloutRecorder
+    from .runtime_services import AgentRuntimeEnvironment
 
 
 EventHandler = Callable[[AgentEvent], None]
-NOOP_EVENT_HANDLER: 'EventHandler' = lambda _event: None
+BASE_EVENT_HANDLER: 'EventHandler' = lambda _event: print(_event.kind, end='\r')
 _REQUESTED_TOKENS_RE = re.compile(
     r"requested\s+([0-9,]+)\s+tokens",
     re.IGNORECASE,
@@ -45,7 +46,7 @@ class TurnInterrupted(RuntimeError):
     pass
 
 
-class AgentLoop:
+class Agent:
     """Minimal Python port of Codex's turn loop.
 
     The core idea mirrors the Rust implementation:
@@ -60,9 +61,10 @@ class AgentLoop:
         tool_registry: 'ToolRegistry',
         context_manager: 'typing.Union[ContextManager, None]' = None,
         parallel_tool_calls: 'bool' = True,
-        event_handler: 'EventHandler' = NOOP_EVENT_HANDLER,
+        event_handler: 'EventHandler' = BASE_EVENT_HANDLER,
         initial_history: 'typing.Tuple[ConversationItem, ...]' = (),
         rollout_recorder: 'typing.Union[SessionRolloutRecorder, None]' = None,
+        runtime_environment: 'AgentRuntimeEnvironment' = None,
     ) -> 'None':
         self._model_client = model_client
         self._tool_registry = tool_registry
@@ -75,6 +77,7 @@ class AgentLoop:
             self._context_manager.resolve_auto_compact_token_limit()
         )
         self._last_total_usage_tokens: 'typing.Union[int, None]' = None
+        self.runtime_environment = runtime_environment
         self.interrupt_asap = False
 
     @property
@@ -82,7 +85,7 @@ class AgentLoop:
         return tuple(self._history)
 
     def set_event_handler(
-        self, event_handler: 'EventHandler' = NOOP_EVENT_HANDLER
+        self, event_handler: 'EventHandler' = BASE_EVENT_HANDLER
     ) -> 'None':
         self._event_handler = event_handler
 
@@ -385,7 +388,7 @@ class AgentLoop:
         token_limit: 'typing.Union[int, None]' = None,
         prune_tool_results_on_context_error: 'bool' = False,
     ) -> 'None':
-        from .utils.compactor import compact_agent_loop
+        from .utils.compactor import compact_agent
 
         payload: 'typing.Dict[str, object]' = {"phase": phase}
         if total_tokens is not None:
@@ -403,7 +406,7 @@ class AgentLoop:
                 self._emit("stream_error", turn_id, **event.payload)
 
         try:
-            compact_result = await compact_agent_loop(
+            compact_result = await compact_agent(
                 self,
                 handle_compact_stream_event,
                 prune_tool_results_on_context_error,

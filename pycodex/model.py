@@ -199,7 +199,7 @@ class ResponsesModelClient:
     """Minimal OpenAI-compatible Responses API client.
 
     This implementation is intentionally narrow: it supports the subset needed
-    by the current AgentLoop abstraction, namely assistant text and function
+    by the current Agent abstraction, namely assistant text and function
     tool calls over the streaming `/responses` endpoint.
     """
 

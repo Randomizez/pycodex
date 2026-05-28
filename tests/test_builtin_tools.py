@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from pycodex import AgentLoop, AgentRuntime, AssistantMessage, ModelResponse
+from pycodex import Agent, CliSubmissionQueue, AssistantMessage, ModelResponse
 from pycodex.protocol import ToolCall, ToolResult, UserMessage
 from pycodex.runtime_services import (
     PlanStore,
@@ -69,14 +69,14 @@ def make_subagent_registry(
 
     def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
         client = model_factory()
-        agent = AgentLoop(
+        agent = Agent(
             client,
             ToolRegistry(),
             initial_history=tuple(initial_history),
         )
-        return AgentRuntime(agent)
+        return CliSubmissionQueue(agent)
 
-    manager.set_runtime_builder(runtime_builder)
+    manager.set_queue_builder(runtime_builder)
     registry = ToolRegistry()
     registry.register(SpawnAgentTool(manager))
     registry.register(SendInputTool(manager))
@@ -95,14 +95,14 @@ def make_subagent_registry_with_session_capture(
     def runtime_builder(_model, _reasoning_effort, initial_history, session_id):
         captured_session_ids.append(session_id)
         client = model_factory()
-        agent = AgentLoop(
+        agent = Agent(
             client,
             ToolRegistry(),
             initial_history=tuple(initial_history),
         )
-        return AgentRuntime(agent)
+        return CliSubmissionQueue(agent)
 
-    manager.set_runtime_builder(runtime_builder)
+    manager.set_queue_builder(runtime_builder)
     registry = ToolRegistry()
     registry.register(SpawnAgentTool(manager))
     registry.register(WaitAgentTool(manager))
@@ -998,14 +998,14 @@ async def test_spawn_agent_fork_context_drops_unpaired_tool_calls() -> 'None':
     def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
         captured_history.append(tuple(initial_history))
         client = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
-        agent = AgentLoop(
+        agent = Agent(
             client,
             ToolRegistry(),
             initial_history=tuple(initial_history),
         )
-        return AgentRuntime(agent)
+        return CliSubmissionQueue(agent)
 
-    manager.set_runtime_builder(runtime_builder)
+    manager.set_queue_builder(runtime_builder)
     registry = ToolRegistry()
     registry.register(SpawnAgentTool(manager))
     registry.register(WaitAgentTool(manager))

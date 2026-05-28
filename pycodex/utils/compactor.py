@@ -12,7 +12,7 @@ from .random_ids import uuid7_string
 import typing
 
 if typing.TYPE_CHECKING:
-    from ..agent import AgentLoop
+    from ..agent import Agent
 
 DEFAULT_COMPACT_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
@@ -69,12 +69,12 @@ def compact(
     return build_compacted_history(user_messages, summary_text)
 
 
-async def compact_agent_loop(
-    agent_loop: 'AgentLoop',
+async def compact_agent(
+    agent: 'Agent',
     stream_event_handler: 'typing.Union[typing.Callable[[ModelStreamEvent], None], None]' = None,
     prune_tool_results_on_context_error: 'bool' = False,
 ) -> 'typing.Union[CompactResult, None]':
-    history = agent_loop.history
+    history = agent.history
     if not history:
         return None
     original_item_count = len(history)
@@ -83,14 +83,14 @@ async def compact_agent_loop(
     noop_stream_event_handler = lambda _event: None
     while True:
         compact_prompt = UserMessage(text=DEFAULT_COMPACT_PROMPT)
-        prompt = agent_loop._context_manager.build_prompt(
+        prompt = agent._context_manager.build_prompt(
             list(history) + [compact_prompt],
             [],
             False,
             turn_id=uuid7_string(),
         )
         try:
-            response = await agent_loop._model_client.complete(
+            response = await agent._model_client.complete(
                 prompt,
                 stream_event_handler or noop_stream_event_handler,
             )
@@ -106,13 +106,13 @@ async def compact_agent_loop(
                 raise
             history = pruned_history
             pruned_tool_results += 1
-            agent_loop.replace_history(history)
+            agent.replace_history(history)
 
     compacted_history = compact(
         list(history) + [compact_prompt] + list(response.items)
     )
-    agent_loop.replace_history(compacted_history)
-    rollout_recorder = agent_loop._rollout_recorder
+    agent.replace_history(compacted_history)
+    rollout_recorder = agent._rollout_recorder
     if rollout_recorder is not None:
         rollout_recorder.append_compacted_history(compacted_history)
     return CompactResult(

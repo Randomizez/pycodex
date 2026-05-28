@@ -11,13 +11,13 @@ from .utils import uuid7_string
 import typing
 
 if TYPE_CHECKING:
-    from .runtime import AgentRuntime
+    from .runtime import CliSubmissionQueue
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
 PlanListener = Callable[[typing.Dict[str, object]], None]
-RuntimeBuilder = Callable[
+SubmissionQueueBuilder = Callable[
     [typing.Union[str, None], typing.Union[str, None], typing.Tuple[ConversationItem, ...], str],
-    "AgentRuntime",
+    "CliSubmissionQueue",
 ]
 AsyncJSONHandler = Callable[[typing.Dict[str, object]], Awaitable[typing.Union[typing.Dict[str, object], None]]]
 
@@ -186,7 +186,7 @@ class RequestPermissionsManager:
 @dataclass
 class ManagedAgent:
     agent_id: 'str'
-    runtime: '"AgentRuntime"'
+    queue: '"CliSubmissionQueue"'
     worker_task: 'asyncio.Task[None]'
     nickname: 'typing.Union[str, None]' = None
     state: 'str' = "pending_init"
@@ -197,14 +197,14 @@ class ManagedAgent:
 
 class SubAgentManager:
     def __init__(self) -> 'None':
-        self._runtime_builder: 'typing.Union[RuntimeBuilder, None]' = None
+        self._queue_builder: 'typing.Union[SubmissionQueueBuilder, None]' = None
         self._agents: 'typing.Dict[str, ManagedAgent]' = {}
         self._condition = asyncio.Condition()
         self._available_nicknames: 'typing.List[str]' = []
         self._nickname_random = random.Random()
 
-    def set_runtime_builder(self, builder: 'typing.Union[RuntimeBuilder, None]') -> 'None':
-        self._runtime_builder = builder
+    def set_queue_builder(self, builder: 'typing.Union[SubmissionQueueBuilder, None]') -> 'None':
+        self._queue_builder = builder
 
     async def spawn_agent(
         self,
@@ -216,18 +216,18 @@ class SubAgentManager:
         reasoning_effort: 'typing.Union[str, None]',
         history: 'typing.Tuple[ConversationItem, ...]',
     ) -> 'typing.Dict[str, object]':
-        builder = self._runtime_builder
+        builder = self._queue_builder
         if builder is None:
-            raise RuntimeError("spawn_agent is unavailable before runtime initialization")
+            raise RuntimeError("spawn_agent is unavailable before queue initialization")
 
         initial_history = _fork_context_history(history) if fork_context else ()
         agent_id = uuid7_string()
-        runtime = builder(model, reasoning_effort, initial_history, agent_id)
-        worker_task = asyncio.create_task(runtime.run_forever())
+        queue = builder(model, reasoning_effort, initial_history, agent_id)
+        worker_task = asyncio.create_task(queue.run_forever())
         nickname = self._next_nickname()
         managed = ManagedAgent(
             agent_id=agent_id,
-            runtime=runtime,
+            queue=queue,
             worker_task=worker_task,
             nickname=nickname,
         )
@@ -256,7 +256,7 @@ class SubAgentManager:
         if managed.state == "shutdown":
             raise RuntimeError(f"agent is shutdown: {agent_id}")
 
-        submission_id, future = await managed.runtime.enqueue_user_turn(
+        submission_id, future = await managed.queue.enqueue_user_turn(
             prompt_text,
             queue="steer" if interrupt else "enqueue",
         )
@@ -274,7 +274,7 @@ class SubAgentManager:
         if managed is None:
             return {"status": "not_found"}
         if managed.worker_task.done():
-            managed.worker_task = asyncio.create_task(managed.runtime.run_forever())
+            managed.worker_task = asyncio.create_task(managed.queue.run_forever())
             managed.state = "pending_init"
             managed.completed_message = None
             managed.error_message = None
@@ -288,8 +288,8 @@ class SubAgentManager:
             return {"status": "not_found"}
         previous_status = self._status_payload(managed)
         if not managed.worker_task.done():
-            managed.runtime._agent_loop.interrupt_asap = True
-            await managed.runtime.shutdown()
+            managed.queue._agent.interrupt_asap = True
+            await managed.queue.shutdown()
             await managed.worker_task
         managed.state = "shutdown"
         managed.pending_submission_ids.clear()
@@ -415,7 +415,7 @@ def _fork_context_history(
     return tuple(filtered)
 
 
-class RuntimeEnvironment:
+class AgentRuntimeEnvironment:
     def __init__(self) -> 'None':
         self.plan_store = PlanStore()
         self.subagent_manager = SubAgentManager()
@@ -423,12 +423,12 @@ class RuntimeEnvironment:
         self.request_permissions_manager = RequestPermissionsManager()
 
 
-def create_runtime_environment() -> 'RuntimeEnvironment':
-    return RuntimeEnvironment()
+def create_agent_runtime_environment() -> 'AgentRuntimeEnvironment':
+    return AgentRuntimeEnvironment()
 
 
-_RUNTIME_ENV = create_runtime_environment()
+_RUNTIME_ENV = create_agent_runtime_environment()
 
 
-def get_runtime_environment() -> 'RuntimeEnvironment':
+def get_agent_runtime_environment() -> 'AgentRuntimeEnvironment':
     return _RUNTIME_ENV

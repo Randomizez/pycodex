@@ -1,7 +1,7 @@
 """pycodex 的最小协议层定义。
 
 核心抽象：
-- AgentLoop：内层 turn 主循环，负责维护历史、调用模型、执行工具，并在
+- Agent：内层 turn 主循环，负责维护历史、调用模型、执行工具，并在
   `ToolCall -> ToolResult -> 下一轮模型调用` 之间反复闭环，直到得到稳定回复。
 - AgentRuntime：外层提交队列，负责按顺序接收 `Submission`，驱动
   `UserTurnOp` / `ShutdownOp` 这类运行时操作。
@@ -27,8 +27,8 @@ JSONDict: 'TypeAlias' = typing.Dict[str, Any]
 
 @dataclass(frozen=True, )
 class ToolSpec:
-    """何时：AgentLoop 准备发起一轮模型请求时，随 `Prompt.tools` 一起发送。
-    发送方：AgentLoop。
+    """何时：Agent 准备发起一轮模型请求时，随 `Prompt.tools` 一起发送。
+    发送方：Agent。
     接收方：ModelClient。
     """
 
@@ -79,8 +79,8 @@ class ToolSpec:
 @dataclass(frozen=True, )
 class UserMessage:
     """何时：外部发起一个新的用户 turn 时创建，并写入会话历史。
-    发送方：外部调用方创建，AgentLoop 转发。
-    接收方：AgentLoop 先接收，随后 ModelClient 在 `Prompt.input` 中看到它。
+    发送方：外部调用方创建，Agent 转发。
+    接收方：Agent 先接收，随后 ModelClient 在 `Prompt.input` 中看到它。
     """
 
     text: 'str'
@@ -98,7 +98,7 @@ class UserMessage:
 class AssistantMessage:
     """何时：模型要直接输出自然语言内容时产生，可作为中间文本或最终回复。
     发送方：ModelClient。
-    接收方：AgentLoop。
+    接收方：Agent。
     """
 
     text: 'str'
@@ -141,7 +141,7 @@ class ContextMessage:
 class ToolCall:
     """何时：模型决定调用工具而不是只输出文本时产生。
     发送方：ModelClient。
-    接收方：AgentLoop，随后由它转给 ToolRegistry 执行。
+    接收方：Agent，随后由它转给 ToolRegistry 执行。
     """
 
     call_id: 'str'
@@ -174,7 +174,7 @@ class ToolCall:
 class ReasoningItem:
     """何时：模型在一次 Responses 采样里产出 reasoning item 时产生。
     发送方：ModelClient。
-    接收方：AgentLoop；它会把该 item 保留进 history，并在后续请求里原样回传给
+    接收方：Agent；它会把该 item 保留进 history，并在后续请求里原样回传给
     ModelClient。
     """
 
@@ -188,8 +188,8 @@ class ReasoningItem:
 @dataclass(frozen=True, )
 class ToolResult:
     """何时：某个 `ToolCall` 执行完成后产生，用于喂回下一轮模型调用。
-    发送方：ToolRegistry 产出，AgentLoop 追加并转发。
-    接收方：AgentLoop 先接收，随后 ModelClient 在下一轮 `Prompt.input` 中看到它。
+    发送方：ToolRegistry 产出，Agent 追加并转发。
+    接收方：Agent 先接收，随后 ModelClient 在下一轮 `Prompt.input` 中看到它。
     """
 
     call_id: 'str'
@@ -254,8 +254,8 @@ Operation: 'TypeAlias' = "UserTurnOp | ShutdownOp"
 
 @dataclass(frozen=True, )
 class Prompt:
-    """何时：AgentLoop 每发起一轮模型采样前构造。
-    发送方：AgentLoop。
+    """何时：Agent 每发起一轮模型采样前构造。
+    发送方：Agent。
     接收方：ModelClient。
     """
 
@@ -271,7 +271,7 @@ class Prompt:
 class ModelResponse:
     """何时：ModelClient 完成一轮 `Prompt` 处理后返回。
     发送方：ModelClient。
-    接收方：AgentLoop。
+    接收方：Agent。
     """
 
     items: 'typing.List[ModelOutputItem]'
@@ -281,7 +281,7 @@ class ModelResponse:
 class ModelStreamEvent:
     """何时：ModelClient 处理 `Prompt` 的过程中有流式中间结果时产生。
     发送方：ModelClient。
-    接收方：AgentLoop。
+    接收方：Agent。
     """
 
     kind: 'str'
@@ -290,8 +290,8 @@ class ModelStreamEvent:
 
 @dataclass(frozen=True, )
 class TurnResult:
-    """何时：一个 turn 已经收敛，AgentLoop 决定结束本轮时返回。
-    发送方：AgentLoop。
+    """何时：一个 turn 已经收敛，Agent 决定结束本轮时返回。
+    发送方：Agent。
     接收方：外部调用方。
     """
 
@@ -305,7 +305,7 @@ class TurnResult:
 @dataclass(frozen=True, )
 class AgentEvent:
     """何时：主循环运行过程中发生阶段性事件时发出，例如模型调用、工具开始/结束。
-    发送方：AgentLoop。
+    发送方：Agent。
     接收方：可选的事件观察者 / 回调。
     """
 

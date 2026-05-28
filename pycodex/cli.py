@@ -12,17 +12,17 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Sequence
 
-from .agent import AgentLoop
+from .agent import Agent
 from .collaboration import DEFAULT_COLLABORATION_MODE, CollaborationMode
 from .compat import Literal
 from .context import ContextManager
-from .model import ResponsesModelClient, ResponsesProviderConfig
+from .model import DEFAULT_CODEX_CONFIG_PATH, ResponsesModelClient, ResponsesProviderConfig
 from .portable import bootstrap_called_home, upload_codex_home
 from .protocol import AgentEvent
-from .runtime import AgentRuntime
-from .runtime_services import RuntimeEnvironment, create_runtime_environment
+from .runtime import CliSubmissionQueue
+from .runtime_services import AgentRuntimeEnvironment, create_agent_runtime_environment
 from .utils import CliSessionView, get_debug_dir, load_codex_dotenv, uuid7_string
-from .utils.compactor import compact_agent_loop
+from .utils.compactor import compact_agent
 from .utils.session_persist import (
     SessionRolloutRecorder,
     conversation_history_to_turns,
@@ -42,6 +42,7 @@ COMPACT_COMMAND = "/compact"
 CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
+
 
 def launch_chat_completion_compat_server(*args, **kwargs):
     from responses_server import (
@@ -98,7 +99,7 @@ def build_parser() -> 'argparse.ArgumentParser':
     )
     parser.add_argument(
         "--config",
-        default=str(Path.home() / ".codex" / "config.toml"),
+        default=str(DEFAULT_CODEX_CONFIG_PATH),
         help="Path to Codex config.toml.",
     )
     parser.add_argument(
@@ -168,7 +169,7 @@ def resolve_prompt_text(prompt_parts: 'Sequence[str]') -> 'str':
 
 
 def get_tools(
-    runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None,
+    runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
     exec_mode: 'bool' = False,
 ):
     from .tools import (
@@ -197,7 +198,7 @@ def get_tools(
         WriteStdinTool,
     )
 
-    runtime_environment = runtime_environment or create_runtime_environment()
+    runtime_environment = runtime_environment or create_agent_runtime_environment()
     registry = Registry()
     code_mode_manager = CodeModeManager(registry)
     unified_exec_manager = UnifiedExecManager()
@@ -263,7 +264,7 @@ def get_tools(
     return registry
 
 
-def get_subagent_tools(runtime_environment: 'typing.Union[RuntimeEnvironment, None]' = None):
+def get_subagent_tools(runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None):
     from .tools import (
         ApplyPatchTool,
         ExecCommandTool,
@@ -275,7 +276,7 @@ def get_subagent_tools(runtime_environment: 'typing.Union[RuntimeEnvironment, No
         WriteStdinTool,
     )
 
-    runtime_environment = runtime_environment or create_runtime_environment()
+    runtime_environment = runtime_environment or create_agent_runtime_environment()
     registry = Registry()
     unified_exec_manager = UnifiedExecManager()
     registry.register(ExecCommandTool(unified_exec_manager))
@@ -287,21 +288,21 @@ def get_subagent_tools(runtime_environment: 'typing.Union[RuntimeEnvironment, No
     return registry
 
 
-def build_runtime(
-    config_path: 'str',
-    profile: 'typing.Union[str, None]',
-    system_prompt: 'typing.Union[str, None]',
+def build_agent(
     client,
+    config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
+    profile: 'typing.Union[str, None]' = None,
+    system_prompt: 'typing.Union[str, None]' = None,
     session_mode: 'CliSessionMode' = "exec",
     collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
-) -> 'AgentRuntime':
-    use_tui_context = session_mode == "tui"
+) -> 'Agent':
+    config_path = str(config_path)
     context_manager = ContextManager.from_codex_config(
         config_path,
         profile,
         base_instructions_override=system_prompt,
         collaboration_mode=collaboration_mode,
-        include_collaboration_instructions=use_tui_context,
+        include_collaboration_instructions=session_mode == "tui",
     )
     session_id = getattr(client, "_session_id", None) or uuid7_string()
     if hasattr(client, "_session_id"):
@@ -312,7 +313,7 @@ def build_runtime(
         base_instructions_override=system_prompt,
         include_collaboration_instructions=False,
     )
-    runtime_environment = create_runtime_environment()
+    runtime_environment = create_agent_runtime_environment()
     runtime_environment.request_user_input_manager.set_handler(None)
     runtime_environment.request_permissions_manager.set_handler(None)
     rollout_recorder = SessionRolloutRecorder.create(
@@ -324,47 +325,44 @@ def build_runtime(
         context_manager.resolve_base_instructions(),
     )
 
-    def make_subagent_runtime_builder(base_client):
-        def build_subagent_runtime(
+    def make_subagent_queue_builder(base_client):
+        def build_subagent_queue(
             model_override: 'typing.Union[str, None]',
             reasoning_effort_override: 'typing.Union[str, None]',
             initial_history=(),
             session_id: 'typing.Union[str, None]' = None,
-        ) -> 'AgentRuntime':
+        ) -> 'CliSubmissionQueue':
             nested_client = base_client.with_overrides(
                 model_override,
                 reasoning_effort_override,
                 session_id=session_id,
                 openai_subagent="collab_spawn",
             )
-            subagent_runtime_environment = create_runtime_environment()
-            subagent_runtime_environment.request_user_input_manager.set_handler(None)
-            subagent_runtime_environment.request_permissions_manager.set_handler(None)
-            subagent_runtime_environment.subagent_manager.set_runtime_builder(
-                make_subagent_runtime_builder(nested_client)
+            subagent_agent_runtime_environment = create_agent_runtime_environment()
+            subagent_agent_runtime_environment.request_user_input_manager.set_handler(None)
+            subagent_agent_runtime_environment.request_permissions_manager.set_handler(None)
+            subagent_agent_runtime_environment.subagent_manager.set_queue_builder(
+                make_subagent_queue_builder(nested_client)
             )
-            sub_agent = AgentLoop(
+            sub_agent = Agent(
                 nested_client,
-                get_subagent_tools(subagent_runtime_environment),
+                get_subagent_tools(subagent_agent_runtime_environment),
                 subagent_context_manager,
                 initial_history=tuple(initial_history),
+                runtime_environment=subagent_agent_runtime_environment,
             )
-            return AgentRuntime(
-                sub_agent, runtime_environment=subagent_runtime_environment
-            )
+            return CliSubmissionQueue(sub_agent)
 
-        return build_subagent_runtime
+        return build_subagent_queue
 
-    runtime_environment.subagent_manager.set_runtime_builder(
-        make_subagent_runtime_builder(client)
+    runtime_environment.subagent_manager.set_queue_builder(
+        make_subagent_queue_builder(client)
     )
-    return AgentRuntime(
-        AgentLoop(
-            client,
-            get_tools(runtime_environment, exec_mode=True),
-            context_manager,
-            rollout_recorder=rollout_recorder,
-        ),
+    return Agent(
+        client,
+        get_tools(runtime_environment, exec_mode=True),
+        context_manager,
+        rollout_recorder=rollout_recorder,
         runtime_environment=runtime_environment,
     )
 
@@ -375,10 +373,10 @@ def format_turn_output(result, json_mode: 'bool') -> 'str':
     return result.output_text or ""
 
 
-def _build_model_client(
-    config_path: 'str',
-    profile: 'typing.Union[str, None]',
-    timeout_seconds: 'float',
+def build_model(
+    config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
+    profile: 'typing.Union[str, None]' = None,
+    timeout_seconds: 'float' = 120.0,
     managed_responses_base_url: 'typing.Union[str, None]' = None,
     vllm_endpoint: 'typing.Union[str, None]' = None,
     use_chat_completion: 'typing.Union[bool, None]' = None,
@@ -434,6 +432,10 @@ def _build_model_client(
         timeout_seconds,
         originator=CLI_ORIGINATOR,
     )
+
+
+def build_cli_queue(agent: 'Agent') -> 'CliSubmissionQueue':
+    return CliSubmissionQueue(agent)
 
 
 async def prompt_request_user_input(
@@ -532,22 +534,22 @@ async def prompt_request_permissions(
 
 
 async def run_interactive_session(
-    runtime: 'AgentRuntime',
+    queue: 'CliSubmissionQueue',
     json_mode: 'bool',
     config_path: 'typing.Union[str, None]' = None,
 ) -> 'int':
-    worker = asyncio.create_task(runtime.run_forever())
-    context_window_tokens = runtime._agent_loop._context_manager.resolve_model_context_window()
+    worker = asyncio.create_task(queue.run_forever())
+    context_window_tokens = queue._agent._context_manager.resolve_model_context_window()
     view = CliSessionView()
     view.set_context_window_tokens(context_window_tokens)
-    model_client = runtime._agent_loop._model_client
+    model_client = queue._agent._model_client
     codex_home = resolve_codex_home(config_path)
-    runtime.set_event_handler(view.handle_event)
+    queue.set_event_handler(view.handle_event)
     pending_turn_tasks: 'typing.Set[asyncio.Task[None]]' = set()
-    runtime_environment = runtime.runtime_environment
+    runtime_environment = queue._agent.runtime_environment
     if runtime_environment is None:
-        runtime_environment = create_runtime_environment()
-        runtime.runtime_environment = runtime_environment
+        runtime_environment = create_agent_runtime_environment()
+        queue._agent.runtime_environment = runtime_environment
     runtime_environment.request_user_input_manager.set_handler(
         lambda payload: prompt_request_user_input(view, payload)
     )
@@ -565,8 +567,8 @@ async def run_interactive_session(
             return bool(pending_turn_tasks)
 
         async def run_manual_compact() -> 'None':
-            agent_loop = runtime._agent_loop
-            if not agent_loop.history:
+            current_agent = queue._agent
+            if not current_agent.history:
                 view.write_line("Nothing to compact.")
                 return
 
@@ -584,8 +586,8 @@ async def run_interactive_session(
                 )
 
             view.write_line("Compacting conversation history...")
-            compact_result = await compact_agent_loop(
-                agent_loop,
+            compact_result = await compact_agent(
+                current_agent,
                 handle_compact_stream_event,
                 True,
             )
@@ -648,10 +650,10 @@ async def run_interactive_session(
                 resume_target = prompt_text[len(RESUME_COMMAND) :].strip()
                 try:
                     resumed = load_resumed_session(codex_home, resume_target)
-                    runtime._agent_loop.replace_history(resumed["history"])
+                    queue._agent.replace_history(resumed["history"])
                     if hasattr(model_client, "_session_id"):
                         model_client._session_id = str(resumed["session_id"])
-                    runtime._agent_loop.set_rollout_recorder(
+                    queue._agent.set_rollout_recorder(
                         SessionRolloutRecorder.resume(resumed["rollout_path"])
                     )
                     view.load_session_history(
@@ -680,7 +682,7 @@ async def run_interactive_session(
                     view.write_line("Usage: /queue <message>")
                     continue
                 try:
-                    submission_id, future = await runtime.enqueue_user_turn(
+                    submission_id, future = await queue.enqueue_user_turn(
                         queued_text, queue="enqueue"
                     )
                     view.show_steer_queued(submission_id, queued_text)
@@ -713,7 +715,7 @@ async def run_interactive_session(
 
             try:
                 steered = has_pending_turn_tasks()
-                submission_id, future = await runtime.enqueue_user_turn(
+                submission_id, future = await queue.enqueue_user_turn(
                     prompt_text,
                     queue="steer",
                 )
@@ -728,7 +730,7 @@ async def run_interactive_session(
     finally:
         runtime_environment.request_user_input_manager.set_handler(None)
         runtime_environment.request_permissions_manager.set_handler(None)
-        await runtime.shutdown()
+        await queue.shutdown()
         await worker
         if pending_turn_tasks:
             await asyncio.gather(*pending_turn_tasks, return_exceptions=True)
@@ -738,7 +740,7 @@ async def run_interactive_session(
 
 
 async def run_cli(args: 'argparse.Namespace') -> 'int':
-    runtime = None
+    queued_agent = None
     worker = None
     debug_dir = get_debug_dir()
     phase_handle = None if debug_dir is None else (debug_dir / "phase.log").open("a", encoding="utf-8")
@@ -748,6 +750,7 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
         if args.put is not None and args.prompt:
             raise ValueError("--put does not accept prompt text")
         configure_loguru()
+        config_path = args.config
         if args.put is not None:
             def emit_put_log(message: 'str') -> 'None':
                 print(message, flush=True)
@@ -768,49 +771,50 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             if phase_handle is not None:
                 phase_handle.write("bootstrap_called_home:done\n")
                 phase_handle.flush()
-            args.config = str(config_path)
             os.environ["CODEX_HOME"] = str(config_path.parent)
         if phase_handle is not None:
-            phase_handle.write("build_model_client:start\n")
+            phase_handle.write("build_model:start\n")
             phase_handle.flush()
-        client = _build_model_client(
-            args.config,
-            args.profile,
-            args.timeout_seconds,
+        model = build_model(
+            config_path=str(config_path),
+            profile=args.profile,
+            timeout_seconds=args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
         )
         if phase_handle is not None:
-            phase_handle.write("build_model_client:done\n")
+            phase_handle.write("build_model:done\n")
+            phase_handle.write("build_agent:start\n")
             phase_handle.flush()
-
-        if phase_handle is not None:
-            phase_handle.write("build_runtime:start\n")
-            phase_handle.flush()
-        runtime = build_runtime(
-            args.config,
-            args.profile,
-            args.system_prompt,
-            client,
+        agent = build_agent(
+            model,
+            config_path=str(config_path),
+            profile=args.profile,
+            system_prompt=args.system_prompt,
             session_mode="tui",
         )
         if phase_handle is not None:
-            phase_handle.write("build_runtime:done\n")
+            phase_handle.write("build_agent:done\n")
+            phase_handle.write("build_cli_queue:start\n")
+            phase_handle.flush()
+        queued_agent = build_cli_queue(agent)
+        if phase_handle is not None:
+            phase_handle.write("build_cli_queue:done\n")
             phase_handle.flush()
         if should_run_interactive(args.prompt, sys.stdin.isatty()):
             return await run_interactive_session(
-                runtime,
+                queued_agent,
                 args.json,
-                args.config,
+                str(config_path),
             )
         else:
             prompt_text = resolve_prompt_text(args.prompt)
-            worker = asyncio.create_task(runtime.run_forever())
+            worker = asyncio.create_task(queued_agent.run_forever())
             if phase_handle is not None:
                 phase_handle.write("submit_user_turn:start\n")
                 phase_handle.flush()
-            result = await runtime.submit_user_turn(prompt_text)
+            result = await queued_agent.submit_user_turn(prompt_text)
             if phase_handle is not None:
                 phase_handle.write("submit_user_turn:done\n")
                 phase_handle.flush()
@@ -829,8 +833,8 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
     finally:
         if phase_handle is not None:
             phase_handle.close()
-        if runtime is not None and worker is not None:
-            await runtime.shutdown()
+        if queued_agent is not None and worker is not None:
+            await queued_agent.shutdown()
             await worker
 
 

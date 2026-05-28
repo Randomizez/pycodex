@@ -2,7 +2,7 @@ from .compat import patch_asyncio
 
 patch_asyncio()
 
-from .agent import AgentLoop
+from .agent import Agent
 from .context import ContextConfig, ContextManager
 from .model import (
     ModelClient,
@@ -26,14 +26,14 @@ from .protocol import (
     TurnResult,
     UserMessage,
 )
-from .runtime import AgentRuntime
+from .runtime import CliSubmissionQueue
 from .runtime_services import (
     PlanStore,
     RequestPermissionsManager,
     RequestUserInputManager,
     SubAgentManager,
-    create_runtime_environment,
-    get_runtime_environment,
+    create_agent_runtime_environment,
+    get_agent_runtime_environment,
 )
 from .tools import (
     ApplyPatchTool,
@@ -90,13 +90,13 @@ def debug(stop: 'bool' = False):
 
 __all__ = [
     "AgentEvent",
-    "AgentLoop",
-    "AgentRuntime",
+    "Agent",
+    "CliSubmissionQueue",
     "ApplyPatchTool",
     "AssistantMessage",
     "BaseTool",
     "CloseAgentTool",
-    "create_runtime_environment",
+    "create_agent_runtime_environment",
     "CodeModeManager",
     "ContextConfig",
     "ContextManager",
@@ -142,5 +142,5 @@ __all__ = [
     "WaitTool",
     "WebSearchTool",
     "WriteStdinTool",
-    "get_runtime_environment",
+    "get_agent_runtime_environment",
 ]
