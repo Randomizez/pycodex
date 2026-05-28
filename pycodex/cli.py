@@ -465,7 +465,7 @@ async def prompt_request_user_input(
         view.write_line("  0. Other")
 
         try:
-            raw_answer = await view.prompt_async("answer> ")
+            raw_answer = await view.get_prompt("answer> ")
         except EOFError:
             return None
         answer_text = raw_answer.strip()
@@ -483,7 +483,7 @@ async def prompt_request_user_input(
                     )
             elif choice == 0:
                 try:
-                    raw_answer = await view.prompt_async("other> ")
+                    raw_answer = await view.get_prompt("other> ")
                 except EOFError:
                     return None
                 selected_answer = raw_answer.strip()
@@ -510,7 +510,7 @@ async def prompt_request_permissions(
     )
     view.write_line("Choose: [n] deny / [t] grant for turn / [s] grant for session")
     try:
-        raw_answer = await view.prompt_async("permissions> ")
+        raw_answer = await view.get_prompt("permissions> ")
     except EOFError:
         return None
 
@@ -612,7 +612,7 @@ async def run_interactive_session(
 
         while True:
             try:
-                raw_line = await view.prompt_async()
+                raw_line = await view.poll_prompt()
             except EOFError:
                 break
             if raw_line is None:

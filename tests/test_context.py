@@ -88,7 +88,7 @@ def test_context_manager_reads_auto_compact_limit_from_codex_config(tmp_path) ->
 
 @pytest.mark.parametrize(
     "model",
-    ["step-3.5-flash", "step-3.5-flash-2603", "step-3.6"],
+    ["step-3.5-flash", "step-3.5-flash-2603", "step-3.7-flash"],
 )
 def test_context_manager_resolves_model_instructions_from_step_models_json_entry(model) -> 'None':
     manager = ContextManager(

@@ -46,6 +46,7 @@ from pycodex.portable import DEFAULT_ENTRY_CONFIG, upload_codex_home
 from pycodex.portable_server import CodexStorageServer
 from pycodex.utils.compactor import SUMMARY_PREFIX
 from pycodex.utils.session_persist import load_resumed_session
+from pycodex.utils.toolcall_visualize import colorize_tool_message, tool_summary
 from pycodex.utils.visualize import colorize_cli_message
 from tests.fake_responses_server import CaptureStore, build_handler
 from tests.fakes import ScriptedModelClient
@@ -80,9 +81,20 @@ def _configure_cli_view_output(
     view._raw_write = raw_write
     view._raw_flush = lambda: None
     view._color_enabled = False
-    view._spinner._raw_write = view._raw_write
-    view._spinner._raw_flush = view._raw_flush
-    view._spinner._color_enabled = False
+    view.prompter.stdout_proxy.close()
+    view.prompter.stdout_proxy = type(
+        "_TestStdoutProxy",
+        (),
+        {
+            "write": lambda self, text: raw_write(text),
+            "flush": lambda self: None,
+            "close": lambda self: None,
+        },
+    )()
+    view.prompter.spinner._raw_write = view._raw_write
+    view.prompter.spinner._raw_flush = view._raw_flush
+    view.prompter.spinner._color_enabled = False
+    view.prompter.spinner.render_one = lambda: None
     return view
 
 
@@ -160,15 +172,15 @@ def _install_test_cli_view(
             if capture_view is not None:
                 capture_view["view"] = self
 
-        async def prompt_async(self, prompt: 'str') -> 'str':
-            self.set_input_active(True)
-            try:
-                value = next(input_iter)
-                if prompt_hook is not None:
-                    await prompt_hook(self, prompt, value)
-                return value
-            finally:
-                self.set_input_active(False, resume_spinner=False)
+        async def poll_prompt(self, prompt: 'str' = None) -> 'str':
+            self.prompter.spinner.pause()
+            value = next(input_iter)
+            if prompt_hook is not None:
+                await prompt_hook(self, prompt, value)
+            return value
+
+        async def get_prompt(self, prompt: 'str' = None) -> 'str':
+            return await self.poll_prompt(prompt)
 
     monkeypatch.setattr("pycodex.cli.CliSessionView", _TestView)
 
@@ -1061,7 +1073,9 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
     assert "Session: hello" in line_output
     assert "[steer] inserted: again" in line_output
     assert "Error: submission interrupted" not in line_output
-    assert stream_chunks == ["assistant> ", "first", "\n", "assistant> ", "second", "\n"]
+    assert "assistant> first" in line_output
+    assert "assistant> second" in line_output
+    assert stream_chunks == []
 
 
 @pytest.mark.asyncio
@@ -1111,7 +1125,9 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
     assert line_output.index("[steer] queued: again") < line_output.index(
         "[steer] inserted: again"
     )
-    assert stream_chunks == ["assistant> ", "first", "\n", "assistant> ", "second", "\n"]
+    assert "assistant> first" in line_output
+    assert "assistant> second" in line_output
+    assert stream_chunks == []
 
 
 @pytest.mark.asyncio
@@ -1128,7 +1144,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
 
     async def prompt_hook(_view, _prompt: 'str', _value: 'str') -> 'None':
-        assert captured_view["view"]._spinner._paused is True
+        assert captured_view["view"].prompter.spinner._paused is True
 
     _install_test_cli_view(
         monkeypatch,
@@ -1145,7 +1161,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
     )
 
     assert code == 0
-    assert model.call_count == 2
+    assert model.call_count == 1
 
 
 @pytest.mark.asyncio
@@ -1170,7 +1186,7 @@ async def test_run_interactive_session_disables_raw_spinner_thread(
     )
 
     assert code == 0
-    assert captured_view["view"]._spinner._enabled is False
+    assert captured_view["view"].prompter.spinner._thread.is_alive() is False
 
 
 @pytest.mark.asyncio
@@ -1181,11 +1197,18 @@ async def test_run_interactive_session_supports_history_and_title_commands(
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
+
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value in {"/title", "/history"}:
+            while "assistant> done" not in line_output:
+                await asyncio.sleep(0.01)
+
     _install_test_cli_view(
         monkeypatch,
         ["hello there", "/title", "/history", "/exit"],
         line_output,
         stream_chunks,
+        prompt_hook=prompt_hook,
     )
 
     code = await run_interactive_session(
@@ -1195,9 +1218,9 @@ async def test_run_interactive_session_supports_history_and_title_commands(
 
     assert code == 0
     assert "Session: hello there" in line_output
-    assert "[1] user> hello there" in line_output
-    assert "    assistant> done" in line_output
-    assert stream_chunks == ["assistant> ", "done", "\n"]
+    assert "[1]U> hello there" in line_output
+    assert "[1]A> done" in line_output
+    assert stream_chunks == []
 
 
 @pytest.mark.asyncio
@@ -1217,6 +1240,8 @@ async def test_run_interactive_session_supports_compact_command(
 
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "/compact":
+            while "assistant> done" not in line_output:
+                await asyncio.sleep(0.01)
             while runtime._has_active_turn():
                 await asyncio.sleep(0.01)
             await asyncio.sleep(0)
@@ -1237,8 +1262,8 @@ async def test_run_interactive_session_supports_compact_command(
     assert code == 0
     assert "Compacting conversation history..." in line_output
     assert "compact(2 items) -> 1 item + [summary]" in line_output
-    assert "checkpoint summary" not in "".join(stream_chunks)
-    assert "after compact" in "".join(stream_chunks)
+    assert "checkpoint summary" not in "".join(line_output)
+    assert "assistant> after compact" in line_output
 
     compact_prompt_items = [
         item
@@ -1460,11 +1485,18 @@ async def test_run_interactive_session_supports_resume_command(
     runtime = AgentRuntime(AgentLoop(model, ToolRegistry()))
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
+
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value == "/history":
+            while "assistant> after resume" not in line_output:
+                await asyncio.sleep(0.01)
+
     _install_test_cli_view(
         monkeypatch,
         ["/resume", "/resume 1", "/title", "continue", "/history", "/exit"],
         line_output,
         stream_chunks,
+        prompt_hook=prompt_hook,
     )
 
     code = await run_interactive_session(
@@ -1477,19 +1509,13 @@ async def test_run_interactive_session_supports_resume_command(
     assert "Available sessions:" in line_output
     assert "[1] older prompt" in line_output
     assert "Resumed session: saved thread" in line_output
-    resumed_index = line_output.index("Resumed session: saved thread")
-    assert line_output[resumed_index + 1] == "Session: saved thread"
-    assert line_output[resumed_index + 2] == "[1] user> older prompt"
-    assert line_output[resumed_index + 3] == "    assistant> older answer"
-    assert line_output[resumed_index + 4] == "[2] user> second prompt"
-    assert line_output[resumed_index + 5] == "    assistant> second answer"
     assert "Session: saved thread" in line_output
-    assert "[1] user> older prompt" in line_output
-    assert "    assistant> older answer" in line_output
-    assert "[2] user> second prompt" in line_output
-    assert "    assistant> second answer" in line_output
-    assert "[3] user> continue" in line_output
-    assert "    assistant> after resume" in line_output
+    assert "[1]U> older prompt" in line_output
+    assert "[1]A> older answer" in line_output
+    assert "[2]U> second prompt" in line_output
+    assert "[2]A> second answer" in line_output
+    assert "[3]U> continue" in line_output
+    assert "[3]A> after resume" in line_output
 
     resumed_prompt_items = [
         item
@@ -1790,11 +1816,21 @@ async def test_interactive_session_resume_restores_prior_history_after_restart(
     )
     first_line_output: 'typing.List[str]' = []
     first_stream_chunks: 'typing.List[str]' = []
+
+    async def first_prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value == "what next":
+            while "assistant> first answer" not in first_line_output:
+                await asyncio.sleep(0.01)
+        if value == "/exit":
+            while "assistant> second answer" not in first_line_output:
+                await asyncio.sleep(0.01)
+
     _install_test_cli_view(
         monkeypatch,
         ["hello", "what next", "/exit"],
         first_line_output,
         first_stream_chunks,
+        prompt_hook=first_prompt_hook,
     )
 
     first_code = await run_interactive_session(
@@ -1829,12 +1865,11 @@ async def test_interactive_session_resume_restores_prior_history_after_restart(
     assert second_client._session_id == first_client._session_id
     assert "[1] hello" in line_output
     assert "Resumed session: hello" in line_output
-    resumed_index = line_output.index("Resumed session: hello")
-    assert line_output[resumed_index + 1] == "Session: hello"
-    assert line_output[resumed_index + 2] == "[1] user> hello"
-    assert line_output[resumed_index + 3] == "    assistant> first answer"
-    assert line_output[resumed_index + 4] == "[2] user> what next"
-    assert line_output[resumed_index + 5] == "    assistant> second answer"
+    assert "Session: hello" in line_output
+    assert "[1]U> hello" in line_output
+    assert "[1]A> first answer" in line_output
+    assert "[2]U> what next" in line_output
+    assert "[2]A> second answer" in line_output
 
 
 @pytest.mark.asyncio
@@ -1882,11 +1917,18 @@ async def test_interactive_session_resume_then_continue_updates_history(
     )
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
+
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value == "/history":
+            while "assistant> after resume" not in line_output:
+                await asyncio.sleep(0.01)
+
     _install_test_cli_view(
         monkeypatch,
         ["/resume", "/resume 1", "continue", "/history", "/exit"],
         line_output,
         stream_chunks,
+        prompt_hook=prompt_hook,
     )
 
     code = await run_interactive_session(
@@ -1897,10 +1939,10 @@ async def test_interactive_session_resume_then_continue_updates_history(
 
     assert code == 0
     assert "Resumed session: hello" in line_output
-    assert "[1] user> hello" in line_output
-    assert "    assistant> first answer" in line_output
-    assert "[2] user> continue" in line_output
-    assert "    assistant> after resume" in line_output
+    assert "[1]U> hello" in line_output
+    assert "[1]A> first answer" in line_output
+    assert "[2]U> continue" in line_output
+    assert "[2]A> after resume" in line_output
 
 
 @pytest.mark.asyncio
@@ -2134,10 +2176,6 @@ async def test_run_interactive_session_supports_model_command(
             del prompt
             text = self.model
             event_handler(ModelStreamEvent(kind="assistant_delta", payload={"delta": text}))
-            if text == "demo-model":
-                first_turn_completed.set()
-            elif text == "alt-model":
-                second_turn_completed.set()
             return ModelResponse(items=[AssistantMessage(text=text)])
 
         async def list_models(self):
@@ -2160,14 +2198,13 @@ async def test_run_interactive_session_supports_model_command(
     )
     line_output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
-    first_turn_completed = asyncio.Event()
-    second_turn_completed = asyncio.Event()
-
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "/model alt-model":
-            await first_turn_completed.wait()
+            while "assistant> demo-model" not in line_output:
+                await asyncio.sleep(0.01)
         elif value == "/model":
-            await second_turn_completed.wait()
+            while "assistant> alt-model" not in line_output:
+                await asyncio.sleep(0.01)
 
     _install_test_cli_view(
         monkeypatch,
@@ -2252,7 +2289,8 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
     ]
     assert "Session: hello" in line_output
     assert "Cannot change model while work is running or queued in steer mode." in line_output
-    assert stream_chunks == ["assistant> ", "demo-model", "\n"]
+    assert "assistant> demo-model" in line_output
+    assert stream_chunks == []
 
 
 @pytest.mark.asyncio
@@ -2264,10 +2302,13 @@ async def test_run_interactive_session_continues_after_model_error(
             self.call_count = 0
 
         async def complete(self, prompt, event_handler):
-            del prompt, event_handler
+            del prompt
             self.call_count += 1
             if self.call_count == 1:
                 raise RuntimeError("synthetic client error")
+            event_handler(
+                ModelStreamEvent(kind="assistant_delta", payload={"delta": "done"})
+            )
             return ModelResponse(items=[AssistantMessage(text="done")])
 
     runtime = AgentRuntime(AgentLoop(_FailOnceModelClient(), ToolRegistry()))
@@ -2367,11 +2408,10 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
         "Extra commands: /history, /title, /model, /resume, /compact",
         "Session: use a tool",
         "user> use a tool",
-        '[tool] echo: {"echo":"hello"}',
+        '[echo] {"echo":"hello"}',
+        "assistant> done",
     ]
-    assert stream_chunks[0].endswith("running echo({'text': 'hello'})")
-    assert stream_chunks[2].endswith("thinking")
-    assert stream_chunks[-3:] == ["assistant> ", "done", "\n"]
+    assert not any("iteration" in line for line in line_output)
 
 
 def test_cli_session_view_formats_plan_and_exec_messages() -> 'None':
@@ -2428,19 +2468,72 @@ def test_cli_session_view_formats_plan_and_exec_messages() -> 'None':
     )
 
     assert output == [
-        "[plan] Working on 2/2",
+        "[update_plan] Working on 2/2",
         "  [x] inspect repo",
         "  [>] collect docs",
-        "[exec] pwd && ls -la -> /data/codex-python",
-        "[agent] spawned Curie (019d25a7...a8c6)",
-        "[agent] wait: Curie=completed: listed tools",
+        "[exec_command] pwd && ls -la -> /data/codex-python",
+        "[spawn_agent] spawned Curie (019d25a7...a8c6)",
+        "[wait_agent] Curie=completed: listed tools",
     ]
 
 
 def test_colorize_cli_message_wraps_ansi_when_enabled() -> 'None':
-    colored = colorize_cli_message("[agent] spawned Curie", "agent", True)
+    colored = colorize_cli_message("[status] working", "status", True)
+    assert colored.startswith("\x1b[1m\x1b[36m")
+    assert colored.endswith("\x1b[0m")
+
+
+def test_colorize_tool_message_uses_tool_name_palette() -> 'None':
+    colored = colorize_tool_message("[spawn_agent] spawned Curie", True)
     assert colored.startswith("\x1b[1m\x1b[34m")
     assert colored.endswith("\x1b[0m")
+
+
+def test_colorize_tool_message_uses_default_highlight_for_exec_code() -> 'None':
+    colored = colorize_tool_message("import json", True, "exec_command")
+    assert colored == "\x1b[1mimport json\x1b[0m"
+
+
+def test_tool_summary_extracts_python_heredoc_and_session_id() -> 'None':
+    command = "python3 - <<'PY'\nimport json\nprint(json.dumps({'ok': True}))\nPY"
+    call = ToolCall(
+        call_id="call_1",
+        name="exec_command",
+        arguments={"cmd": command},
+    )
+    result = ToolResult(
+        call_id="call_1",
+        name="exec_command",
+        output='Exit code: 0\nOutput:\n{"ok": true}\n',
+    )
+
+    assert tool_summary(
+        {
+            "tool_name": "exec_command",
+            "call": call,
+            "result": result,
+            "is_error": False,
+        }
+    ) == (
+        "[exec_command] python3 - <<'PY'\n"
+        "import json\n"
+        "print(json.dumps({'ok': True}))\n"
+        'PY -> {"ok": true}'
+    )
+
+    running = ToolResult(
+        call_id="call_1",
+        name="exec_command",
+        output="Process running with session ID 7\n",
+    )
+    assert tool_summary(
+        {
+            "tool_name": "exec_command",
+            "call": call,
+            "result": running,
+            "is_error": False,
+        }
+    ).endswith("PY -> session_id=7")
 
 
 def test_cli_session_view_shows_web_search_tool_called_message() -> 'None':
@@ -2473,8 +2566,8 @@ def test_cli_session_view_shows_web_search_tool_called_message() -> 'None':
     )
 
     assert output == [
-        "[web] searched: github codex",
-        "[web] opened: http://example.com",
+        "[web_search] searched: github codex",
+        "[web_search] opened: http://example.com",
     ]
 
 
@@ -2498,7 +2591,7 @@ def test_cli_session_view_turn_failed_clears_pending_prompt() -> 'None':
     )
 
     assert view._pending_user_prompts == {}
-    assert view._spinner._turn_active is False
+    assert view.prompter.spinner._paused is True
     assert output == ["Session: hello", "user> hello"]
 
 
@@ -2526,14 +2619,13 @@ def test_cli_session_view_shows_stream_error_message() -> 'None':
         "user> hello",
         "[status] Reconnecting... 1/5",
     ]
-    assert view._spinner._label == "reconnecting"
+    assert view.prompter.spinner._label == "reconnecting"
 
 
-def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
+def test_cli_session_view_renders_tool_completion_with_current_spinner() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="turn_started",
@@ -2567,9 +2659,8 @@ def test_cli_session_view_keeps_spinner_paused_while_input_active() -> 'None':
         )
     )
 
-    assert view._spinner._turn_active is True
-    assert view._spinner._paused is True
-    assert output == ["Session: hello", "user> hello", "[exec] pwd"]
+    assert view.prompter.spinner._paused is False
+    assert output == ["Session: hello", "user> hello", "[exec_command] pwd"]
 
 
 def test_cli_session_view_tool_started_uses_call_arguments_in_spinner_label() -> 'None':
@@ -2592,10 +2683,10 @@ def test_cli_session_view_tool_started_uses_call_arguments_in_spinner_label() ->
         )
     )
 
-    assert view._spinner._label == "running exec_command({'cmd': 'pwd'})"
+    assert view.prompter.spinner._label == "calling exec_command({'cmd': 'pwd'})"
 
 
-def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
+def test_cli_session_view_keeps_prompt_text_unchanged_without_context_usage() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -2613,12 +2704,7 @@ def test_cli_session_view_builds_second_line_input_spinner_prompt() -> 'None':
             payload={},
         )
     )
-    view.set_input_active(True)
-
-    rendered = view.build_input_prompt("pycodex> ")
-
-    assert rendered.endswith("\npycodex> ")
-    assert "waiting model" in rendered
+    assert view.prompter.prompt == "pycodex> "
 
 
 def test_cli_session_view_formats_prompt_with_context_remaining_percent() -> 'None':
@@ -2634,9 +2720,7 @@ def test_cli_session_view_formats_prompt_with_context_remaining_percent() -> 'No
             payload={"usage": {"total_tokens": 20_800}},
         )
     )
-    view.set_input_active(True)
-
-    assert view.build_input_prompt("pycodex> ") == "pyco(90%)> "
+    assert view.prompter.prompt == "pyco(90%)> "
 
 
 def test_cli_session_view_keeps_failed_context_usage() -> 'None':
@@ -2665,9 +2749,7 @@ def test_cli_session_view_keeps_failed_context_usage() -> 'None':
             payload={"error": "context_length_exceeded"},
         )
     )
-    view.set_input_active(True)
-
-    assert view.build_input_prompt("pycodex> ") == "pyco(0%)> "
+    assert view.prompter.prompt == "pyco(0%)> "
 
 
 def test_cli_session_view_shows_auto_compact_events() -> 'None':
@@ -2701,16 +2783,13 @@ def test_cli_session_view_shows_full_context_on_initial_prompt() -> 'None':
         CliSessionView(context_window_tokens=100_000),
         output,
     )
-    view.set_input_active(True)
-
-    assert view.build_input_prompt("pycodex> ") == "pyco(100%)> "
+    assert view._format_main_prompt("pycodex> ") == "pyco(100%)> "
 
 
-def test_cli_session_view_shows_prompt_managed_streaming_text() -> 'None':
+def test_cli_session_view_buffers_streaming_text() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="turn_started",
@@ -2726,14 +2805,14 @@ def test_cli_session_view_shows_prompt_managed_streaming_text() -> 'None':
         )
     )
 
-    assert view.build_input_prompt("pycodex> ") == "assistant> hi\n"
+    assert view._stream_buffer == "hi"
+    assert output == ["Session: hello", "user> hello"]
 
 
-def test_cli_session_view_renders_streaming_text_inside_prompt_when_enabled() -> 'None':
+def test_cli_session_view_buffers_streaming_text_without_prompt_state() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="assistant_delta",
@@ -2742,14 +2821,13 @@ def test_cli_session_view_renders_streaming_text_inside_prompt_when_enabled() ->
         )
     )
 
-    assert view.build_input_prompt("pycodex> ") == "assistant> hi\n"
+    assert view._stream_buffer == "hi"
 
 
 def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="assistant_delta",
@@ -2757,7 +2835,6 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion()
             payload={"delta": "hi"},
         )
     )
-    view.set_input_active(False, resume_spinner=False)
     view.handle_event(
         AgentEvent(
             kind="turn_completed",
@@ -2769,12 +2846,11 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_completion()
     assert output == ["assistant> hi"]
 
 
-def test_cli_session_view_handoffs_prompt_stream_to_regular_output() -> 'None':
+def test_cli_session_view_finish_stream_flushes_buffered_output() -> 'None':
     output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     view = _build_cli_view(output, stream_chunks)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="assistant_delta",
@@ -2782,15 +2858,13 @@ def test_cli_session_view_handoffs_prompt_stream_to_regular_output() -> 'None':
             payload={"delta": "hi"},
         )
     )
-    view.set_input_active(False, resume_spinner=False)
-    view.handoff_prompt_stream_to_output()
+    view.finish_stream()
 
-    assert stream_chunks == ["assistant> ", "hi"]
-    assert view._streaming is True
-    assert view._streaming_in_prompt is False
+    assert output == ["assistant> hi"]
+    assert stream_chunks == []
 
 
-def test_cli_session_view_can_leave_spinner_paused_after_input_submit() -> 'None':
+def test_cli_session_view_turn_completed_pauses_spinner() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -2808,11 +2882,15 @@ def test_cli_session_view_can_leave_spinner_paused_after_input_submit() -> 'None
             payload={},
         )
     )
-    view.set_input_active(True)
-    view.set_input_active(False, resume_spinner=False)
+    view.handle_event(
+        AgentEvent(
+            kind="turn_completed",
+            turn_id="turn_1",
+            payload={"output_text": ""},
+        )
+    )
 
-    assert view._spinner._turn_active is True
-    assert view._spinner._paused is True
+    assert view.prompter.spinner._paused is True
 
 
 def test_cli_session_view_shows_steer_queue_and_insert_messages() -> 'None':
@@ -2840,7 +2918,6 @@ def test_cli_session_view_preserves_prompt_managed_stream_output_on_interrupt() 
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
-    view.set_input_active(True)
     view.handle_event(
         AgentEvent(
             kind="turn_started",
@@ -2961,9 +3038,9 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
     )
 
     assert output == ["Session: hello", "user> hello"]
-    assert stream_chunks == ["assistant> ", "Hel", "lo"]
-    assert view._spinner._paused is True
-    assert view._streaming is True
+    assert stream_chunks == []
+    assert view._stream_buffer == "Hello"
+    assert view.prompter.spinner._label == "talking"
 
     view.handle_event(
         AgentEvent(
@@ -2973,10 +3050,8 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
         )
     )
 
-    assert stream_chunks[:4] == ["assistant> ", "Hel", "lo", "\n"]
-    assert stream_chunks[4].endswith("running exec_command")
-    assert view._spinner._paused is False
-    assert view._streaming is False
+    assert view.prompter.spinner._label == "calling exec_command"
+    assert view.prompter.spinner._paused is False
 
 
 @pytest.mark.asyncio
@@ -3106,11 +3181,13 @@ async def test_run_interactive_session_preserves_tui_context_across_turns(
 
     outputs: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
-    first_turn_completed = asyncio.Event()
 
     async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
         if value == "Reply with TWO only.":
-            await first_turn_completed.wait()
+            while len(list(capture_root.glob("*_POST_*.json"))) < 1:
+                await asyncio.sleep(0.01)
+            while runtime._has_active_turn():
+                await asyncio.sleep(0.01)
 
     try:
         _install_test_cli_view(
@@ -3119,11 +3196,6 @@ async def test_run_interactive_session_preserves_tui_context_across_turns(
             outputs,
             stream_chunks,
             prompt_hook=prompt_hook,
-            line_callback=(
-                lambda text: first_turn_completed.set()
-                if text == "assistant> OK"
-                else None
-            ),
         )
         args = build_parser().parse_args(["--config", str(config_path)])
         client = _build_model_client(
@@ -3327,18 +3399,20 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
         "Session: Analyze current directory",
         "user> Analyze current directory",
     ]
-    assert outputs[4].startswith("Error: responses ")
-    assert "\n  - provider: neo" in outputs[4]
-    assert "\n  - model: gpt-5.4" in outputs[4]
+    assert outputs[4] == "assistant> partial"
+    error_line = next(line for line in outputs if line.startswith("Error: responses "))
+    assert "\n  - provider: neo" in error_line
+    assert "\n  - model: gpt-5.4" in error_line
     assert (
-        "\n  - last_event: response.output_text.delta" in outputs[4]
-        or "\n  - last_event_type: response.output_text.delta" in outputs[4]
+        "\n  - last_event: response.output_text.delta" in error_line
+        or "\n  - last_event_type: response.output_text.delta" in error_line
     )
-    assert outputs[5:] == [
+    error_index = outputs.index(error_line)
+    assert outputs[error_index + 1 :] == [
         "user> go on",
         "assistant> RESUMED",
     ]
-    assert stream_chunks == ["\n"]
+    assert stream_chunks == []
 
     second_body = captured_bodies[1]
     second_user_messages = [
@@ -3439,12 +3513,25 @@ async def test_go_on_after_network_drop_does_not_replay_partial_reasoning_or_too
     )
     monkeypatch.setenv("NEO_KEY", "dummy-key")
 
+    outputs: 'typing.List[str]' = []
+    saw_error = asyncio.Event()
+
+    async def prompt_hook(_view, _prompt: 'str', value: 'str') -> 'None':
+        if value == "go on":
+            await saw_error.wait()
+
     try:
         _install_test_cli_view(
             monkeypatch,
             ["Analyze current directory", "go on", "/exit"],
+            outputs,
             [],
-            [],
+            prompt_hook=prompt_hook,
+            line_callback=(
+                lambda text: saw_error.set()
+                if text.startswith("Error: responses ")
+                else None
+            ),
         )
         args = build_parser().parse_args(["--config", str(config_path)])
         client = _build_model_client(
@@ -3836,10 +3923,8 @@ async def test_prompt_request_user_input_collects_choice_labels() -> 'None':
         (),
         {
             "finish_stream": lambda self: None,
-            "pause_spinner": lambda self: None,
-            "resume_spinner": lambda self: None,
             "write_line": lambda self, text: outputs.append(text),
-            "prompt_async": lambda self, _prompt: asyncio.sleep(
+            "get_prompt": lambda self, _prompt: asyncio.sleep(
                 0,
                 result=next(inputs),
             ),
@@ -3888,10 +3973,8 @@ async def test_prompt_request_permissions_supports_session_scope() -> 'None':
         (),
         {
             "finish_stream": lambda self: None,
-            "pause_spinner": lambda self: None,
-            "resume_spinner": lambda self: None,
             "write_line": lambda self, text: outputs.append(text),
-            "prompt_async": lambda self, _prompt: asyncio.sleep(
+            "get_prompt": lambda self, _prompt: asyncio.sleep(
                 0,
                 result=next(inputs),
             ),

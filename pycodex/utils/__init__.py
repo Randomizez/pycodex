@@ -3,18 +3,14 @@ from .debug import get_debug_dir
 from .get_env import build_user_agent, get_shell_name, get_timezone_name
 from .random_ids import uuid7_string
 from .compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
+from .toolcall_visualize import colorize_cli_message, tool_summary
 from .visualize import (
     CliSessionView,
     Spinner,
     cli_color_enabled,
-    colorize_cli_message,
-    extract_plan_items,
-    format_cli_plan_messages,
     format_cli_tool_call_message,
-    format_cli_tool_message,
     short_id,
     shorten_title,
-    summarize_tool_event,
 )
 
 __all__ = [
@@ -26,10 +22,7 @@ __all__ = [
     "build_user_agent",
     "cli_color_enabled",
     "colorize_cli_message",
-    "extract_plan_items",
-    "format_cli_plan_messages",
     "format_cli_tool_call_message",
-    "format_cli_tool_message",
     "get_debug_dir",
     "get_shell_name",
     "get_timezone_name",
@@ -38,7 +31,7 @@ __all__ = [
     "parse_dotenv_value",
     "short_id",
     "shorten_title",
-    "summarize_tool_event",
+    "tool_summary",
     "compact",
     "uuid7_string",
 ]

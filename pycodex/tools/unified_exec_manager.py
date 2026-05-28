@@ -234,6 +234,9 @@ class UnifiedExecManager:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            # Keep interactive shells launched by tools from stealing the CLI
+            # terminal's foreground process group.
+            start_new_session=True,
         )
         session = UnifiedExecSession(
             session_id=session_id,

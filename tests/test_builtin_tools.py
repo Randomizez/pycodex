@@ -265,6 +265,36 @@ async def test_exec_command_tool_returns_session_for_long_running_process(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_exec_command_starts_process_in_new_session(tmp_path, monkeypatch) -> 'None':
+    original_create_subprocess_exec = asyncio.create_subprocess_exec
+    captured_kwargs = {}
+
+    async def capture_create_subprocess_exec(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        return await original_create_subprocess_exec(*args, **kwargs)
+
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        capture_create_subprocess_exec,
+    )
+    registry = make_registry(tmp_path)
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_7_session",
+            name="exec_command",
+            arguments={"cmd": "printf ok"},
+        ),
+        ToolContext(turn_id="turn_7_session", history=()),
+    )
+
+    assert result.is_error is False
+    assert "Process exited with code 0" in result.output
+    assert "ok" in result.output
+    assert captured_kwargs["start_new_session"] is True
+
+
+@pytest.mark.asyncio
 async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     start = await registry.execute(
