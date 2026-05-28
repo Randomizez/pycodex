@@ -27,7 +27,7 @@ if typing.TYPE_CHECKING:
 
 
 EventHandler = Callable[[AgentEvent], None]
-BASE_EVENT_HANDLER: 'EventHandler' = lambda _event: print(_event.kind, end='\r')
+BASE_EVENT_HANDLER: 'EventHandler' = lambda _event: None
 _REQUESTED_TOKENS_RE = re.compile(
     r"requested\s+([0-9,]+)\s+tokens",
     re.IGNORECASE,

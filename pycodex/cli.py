@@ -837,6 +837,19 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             await queued_agent.shutdown()
             await worker
 
+def ipython_agent(config_path: 'str' = DEFAULT_CODEX_CONFIG_PATH):
+    from loguru import logger
+    logger.remove()
+    logger.add(sys.stderr, level="INFO")
+
+    model = build_model(config_path)
+    agent = build_agent(client=model, config_path=config_path)
+
+    from pycodex.tools.ipython_tool import attach_ipython_tool
+
+    attach_ipython_tool(agent)
+
+    return agent
 
 def main(argv: 'typing.Union[Sequence[str], None]' = None) -> 'int':
     raw_args = list(argv) if argv is not None else None
