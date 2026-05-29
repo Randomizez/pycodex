@@ -28,6 +28,7 @@ from pycodex import (
 )
 from pycodex.cli import (
     CliSessionView,
+    EXTRA_COMMANDS_LINE,
     LOCAL_RESPONSES_SERVER_API_KEY_ENV,
     build_agent,
     build_model,
@@ -64,39 +65,14 @@ def _configure_cli_view_output(
     line_output: 'typing.List[str]',
     stream_chunks: 'typing.Union[typing.List[str], None]' = None,
     line_callback=None,
-    raw_callback=None,
 ) -> 'CliSessionView':
-    if stream_chunks is None:
-        stream_chunks = []
-
     def write_line(text: 'str') -> 'None':
         line_output.append(text)
         if line_callback is not None:
             line_callback(text)
 
-    def raw_write(text: 'str') -> 'None':
-        stream_chunks.append(text)
-        if raw_callback is not None:
-            raw_callback(text)
-
     view._line_output = write_line
-    view._raw_write = raw_write
-    view._raw_flush = lambda: None
     view._color_enabled = False
-    view.prompter.stdout_proxy.close()
-    view.prompter.stdout_proxy = type(
-        "_TestStdoutProxy",
-        (),
-        {
-            "write": lambda self, text: raw_write(text),
-            "flush": lambda self: None,
-            "close": lambda self: None,
-        },
-    )()
-    view.prompter.spinner._raw_write = view._raw_write
-    view.prompter.spinner._raw_flush = view._raw_flush
-    view.prompter.spinner._color_enabled = False
-    view.prompter.spinner.render_one = lambda: None
     return view
 
 
@@ -155,7 +131,6 @@ def _install_test_cli_view(
     stream_chunks: 'typing.List[str]',
     prompt_hook=None,
     line_callback=None,
-    raw_callback=None,
     capture_view: 'typing.Union[typing.Dict[str, CliSessionView], None]' = None,
 ) -> 'None':
     input_iter = iter(inputs)
@@ -169,13 +144,11 @@ def _install_test_cli_view(
                 line_output,
                 stream_chunks,
                 line_callback=line_callback,
-                raw_callback=raw_callback,
             )
             if capture_view is not None:
                 capture_view["view"] = self
 
         async def poll_prompt(self, prompt: 'str' = None) -> 'str':
-            self.prompter.spinner.pause()
             value = next(input_iter)
             if prompt_hook is not None:
                 await prompt_hook(self, prompt, value)
@@ -1083,7 +1056,7 @@ async def test_run_interactive_session_steer_mode_restarts_at_request_boundary(
     assert model.call_count == 2
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
     ]
     assert "Session: hello" in line_output
     assert "[steer] inserted: again" in line_output
@@ -1146,7 +1119,7 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
 
 
 @pytest.mark.asyncio
-async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
+async def test_run_interactive_session_keeps_status_inactive_while_waiting_for_input(
     monkeypatch,
 ) -> 'None':
     captured_view = {}
@@ -1159,7 +1132,7 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
     runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
 
     async def prompt_hook(_view, _prompt: 'str', _value: 'str') -> 'None':
-        assert captured_view["view"].prompter.spinner._paused is True
+        assert captured_view["view"].prompter._status is None
 
     _install_test_cli_view(
         monkeypatch,
@@ -1177,31 +1150,6 @@ async def test_run_interactive_session_pauses_spinner_while_waiting_for_input(
 
     assert code == 0
     assert model.call_count == 1
-
-
-@pytest.mark.asyncio
-async def test_run_interactive_session_disables_raw_spinner_thread(
-    monkeypatch,
-) -> 'None':
-    captured_view = {}
-    _install_test_cli_view(
-        monkeypatch,
-        ["hello", "/exit"],
-        [],
-        [],
-        capture_view=captured_view,
-    )
-
-    model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
-    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
-
-    code = await run_interactive_session(
-        runtime,
-        False,
-    )
-
-    assert code == 0
-    assert captured_view["view"].prompter.spinner._thread.is_alive() is False
 
 
 @pytest.mark.asyncio
@@ -2238,7 +2186,7 @@ async def test_run_interactive_session_supports_model_command(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
         "Session: hello",
         "user> hello",
         "assistant> demo-model",
@@ -2301,7 +2249,7 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
     assert model.model == "demo-model"
     assert line_output[:2] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
     ]
     assert "Session: hello" in line_output
     assert "Cannot change model while work is running or queued in steer mode." in line_output
@@ -2357,7 +2305,7 @@ async def test_run_interactive_session_continues_after_model_error(
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
         "Session: hello",
         "user> hello",
         "Error: synthetic client error",
@@ -2421,7 +2369,7 @@ async def test_run_interactive_session_shows_tool_progress_without_iteration_noi
     assert code == 0
     assert line_output == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
         "Session: use a tool",
         "user> use a tool",
         '[echo] {"echo":"hello"}',
@@ -2607,7 +2555,7 @@ def test_cli_session_view_turn_failed_clears_pending_prompt() -> 'None':
     )
 
     assert view._pending_user_prompts == {}
-    assert view.prompter.spinner._paused is True
+    assert view.prompter._status is None
     assert output == ["Session: hello", "user> hello"]
 
 
@@ -2635,10 +2583,10 @@ def test_cli_session_view_shows_stream_error_message() -> 'None':
         "user> hello",
         "[status] Reconnecting... 1/5",
     ]
-    assert view.prompter.spinner._label == "reconnecting"
+    assert view.prompter._status == "reconnecting"
 
 
-def test_cli_session_view_renders_tool_completion_with_current_spinner() -> 'None':
+def test_cli_session_view_renders_tool_completion_with_current_status() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -2675,11 +2623,11 @@ def test_cli_session_view_renders_tool_completion_with_current_spinner() -> 'Non
         )
     )
 
-    assert view.prompter.spinner._paused is False
+    assert view.prompter._status == "called exec_command"
     assert output == ["Session: hello", "user> hello", "[exec_command] pwd"]
 
 
-def test_cli_session_view_tool_started_uses_call_arguments_in_spinner_label() -> 'None':
+def test_cli_session_view_tool_started_uses_call_arguments_in_status_label() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -2699,7 +2647,7 @@ def test_cli_session_view_tool_started_uses_call_arguments_in_spinner_label() ->
         )
     )
 
-    assert view.prompter.spinner._label == "calling exec_command({'cmd': 'pwd'})"
+    assert view.prompter._status == "calling exec_command({'cmd': 'pwd'})"
 
 
 def test_cli_session_view_keeps_prompt_text_unchanged_without_context_usage() -> 'None':
@@ -2880,7 +2828,7 @@ def test_cli_session_view_finish_stream_flushes_buffered_output() -> 'None':
     assert stream_chunks == []
 
 
-def test_cli_session_view_turn_completed_pauses_spinner() -> 'None':
+def test_cli_session_view_turn_completed_clears_status() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -2906,7 +2854,7 @@ def test_cli_session_view_turn_completed_pauses_spinner() -> 'None':
         )
     )
 
-    assert view.prompter.spinner._paused is True
+    assert view.prompter._status is None
 
 
 def test_cli_session_view_shows_steer_queue_and_insert_messages() -> 'None':
@@ -3018,7 +2966,7 @@ def test_cli_session_view_keeps_history_for_reused_turn_id_across_submissions() 
     ]
 
 
-def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes() -> 'None':
+def test_cli_session_view_assistant_stream_updates_status_until_stream_finishes() -> 'None':
     output: 'typing.List[str]' = []
     stream_chunks: 'typing.List[str]' = []
     view = _build_cli_view(output, stream_chunks)
@@ -3056,7 +3004,7 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
     assert output == ["Session: hello", "user> hello"]
     assert stream_chunks == []
     assert view._stream_buffer == "Hello"
-    assert view.prompter.spinner._label == "talking"
+    assert view.prompter._status == "talking"
 
     view.handle_event(
         AgentEvent(
@@ -3066,8 +3014,7 @@ def test_cli_session_view_assistant_stream_pauses_spinner_until_stream_finishes(
         )
     )
 
-    assert view.prompter.spinner._label == "calling exec_command"
-    assert view.prompter.spinner._paused is False
+    assert view.prompter._status == "calling exec_command"
 
 
 @pytest.mark.asyncio
@@ -3413,7 +3360,7 @@ async def test_run_interactive_session_can_resume_after_network_drop_with_go_on(
     assert request_count["value"] == 2
     assert outputs[:4] == [
         "pycodex interactive mode. Type /exit to quit.",
-        "Extra commands: /history, /title, /model, /resume, /compact",
+        EXTRA_COMMANDS_LINE,
         "Session: Analyze current directory",
         "user> Analyze current directory",
     ]

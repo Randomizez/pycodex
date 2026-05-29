@@ -1,10 +1,8 @@
 import asyncio
 import os
-import sys
 import threading
 from contextlib import suppress
 from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import StdoutProxy
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from ..protocol import AgentEvent, JSONDict, ToolCall
@@ -15,7 +13,7 @@ from .toolcall_visualize import (
 )
 import typing
 
-SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+STATUS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
 DEFAULT_MAIN_PROMPT = "pycodex> "
 
@@ -49,76 +47,6 @@ def percent_of_context_window_remaining(
     return int(round(max(0.0, min(100.0, (remaining / effective_window) * 100.0))))
 
 
-class Spinner:
-    def __init__(
-        self,
-        raw_write=None,
-        raw_flush=None,
-        terminal_lock: "threading.RLock" = None,
-    ) -> "None":
-        self._raw_write = raw_write or sys.stdout.write
-        self._raw_flush = raw_flush or sys.stdout.flush
-        self._terminal_lock = terminal_lock or threading.Lock()
-        self._color_enabled = False
-
-        self._visible = False
-        self._paused = True
-        self._index = 0
-        self._label = "thinking"
-        self._stop = threading.Event()
-        self._thread = threading.Thread(
-            target=self._run,
-            name="pycodex-cli-spinner",
-            daemon=True,
-        )
-        self._thread.start()
-
-    @property
-    def spinner_frame(self) -> "str":
-        self._index += 1
-        suffix = f" {self._label}"
-        frame = f"{SPINNER_FRAMES[self._index % len(SPINNER_FRAMES)]}{suffix}"
-        frame = colorize_cli_message(frame, kind="status", enabled=self._color_enabled)
-        return frame
-
-    def set_label(self, label: "str") -> "None":
-        with self._terminal_lock:
-            self._label = label
-
-    def pause(self) -> "None":
-        self._paused = True
-        self.clear()
-
-    def resume(self) -> "None":
-        self._paused = False
-
-    def clear(self) -> "None":
-        with self._terminal_lock:
-            if not self._visible:
-                return
-            self._raw_write("\r")
-            self._raw_flush()
-            self._visible = False
-
-    def render_one(self) -> "None":
-        if self._paused:
-            return
-        with self._terminal_lock:
-            if self._paused:
-                return
-            self._raw_write(f"\r{self.spinner_frame}")
-            self._raw_flush()
-            self._visible = True
-
-    def close(self) -> "None":
-        self._stop.set()
-        self._thread.join(timeout=0.5)
-
-    def _run(self) -> "None":
-        while not self._stop.wait(0.12):
-            self.render_one()
-
-
 class Prompter:
     def __init__(self, prompt: str = DEFAULT_MAIN_PROMPT, lock=None):
         self.lock = lock or threading.Lock()
@@ -127,28 +55,18 @@ class Prompter:
             enable_system_prompt=True,
             show_frame=True,
         )
-        
-        self.stdout_proxy = StdoutProxy(raw=False)
-
-        self.spinner = Spinner(
-            raw_write=self.stdout_proxy.write,
-            raw_flush=self.stdout_proxy.flush,
-            terminal_lock=self.lock,
-        )
 
         self.prompt = prompt
+        self._status = None
+        self._status_frame_index = 0
 
         self._prompt_task = None
 
     def set_prompt(self, prompt):
         self.prompt = prompt
 
-    def set_status(self, text, active=True):
-        if active:
-            self.spinner.resume()
-        else:
-            self.spinner.pause()
-        self.spinner.set_label(text)
+    def set_status(self, text=None, active=True):
+        self._status = text if active else None
 
     async def poll_input(self) -> "typing.Union[str, None]":
         if self._prompt_task is None:
@@ -167,28 +85,36 @@ class Prompter:
             return prompt_task.result()
         except asyncio.CancelledError:
             return None
-    
+
     async def require_input(self):
         if self._prompt_task and not self._prompt_task.done():
             self._prompt_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._prompt_task
-        
+
         return await self._block_prompt()
 
     async def _block_prompt(self):
         with patch_stdout(raw=True):
             return await self._prompt_session.prompt_async(
-                lambda: '\n' + self.prompt,
-                refresh_interval=0.12
+                lambda: self.prompt,
+                refresh_interval=0.12,
+                bottom_toolbar=self._get_status,
             )
-    
+
+    def _get_status(self):
+        self._status_frame_index += 1
+        if self._status is None:
+            return None
+        else:
+            frame = STATUS_FRAMES[self._status_frame_index % len(STATUS_FRAMES)]
+            status = f"{frame} {self._status}"
+            return status
+
     def close(self) -> "None":
         if self._prompt_task is not None and not self._prompt_task.done():
             self._prompt_task.cancel()
             self._prompt_task = None
-        self.stdout_proxy.close()
-        self.spinner.close()
 
 
 def format_cli_tool_call_message(
@@ -234,7 +160,7 @@ class CliSessionView:
 
     This class is the single place that knows how to:
     - render `AgentEvent`s into human-facing terminal output;
-    - multiplex prompt input, streamed assistant output, and spinner state;
+    - multiplex prompt input, streamed assistant output, and status state;
     - keep lightweight session UI state such as title, history, and steer markers.
 
     Public interface:
@@ -244,7 +170,7 @@ class CliSessionView:
     - `show_history()`, `show_title()`, `load_session_history(...)`, `show_steer_queued(...)`,
       `schedule_steer_inserted(...)`: small session UI helpers used by the
       interactive command loop.
-    - `close()`: release prompt/spinner resources at shutdown.
+    - `close()`: release prompt resources at shutdown.
 
     """
 
@@ -297,7 +223,7 @@ class CliSessionView:
             pending_prompt = self._pending_user_prompts.pop(submission_id, None)
             if pending_prompt is not None:
                 self._history.append((pending_prompt, final_text))
-            self.prompter.set_status(event.kind, active=False)
+            self.prompter.set_status(active=False)
             return
         self.finish_stream()
 
@@ -369,7 +295,7 @@ class CliSessionView:
             self._print_line(
                 colorize_cli_message(message, "status", self._color_enabled)
             )
-            self.prompter.set_status("compacting", active=True)
+            self.prompter.set_status("compacting")
             return
 
         if event.kind == "auto_compact_completed":
@@ -378,7 +304,7 @@ class CliSessionView:
             self._print_line(
                 colorize_cli_message(message, "status", self._color_enabled)
             )
-            self.prompter.set_status("compacted", active=True)
+            self.prompter.set_status("compacted")
             return
 
         if event.kind == "auto_compact_failed":
@@ -408,7 +334,7 @@ class CliSessionView:
                 args = call.arguments
             if tool_name and args is not None:
                 self.prompter.set_status(
-                    shorten_title(f"calling {tool_name}({args})", limit=72), active=True
+                    shorten_title(f"calling {tool_name}({args})", limit=72)
                 )
             elif tool_name:
                 self.prompter.set_status(f"calling {tool_name}")
@@ -439,7 +365,7 @@ class CliSessionView:
                 event.payload.get("submission_id", event.turn_id)
             ).strip()
             self._pending_user_prompts.pop(submission_id, None)
-            self.prompter.set_status(event.kind, active=False)
+            self.prompter.set_status(active=False)
             return
 
         if event.kind == "turn_interrupted":
@@ -450,7 +376,7 @@ class CliSessionView:
             pending_prompt = self._pending_user_prompts.pop(submission_id, None)
             if pending_prompt is not None and final_text:
                 self._history.append((pending_prompt, final_text))
-            self.prompter.set_status(event.kind, active=False)
+            self.prompter.set_status(active=False)
             return
 
     def show_history(self) -> "None":
@@ -568,7 +494,9 @@ class CliSessionView:
             self._line_output(text)
 
     def _print_user_turn(self, text: "str") -> "None":
-        self._print_line(f"user> {text}")
+        self._print_line(
+            colorize_cli_message(f"user> {text}", "assistant", self._color_enabled)
+        )
 
     def _remember_agent_name(self, tool_name: "str", summary: "str") -> "None":
         if tool_name != "spawn_agent":

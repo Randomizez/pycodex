@@ -6,7 +6,6 @@ from .compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
 from .toolcall_visualize import colorize_cli_message, tool_summary
 from .visualize import (
     CliSessionView,
-    Spinner,
     cli_color_enabled,
     format_cli_tool_call_message,
     short_id,
@@ -18,7 +17,6 @@ __all__ = [
     "DEFAULT_COMPACT_PROMPT",
     "DOTENV_FILENAME",
     "SUMMARY_PREFIX",
-    "Spinner",
     "build_user_agent",
     "cli_color_enabled",
     "colorize_cli_message",

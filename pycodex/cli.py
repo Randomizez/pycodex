@@ -39,6 +39,11 @@ MODEL_COMMAND = "/model"
 QUEUE_COMMAND = "/queue"
 RESUME_COMMAND = "/resume"
 COMPACT_COMMAND = "/compact"
+LINK_COMMAND = "/link"
+UNLINK_COMMAND = "/unlink"
+EXTRA_COMMANDS_LINE = (
+    "Extra commands: /history, /title, /model, /resume, /compact, /link, /unlink"
+)
 CliSessionMode = Literal["exec", "tui"]
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
@@ -557,7 +562,8 @@ async def run_interactive_session(
         lambda payload: prompt_request_permissions(view, payload)
     )
     view.write_line("pycodex interactive mode. Type /exit to quit.")
-    view.write_line("Extra commands: /history, /title, /model, /resume, /compact")
+    view.write_line(EXTRA_COMMANDS_LINE)
+    feishu_link = None
     try:
 
         def has_pending_turn_tasks() -> 'bool':
@@ -676,6 +682,37 @@ async def run_interactive_session(
                 except Exception as exc:  # pragma: no cover - defensive surface
                     view.show_error(str(exc))
                 continue
+            if prompt_text.startswith(f"{LINK_COMMAND} "):
+                link_target = prompt_text[len(LINK_COMMAND) :].strip()
+                if not link_target:
+                    view.write_line("Usage: /link <feishu-email|open_id|chat_id>")
+                    continue
+                if feishu_link:
+                    view.write_line("A Feishu card is already linked. Use /unlink first.")
+                    continue
+                try:
+                    from .feishu_link import PycodexRuntimeLink
+
+                    view.write_line(f"Linking Feishu card to current session: {link_target}")
+                    link = await PycodexRuntimeLink(queue, link_target).start_async()
+                    feishu_link = link
+                    view.write_line(
+                        "Linked Feishu card: session_key={0} message_id={1}".format(
+                            link.session_key,
+                            link.message_id or "-",
+                        )
+                    )
+                except Exception as exc:  # pragma: no cover - defensive surface
+                    view.show_error(str(exc))
+                continue
+            if prompt_text == UNLINK_COMMAND:
+                if not feishu_link:
+                    view.write_line("No Feishu card is linked.")
+                    continue
+                feishu_link.detach()
+                feishu_link = None
+                view.write_line("Unlinked Feishu card.")
+                continue
             if prompt_text.startswith(f"{QUEUE_COMMAND} "):
                 queued_text = prompt_text[len(QUEUE_COMMAND) :].strip()
                 if not queued_text:
@@ -728,6 +765,9 @@ async def run_interactive_session(
                 view.show_error(str(exc))
                 continue
     finally:
+        if feishu_link:
+            feishu_link.detach()
+            feishu_link.stop()
         runtime_environment.request_user_input_manager.set_handler(None)
         runtime_environment.request_permissions_manager.set_handler(None)
         await queue.shutdown()
