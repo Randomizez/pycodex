@@ -1,7 +1,7 @@
 import json
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 
 from ..protocol import (
@@ -22,6 +22,7 @@ UUID_PATTERN = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
     re.IGNORECASE,
 )
+ROLLOUT_READ_CHUNK_SIZE = 1024 * 1024
 
 
 def resolve_codex_home(
@@ -282,22 +283,21 @@ def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
         return {}
 
     names_by_id: 'typing.Dict[str, str]' = {}
-    for raw_line in reversed(
-        index_path.read_text(encoding="utf-8", errors="replace").splitlines()
-    ):
-        line = raw_line.strip()
-        if not line:
-            continue
-        try:
-            entry = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(entry, dict):
-            continue
-        thread_id = str(entry.get("id", "")).strip()
-        thread_name = str(entry.get("thread_name", "")).strip()
-        if thread_id and thread_name and thread_id not in names_by_id:
-            names_by_id[thread_id] = thread_name
+    with index_path.open("r", encoding="utf-8", errors="replace") as handle:
+        for raw_line in handle:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict):
+                continue
+            thread_id = str(entry.get("id", "")).strip()
+            thread_name = str(entry.get("thread_name", "")).strip()
+            if thread_id and thread_name:
+                names_by_id[thread_id] = thread_name
     return names_by_id
 
 
@@ -323,26 +323,47 @@ def _extract_first_user_message_preview(rollout_path: 'Path') -> 'typing.Union[s
 
 
 def _iter_rollout_entries(rollout_path: 'Path') -> 'typing.Iterable[typing.Dict[str, object]]':
-    text = rollout_path.read_text(encoding="utf-8", errors="replace")
     decoder = json.JSONDecoder()
-    index = 0
+    buffer = ""
+    start = 0
     parsed_entries = 0
-    text_length = len(text)
 
-    while index < text_length:
-        while index < text_length and text[index].isspace():
-            index += 1
-        if index >= text_length:
-            break
-        try:
-            entry, index = decoder.raw_decode(text, index)
-        except json.JSONDecodeError as exc:
-            if parsed_entries > 0:
+    with rollout_path.open("r", encoding="utf-8", errors="replace") as handle:
+        while True:
+            chunk = handle.read(ROLLOUT_READ_CHUNK_SIZE)
+            eof = not chunk
+            if chunk:
+                buffer += chunk
+
+            while True:
+                while start < len(buffer) and buffer[start].isspace():
+                    start += 1
+                if start >= len(buffer):
+                    buffer = ""
+                    start = 0
+                    break
+                try:
+                    entry, start = decoder.raw_decode(buffer, start)
+                except json.JSONDecodeError as exc:
+                    if eof:
+                        if parsed_entries > 0:
+                            return
+                        raise ValueError(
+                            f"failed to parse rollout file {rollout_path}: {exc}"
+                        ) from exc
+                    if start:
+                        buffer = buffer[start:]
+                        start = 0
+                    break
+                if isinstance(entry, dict):
+                    parsed_entries += 1
+                    yield entry
+                if start > ROLLOUT_READ_CHUNK_SIZE:
+                    buffer = buffer[start:]
+                    start = 0
+
+            if eof:
                 break
-            raise ValueError(f"failed to parse rollout file {rollout_path}: {exc}") from exc
-        if isinstance(entry, dict):
-            parsed_entries += 1
-            yield entry
 
     if parsed_entries == 0:
         raise ValueError(f"no rollout entries found in {rollout_path}")
@@ -468,7 +489,7 @@ def _append_deserialized_response_item(
 
 
 def _rollout_path_for_session(codex_home: 'Path', session_id: 'str') -> 'Path':
-    now = datetime.now(timezone.utc)
+    now = datetime.now().astimezone()
     return (
         codex_home
         / "sessions"
@@ -480,6 +501,4 @@ def _rollout_path_for_session(codex_home: 'Path', session_id: 'str') -> 'Path':
 
 
 def _timestamp_string() -> 'str':
-    now = datetime.now(timezone.utc)
-    milliseconds = int(now.microsecond / 1000)
-    return now.strftime("%Y-%m-%dT%H:%M:%S") + f".{milliseconds:03d}Z"
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
