@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 import threading
 import time
 import typing
@@ -18,11 +19,12 @@ class PycodexRuntimeLink:
         target: str,
         loop=None,
         card: 'typing.Union[PycodexCard, None]' = None,
+        config_path: 'typing.Union[str, Path, None]' = None,
     ) -> None:
         self.queue = queue
         self.target = target
         self.loop = loop
-        self.card = card or PycodexCard.from_env()
+        self.card = card or PycodexCard.from_env(config_path)
         self.session_key = None
         self.message_id = None
         self._listener = None

@@ -694,7 +694,11 @@ async def run_interactive_session(
                     from .feishu_link import PycodexRuntimeLink
 
                     view.write_line(f"Linking Feishu card to current session: {link_target}")
-                    link = await PycodexRuntimeLink(queue, link_target).start_async()
+                    link = await PycodexRuntimeLink(
+                        queue,
+                        link_target,
+                        config_path=config_path,
+                    ).start_async()
                     feishu_link = link
                     view.write_line(
                         "Linked Feishu card: session_key={0} message_id={1}".format(

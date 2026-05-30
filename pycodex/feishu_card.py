@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import time
 import typing
 
@@ -23,6 +24,8 @@ class PycodexCard:
         domain: str = FEISHU_DOMAIN,
         verification_token: "typing.Union[str, None]" = None,
         encrypt_key: "typing.Union[str, None]" = None,
+        refresh_token: "typing.Union[str, None]" = None,
+        refresh_token_store_path: "typing.Union[str, Path, None]" = None,
         session: "typing.Union[requests.Session, None]" = None,
     ) -> None:
         self.app_id = app_id
@@ -31,6 +34,12 @@ class PycodexCard:
         self.domain = domain
         self.verification_token = verification_token
         self.encrypt_key = encrypt_key
+        self.refresh_token = refresh_token
+        self.refresh_token_store_path = (
+            Path(refresh_token_store_path).expanduser()
+            if refresh_token_store_path is not None
+            else None
+        )
         self.session = session or requests.Session()
         self.message_id = None
         self.callback_token = None
@@ -43,11 +52,16 @@ class PycodexCard:
         self.error = ""
         self.running = False
         self.detached = False
+        self._user_access_token = None
+        self._user_token_expires_at = 0.0
         self._tenant_token = None
         self._tenant_token_expires_at = 0.0
 
     @classmethod
-    def from_env(cls) -> "PycodexCard":
+    def from_env(
+        cls,
+        config_path: "typing.Union[str, Path, None]" = None,
+    ) -> "PycodexCard":
         api_base = os.environ.get("FEISHU_API_BASE", FEISHU_API_BASE)
         return cls(
             app_id=_env("FEISHU_APP_ID", "LARK_APP_ID"),
@@ -59,6 +73,8 @@ class PycodexCard:
                 "LARK_VERIFICATION_TOKEN",
             ),
             encrypt_key=_env("FEISHU_ENCRYPT_KEY", "LARK_ENCRYPT_KEY"),
+            refresh_token=os.environ.get("FEISHU_REFRESH_TOKEN"),
+            refresh_token_store_path=_dotenv_path_for_config(config_path),
         )
 
     def configured(self) -> bool:
@@ -133,6 +149,7 @@ class PycodexCard:
                 "/interactive/v1/card/update",
                 None,
                 build_body,
+                use_user_token=False,
             )
 
     def set_queued(self, prompt: str, sender: str = "cli") -> None:
@@ -348,7 +365,7 @@ class PycodexCard:
         if normalized.startswith("ou_"):
             return normalized
         if normalized.startswith("oc_"):
-            return None
+            return normalized
         if normalized.isnumeric():
             return self._lookup_user({"mobiles": [normalized]})
         if "@" not in normalized:
@@ -368,6 +385,7 @@ class PycodexCard:
             "/contact/v3/users/batch_get_id",
             params={"user_id_type": "open_id"},
             json_body=payload,
+            use_user_token=False,
         )
         user_list = _dig(response, "data", "user_list")
         if not isinstance(user_list, list) or not user_list:
@@ -386,6 +404,7 @@ class PycodexCard:
                     "GET",
                     "/contact/v3/users/{0}".format(user_id),
                     params={"user_id_type": user_id_type},
+                    use_user_token=False,
                 )
             except Exception:
                 continue
@@ -400,15 +419,16 @@ class PycodexCard:
         path: str,
         params: "typing.Union[typing.Dict[str, str], None]" = None,
         json_body: "typing.Union[typing.Dict[str, object], None]" = None,
+        use_user_token: bool = True,
     ) -> "typing.Dict[str, object]":
-        if not self.configured():
-            raise RuntimeError("FEISHU_APP_ID and FEISHU_APP_SECRET are required")
+        user_token = self.user_access_token() if use_user_token else None
+        token = user_token or self.tenant_access_token()
         response = self.session.request(
             method,
             self.api_base.rstrip("/") + path,
             params=params,
             json=json_body,
-            headers={"Authorization": "Bearer {0}".format(self.tenant_access_token())},
+            headers={"Authorization": "Bearer {0}".format(token)},
             timeout=20,
         )
         return _checked_json_response(response)
@@ -419,6 +439,7 @@ class PycodexCard:
         path: str,
         params: "typing.Union[typing.Dict[str, str], None]",
         json_body_builder: "typing.Callable[[str], typing.Dict[str, object]]",
+        use_user_token: bool = True,
     ) -> "typing.Dict[str, object]":
         try:
             return self._request(
@@ -426,6 +447,7 @@ class PycodexCard:
                 path,
                 params=params,
                 json_body=json_body_builder(CARD_OUTPUT_MODE_MARKDOWN),
+                use_user_token=use_user_token,
             )
         except Exception as exc:
             if not _is_card_content_error(exc):
@@ -435,7 +457,45 @@ class PycodexCard:
                 path,
                 params=params,
                 json_body=json_body_builder(CARD_OUTPUT_MODE_CODE),
+                use_user_token=use_user_token,
             )
+
+    def user_access_token(self) -> "typing.Union[str, None]":
+        if not self.refresh_token:
+            return None
+        now = time.time()
+        if self._user_access_token and now < self._user_token_expires_at:
+            return self._user_access_token
+        if not self.configured():
+            raise RuntimeError("FEISHU_APP_ID and FEISHU_APP_SECRET are required")
+        response = self.session.post(
+            self.api_base.rstrip("/") + "/authen/v2/oauth/token",
+            json={
+                "grant_type": "refresh_token",
+                "client_id": self.app_id,
+                "client_secret": self.app_secret,
+                "refresh_token": self.refresh_token,
+            },
+            timeout=20,
+        )
+        payload = _checked_json_response(response)
+        token = payload.get("access_token")
+        if not token:
+            raise RuntimeError("user access_token missing from Feishu response")
+        self._user_access_token = str(token)
+        expires_in = payload.get("expires_in") or 0
+        self._user_token_expires_at = time.time() + max(60, int(expires_in) - 120)
+        refresh_token = payload.get("refresh_token")
+        if refresh_token:
+            self.refresh_token = str(refresh_token)
+            os.environ["FEISHU_REFRESH_TOKEN"] = self.refresh_token
+            if self.refresh_token_store_path is not None:
+                _write_dotenv_value(
+                    self.refresh_token_store_path,
+                    "FEISHU_REFRESH_TOKEN",
+                    self.refresh_token,
+                )
+        return self._user_access_token
 
     def tenant_access_token(self) -> str:
         now = time.time()
@@ -586,6 +646,44 @@ def _env(*names: str) -> "typing.Union[str, None]":
         if value:
             return value
     return None
+
+
+def _dotenv_path_for_config(
+    config_path: "typing.Union[str, Path, None]",
+) -> "typing.Union[Path, None]":
+    if config_path is None:
+        return None
+    return Path(config_path).expanduser().resolve().parent / ".env"
+
+
+def _write_dotenv_value(path: Path, key: str, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    replacement = "{0}={1}\n".format(key, _quote_dotenv_value(value))
+    lines = []
+    replaced = False
+    if path.exists():
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        prefix = "export " if stripped.startswith("export ") else ""
+        candidate = stripped[len(prefix) :]
+        if candidate.split("=", 1)[0].strip() == key and "=" in candidate:
+            lines[index] = replacement
+            replaced = True
+            break
+    if not replaced:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(replacement)
+    path.write_text("".join(lines), encoding="utf-8")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        pass
+
+
+def _quote_dotenv_value(value: str) -> str:
+    return "'" + str(value).replace("'", "'\"'\"'") + "'"
 
 
 def _api_base_to_domain(api_base: str) -> str:

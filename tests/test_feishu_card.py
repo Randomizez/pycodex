@@ -1,6 +1,7 @@
 import json
 
 from pycodex.feishu_card import PycodexCard
+from pycodex.utils.dotenv import parse_dotenv
 
 
 class _Response:
@@ -14,13 +15,16 @@ class _Response:
 
 
 class _FakeSession:
-    def __init__(self, responses):
+    def __init__(self, responses, post_responses=None):
         self._responses = list(responses)
+        self._post_responses = list(post_responses or [])
         self.posts = []
         self.requests = []
 
     def post(self, url, json=None, timeout=None):
         self.posts.append({"url": url, "json": json, "timeout": timeout})
+        if self._post_responses:
+            return _Response(self._post_responses.pop(0))
         return _Response({"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
 
     def request(self, method, url, params=None, json=None, headers=None, timeout=None):
@@ -144,3 +148,107 @@ def test_resolve_name_without_default_email_domain_does_not_guess(monkeypatch) -
 
     assert card.resolve_name("alice") is None
     assert lookups == []
+
+
+def test_feishu_card_from_env_reads_refresh_token_for_user_auth(monkeypatch) -> None:
+    monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "refresh-token")
+
+    card = PycodexCard.from_env()
+
+    assert card.refresh_token == "refresh-token"
+
+
+def test_feishu_card_can_exchange_refresh_token_for_user_token() -> None:
+    session = _FakeSession(
+        [{"code": 0, "data": {"message_id": "om_test"}}],
+        post_responses=[
+            {
+                "code": 0,
+                "access_token": "user-token",
+                "expires_in": 7200,
+                "refresh_token": "next-refresh-token",
+            }
+        ],
+    )
+    card = PycodexCard(
+        app_id="app",
+        app_secret="secret",
+        refresh_token="refresh-token",
+        session=session,
+    )
+
+    card.send("oc_chat")
+
+    assert session.posts[0]["url"].endswith("/authen/v2/oauth/token")
+    assert session.posts[0]["json"] == {
+        "grant_type": "refresh_token",
+        "client_id": "app",
+        "client_secret": "secret",
+        "refresh_token": "refresh-token",
+    }
+    assert session.requests[0]["headers"] == {
+        "Authorization": "Bearer user-token",
+    }
+    assert card.refresh_token == "next-refresh-token"
+
+
+def test_feishu_card_persists_rotated_refresh_token_to_dotenv(tmp_path, monkeypatch) -> None:
+    monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
+    dotenv_path = tmp_path / ".env"
+    dotenv_path.write_text("FEISHU_APP_ID='app'\nFEISHU_REFRESH_TOKEN='old-refresh'\n")
+    session = _FakeSession(
+        [],
+        post_responses=[
+            {
+                "code": 0,
+                "access_token": "user-token",
+                "expires_in": 7200,
+                "refresh_token": "next-refresh-token",
+            }
+        ],
+    )
+    card = PycodexCard(
+        app_id="app",
+        app_secret="secret",
+        refresh_token="old-refresh",
+        refresh_token_store_path=dotenv_path,
+        session=session,
+    )
+
+    assert card.user_access_token() == "user-token"
+
+    assert parse_dotenv(dotenv_path.read_text())["FEISHU_REFRESH_TOKEN"] == (
+        "next-refresh-token"
+    )
+    assert card.refresh_token == "next-refresh-token"
+    assert session.posts[0]["json"]["refresh_token"] == "old-refresh"
+
+
+def test_feishu_card_user_lookup_uses_tenant_token_with_refresh_token() -> None:
+    session = _FakeSession(
+        [
+            {
+                "code": 0,
+                "data": {
+                    "user_list": [
+                        {
+                            "user_id": "ou_user",
+                        }
+                    ]
+                },
+            }
+        ]
+    )
+    card = PycodexCard(
+        app_id="app",
+        app_secret="secret",
+        refresh_token="refresh-token",
+        session=session,
+    )
+
+    assert card._lookup_user({"emails": ["alice@example.com"]}) == "ou_user"
+
+    assert session.posts[0]["url"].endswith("/auth/v3/tenant_access_token/internal")
+    assert session.requests[0]["headers"] == {
+        "Authorization": "Bearer tenant-token",
+    }
