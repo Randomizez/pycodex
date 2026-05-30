@@ -8,6 +8,7 @@ import requests
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 FEISHU_DOMAIN = "https://open.feishu.cn"
+FEISHU_REFRESH_TOKEN_FILE = "~/.codex/.feishu_refresh_token"
 CARD_OUTPUT_LIMIT = 6500
 CARD_OUTPUT_MODE_MARKDOWN = "markdown"
 CARD_OUTPUT_MODE_CODE = "code"
@@ -25,7 +26,6 @@ class PycodexCard:
         verification_token: "typing.Union[str, None]" = None,
         encrypt_key: "typing.Union[str, None]" = None,
         refresh_token: "typing.Union[str, None]" = None,
-        refresh_token_store_path: "typing.Union[str, Path, None]" = None,
         session: "typing.Union[requests.Session, None]" = None,
     ) -> None:
         self.app_id = app_id
@@ -35,11 +35,6 @@ class PycodexCard:
         self.verification_token = verification_token
         self.encrypt_key = encrypt_key
         self.refresh_token = refresh_token
-        self.refresh_token_store_path = (
-            Path(refresh_token_store_path).expanduser()
-            if refresh_token_store_path is not None
-            else None
-        )
         self.session = session or requests.Session()
         self.message_id = None
         self.callback_token = None
@@ -48,6 +43,7 @@ class PycodexCard:
         self.status_detail = "Ready."
         self.last_sender = "cli"
         self.last_prompt = ""
+        self.model_name = "pycodex"
         self.output_text = ""
         self.error = ""
         self.running = False
@@ -58,10 +54,7 @@ class PycodexCard:
         self._tenant_token_expires_at = 0.0
 
     @classmethod
-    def from_env(
-        cls,
-        config_path: "typing.Union[str, Path, None]" = None,
-    ) -> "PycodexCard":
+    def from_env(cls) -> "PycodexCard":
         api_base = os.environ.get("FEISHU_API_BASE", FEISHU_API_BASE)
         return cls(
             app_id=_env("FEISHU_APP_ID", "LARK_APP_ID"),
@@ -73,8 +66,7 @@ class PycodexCard:
                 "LARK_VERIFICATION_TOKEN",
             ),
             encrypt_key=_env("FEISHU_ENCRYPT_KEY", "LARK_ENCRYPT_KEY"),
-            refresh_token=os.environ.get("FEISHU_REFRESH_TOKEN"),
-            refresh_token_store_path=_dotenv_path_for_config(config_path),
+            refresh_token=_read_refresh_token() or os.environ.get("FEISHU_REFRESH_TOKEN"),
         )
 
     def configured(self) -> bool:
@@ -308,7 +300,7 @@ class PycodexCard:
                     "disabled": input_disabled,
                     "placeholder": {
                         "tag": "plain_text",
-                        "content": "Ask pycodex...",
+                        "content": f"Ask {self.model_name}...",
                     },
                     "behaviors": [{"type": "callback", "value": {"action": "send"}}],
                     "value": {"action": "send"},
@@ -461,8 +453,10 @@ class PycodexCard:
             )
 
     def user_access_token(self) -> "typing.Union[str, None]":
-        if not self.refresh_token:
+        refresh_token = _read_refresh_token() or self.refresh_token
+        if not refresh_token:
             return None
+        self.refresh_token = refresh_token
         now = time.time()
         if self._user_access_token and now < self._user_token_expires_at:
             return self._user_access_token
@@ -474,7 +468,7 @@ class PycodexCard:
                 "grant_type": "refresh_token",
                 "client_id": self.app_id,
                 "client_secret": self.app_secret,
-                "refresh_token": self.refresh_token,
+                "refresh_token": refresh_token,
             },
             timeout=20,
         )
@@ -489,12 +483,7 @@ class PycodexCard:
         if refresh_token:
             self.refresh_token = str(refresh_token)
             os.environ["FEISHU_REFRESH_TOKEN"] = self.refresh_token
-            if self.refresh_token_store_path is not None:
-                _write_dotenv_value(
-                    self.refresh_token_store_path,
-                    "FEISHU_REFRESH_TOKEN",
-                    self.refresh_token,
-                )
+            _write_refresh_token(self.refresh_token)
         return self._user_access_token
 
     def tenant_access_token(self) -> str:
@@ -648,42 +637,26 @@ def _env(*names: str) -> "typing.Union[str, None]":
     return None
 
 
-def _dotenv_path_for_config(
-    config_path: "typing.Union[str, Path, None]",
-) -> "typing.Union[Path, None]":
-    if config_path is None:
+def _refresh_token_path() -> Path:
+    return Path(FEISHU_REFRESH_TOKEN_FILE).expanduser()
+
+
+def _read_refresh_token() -> "typing.Union[str, None]":
+    path = _refresh_token_path()
+    if not path.exists():
         return None
-    return Path(config_path).expanduser().resolve().parent / ".env"
+    value = path.read_text(encoding="utf-8", errors="replace").strip()
+    return value or None
 
 
-def _write_dotenv_value(path: Path, key: str, value: str) -> None:
+def _write_refresh_token(value: str) -> None:
+    path = _refresh_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    replacement = "{0}={1}\n".format(key, _quote_dotenv_value(value))
-    lines = []
-    replaced = False
-    if path.exists():
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(True)
-    for index, line in enumerate(lines):
-        stripped = line.lstrip()
-        prefix = "export " if stripped.startswith("export ") else ""
-        candidate = stripped[len(prefix) :]
-        if candidate.split("=", 1)[0].strip() == key and "=" in candidate:
-            lines[index] = replacement
-            replaced = True
-            break
-    if not replaced:
-        if lines and not lines[-1].endswith("\n"):
-            lines[-1] += "\n"
-        lines.append(replacement)
-    path.write_text("".join(lines), encoding="utf-8")
+    path.write_text("{0}\n".format(value), encoding="utf-8")
     try:
         path.chmod(0o600)
     except OSError:
         pass
-
-
-def _quote_dotenv_value(value: str) -> str:
-    return "'" + str(value).replace("'", "'\"'\"'") + "'"
 
 
 def _api_base_to_domain(api_base: str) -> str:

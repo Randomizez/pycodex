@@ -697,7 +697,6 @@ async def run_interactive_session(
                     link = await PycodexRuntimeLink(
                         queue,
                         link_target,
-                        config_path=config_path,
                     ).start_async()
                     feishu_link = link
                     view.write_line(

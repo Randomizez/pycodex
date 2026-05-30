@@ -1,7 +1,6 @@
 import json
 
 from pycodex.feishu_card import PycodexCard
-from pycodex.utils.dotenv import parse_dotenv
 
 
 class _Response:
@@ -150,7 +149,8 @@ def test_resolve_name_without_default_email_domain_does_not_guess(monkeypatch) -
     assert lookups == []
 
 
-def test_feishu_card_from_env_reads_refresh_token_for_user_auth(monkeypatch) -> None:
+def test_feishu_card_from_env_reads_refresh_token_for_user_auth(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "refresh-token")
 
     card = PycodexCard.from_env()
@@ -158,7 +158,20 @@ def test_feishu_card_from_env_reads_refresh_token_for_user_auth(monkeypatch) -> 
     assert card.refresh_token == "refresh-token"
 
 
-def test_feishu_card_can_exchange_refresh_token_for_user_token() -> None:
+def test_feishu_card_from_env_reads_fixed_refresh_token_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("file-refresh\n")
+
+    card = PycodexCard.from_env()
+
+    assert card.refresh_token == "file-refresh"
+
+
+def test_feishu_card_can_exchange_refresh_token_for_user_token(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     session = _FakeSession(
         [{"code": 0, "data": {"message_id": "om_test"}}],
         post_responses=[
@@ -192,10 +205,12 @@ def test_feishu_card_can_exchange_refresh_token_for_user_token() -> None:
     assert card.refresh_token == "next-refresh-token"
 
 
-def test_feishu_card_persists_rotated_refresh_token_to_dotenv(tmp_path, monkeypatch) -> None:
+def test_feishu_card_persists_rotated_refresh_token_to_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
-    dotenv_path = tmp_path / ".env"
-    dotenv_path.write_text("FEISHU_APP_ID='app'\nFEISHU_REFRESH_TOKEN='old-refresh'\n")
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("old-refresh\n")
     session = _FakeSession(
         [],
         post_responses=[
@@ -210,18 +225,63 @@ def test_feishu_card_persists_rotated_refresh_token_to_dotenv(tmp_path, monkeypa
     card = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="old-refresh",
-        refresh_token_store_path=dotenv_path,
+        refresh_token="stale-refresh",
         session=session,
     )
 
     assert card.user_access_token() == "user-token"
 
-    assert parse_dotenv(dotenv_path.read_text())["FEISHU_REFRESH_TOKEN"] == (
-        "next-refresh-token"
-    )
+    assert token_path.read_text() == "next-refresh-token\n"
     assert card.refresh_token == "next-refresh-token"
     assert session.posts[0]["json"]["refresh_token"] == "old-refresh"
+
+
+def test_feishu_card_rereads_refresh_token_store_for_each_exchange(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("old-refresh\n")
+    first_session = _FakeSession(
+        [],
+        post_responses=[
+            {
+                "code": 0,
+                "access_token": "first-user-token",
+                "expires_in": 7200,
+                "refresh_token": "first-refresh-token",
+            }
+        ],
+    )
+    second_session = _FakeSession(
+        [],
+        post_responses=[
+            {
+                "code": 0,
+                "access_token": "second-user-token",
+                "expires_in": 7200,
+                "refresh_token": "second-refresh-token",
+            }
+        ],
+    )
+    first = PycodexCard(
+        app_id="app",
+        app_secret="secret",
+        refresh_token="old-refresh",
+        session=first_session,
+    )
+    second = PycodexCard(
+        app_id="app",
+        app_secret="secret",
+        refresh_token="old-refresh",
+        session=second_session,
+    )
+
+    assert first.user_access_token() == "first-user-token"
+    assert second.user_access_token() == "second-user-token"
+
+    assert first_session.posts[0]["json"]["refresh_token"] == "old-refresh"
+    assert second_session.posts[0]["json"]["refresh_token"] == "first-refresh-token"
+    assert token_path.read_text() == "second-refresh-token\n"
 
 
 def test_feishu_card_user_lookup_uses_tenant_token_with_refresh_token() -> None:

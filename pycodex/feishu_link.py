@@ -1,11 +1,11 @@
 import asyncio
-from pathlib import Path
 import threading
 import time
 import typing
 
 from .feishu_card import PycodexCard
 from .protocol import AssistantMessage, UserMessage
+from .runtime import CliSubmissionQueue
 
 CARD_UPDATE_FLUSH_INTERVAL_SECONDS = 0.5
 _LISTENER = None
@@ -15,16 +15,15 @@ _LISTENER_LOCK = threading.Lock()
 class PycodexRuntimeLink:
     def __init__(
         self,
-        queue,
+        queue: 'CliSubmissionQueue',
         target: str,
         loop=None,
         card: 'typing.Union[PycodexCard, None]' = None,
-        config_path: 'typing.Union[str, Path, None]' = None,
     ) -> None:
         self.queue = queue
         self.target = target
         self.loop = loop
-        self.card = card or PycodexCard.from_env(config_path)
+        self.card = card or PycodexCard.from_env()
         self.session_key = None
         self.message_id = None
         self._listener = None
@@ -47,6 +46,7 @@ class PycodexRuntimeLink:
             self.card.status = "Running"
             self.card.status_detail = "Model request started."
             self.card.running = True
+        self.card.model_name = getattr(self.queue._agent._model_client, 'model', 'pycodex')
         self.card.send(self.target)
         self.session_key = self.card.session_key
         self.message_id = self.card.message_id
