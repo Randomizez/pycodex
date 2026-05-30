@@ -554,7 +554,7 @@ Those are the next alignment target after the prompt/context pass.
 
 - `pycodex` 现在已经补上最小的 provider 级 stream retry：`ResponsesProviderConfig`
   支持 `stream_max_retries` / `stream_idle_timeout_ms`，默认值对齐 upstream 的
-  `5` 次重试和 `300_000 ms` SSE idle timeout；代码在 `pycodex/model.py`
+  `300_000 ms` SSE idle timeout；代码在 `pycodex/model.py`
 - 当前实现会把 `response.failed`、stream 在 `response.completed` 前断开、以及
   `requests` 侧的读流异常统一视为 retryable stream error，并在
   `ResponsesModelClient.complete(...)` 里按 backoff 重试；重试前会向外发

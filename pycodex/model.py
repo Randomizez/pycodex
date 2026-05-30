@@ -31,7 +31,7 @@ DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 ModelStreamEventHandler = Callable[[ModelStreamEvent], None]
 NOOP_MODEL_STREAM_EVENT_HANDLER: 'ModelStreamEventHandler' = lambda _event: None
-DEFAULT_STREAM_MAX_RETRIES = 5
+DEFAULT_STREAM_MAX_RETRIES = 500 # ~28h
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 INITIAL_RETRY_DELAY_SECONDS = 0.2
 RETRY_BACKOFF_FACTOR = 2.0
@@ -873,8 +873,8 @@ class ResponsesModelClient:
 
     def _retry_delay_seconds(self, attempt: 'int') -> 'float':
         return INITIAL_RETRY_DELAY_SECONDS * (
-            RETRY_BACKOFF_FACTOR ** max(attempt - 1, 0)
-        )
+            RETRY_BACKOFF_FACTOR ** max(min(attempt - 1, 10), 0)
+        ) # 200s max
 
     def _try_parse_retry_after_seconds(
         self,
