@@ -57,6 +57,30 @@ def _answer_markdown_content(card):
     return columns[0]["elements"][0]["content"]
 
 
+def _prompt_input(card):
+    for element in card["body"]["elements"]:
+        if element.get("element_id") == "prompt_input":
+            return element
+    raise AssertionError("prompt_input not found")
+
+
+def test_feishu_card_uses_session_connected_header_and_input_status() -> None:
+    card = PycodexCard()
+
+    rendered = card.render()
+    assert rendered["header"]["title"]["content"] == "Session Connected"
+    assert _prompt_input(rendered)["placeholder"]["content"] == "Ask pycodex..."
+
+    card.status = "Running"
+    card.status_detail = "Model request started."
+    rendered = card.render()
+
+    assert rendered["header"]["title"]["content"] == "Session Connected"
+    assert _prompt_input(rendered)["placeholder"]["content"] == (
+        "Running - Model request started."
+    )
+
+
 def test_feishu_card_send_falls_back_to_code_mode_without_mutating_output() -> None:
     session = _FakeSession(
         [

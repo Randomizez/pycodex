@@ -158,7 +158,7 @@ class PycodexCard:
         self.output_text = output or self.output_text
 
     def detach(self) -> None:
-        self.status = "Session Detached"
+        self.status = "Detached"
         self.status_detail = ""
         self.error = ""
         self.running = False
@@ -238,6 +238,7 @@ class PycodexCard:
     def render(
         self, output_mode: str = CARD_OUTPUT_MODE_MARKDOWN
     ) -> "typing.Dict[str, object]":
+        idle = str(self.status or "").lower() == "idle"
         status_line = _escape_markdown(self.status)
         if self.status_detail:
             status_line += " - " + _escape_markdown(self.status_detail)
@@ -250,12 +251,13 @@ class PycodexCard:
             "Waiting for output..." if self.running else "Ready."
         )
         output_content = _render_output_content(output, output_mode)
+        color, title = _status_template(self.status)
         card = {
             "schema": "2.0",
             "config": {"update_multi": True},
             "header": {
-                "title": {"tag": "plain_text", "content": status_line},
-                "template": _status_template(self.status),
+                "title": {"tag": "plain_text", "content": title},
+                "template": color,
             },
             "body": {
                 "elements": [
@@ -300,7 +302,7 @@ class PycodexCard:
                     "disabled": input_disabled,
                     "placeholder": {
                         "tag": "plain_text",
-                        "content": f"Ask {self.model_name}...",
+                        "content": f"Ask {self.model_name}..." if idle else status_line,
                     },
                     "behaviors": [{"type": "callback", "value": {"action": "send"}}],
                     "value": {"action": "send"},
@@ -584,15 +586,15 @@ def _display_user_name(user: "typing.Any") -> "typing.Union[str, None]":
     return None
 
 
-def _status_template(status: str) -> str:
+def _status_template(status: str) -> "typing.Tuple[str, str]":
     normalized = status.lower()
     if normalized in {"error", "failed"}:
-        return "red"
+        return "red", "Session Connected"
     if normalized in {"running", "responding", "tool", "queued", "retrying"}:
-        return "blue"
-    if normalized in {"session detached"}:
-        return "grey"
-    return "green"
+        return "blue", "Session Connected"
+    if normalized in {"detached"}:
+        return "grey", "Session Detached"
+    return "green", "Session Connected"
 
 
 def _truncate(text: str, limit: int) -> str:
