@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import threading
 from contextlib import suppress
@@ -50,11 +51,7 @@ def percent_of_context_window_remaining(
 class Prompter:
     def __init__(self, prompt: str = DEFAULT_MAIN_PROMPT, lock=None):
         self.lock = lock or threading.Lock()
-        self._prompt_session = PromptSession(
-            erase_when_done=True,
-            enable_system_prompt=True,
-            show_frame=True,
-        )
+        self._prompt_session = PromptSession(**prompt_session_kwargs())
 
         self.prompt = prompt
         self._status = None
@@ -115,6 +112,21 @@ class Prompter:
         if self._prompt_task is not None and not self._prompt_task.done():
             self._prompt_task.cancel()
             self._prompt_task = None
+
+
+def prompt_session_kwargs() -> "typing.Dict[str, object]":
+    kwargs = {
+        "erase_when_done": True,
+        "enable_system_prompt": True,
+    }
+    try:
+        parameters = inspect.signature(PromptSession.__init__).parameters
+    except (TypeError, ValueError):
+        return kwargs
+
+    if "show_frame" in parameters:
+        kwargs["show_frame"] = True
+    return kwargs
 
 
 def format_cli_tool_call_message(
