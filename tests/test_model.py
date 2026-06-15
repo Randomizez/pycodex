@@ -17,6 +17,7 @@ from pycodex import (
     NOOP_MODEL_STREAM_EVENT_HANDLER,
     Prompt,
     ReasoningItem,
+    ResponsesIncompleteError,
     ResponsesModelClient,
     ResponsesProviderConfig,
     ToolCall,
@@ -852,6 +853,55 @@ def test_responses_model_client_formats_incomplete_stream_errors() -> 'None':
     assert '- last_event: response.output_text.delta' in message
     assert '- output_items_received: 0' in message
     assert 'the stream ended without a terminal `response.completed` event' in message
+
+
+def test_responses_model_client_raises_response_incomplete_with_partial_items() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env='DUMMY_KEY',
+    )
+    client = ResponsesModelClient(provider)
+    events: 'typing.List[ModelStreamEvent]' = []
+    stream = [
+        b'event: response.output_text.delta\n',
+        b'data: {"type":"response.output_text.delta","delta":"partial summary"}\n',
+        b'\n',
+        b'event: response.incomplete\n',
+        b'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n',
+        b'\n',
+    ]
+
+    with pytest.raises(ResponsesIncompleteError) as exc_info:
+        client._parse_stream(stream, events.append)
+
+    message = str(exc_info.value)
+    assert message.startswith('responses stream ended with `response.incomplete`')
+    assert '- reason: max_output_tokens' in message
+    assert exc_info.value.reason == 'max_output_tokens'
+    assert '- output_items_received: 1' in message
+    assert [
+        item.text for item in exc_info.value.partial_items
+        if isinstance(item, AssistantMessage)
+    ] == ['partial summary']
+    assert events == [
+        ModelStreamEvent(
+            kind='assistant_delta',
+            payload={'delta': 'partial summary'},
+        )
+    ]
+
+
+def test_responses_provider_default_stream_max_retries_is_five() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+    )
+
+    assert provider.effective_stream_max_retries() == 5
 
 
 @pytest.mark.asyncio

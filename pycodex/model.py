@@ -31,7 +31,7 @@ DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 ModelStreamEventHandler = Callable[[ModelStreamEvent], None]
 NOOP_MODEL_STREAM_EVENT_HANDLER: 'ModelStreamEventHandler' = lambda _event: None
-DEFAULT_STREAM_MAX_RETRIES = 500 # ~28h
+DEFAULT_STREAM_MAX_RETRIES = 5
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 INITIAL_RETRY_DELAY_SECONDS = 0.2
 RETRY_BACKOFF_FACTOR = 2.0
@@ -173,6 +173,18 @@ def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union
 
 class ResponsesApiError(RuntimeError):
     pass
+
+
+class ResponsesIncompleteError(ResponsesApiError):
+    def __init__(
+        self,
+        message: 'str',
+        partial_items: 'typing.Sequence[object]',
+        reason: 'str' = "",
+    ) -> 'None':
+        super().__init__(message)
+        self.partial_items = tuple(partial_items)
+        self.reason = reason
 
 
 class ResponsesRetryableError(ResponsesApiError):
@@ -495,6 +507,7 @@ class ResponsesModelClient:
         diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
     ) -> 'ModelResponse':
         items: 'typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]' = []
+        output_text_deltas: 'typing.List[str]' = []
         saw_completed = False
         last_event_type = ""
 
@@ -513,6 +526,7 @@ class ResponsesModelClient:
                 diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
+                output_text_deltas.append(str(payload.get("delta", "")))
                 event_handler(
                     ModelStreamEvent(
                         kind="assistant_delta",
@@ -592,6 +606,22 @@ class ResponsesModelClient:
                 saw_completed = True
                 break
 
+            if event_type == "response.incomplete":
+                partial_items = self._items_with_partial_output_text(
+                    items,
+                    output_text_deltas,
+                )
+                reason = self._response_incomplete_reason(payload)
+                raise ResponsesIncompleteError(
+                    self._format_response_incomplete_error(
+                        payload,
+                        len(partial_items),
+                        reason,
+                    ),
+                    partial_items,
+                    reason=reason,
+                )
+
             if event_type == "response.failed":
                 self._raise_response_failed_error(payload)
 
@@ -601,6 +631,19 @@ class ResponsesModelClient:
             )
 
         return ModelResponse(items=items)
+
+    def _items_with_partial_output_text(
+        self,
+        items: 'typing.Sequence[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]',
+        output_text_deltas: 'typing.Sequence[str]',
+    ) -> 'typing.Tuple[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], ...]':
+        partial_items = list(items)
+        if any(isinstance(item, AssistantMessage) for item in partial_items):
+            return tuple(partial_items)
+        partial_text = "".join(output_text_deltas).strip()
+        if partial_text:
+            partial_items.append(AssistantMessage(text=partial_text))
+        return tuple(partial_items)
 
     def _parse_output_item(
         self,
@@ -778,6 +821,37 @@ class ResponsesModelClient:
             "responses stream failed on the server side",
             details,
         )
+
+    def _format_response_incomplete_error(
+        self,
+        payload: 'typing.Dict[str, object]',
+        output_item_count: 'int',
+        reason: 'typing.Union[str, None]' = None,
+    ) -> 'str':
+        details = self._base_error_details(self.responses_url())
+        if reason:
+            details.append(("reason", reason))
+        details.append(("output_items_received", str(output_item_count)))
+        details.append(
+            (
+                "meaning",
+                "the server ended the response with `response.incomplete` before "
+                "a terminal `response.completed` event",
+            )
+        )
+        return self._format_error_message(
+            "responses stream ended with `response.incomplete`",
+            details,
+        )
+
+    def _response_incomplete_reason(self, payload: 'typing.Dict[str, object]') -> 'str':
+        response = payload.get("response")
+        incomplete_details = (
+            response.get("incomplete_details") if isinstance(response, dict) else None
+        )
+        if not isinstance(incomplete_details, dict):
+            return ""
+        return str(incomplete_details.get("reason") or "").strip()
 
     def _raise_response_failed_error(self, payload: 'typing.Dict[str, object]') -> 'None':
         response = payload.get("response")

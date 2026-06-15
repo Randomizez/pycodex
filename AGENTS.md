@@ -57,4 +57,5 @@
 - 对接真实 `~/.codex/sessions/.../rollout-*.jsonl` 时，不要假设它一定是严格的一行一个 JSON object：本机样本可能包含 pretty-printed 多行对象，且文件尾部偶尔带未完成记录。恢复历史时用 concatenated-JSON 方式读取，并容忍尾部残缺。
 - `pycodex` 本地 session 保存现在也按上游思路走：新 session 一开始就分配稳定的 uuidv7 thread/session id，并把历史增量追加到 `CODEX_HOME/sessions/.../rollout-*.jsonl`；`/resume` 列表应只展示至少有真实 user message 的 rollout，避免空白新 session 污染恢复列表。
 - auto-compact 对齐上游配置名 `model_auto_compact_token_limit`；为空时关闭，触发依据是最近一次模型上报的 `usage.total_tokens`，pre-turn 压缩上一轮历史，mid-turn 压缩工具 follow-up 前的当前历史，并继续复用现有 compacted rollout 记录。
+- Responses streaming 里的 `response.incomplete` 不是连接断开：不要让 `ResponsesModelClient` 把它当 retryable incomplete stream 反复重连。普通 turn 应明确报 `response.incomplete`；compact 请求如果已经收到 assistant partial summary，可以用这个 partial summary 完成 replacement history，避免 midturn auto-compact 卡在 5 次 retry。
 - Feishu card tests read `~/.codex/.feishu_refresh_token` through production code; when running `tests/test_feishu_card.py` locally, isolate HOME (for example `HOME=/tmp/pycodex-empty-home env -u VIRTUAL_ENV uv run pytest tests/test_feishu_card.py tests/test_feishu_link.py`) unless the test itself controls `HOME`.

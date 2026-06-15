@@ -873,6 +873,76 @@ async def test_apply_patch_tool_does_not_leave_partial_writes_on_failure(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_apply_patch_tool_allows_paths_outside_workspace(tmp_path) -> 'None':
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+
+    patch = "\n".join(
+        [
+            "*** Begin Patch",
+            "*** Add File: ../outside.txt",
+            "+outside",
+            "*** End Patch",
+        ]
+    )
+    registry = make_registry(workspace)
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_apply_outside",
+            name="apply_patch",
+            arguments=patch,
+            tool_type="custom",
+        ),
+        ToolContext(turn_id="turn_apply_outside", history=()),
+    )
+
+    assert result.is_error is False
+    assert result.output == (
+        "Exit code: 0\n"
+        "Wall time: 0 seconds\n"
+        "Output:\n"
+        f"Success: A {outside}\n"
+    )
+    assert outside.read_text() == "outside\n"
+
+
+@pytest.mark.asyncio
+async def test_apply_patch_tool_allows_absolute_paths_outside_workspace(tmp_path) -> 'None':
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "absolute-outside.txt"
+    workspace.mkdir()
+
+    patch = "\n".join(
+        [
+            "*** Begin Patch",
+            f"*** Add File: {outside}",
+            "+absolute outside",
+            "*** End Patch",
+        ]
+    )
+    registry = make_registry(workspace)
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_apply_absolute_outside",
+            name="apply_patch",
+            arguments=patch,
+            tool_type="custom",
+        ),
+        ToolContext(turn_id="turn_apply_absolute_outside", history=()),
+    )
+
+    assert result.is_error is False
+    assert result.output == (
+        "Exit code: 0\n"
+        "Wall time: 0 seconds\n"
+        "Output:\n"
+        f"Success: A {outside}\n"
+    )
+    assert outside.read_text() == "absolute outside\n"
+
+
+@pytest.mark.asyncio
 async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -> 'None':
     image_path = tmp_path / "pixel.png"
     image_path.write_bytes(

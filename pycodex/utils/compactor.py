@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from ..protocol import (
     AssistantMessage,
     ConversationItem,
+    ModelResponse,
     ModelStreamEvent,
     ToolCall,
     ToolResult,
@@ -74,6 +75,8 @@ async def compact_agent(
     stream_event_handler: 'typing.Union[typing.Callable[[ModelStreamEvent], None], None]' = None,
     prune_tool_results_on_context_error: 'bool' = False,
 ) -> 'typing.Union[CompactResult, None]':
+    from ..model import ResponsesIncompleteError
+
     history = agent.history
     if not history:
         return None
@@ -94,6 +97,14 @@ async def compact_agent(
                 prompt,
                 stream_event_handler or noop_stream_event_handler,
             )
+            break
+        except ResponsesIncompleteError as exc:
+            if (
+                exc.reason != "max_output_tokens"
+                or _last_assistant_message(exc.partial_items) is None
+            ):
+                raise
+            response = ModelResponse(items=list(exc.partial_items))
             break
         except Exception as exc:
             if (

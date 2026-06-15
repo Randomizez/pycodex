@@ -12,6 +12,7 @@ from pycodex import (
     ContextManager,
     ModelResponse,
     ModelStreamEvent,
+    ResponsesIncompleteError,
     ToolCall,
     ToolRegistry,
     ToolResult,
@@ -356,6 +357,131 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
         "auto_compact_completed",
     ]
     assert auto_events[0].payload["phase"] == "mid_turn"
+
+
+@pytest.mark.asyncio
+async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -> 'None':
+    class PartialCompactModelClient:
+        def __init__(self) -> 'None':
+            self.prompts = []
+            self.call_count = 0
+
+        async def complete(self, prompt, event_handler):
+            self.prompts.append(prompt)
+            self.call_count += 1
+            if self.call_count == 1:
+                event_handler(
+                    ModelStreamEvent(
+                        kind="token_count",
+                        payload={"usage": {"total_tokens": 12}},
+                    )
+                )
+                return ModelResponse(
+                    items=[
+                        ToolCall(
+                            call_id="call_1",
+                            name="echo",
+                            arguments={"text": "tool output"},
+                        )
+                    ]
+                )
+            if self.call_count == 2:
+                event_handler(
+                    ModelStreamEvent(
+                        kind="assistant_delta",
+                        payload={"delta": "partial compact summary"},
+                    )
+                )
+                raise ResponsesIncompleteError(
+                    "responses stream ended with `response.incomplete`",
+                    [AssistantMessage(text="partial compact summary")],
+                    reason="max_output_tokens",
+                )
+            if self.call_count == 3:
+                return ModelResponse(items=[AssistantMessage(text="final answer")])
+            raise AssertionError(f"unexpected call_count={self.call_count}")
+
+    model = PartialCompactModelClient()
+    tools = ToolRegistry()
+    tools.register(EchoTool())
+    events = []
+    agent = Agent(
+        model,
+        tools,
+        _auto_compact_context(10),
+        event_handler=events.append,
+    )
+
+    result = await agent.run_turn(["use the tool"])
+
+    assert result.output_text == "final answer"
+    assert model.call_count == 3
+    assert "turn_failed" not in [event.kind for event in events]
+    follow_up_items = _conversation_items(model.prompts[2])
+    assert [type(item).__name__ for item in follow_up_items] == [
+        "UserMessage",
+        "UserMessage",
+    ]
+    assert follow_up_items[1].text == f"{SUMMARY_PREFIX}\npartial compact summary"
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_completed",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary() -> 'None':
+    class PartialCompactModelClient:
+        def __init__(self) -> 'None':
+            self.call_count = 0
+
+        async def complete(self, prompt, event_handler):
+            del prompt
+            self.call_count += 1
+            if self.call_count == 1:
+                event_handler(
+                    ModelStreamEvent(
+                        kind="token_count",
+                        payload={"usage": {"total_tokens": 2}},
+                    )
+                )
+                return ModelResponse(
+                    items=[
+                        ToolCall(
+                            call_id="call_1",
+                            name="echo",
+                            arguments={"text": "tool output"},
+                        )
+                    ]
+                )
+            if self.call_count == 2:
+                raise ResponsesIncompleteError(
+                    "responses stream ended with `response.incomplete`",
+                    [AssistantMessage(text="partial compact summary")],
+                    reason="content_filter",
+                )
+            raise AssertionError(f"unexpected call_count={self.call_count}")
+
+    events = []
+    tools = ToolRegistry()
+    tools.register(EchoTool())
+    agent = Agent(
+        PartialCompactModelClient(),
+        tools,
+        _auto_compact_context(1),
+        event_handler=events.append,
+    )
+
+    with pytest.raises(ResponsesIncompleteError):
+        await agent.run_turn(["new prompt"])
+
+    auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
+    assert [event.kind for event in auto_events] == [
+        "auto_compact_started",
+        "auto_compact_failed",
+    ]
+    assert auto_events[1].payload["error_type"] == "ResponsesIncompleteError"
 
 
 @pytest.mark.asyncio

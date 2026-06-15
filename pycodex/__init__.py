@@ -8,6 +8,7 @@ from .model import (
     ModelClient,
     NOOP_MODEL_STREAM_EVENT_HANDLER,
     ResponsesApiError,
+    ResponsesIncompleteError,
     ResponsesModelClient,
     ResponsesProviderConfig,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "RequestUserInputManager",
     "ResumeAgentTool",
     "ResponsesApiError",
+    "ResponsesIncompleteError",
     "ResponsesModelClient",
     "ResponsesProviderConfig",
     "SendInputTool",

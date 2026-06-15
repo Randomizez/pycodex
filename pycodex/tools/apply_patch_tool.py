@@ -258,13 +258,13 @@ class ApplyPatchTool(BaseTool):
             content = preview[path]
             if content is None:
                 raise ApplyPatchError(
-                    f"apply_patch verification failed: Failed to read {path.relative_to(self._workspace_root)}"
+                    f"apply_patch verification failed: Failed to read {self._display_path(path)}"
                 )
             return content
 
         if not path.exists() or not path.is_file():
             raise ApplyPatchError(
-                f"apply_patch verification failed: Failed to read {path.relative_to(self._workspace_root)}"
+                f"apply_patch verification failed: Failed to read {self._display_path(path)}"
             )
         return path.read_text(encoding="utf-8", errors="replace")
 
@@ -286,7 +286,7 @@ class ApplyPatchTool(BaseTool):
             if match_index is None:
                 raise ApplyPatchError(
                     "apply_patch verification failed: Failed to find expected lines in "
-                    f"{path.relative_to(self._workspace_root)}"
+                    f"{self._display_path(path)}"
                 )
             lines[match_index : match_index + len(old_block)] = new_block
             cursor = match_index + len(new_block)
@@ -329,7 +329,7 @@ class ApplyPatchTool(BaseTool):
     def _format_success(self, summaries: 'typing.Dict[Path, str]') -> 'str':
         buckets = {"A": [], "M": [], "D": []}
         for path, status in summaries.items():
-            buckets[status].append(path.relative_to(self._workspace_root).as_posix())
+            buckets[status].append(self._display_path(path))
         lines = ["Success:"]
         for status in ("A", "M", "D"):
             for rel_path in sorted(buckets[status]):
@@ -345,16 +345,15 @@ class ApplyPatchTool(BaseTool):
         )
 
     def _resolve_workspace_path(self, path_text: 'str') -> 'Path':
-        path = Path(path_text)
+        path = Path(path_text).expanduser()
         resolved = path if path.is_absolute() else self._workspace_root / path
-        resolved = resolved.resolve()
+        return resolved.resolve()
+
+    def _display_path(self, path: 'Path') -> 'str':
         try:
-            resolved.relative_to(self._workspace_root)
-        except ValueError as exc:
-            raise ApplyPatchError(
-                "patch rejected: writing outside of the project; rejected by user approval settings"
-            ) from exc
-        return resolved
+            return path.relative_to(self._workspace_root).as_posix()
+        except ValueError:
+            return str(path)
 
     def _join_lines(self, lines: 'typing.List[str]') -> 'str':
         if not lines:
