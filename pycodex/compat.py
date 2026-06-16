@@ -26,15 +26,19 @@ except ImportError:  # pragma: no cover - Python 3.6 path
         TypeAlias = object
 
 
+def _get_running_loop_compat():
+    loop = asyncio.get_event_loop()
+    if not loop.is_running():
+        raise RuntimeError("no running event loop")
+    return loop
+
+
 def patch_asyncio():
     if not hasattr(asyncio, "create_task"):
         asyncio.create_task = asyncio.ensure_future
 
     if not hasattr(asyncio, "get_running_loop"):
-        def get_running_loop():
-            return asyncio.get_event_loop()
-
-        asyncio.get_running_loop = get_running_loop
+        asyncio.get_running_loop = _get_running_loop_compat
 
     if not hasattr(asyncio, "to_thread"):
         async def to_thread(func, *args, **kwargs):
