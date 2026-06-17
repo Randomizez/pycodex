@@ -2586,6 +2586,87 @@ def test_cli_session_view_shows_stream_error_message() -> 'None':
     assert view.prompter._status == "reconnecting"
 
 
+def test_cli_session_view_discards_stream_buffer_before_retry_status() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="turn_started",
+            turn_id="turn_1",
+            payload={"user_text": "hello"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="assistant_delta",
+            turn_id="turn_1",
+            payload={"delta": "same final"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="stream_error",
+            turn_id="turn_1",
+            payload={"message": "Reconnecting... 1/5"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="assistant_delta",
+            turn_id="turn_1",
+            payload={"delta": "same final"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="turn_completed",
+            turn_id="turn_1",
+            payload={"output_text": "same final"},
+        )
+    )
+
+    assert output == [
+        "Session: hello",
+        "user> hello",
+        "[status] Reconnecting... 1/5",
+        "assistant> same final",
+    ]
+
+
+def test_cli_session_view_flushes_stream_buffer_on_turn_failure() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="turn_started",
+            turn_id="turn_1",
+            payload={"user_text": "hello"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="assistant_delta",
+            turn_id="turn_1",
+            payload={"delta": "partial"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="turn_failed",
+            turn_id="turn_1",
+            payload={"error": "synthetic"},
+        )
+    )
+
+    assert output == [
+        "Session: hello",
+        "user> hello",
+        "assistant> partial",
+    ]
+
+
 def test_cli_session_view_renders_tool_completion_with_current_status() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)

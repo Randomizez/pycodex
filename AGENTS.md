@@ -19,6 +19,7 @@
 - 对 vLLM chat-completions 打开 `return_token_ids=true` 时，streaming `prompt_token_ids` 只出现在首个 chunk，后续每个 chunk 的 `choices[*].token_ids` 都是 decode delta；要在 `responses_server` 侧导出 trajectory 时，按“首个 `prompt_token_ids` + 按序拼接所有 chunk 的 `token_ids`”重建即可。
 - `pycodex` 默认是最小交互 CLI；无 prompt 时进入 REPL，并通过 `AgentRuntime` 跑外层提交循环。当前会显示最小事件流、assistant 流式输出、简单 title/history（`/title`, `/history`），并默认注册一组与原版一一对应的本地工具子集。
 - 交互 CLI 的事件流展示优先表达用户可感知的阶段（例如工具开始/完成、模型回看工具结果），不要直接把内部 `iteration` 计数暴露成主要状态文案；`iterations` 应继续保留在 `TurnResult` 等程序化结果里。
+- 在交互 CLI 里，`stream_error` 表示当前 Responses stream attempt 失败且模型客户端可能马上自动重试；不要在这个事件上 `finish_stream()` 输出当前 assistant delta buffer，否则第一次失败 attempt 的文本和重试成功后的最终回复会重复显示。真正 fatal 的失败仍由 `turn_failed` 走通用 flush，保留 partial 输出。
 - prompt/context 相关逻辑统一放在 `pycodex/context.py`：`AgentLoop` 只维护真实会话历史；每轮请求前由 `ContextManager` 注入 base instructions、developer message、`AGENTS.md` 指令和 `<environment_context>`，且这些注入项不写回 history。
 - 对需要 model-specific prompt 的本地 model slug，直接在 vendored `pycodex/prompts/models.json` 补条目；当前 `step-3.5-flash` / `step-3.5-flash-2603` / `step-3.6` 已按这个方式接入。
 - 交互 REPL 的 context 用量提示也应尽量贴近上游语义：展示“剩余 context 百分比”而不是原始 token 数；计算时按上游同款 `BASELINE_TOKENS=12000` 做归一化，并在模型元数据只有 `context_window` 时默认按 `95%` effective window 处理。只要当前模型能解析出 context window，初始 prompt 就先显示 `100%`，等首个 usage 回来后再刷新成真实值。

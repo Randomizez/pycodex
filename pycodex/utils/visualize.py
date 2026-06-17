@@ -237,6 +237,20 @@ class CliSessionView:
                 self._history.append((pending_prompt, final_text))
             self.prompter.set_status(active=False)
             return
+
+        if event.kind == "stream_error":
+            self._stream_buffer = ""
+            message = str(event.payload.get("message", "")).strip() or "Reconnecting..."
+            self._print_line(
+                colorize_cli_message(
+                    f"[status] {message}",
+                    "status",
+                    self._color_enabled,
+                )
+            )
+            self.prompter.set_status("reconnecting")
+            return
+
         self.finish_stream()
 
         if event.kind == "turn_started":
@@ -283,18 +297,6 @@ class CliSessionView:
 
         if event.kind == "model_called":
             # self.prompter.set_status("thinking")
-            return
-
-        if event.kind == "stream_error":
-            message = str(event.payload.get("message", "")).strip() or "Reconnecting..."
-            self._print_line(
-                colorize_cli_message(
-                    f"[status] {message}",
-                    "status",
-                    self._color_enabled,
-                )
-            )
-            self.prompter.set_status("reconnecting")
             return
 
         if event.kind == "auto_compact_started":
