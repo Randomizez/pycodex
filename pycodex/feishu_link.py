@@ -31,6 +31,7 @@ class PycodexRuntimeLink:
         self._event_handler = None
         self._detached = False
         self._update_thread = None
+        self._update_stop = threading.Event()
         self._update_lock = threading.Lock()
         self._update_pending = False
 
@@ -60,17 +61,19 @@ class PycodexRuntimeLink:
     def stop(self) -> None:
         self._restore_event_handler()
         if self._listener is not None:
-            self._listener.unregister(self)
+            _release_feishu_listener(self._listener, self)
             self._listener = None
+        self._stop_update_thread()
 
     def detach(self) -> None:
         self._detached = True
         self._restore_event_handler()
         if self._listener is not None:
-            self._listener.unregister(self)
+            _release_feishu_listener(self._listener, self)
             self._listener = None
         self.card.detach()
         self._safe_update_card()
+        self._stop_update_thread()
 
     def _restore_event_handler(self) -> None:
         current = getattr(self.queue, "_event_handler", None)
@@ -152,6 +155,7 @@ class PycodexRuntimeLink:
     def _start_update_thread(self) -> None:
         if self._update_thread is not None and self._update_thread.is_alive():
             return
+        self._update_stop.clear()
         self._update_thread = threading.Thread(
             target=self._run_update_loop,
             name="pycodex-feishu-card",
@@ -159,9 +163,15 @@ class PycodexRuntimeLink:
         self._update_thread.daemon = True
         self._update_thread.start()
 
+    def _stop_update_thread(self) -> None:
+        self._update_stop.set()
+        thread = self._update_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self._update_thread = None
+
     def _run_update_loop(self) -> None:
-        while True:
-            time.sleep(CARD_UPDATE_FLUSH_INTERVAL_SECONDS)
+        while not self._update_stop.wait(CARD_UPDATE_FLUSH_INTERVAL_SECONDS):
             with self._update_lock:
                 if not self._update_pending:
                     continue
@@ -194,6 +204,19 @@ def _feishu_listener(card: PycodexCard) -> '_FeishuCardActionListener':
         return _LISTENER
 
 
+def _release_feishu_listener(
+    listener: '_FeishuCardActionListener',
+    link: PycodexRuntimeLink,
+) -> None:
+    global _LISTENER
+    with _LISTENER_LOCK:
+        listener.unregister(link)
+        if listener.empty():
+            listener.stop()
+            if _LISTENER is listener:
+                _LISTENER = None
+
+
 class _FeishuCardActionListener:
     def __init__(self, card: PycodexCard) -> None:
         self.app_id = card.app_id
@@ -204,6 +227,7 @@ class _FeishuCardActionListener:
         self.link = None
         self._async_thread = _AsyncLoopThread()
         self._thread = None
+        self._client = None
 
     def assert_compatible(self, card: PycodexCard) -> None:
         if self.app_id != card.app_id or self.domain != card.domain:
@@ -228,6 +252,20 @@ class _FeishuCardActionListener:
     def unregister(self, link: PycodexRuntimeLink) -> None:
         if self.link is link:
             self.link = None
+
+    def empty(self) -> bool:
+        return self.link is None
+
+    def stop(self) -> None:
+        client = self._client
+        self._client = None
+        if client is not None:
+            _stop_client(client)
+        thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        self._thread = None
+        self._async_thread.stop()
 
     def _listen(self) -> None:
         try:
@@ -259,7 +297,12 @@ class _FeishuCardActionListener:
             event_handler=handler,
             domain=self.domain,
         )
-        client.start()
+        self._client = client
+        try:
+            client.start()
+        finally:
+            if self._client is client:
+                self._client = None
 
     def _handle_card_action(self, event) -> 'typing.Dict[str, object]':
         try:
@@ -298,6 +341,20 @@ def _event_message_id(event) -> "typing.Union[str, None]":
         if value:
             return value
     return None
+
+
+def _stop_client(client) -> None:
+    for name in ("stop", "close", "disconnect", "shutdown"):
+        method = getattr(client, name, None)
+        if not callable(method):
+            continue
+        try:
+            method()
+        except TypeError:
+            continue
+        except Exception as exc:
+            print(exc)
+        return
 
 
 class _AsyncLoopThread:
