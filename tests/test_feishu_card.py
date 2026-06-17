@@ -53,15 +53,32 @@ def _card_output_from_update_payload(payload):
 
 
 def _answer_markdown_content(card):
-    columns = card["body"]["elements"][1]["columns"]
+    columns = _element(card, "answer_box")["columns"]
     return columns[0]["elements"][0]["content"]
 
 
-def _prompt_input(card):
+def _working_markdown_content(card):
+    element = _element(card, "working_output_box")
+    columns = element["columns"]
+    return columns[0]["elements"][0]["content"]
+
+
+def _has_element(card, element_id):
+    return any(
+        element.get("element_id") == element_id
+        for element in card["body"]["elements"]
+    )
+
+
+def _element(card, element_id):
     for element in card["body"]["elements"]:
-        if element.get("element_id") == "prompt_input":
+        if element.get("element_id") == element_id:
             return element
-    raise AssertionError("prompt_input not found")
+    raise AssertionError("{0} not found".format(element_id))
+
+
+def _prompt_input(card):
+    return _element(card, "prompt_input")
 
 
 def test_feishu_card_uses_session_connected_header_and_input_status() -> None:
@@ -146,6 +163,33 @@ def test_feishu_card_preserves_previous_output_while_next_turn_runs() -> None:
 
     card.apply_event({"kind": "turn_completed", "output_text": "new answer"})
     assert card.output_text == "new answer"
+
+
+def test_feishu_card_shows_current_delta_segment_above_input() -> None:
+    card = PycodexCard()
+    card.output_text = "previous answer"
+    card.apply_event({"kind": "turn_started", "user_text": "next prompt"})
+
+    card.apply_event({"kind": "assistant_delta", "delta": "first "})
+    card.apply_event({"kind": "assistant_delta", "delta": "segment"})
+    rendered = card.render()
+
+    assert _answer_markdown_content(rendered) == "(*last turn)\nprevious answer"
+    assert _element(rendered, "working_output_box")["background_style"] == "green-50"
+    assert _working_markdown_content(rendered) == "first segment"
+
+    card.apply_event({"kind": "tool_started", "tool_name": "shell"})
+    card.apply_event({"kind": "tool_completed", "summary": "done"})
+    assert _working_markdown_content(card.render()) == "first segment"
+
+    card.apply_event({"kind": "assistant_delta", "delta": "second "})
+    card.apply_event({"kind": "assistant_delta", "delta": "segment"})
+    assert _working_markdown_content(card.render()) == "second segment"
+
+    card.apply_event({"kind": "turn_completed", "output_text": "final answer"})
+    rendered = card.render()
+    assert _answer_markdown_content(rendered) == "final answer"
+    assert not _has_element(rendered, "working_output_box")
 
 
 def test_resolve_name_uses_default_email_domain_from_env(monkeypatch) -> None:

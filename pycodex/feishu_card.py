@@ -45,6 +45,8 @@ class PycodexCard:
         self.last_prompt = ""
         self.model_name = "pycodex"
         self.output_text = ""
+        self.working_output_text = ""
+        self._working_delta_active = False
         self.error = ""
         self.running = False
         self.detached = False
@@ -150,6 +152,7 @@ class PycodexCard:
         self.last_sender = sender or "cli"
         self.last_prompt = prompt
         self._mark_last_turn_output()
+        self._reset_working_output()
         self.error = ""
         self.running = True
 
@@ -179,6 +182,7 @@ class PycodexCard:
             self.status_detail = "Model request started."
             was_running = self.running
             self.running = True
+            self._reset_working_output()
             prompt = payload.get("user_text") or "\n".join(
                 str(item) for item in payload.get("user_texts", []) or []
             )
@@ -193,16 +197,18 @@ class PycodexCard:
         if kind == "assistant_delta":
             self.status = "Responding"
             self.status_detail = "Receiving assistant output."
-            # self.output_text += str(payload.get("delta", ""))
+            self._append_working_delta(str(payload.get("delta") or ""))
             return False
         if kind == "tool_started":
             self.status = "Tool"
             self.status_detail = str(payload.get("tool_name") or "tool")
+            self._finish_working_delta_segment()
             return False
         if kind == "tool_completed":
             self.status_detail = str(
                 payload.get("summary") or payload.get("tool_name") or "tool completed"
             )
+            self._finish_working_delta_segment()
             return False
         if kind == "stream_error":
             self.status = "Retrying"
@@ -217,23 +223,42 @@ class PycodexCard:
             self.status = "Idle"
             self.status_detail = "Turn completed."
             self.running = False
+            self._reset_working_output()
             return True
         if kind in {"turn_failed", "submission_failed"}:
             self.status = "Error"
             self.error = str(payload.get("error") or kind)
             self.status_detail = self.error
             self.running = False
+            self._finish_working_delta_segment()
             return True
         if kind in {"turn_interrupted", "submission_cancelled"}:
             self.status = "Idle"
             self.status_detail = kind.replace("_", " ")
             self.running = False
+            self._reset_working_output()
             return True
         return False
 
     def _mark_last_turn_output(self) -> None:
         if self.output_text and not self.output_text.startswith(LAST_TURN_PREFIX):
             self.output_text = LAST_TURN_PREFIX + self.output_text
+
+    def _reset_working_output(self) -> None:
+        self.working_output_text = ""
+        self._working_delta_active = False
+
+    def _finish_working_delta_segment(self) -> None:
+        self._working_delta_active = False
+
+    def _append_working_delta(self, delta: str) -> None:
+        if not delta:
+            return
+        if self._working_delta_active:
+            self.working_output_text += delta
+        else:
+            self.working_output_text = delta
+            self._working_delta_active = True
 
     def render(
         self, output_mode: str = CARD_OUTPUT_MODE_MARKDOWN
@@ -251,7 +276,25 @@ class PycodexCard:
             "Waiting for output..." if self.running else "Ready."
         )
         output_content = _render_output_content(output, output_mode)
+        working_output = _truncate(self.working_output_text, CARD_OUTPUT_LIMIT)
         color, title = _status_template(self.status)
+        body_elements = [
+            {
+                "tag": "markdown",
+                "element_id": "prompt_md",
+                "content": f"> {sender}: **{_escape_code_block(prompt)}**",
+            },
+            _output_box("answer_box", "answer_md", output_content, "grey-50"),
+        ]
+        if working_output:
+            body_elements.append(
+                _output_box(
+                    "working_output_box",
+                    "working_output_md",
+                    _render_output_content(working_output, output_mode),
+                    "green-50",
+                )
+            )
         card = {
             "schema": "2.0",
             "config": {"update_multi": True},
@@ -260,35 +303,7 @@ class PycodexCard:
                 "template": color,
             },
             "body": {
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "element_id": "prompt_md",
-                        "content": f"> {sender}: **{_escape_code_block(prompt)}**",
-                    },
-                    {
-                        "tag": "column_set",
-                        "background_style": "grey-50",
-                        "horizontal_spacing": "8px",
-                        "horizontal_align": "left",
-                        "columns": [
-                            {
-                                "tag": "column",
-                                "width": "auto",
-                                "elements": [
-                                    {
-                                        "tag": "markdown",
-                                        "element_id": "answer_md",
-                                        "content": output_content,
-                                    },
-                                ],
-                                "vertical_spacing": "8px",
-                                "horizontal_align": "left",
-                                "vertical_align": "top",
-                            }
-                        ],
-                    },
-                ]
+                "elements": body_elements,
             },
         }
         if not self.detached:
@@ -612,6 +627,37 @@ def _render_output_content(output: str, output_mode: str) -> str:
     if output_mode == CARD_OUTPUT_MODE_CODE:
         return "```text\n{0}\n```".format(_escape_code_block(output))
     return output
+
+
+def _output_box(
+    box_id: str,
+    markdown_id: str,
+    content: str,
+    background_style: str,
+) -> "typing.Dict[str, object]":
+    return {
+        "tag": "column_set",
+        "element_id": box_id,
+        "background_style": background_style,
+        "horizontal_spacing": "8px",
+        "horizontal_align": "left",
+        "columns": [
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "element_id": markdown_id,
+                        "content": content,
+                    },
+                ],
+                "vertical_spacing": "8px",
+                "horizontal_align": "left",
+                "vertical_align": "top",
+            }
+        ],
+    }
 
 
 def _is_card_content_error(exc: "BaseException") -> bool:
