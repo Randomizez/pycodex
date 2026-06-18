@@ -1,3 +1,8 @@
+import asyncio
+import sys
+import threading
+import types
+
 from pycodex.feishu_card import PycodexCard
 import pycodex.feishu_link as feishu_link
 from pycodex.feishu_link import _FeishuCardActionListener, _release_feishu_listener
@@ -10,6 +15,77 @@ class _Object:
 
 def _event(message_id):
     return _Object(event=_Object(context=_Object(open_message_id=message_id)))
+
+
+def _install_fake_lark(monkeypatch, client_class, client_module):
+    lark_module = types.ModuleType("lark_oapi")
+    ws_module = types.ModuleType("lark_oapi.ws")
+    event_module = types.ModuleType("lark_oapi.event")
+    callback_module = types.ModuleType("lark_oapi.event.callback")
+    model_module = types.ModuleType("lark_oapi.event.callback.model")
+    card_action_module = types.ModuleType(
+        "lark_oapi.event.callback.model.p2_card_action_trigger"
+    )
+
+    class _Builder:
+        def register_p2_card_action_trigger(self, callback):
+            self.callback = callback
+            return self
+
+        def build(self):
+            return _Object(callback=getattr(self, "callback", None))
+
+    class _EventDispatcherHandler:
+        @staticmethod
+        def builder(*args):
+            return _Builder()
+
+    class _LogLevel:
+        INFO = "info"
+
+    class _P2CardActionTriggerResponse:
+        def __init__(self, payload):
+            self.payload = payload
+
+    lark_module.EventDispatcherHandler = _EventDispatcherHandler
+    lark_module.LogLevel = _LogLevel
+    lark_module.ws = ws_module
+    ws_module.Client = client_class
+    ws_module.client = client_module
+    client_module.Client = client_class
+    card_action_module.P2CardActionTriggerResponse = _P2CardActionTriggerResponse
+
+    for module in (
+        lark_module,
+        ws_module,
+        client_module,
+        event_module,
+        callback_module,
+        model_module,
+        card_action_module,
+    ):
+        module.__path__ = []
+
+    monkeypatch.setitem(sys.modules, "lark_oapi", lark_module)
+    monkeypatch.setitem(sys.modules, "lark_oapi.ws", ws_module)
+    monkeypatch.setitem(sys.modules, "lark_oapi.ws.client", client_module)
+    monkeypatch.setitem(sys.modules, "lark_oapi.event", event_module)
+    monkeypatch.setitem(sys.modules, "lark_oapi.event.callback", callback_module)
+    monkeypatch.setitem(sys.modules, "lark_oapi.event.callback.model", model_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "lark_oapi.event.callback.model.p2_card_action_trigger",
+        card_action_module,
+    )
+
+
+async def _noop():
+    return None
+
+
+async def _forever():
+    while True:
+        await asyncio.sleep(3600)
 
 
 def test_feishu_listener_tracks_one_active_link() -> None:
@@ -53,3 +129,80 @@ def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
 
     assert second is not first
     assert feishu_link._LISTENER is second
+
+
+def test_feishu_listener_replaces_running_sdk_module_loop(monkeypatch) -> None:
+    client_module = types.ModuleType("lark_oapi.ws.client")
+    started_loops = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            loop = client_module.loop
+            started_loops.append(loop)
+            loop.run_until_complete(_noop())
+
+    _install_fake_lark(monkeypatch, _Client, client_module)
+
+    stale_loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    thread = threading.Thread(target=_run_loop_forever, args=(stale_loop, ready))
+    thread.daemon = True
+    thread.start()
+    ready.wait(timeout=2.0)
+    client_module.loop = stale_loop
+
+    try:
+        listener = _FeishuCardActionListener(
+            PycodexCard(app_id="app", app_secret="secret")
+        )
+        listener._listen()
+    finally:
+        stale_loop.call_soon_threadsafe(stale_loop.stop)
+        thread.join(timeout=2.0)
+        stale_loop.close()
+
+    assert started_loops
+    assert started_loops[0] is not stale_loop
+    assert started_loops[0].is_closed()
+
+
+def test_feishu_listener_stop_closes_sdk_loop(monkeypatch) -> None:
+    client_module = types.ModuleType("lark_oapi.ws.client")
+    started = threading.Event()
+    stopped_loops = []
+    disconnected = []
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def start(self):
+            loop = client_module.loop
+            stopped_loops.append(loop)
+            started.set()
+            loop.run_until_complete(_forever())
+
+        async def _disconnect(self):
+            disconnected.append(True)
+
+    _install_fake_lark(monkeypatch, _Client, client_module)
+
+    listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
+    listener.start()
+    assert started.wait(timeout=2.0)
+
+    listener.stop()
+
+    assert disconnected == [True]
+    assert stopped_loops
+    assert stopped_loops[0].is_closed()
+    assert listener._thread is None
+
+
+def _run_loop_forever(loop, ready):
+    asyncio.set_event_loop(loop)
+    ready.set()
+    loop.run_forever()

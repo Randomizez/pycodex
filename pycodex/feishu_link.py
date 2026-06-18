@@ -228,6 +228,8 @@ class _FeishuCardActionListener:
         self._async_thread = _AsyncLoopThread()
         self._thread = None
         self._client = None
+        self._client_loop = None
+        self._stop_requested = threading.Event()
 
     def assert_compatible(self, card: PycodexCard) -> None:
         if self.app_id != card.app_id or self.domain != card.domain:
@@ -238,6 +240,7 @@ class _FeishuCardActionListener:
             raise RuntimeError("FEISHU_APP_ID and FEISHU_APP_SECRET are required")
         if self._thread is not None and self._thread.is_alive():
             return
+        self._stop_requested.clear()
         self._async_thread.start()
         self._thread = threading.Thread(
             target=self._listen,
@@ -257,10 +260,11 @@ class _FeishuCardActionListener:
         return self.link is None
 
     def stop(self) -> None:
+        self._stop_requested.set()
         client = self._client
-        self._client = None
-        if client is not None:
-            _stop_client(client)
+        loop = self._client_loop
+        if loop is not None:
+            _stop_lark_client(client, loop)
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
@@ -291,18 +295,37 @@ class _FeishuCardActionListener:
             .register_p2_card_action_trigger(on_card_action)
             .build()
         )
-        client = lark_ws.Client(
-            self.app_id,
-            self.app_secret,
-            event_handler=handler,
-            domain=self.domain,
-        )
-        self._client = client
+        import lark_oapi.ws.client as lark_ws_client
+
+        client = None
+        loop = asyncio.new_event_loop()
+        self._client_loop = loop
+        asyncio.set_event_loop(loop)
+        lark_ws_client.loop = loop
         try:
+            if self._stop_requested.is_set():
+                return
+            client = lark_ws.Client(
+                self.app_id,
+                self.app_secret,
+                event_handler=handler,
+                domain=self.domain,
+            )
+            self._client = client
+            if self._stop_requested.is_set():
+                return
             client.start()
+        except RuntimeError as exc:
+            stopped = "Event loop stopped before Future completed" in str(exc)
+            if not self._stop_requested.is_set() or not stopped:
+                raise
         finally:
             if self._client is client:
                 self._client = None
+            if self._client_loop is loop:
+                self._client_loop = None
+            _close_loop(loop)
+            asyncio.set_event_loop(None)
 
     def _handle_card_action(self, event) -> 'typing.Dict[str, object]':
         try:
@@ -343,18 +366,58 @@ def _event_message_id(event) -> "typing.Union[str, None]":
     return None
 
 
-def _stop_client(client) -> None:
-    for name in ("stop", "close", "disconnect", "shutdown"):
-        method = getattr(client, name, None)
-        if not callable(method):
-            continue
+def _stop_lark_client(client, loop) -> None:
+    if loop.is_closed():
+        return
+    disconnect = getattr(client, "_disconnect", None) if client is not None else None
+    if loop.is_running():
+        future = asyncio.run_coroutine_threadsafe(
+            _disconnect_then_stop(disconnect, loop),
+            loop,
+        )
         try:
-            method()
-        except TypeError:
-            continue
+            future.result(timeout=2.0)
+        except Exception as exc:
+            future.cancel()
+            print(exc)
+            loop.call_soon_threadsafe(loop.stop)
+        return
+    if callable(disconnect):
+        try:
+            loop.run_until_complete(disconnect())
         except Exception as exc:
             print(exc)
+
+
+async def _disconnect_then_stop(disconnect, loop) -> None:
+    try:
+        if callable(disconnect):
+            await disconnect()
+    except Exception as exc:
+        print(exc)
+    finally:
+        loop.stop()
+
+
+def _close_loop(loop) -> None:
+    if loop.is_closed():
         return
+    tasks = list(_all_loop_tasks(loop))
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+    shutdown_asyncgens = getattr(loop, "shutdown_asyncgens", None)
+    if callable(shutdown_asyncgens):
+        loop.run_until_complete(shutdown_asyncgens())
+    loop.close()
+
+
+def _all_loop_tasks(loop):
+    all_tasks = getattr(asyncio, "all_tasks", None)
+    if callable(all_tasks):
+        return all_tasks(loop)
+    return asyncio.Task.all_tasks(loop)
 
 
 class _AsyncLoopThread:
