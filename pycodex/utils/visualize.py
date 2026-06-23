@@ -17,6 +17,7 @@ import typing
 STATUS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
 DEFAULT_MAIN_PROMPT = "pycodex> "
+IDLE_LISTENING_STATUS = "idle: listening"
 
 
 def shorten_title(text: "str", limit: "int" = 48) -> "str":
@@ -235,7 +236,7 @@ class CliSessionView:
             pending_prompt = self._pending_user_prompts.pop(submission_id, None)
             if pending_prompt is not None:
                 self._history.append((pending_prompt, final_text))
-            self.prompter.set_status(active=False)
+            self._set_idle_status(event)
             return
 
         if event.kind == "stream_error":
@@ -379,7 +380,7 @@ class CliSessionView:
                 event.payload.get("submission_id", event.turn_id)
             ).strip()
             self._pending_user_prompts.pop(submission_id, None)
-            self.prompter.set_status(active=False)
+            self._set_idle_status(event)
             return
 
         if event.kind == "turn_interrupted":
@@ -390,7 +391,7 @@ class CliSessionView:
             pending_prompt = self._pending_user_prompts.pop(submission_id, None)
             if pending_prompt is not None and final_text:
                 self._history.append((pending_prompt, final_text))
-            self.prompter.set_status(active=False)
+            self._set_idle_status(event)
             return
 
     def show_history(self) -> "None":
@@ -455,6 +456,13 @@ class CliSessionView:
         if self._context_remaining_percent is None:
             return prompt
         return f"pyco({self._context_remaining_percent}%)> "
+
+    def _set_idle_status(self, event: "AgentEvent") -> "None":
+        background_work_count = event.payload.get("background_exec_count", 0)
+        if background_work_count > 0:
+            self.prompter.set_status(IDLE_LISTENING_STATUS)
+        else:
+            self.prompter.set_status(active=False)
 
     def show_steer_queued(self, turn_id: "str", prompt: "str") -> "None":
         preview = shorten_title(prompt, limit=72)

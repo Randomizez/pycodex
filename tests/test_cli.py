@@ -2938,6 +2938,50 @@ def test_cli_session_view_turn_completed_clears_status() -> 'None':
     assert view.prompter._status is None
 
 
+def test_cli_session_view_turn_completed_listens_with_background_work() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="turn_started",
+            turn_id="turn_1",
+            payload={"user_text": "hello"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="turn_completed",
+            turn_id="turn_1",
+            payload={"output_text": "", "background_exec_count": 1},
+        )
+    )
+
+    assert view.prompter._status == "idle: listening"
+
+
+def test_cli_session_view_turn_completed_clears_status_without_background_work() -> 'None':
+    output: 'typing.List[str]' = []
+    view = _build_cli_view(output)
+
+    view.handle_event(
+        AgentEvent(
+            kind="turn_started",
+            turn_id="turn_1",
+            payload={"user_text": "hello"},
+        )
+    )
+    view.handle_event(
+        AgentEvent(
+            kind="turn_completed",
+            turn_id="turn_1",
+            payload={"output_text": "", "background_exec_count": 0},
+        )
+    )
+
+    assert view.prompter._status is None
+
+
 def test_cli_session_view_shows_steer_queue_and_insert_messages() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)

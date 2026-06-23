@@ -17,7 +17,7 @@ from .protocol import (
     TurnResult,
     UserMessage,
 )
-from .tools import ToolContext, ToolRegistry
+from .tools import ExecCommandTool, ToolContext, ToolRegistry, UnifiedExecManager
 from .utils import uuid7_string
 import typing
 
@@ -46,6 +46,7 @@ _CONTEXT_LENGTH_ERROR_MARKERS = (
     "exceeds the context window",
     "exceeded the context window",
 )
+TERMINAL_TURN_EVENTS = {"turn_completed", "turn_failed", "turn_interrupted"}
 
 
 class TurnInterrupted(RuntimeError):
@@ -85,6 +86,15 @@ class Agent:
         self._last_total_usage_tokens: 'typing.Union[int, None]' = None
         self.runtime_environment = runtime_environment
         self.interrupt_asap = False
+        self._turn_running = False
+        exec_command_tool = self._tool_registry.get_tool("exec_command")
+        self._exec_manager = (
+            exec_command_tool._manager
+            if isinstance(exec_command_tool, ExecCommandTool)
+            else None
+        )
+        if self._exec_manager is not None:
+            self._exec_manager.set_notify_hook(self.maybe_invoke)
 
     @property
     def history(self) -> 'typing.Tuple[ConversationItem, ...]':
@@ -129,6 +139,7 @@ class Agent:
     async def run_turn(
         self, texts: 'typing.List[str]', turn_id: 'typing.Union[str, None]' = None
     ) -> 'TurnResult':
+        self._turn_running = True
         turn_id = turn_id or uuid7_string()
         self.interrupt_asap = False
         new_user_messages = [UserMessage(text=text) for text in texts]
@@ -191,6 +202,7 @@ class Agent:
                         iteration=iteration,
                         output_text=last_assistant_message,
                     )
+                    self._turn_running = False
                     return TurnResult(
                         turn_id=turn_id,
                         output_text=last_assistant_message,
@@ -211,6 +223,7 @@ class Agent:
                     output_text=last_assistant_message,
                 )
         except TurnInterrupted:
+            self._turn_running = False
             raise
         except Exception as exc:
             context_usage = _usage_from_context_length_error(str(exc))
@@ -224,7 +237,28 @@ class Agent:
                 error=str(exc),
                 error_type=type(exc).__name__,
             )
+            self._turn_running = False
             raise
+
+    async def maybe_invoke(self, event: 'typing.Dict[str, object]') -> 'bool':
+        if self._turn_running or event.get("type") != "exec_command_completed":
+            return False
+        payload = {
+            "session_id": event.get("session_id"),
+            "exit_code": event.get("exit_code"),
+            "command": event.get("command"),
+        }
+        text = (
+            "<exec_command_completed>\n"
+            f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
+            "</exec_command_completed>"
+        )
+        self._turn_running = True
+        task = asyncio.create_task(self.run_turn([text]))
+        task.add_done_callback(
+            lambda task: None if task.cancelled() else task.exception()
+        )
+        return True
 
     async def _execute_tool_batch(
         self,
@@ -294,9 +328,17 @@ class Agent:
         return result
 
     def _emit(self, kind: 'str', turn_id: 'str', **payload: 'object') -> 'None':
+        if kind in TERMINAL_TURN_EVENTS:
+            payload["background_exec_count"] = self._background_exec_count()
         self._event_handler(
             AgentEvent(kind=kind, turn_id=turn_id, payload=dict(payload))
         )
+
+    def _background_exec_count(self) -> 'int':
+        manager: 'typing.Union[UnifiedExecManager, None]' = self._exec_manager
+        if manager is None:
+            return 0
+        return manager.running_session_count()
 
     def _persist_history_items(
         self,

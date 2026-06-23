@@ -265,6 +265,46 @@ async def test_exec_command_tool_returns_session_for_long_running_process(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_exec_command_notifies_hook_when_background_session_exits(tmp_path) -> 'None':
+    notifications = []
+    notified = asyncio.Event()
+
+    async def on_completed(event):
+        notifications.append(event)
+        notified.set()
+
+    manager = UnifiedExecManager(tmp_path)
+    manager.set_notify_hook(on_completed)
+    output = await manager.exec_command(
+        "printf done",
+        yield_time_ms=1,
+    )
+
+    assert "Process running with session ID " in output
+    await asyncio.wait_for(notified.wait(), timeout=1.0)
+    assert len(notifications) == 1
+    assert notifications[0]["type"] == "exec_command_completed"
+    assert notifications[0]["session_id"] == 1000
+    assert notifications[0]["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exec_manager_reports_running_sessions(tmp_path) -> 'None':
+    manager = UnifiedExecManager(tmp_path)
+    output = await manager.exec_command(
+        "sleep 0.2",
+        yield_time_ms=1,
+    )
+
+    assert "Process running with session ID " in output
+    assert manager.running_session_count() == 1
+
+    await manager.write_stdin(1000, yield_time_ms=1_000)
+
+    assert manager.running_session_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_exec_command_starts_process_in_new_session(tmp_path, monkeypatch) -> 'None':
     original_create_subprocess_exec = asyncio.create_subprocess_exec
     captured_kwargs = {}

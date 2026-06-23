@@ -37,6 +37,7 @@ SUMMARY_PREFIX = (
 COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
 _APPROX_CHARS_PER_TOKEN = 4
 _SUBAGENT_NOTIFICATION_PREFIX = "<subagent_notification>\n"
+_EXEC_COMMAND_COMPLETED_PREFIX = "<exec_command_completed>\n"
 
 
 @dataclass(frozen=True)
@@ -253,7 +254,12 @@ def _pluralize(noun: 'str', count: 'int') -> 'str':
 
 
 def _is_synthetic_user_message(text: 'str') -> 'bool':
-    return text.startswith(_SUBAGENT_NOTIFICATION_PREFIX)
+    return text.startswith(
+        (
+            _SUBAGENT_NOTIFICATION_PREFIX,
+            _EXEC_COMMAND_COMPLETED_PREFIX,
+        )
+    )
 
 
 def _is_context_length_error(message: 'str') -> 'bool':

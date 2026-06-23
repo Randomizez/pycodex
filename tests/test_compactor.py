@@ -65,6 +65,27 @@ def test_compact_filters_synthetic_subagent_notifications() -> 'None':
     ]
 
 
+def test_compact_filters_synthetic_exec_completion_notifications() -> 'None':
+    history = (
+        UserMessage(text="real user"),
+        UserMessage(
+            text=(
+                "<exec_command_completed>\n"
+                '{"session_id":1000,"exit_code":0,"command":"sleep 1"}\n'
+                "</exec_command_completed>"
+            )
+        ),
+        AssistantMessage(text="new summary"),
+    )
+
+    compacted = compact(history)
+
+    assert [item.text for item in compacted] == [
+        "real user",
+        f"{SUMMARY_PREFIX}\nnew summary",
+    ]
+
+
 def test_prune_oldest_tool_response_removes_matching_call_pair() -> 'None':
     history = (
         UserMessage(text="first"),

@@ -207,6 +207,20 @@ class UnifiedExecManager:
         self._next_session_id = DEFAULT_SESSION_ID_START
         self._sessions: 'typing.Dict[int, UnifiedExecSession]' = {}
         self._lock = asyncio.Lock()
+        self._notify_hook: 'typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]' = None
+
+    def set_notify_hook(
+        self,
+        callback: 'typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]',
+    ) -> 'None':
+        self._notify_hook = callback
+
+    def running_session_count(self) -> 'int':
+        return sum(
+            1
+            for session in self._sessions.values()
+            if session.process.returncode is None
+        )
 
     async def exec_command(
         self,
@@ -250,11 +264,15 @@ class UnifiedExecManager:
         async with self._lock:
             self._sessions[session_id] = session
 
-        return await self._wait_and_snapshot(
+        output = await self._wait_and_snapshot(
             session_id,
             max(yield_time_ms, 1),
             max_output_tokens,
         )
+        session = await self._get_session(session_id)
+        if session is not None:
+            asyncio.create_task(self._notify_when_session_completes(session_id))
+        return output
 
     async def write_stdin(
         self,
@@ -366,6 +384,29 @@ class UnifiedExecManager:
             session.unread_output.push_chunk(chunk)
             session.output_event.set()
         session.output_event.set()
+
+    async def _notify_when_session_completes(self, session_id: 'int') -> 'None':
+        callback = self._notify_hook
+        if callback is None:
+            return
+        session = await self._get_session(session_id)
+        if session is None:
+            return
+        await session.process.wait()
+        async with self._lock:
+            if self._sessions.get(session_id) is not session:
+                return
+        try:
+            await callback(
+                {
+                    "type": "exec_command_completed",
+                    "session_id": session_id,
+                    "exit_code": session.process.returncode,
+                    "command": session.command_display,
+                }
+            )
+        except Exception:  # pragma: no cover - background notification must not break tools
+            return
 
     def _resolve_workdir(self, workdir: 'typing.Union[str, None]') -> 'Path':
         if not workdir:

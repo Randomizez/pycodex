@@ -18,6 +18,7 @@ from pycodex import (
     ToolResult,
     UserMessage,
 )
+from pycodex.tools import ExecCommandTool, UnifiedExecManager
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX
 from tests.fakes import ScriptedModelClient
 import typing
@@ -560,6 +561,110 @@ async def test_runtime_submission_loop_processes_turn_and_shutdown() -> 'None':
         await runtime.shutdown()
     finally:
         await worker
+
+
+@pytest.mark.asyncio
+async def test_agent_maybe_invoke_formats_exec_completion_when_idle() -> 'None':
+    request_seen = asyncio.Event()
+
+    async def response_factory(prompt, call_count):
+        del prompt, call_count
+        request_seen.set()
+        return ModelResponse(items=[AssistantMessage(text="auto done")])
+
+    model = ScriptedModelClient(
+        response_factory=response_factory,
+    )
+    agent = Agent(model, ToolRegistry())
+
+    started = await agent.maybe_invoke(
+        {
+            "type": "exec_command_completed",
+            "session_id": 1000,
+            "exit_code": 0,
+            "command": "python watch.py",
+        }
+    )
+
+    assert started is True
+    await asyncio.wait_for(request_seen.wait(), timeout=1.0)
+    while agent._turn_running:
+        await asyncio.sleep(0.01)
+    assert model.call_count == 1
+    prompt_items = _conversation_items(model.prompts[0])
+    assert isinstance(prompt_items[0], UserMessage)
+    assert (
+        prompt_items[0].text
+        == "<exec_command_completed>\n"
+        '{"session_id":1000,"exit_code":0,"command":"python watch.py"}\n'
+        "</exec_command_completed>"
+    )
+
+
+def test_agent_connects_exec_completion_hook_from_tool_registry() -> 'None':
+    tools = ToolRegistry()
+    manager = UnifiedExecManager()
+    tools.register(ExecCommandTool(manager))
+    agent = Agent(
+        ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
+        tools,
+    )
+
+    assert manager._notify_hook == agent.maybe_invoke
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_completed_emits_background_exec_count() -> 'None':
+    tools = ToolRegistry()
+    manager = UnifiedExecManager()
+    tools.register(ExecCommandTool(manager))
+    agent = Agent(
+        ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
+        tools,
+    )
+    manager.running_session_count = lambda: 2
+    events = []
+    agent.set_event_handler(events.append)
+
+    await agent.run_turn(["hello"])
+
+    completed_events = [event for event in events if event.kind == "turn_completed"]
+    assert completed_events
+    assert completed_events[-1].payload["background_exec_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_agent_maybe_invoke_noops_while_active() -> 'None':
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+
+    async def response_factory(prompt, call_count):
+        del prompt, call_count
+        request_started.set()
+        await release_request.wait()
+        return ModelResponse(items=[AssistantMessage(text="done")])
+
+    model = ScriptedModelClient(response_factory=response_factory)
+    agent = Agent(model, ToolRegistry())
+    first_turn = asyncio.create_task(agent.run_turn(["hello"]))
+    try:
+        await request_started.wait()
+        started = await agent.maybe_invoke(
+            {
+                "type": "exec_command_completed",
+                "session_id": 1000,
+                "exit_code": 0,
+                "command": "python watch.py",
+            }
+        )
+
+        assert started is False
+        release_request.set()
+        result = await first_turn
+        assert result.output_text == "done"
+        assert model.call_count == 1
+    finally:
+        release_request.set()
 
 
 @pytest.mark.asyncio
