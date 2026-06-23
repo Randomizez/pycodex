@@ -27,7 +27,11 @@ MAX_EXEC_YIELD_TIME_MS = 30_000
 
 class ExecCommandTool(BaseTool):
     name = "exec_command"
-    description = "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+    description = (
+        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. "
+        "For long tasks, you can reply first; when the task finishes, you will be "
+        "invoked to continue."
+    )
     input_schema = {
         "type": "object",
         "properties": {

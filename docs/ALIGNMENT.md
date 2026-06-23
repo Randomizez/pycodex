@@ -76,7 +76,9 @@ Tool-specific status uses two inputs:
   `update_plan`, `apply_patch`, and `view_image` on the captured default path.
   `exec_command` intentionally omits upstream approval/sandbox parameters
   (`sandbox_permissions`, `justification`, `prefix_rule`) because pycodex skips
-  that authorization path by design.
+  that authorization path by design; its description also tells the agent that
+  it can reply first for long tasks and will be invoked to continue when the
+  task finishes.
 
 ## Result
 
@@ -187,8 +189,9 @@ schema 一致的工具有：
 
 - `exec_command`：`pycodex` 刻意不暴露 upstream 的
   `sandbox_permissions` / `justification` / `prefix_rule`，因为当前实现明确跳过
-  approval/sandbox escalation 逻辑；其余参数和运行时默认/范围约束按类内 schema
-  对齐。
+  approval/sandbox escalation 逻辑；description 还额外提示本地差异：长任务可以先回复
+  用户，任务完成时 agent 会被 invoke 来继续处理；其余参数和运行时默认/范围约束按类内
+  schema 对齐。
 - `request_user_input`：`pycodex` 按 upstream source main 建模，带
   `autoResolutionMs`；installed `codex-cli 0.138.0` 的 live capture 仍未带该字段。
 - `spawn_agent` / `send_input` / `resume_agent` / `wait_agent` /
@@ -370,7 +373,7 @@ schema 一致的工具有：
 |---|---|---|---|
 | `shell` | `not exposed` | `local shim` | 默认 `codex-tui` 首轮路径不带这个工具；类内 argv 执行语义和 schema 已整理，但没有当前 upstream 默认 CLI 同名 payload 可逐字节对齐 |
 | `shell_command` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已刷新为 shell-string command 语义 |
-| `exec_command` | `intentional approval-field delta; round-trip same` | `class aligned except skipped auth` | 删除 fallback 后不再暴露 `sandbox_permissions` / `justification` / `prefix_rule`，这是 pycodex 刻意跳过鉴权逻辑的差异；其余参数按 schema 执行，`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
+| `exec_command` | `intentional approval-field/description delta; round-trip same` | `class aligned except skipped auth + local idle resume` | 删除 fallback 后不再暴露 `sandbox_permissions` / `justification` / `prefix_rule`，这是 pycodex 刻意跳过鉴权逻辑的差异；description 额外提示长任务可以先回复用户，任务完成时 agent 会被 invoke 来继续处理；其余参数按 schema 执行，`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
 | `write_stdin` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
 | `exec` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode custom/freeform desc 和 grammar 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
@@ -408,7 +411,8 @@ same:
 
 different:
 - dynamic request metadata values
-- intentional `exec_command` approval/sandbox field omission in pycodex
+- intentional `exec_command` approval/sandbox field omission and idle-resume
+  description in pycodex
 - transport-layer header casing / normalization
 - paths and modes not yet aligned beyond captured `exec` / default TUI paths
 - installed upstream `request_user_input` lacks source-main `autoResolutionMs`

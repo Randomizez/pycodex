@@ -955,6 +955,9 @@ def test_get_tools_exec_mode_serialization_comes_from_class_specs() -> 'None':
 
     exec_command = payloads["exec_command"]
     assert "output_schema" not in exec_command
+    assert "in a PTY" in exec_command["description"]
+    assert "reply first" in exec_command["description"]
+    assert "you will be invoked to continue" in exec_command["description"]
     exec_command_tool = registry.get_tool("exec_command")
     assert exec_command_tool is not None
     assert exec_command_tool.output_schema["required"] == ["wall_time_seconds", "output"]
