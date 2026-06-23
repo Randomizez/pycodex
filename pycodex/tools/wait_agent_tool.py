@@ -14,6 +14,10 @@ from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import AGENT_STATUS_SCHEMA
 from .base_tool import BaseTool, ToolContext
 
+DEFAULT_WAIT_AGENT_TIMEOUT_MS = 30_000
+MIN_WAIT_AGENT_TIMEOUT_MS = 10_000
+MAX_WAIT_AGENT_TIMEOUT_MS = 3_600_000
+
 WAIT_AGENT_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -37,7 +41,8 @@ class WaitAgentTool(BaseTool):
     description = (
         "Wait for agents to reach a final status. Completed statuses may "
         "include the agent's final message. Returns empty status when timed "
-        "out."
+        "out. Once the agent reaches a final status, a notification message "
+        "will be received containing the same completed status."
     )
     input_schema = {
         "type": "object",
@@ -49,7 +54,7 @@ class WaitAgentTool(BaseTool):
             },
             "timeout_ms": {
                 "type": "integer",
-                "description": "Optional timeout in milliseconds.",
+                "description": "Timeout in milliseconds. Defaults to 30000, min 10000, max 3600000. Prefer longer waits (minutes) to avoid busy polling.",
             },
         },
         "required": ["ids"],
@@ -69,5 +74,12 @@ class WaitAgentTool(BaseTool):
         agent_ids = [str(item).strip() for item in ids if str(item).strip()]
         if not agent_ids:
             return "Error: `ids` must include at least one non-empty id."
-        timeout_ms = int(args.get("timeout_ms", 30_000))
+        timeout_ms = self._timeout_ms(args)
         return await self._subagent_manager.wait_agents(agent_ids, timeout_ms)
+
+    def _timeout_ms(self, args: 'JSONDict') -> 'int':
+        value = int(args.get("timeout_ms", DEFAULT_WAIT_AGENT_TIMEOUT_MS))
+        return min(
+            max(value, MIN_WAIT_AGENT_TIMEOUT_MS),
+            MAX_WAIT_AGENT_TIMEOUT_MS,
+        )

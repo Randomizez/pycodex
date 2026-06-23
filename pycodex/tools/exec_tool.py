@@ -28,8 +28,24 @@ SOURCE: /[\s\S]+/
 class ExecTool(BaseTool):
     name = "exec"
     description = (
-        "Runs raw JavaScript in an isolated context. Send raw JavaScript "
-        "source text, not JSON, quoted strings, or markdown code fences."
+        "Run JavaScript code to orchestrate/compose tool calls\n"
+        "- Evaluates the provided JavaScript code in a fresh V8 isolate as an "
+        "async module.\n"
+        "- All nested tools are available on the global `tools` object, for "
+        "example `await tools.exec_command(...)`.\n"
+        "- Nested tool methods take either a string or an object as their input "
+        "argument.\n"
+        "- Runs raw JavaScript -- no Node, no file system, no network access, "
+        "no console.\n"
+        "- Accepts raw JavaScript source text, not JSON, quoted strings, or "
+        "markdown code fences.\n"
+        "- You may optionally start the tool input with a first-line pragma "
+        "like `// @exec: {\"yield_time_ms\": 10000, "
+        "\"max_output_tokens\": 1000}`.\n"
+        "- `yield_time_ms` asks `exec` to yield early if the script is still "
+        "running. Defaults to 10000 ms.\n"
+        "- `max_output_tokens` sets the token budget for direct `exec` results. "
+        "Defaults to 10000 tokens."
     )
     tool_type = "custom"
     format = {

@@ -88,7 +88,7 @@
   - Codex 风格请求 headers（如 request id / turn metadata / originator）
   - 普通 function tools
   - freeform/custom tools
-  - `output_schema`
+  - 不在 request-visible function tool payload 里序列化 `output_schema`
   - `custom_tool_call` / `custom_tool_call_output`
 - 其中有一个 hardcoded reference 测试会直接固定一份示例 request body JSON，用来防止 payload format 被悄悄改坏。
 - SSE 解析要能恢复 assistant message、function tool call、custom tool call。
@@ -96,8 +96,8 @@
 
 ### `tests/test_cli.py`
 
-- `get_tools(exec_mode=True)` 除了校验工具集合本身，还会把 `model_visible_specs()` 的序列化结果和 vendored `pycodex/prompts/exec_tools.json` 逐字节对比。
-- 预期：exec-mode tool schema 对齐发生在工具定义层，而不是通过 prompt 级 override 旁路注入。
+- `get_tools(exec_mode=True)` 除了校验工具集合本身，还会验证 `model_visible_specs()` 的序列化结果来自类内 `BaseTool` spec，而不是 prompt 级 JSON fallback。
+- 预期：exec-mode tool schema 对齐发生在工具定义层；function tool 的 `output_schema` 可作为类内元数据保留，但不发进 `/responses` request。
 - 非交互 `run_cli(...)` 的 capture 测试会直接验证默认 CLI 非 `exec` 路径现在发的是 `codex-tui`，并且 developer message 里包含 `<collaboration_mode>`。
 
 ### `tests/fake_responses_server.py`
@@ -180,7 +180,7 @@
 - sub-agent request body 里的 `prompt_cache_key` 现在也已对齐：parent thread 用自己的稳定 session id，sub-agent thread 改为使用 `agent_id`。
 - sub-agent request 的 `x-openai-subagent: collab_spawn` header，以及后续 turn 不再携带 `workspaces` 的 metadata 细节，也已对齐 upstream。
 - 已补抓默认 CLI 主线程的两轮无工具对话：当前 upstream Codex 和 `pycodex` 的首轮/次轮 request body 与 header shape 一致；第二轮都会省略 `workspaces`。
-- sub-agent 那 6 个工具的 schema 现在已固化到 `pycodex/prompts/subagent_tools.json`，并有 snapshot 测试锁定。
+- sub-agent 那 6 个工具的 schema 现在来自类内 `BaseTool` spec，并由 CLI serialization 测试覆盖；`pycodex/prompts/subagent_tools.json` 已删除。
 - 其余文件/agent/交互类工具 smoke 见上表；`web_search` 当前主要通过 payload/事件层测试验证接入，是否在真实模型里被主动选中还受具体 prompt 与 provider 行为影响。
 
 ## 后续新增工具时的记录要求

@@ -161,6 +161,36 @@ async def test_shell_command_tool_runs_shell_script(tmp_path) -> 'None':
 
 
 @pytest.mark.asyncio
+async def test_shell_command_tool_default_timeout_matches_schema(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    import pycodex.tools.shell_command_tool as shell_command_tool
+
+    captured_timeouts = []
+    original_wait_for = asyncio.wait_for
+
+    async def capture_wait_for(awaitable, timeout):
+        captured_timeouts.append(timeout)
+        return await original_wait_for(awaitable, timeout=timeout)
+
+    monkeypatch.setattr(shell_command_tool.asyncio, "wait_for", capture_wait_for)
+
+    registry = make_registry(tmp_path)
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_shell_command_default_timeout",
+            name="shell_command",
+            arguments={"command": "printf ok"},
+        ),
+        ToolContext(turn_id="turn_shell_command_default_timeout", history=()),
+    )
+
+    assert result.is_error is False
+    assert captured_timeouts[-1] == 10.0
+
+
+@pytest.mark.asyncio
 async def test_list_dir_tool_lists_entries_from_absolute_path(tmp_path) -> 'None':
     (tmp_path / "a.txt").write_text("a")
     subdir = tmp_path / "sub"
@@ -223,6 +253,39 @@ async def test_grep_files_tool_returns_matching_paths(tmp_path) -> 'None':
 
 
 @pytest.mark.asyncio
+async def test_exec_command_tool_schema_omits_skipped_approval_fields() -> 'None':
+    tool = ExecCommandTool(UnifiedExecManager(Path.cwd()))
+    properties = tool.input_schema["properties"]
+
+    assert "sandbox_permissions" not in properties
+    assert "justification" not in properties
+    assert "prefix_rule" not in properties
+
+
+@pytest.mark.asyncio
+async def test_exec_command_tool_clamps_yield_time_to_schema_range() -> 'None':
+    class RecordingManager:
+        def __init__(self) -> 'None':
+            self.calls = []
+
+        async def exec_command(self, **kwargs):
+            self.calls.append(kwargs)
+            return "ok"
+
+    manager = RecordingManager()
+    tool = ExecCommandTool(manager)
+    context = ToolContext(turn_id="turn_exec_clamp", history=())
+
+    result = await tool.run(context, {"cmd": "true", "yield_time_ms": 1})
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 250
+
+    result = await tool.run(context, {"cmd": "true", "yield_time_ms": 999_999})
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 30_000
+
+
+@pytest.mark.asyncio
 async def test_exec_command_tool_returns_session_for_long_running_process(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
@@ -262,6 +325,40 @@ async def test_exec_command_tool_returns_session_for_long_running_process(tmp_pa
     combined_output = result.output + closed.output
     assert "start" in combined_output
     assert "end" in combined_output
+
+
+@pytest.mark.asyncio
+async def test_write_stdin_tool_clamps_yield_time_to_schema_range() -> 'None':
+    class RecordingManager:
+        def __init__(self) -> 'None':
+            self.calls = []
+
+        async def write_stdin(self, **kwargs):
+            self.calls.append(kwargs)
+            return "ok"
+
+    manager = RecordingManager()
+    tool = WriteStdinTool(manager)
+    context = ToolContext(turn_id="turn_write_clamp", history=())
+
+    result = await tool.run(
+        context,
+        {"session_id": 1000, "chars": "x", "yield_time_ms": 1},
+    )
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 250
+
+    result = await tool.run(context, {"session_id": 1000, "chars": "x"})
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 250
+
+    result = await tool.run(context, {"session_id": 1000, "yield_time_ms": 1})
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 5_000
+
+    result = await tool.run(context, {"session_id": 1000, "yield_time_ms": 999_999})
+    assert result == "ok"
+    assert manager.calls[-1]["yield_time_ms"] == 300_000
 
 
 @pytest.mark.asyncio
@@ -499,7 +596,7 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
                 "cmd": (
                     "python3 -c \"import sys,time; "
                     "sys.stdout.write('READY'); sys.stdout.flush(); "
-                    "time.sleep(0.2); "
+                    "time.sleep(0.5); "
                     "sys.stdout.write('HEAD' + 'A'*700000 + 'MID' + 'B'*700000 + 'TAIL'); "
                     "sys.stdout.flush()\""
                 ),
@@ -513,7 +610,7 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
     session_id_text = start.output.split(marker, 1)[1].splitlines()[0]
     session_id = int(session_id_text)
 
-    await asyncio.sleep(0.6)
+    await asyncio.sleep(0.9)
 
     finish = await registry.execute(
         ToolCall(
@@ -607,6 +704,7 @@ def test_web_search_tool_serializes_as_provider_native_spec(tmp_path) -> 'None':
     assert web_search.serialize() == {
         "type": "web_search",
         "external_web_access": True,
+        "search_content_types": ["text", "image"],
     }
 
 
@@ -762,6 +860,51 @@ async def test_request_user_input_tool_returns_structured_answers_in_plan_mode()
         "output": '{"answers":{"choice":{"answers":["Use tool A (Recommended)"]}}}',
         "success": True,
     }
+
+
+@pytest.mark.asyncio
+async def test_request_user_input_tool_clamps_auto_resolution_ms() -> 'None':
+    manager = RequestUserInputManager()
+    captured_payloads: 'typing.List[typing.Dict[str, object]]' = []
+
+    async def handler(payload):
+        captured_payloads.append(payload)
+        return {"answers": {"choice": {"answers": ["Use tool A (Recommended)"]}}}
+
+    manager.set_handler(handler)
+    registry = ToolRegistry()
+    registry.register(RequestUserInputTool(manager))
+
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_request_user_input_auto",
+            name="request_user_input",
+            arguments={
+                "autoResolutionMs": 999999,
+                "questions": [
+                    {
+                        "id": "choice",
+                        "header": "Select",
+                        "question": "Pick one",
+                        "options": [
+                            {
+                                "label": "Use tool A (Recommended)",
+                                "description": "Fast path",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ),
+        ToolContext(
+            turn_id="turn_request_user_input_auto",
+            history=(),
+            collaboration_mode="plan",
+        ),
+    )
+
+    assert result.is_error is False
+    assert captured_payloads[0]["autoResolutionMs"] == 240000
 
 
 @pytest.mark.asyncio
@@ -1008,12 +1151,33 @@ async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -
         {
             "type": "input_image",
             "image_url": result.output["image_url"],
+            "detail": "high",
         },
     )
+    assert result.output["detail"] == "high"
     serialized = result.serialize()
     assert serialized["type"] == "function_call_output"
     assert serialized["output"][0]["type"] == "input_image"
     assert str(result.output["image_url"]).startswith("data:image/png;base64,")
+
+    original = await registry.execute(
+        ToolCall(
+            call_id="call_12_original",
+            name="view_image",
+            arguments={"path": str(image_path), "detail": "original"},
+        ),
+        ToolContext(turn_id="turn_12_original", history=()),
+    )
+
+    assert original.is_error is False
+    assert original.output["detail"] == "original"
+    assert original.content_items == (
+        {
+            "type": "input_image",
+            "image_url": original.output["image_url"],
+            "detail": "original",
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -1083,7 +1247,7 @@ async def test_spawn_agent_send_input_wait_and_close_round_trip() -> 'None':
         ToolContext(turn_id="turn_close", history=()),
     )
 
-    assert closed.output == {"status": {"completed": "done two"}}
+    assert closed.output == {"previous_status": {"completed": "done two"}}
 
 
 @pytest.mark.asyncio
@@ -1098,6 +1262,33 @@ async def test_spawn_agent_requires_message_or_items() -> 'None':
 
     assert spawned.is_error is False
     assert spawned.output == "Provide one of: message or items"
+
+
+@pytest.mark.asyncio
+async def test_wait_agent_tool_clamps_timeout_to_schema_range() -> 'None':
+    class RecordingManager:
+        def __init__(self) -> 'None':
+            self.calls = []
+
+        async def wait_agents(self, agent_ids, timeout_ms):
+            self.calls.append((agent_ids, timeout_ms))
+            return {"status": {}, "timed_out": True}
+
+    manager = RecordingManager()
+    tool = WaitAgentTool(manager)
+    context = ToolContext(turn_id="turn_wait_agent_clamp", history=())
+
+    result = await tool.run(context, {"ids": ["agent-1"], "timeout_ms": 1})
+    assert result == {"status": {}, "timed_out": True}
+    assert manager.calls[-1] == (["agent-1"], 10_000)
+
+    result = await tool.run(context, {"ids": ["agent-1"]})
+    assert result == {"status": {}, "timed_out": True}
+    assert manager.calls[-1] == (["agent-1"], 30_000)
+
+    result = await tool.run(context, {"ids": ["agent-1"], "timeout_ms": 9_999_999})
+    assert result == {"status": {}, "timed_out": True}
+    assert manager.calls[-1] == (["agent-1"], 3_600_000)
 
 
 @pytest.mark.asyncio
@@ -1217,7 +1408,7 @@ async def test_spawn_agent_uses_agent_id_as_nested_session_id() -> 'None':
         ),
         ToolContext(turn_id="turn_close_session", history=()),
     )
-    assert closed.output == {"status": {"completed": "done"}}
+    assert closed.output == {"previous_status": {"completed": "done"}}
 
 
 @pytest.mark.asyncio

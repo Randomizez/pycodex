@@ -55,7 +55,13 @@ class RequestPermissionsTool(BaseTool):
     name = "request_permissions"
     description = (
         "Request additional filesystem or network permissions from the user "
-        "and wait for a response."
+        "and wait for the client to grant a subset of the requested permission "
+        "profile. Use environment_id to target a specific attached "
+        "environment; omit it to use the primary environment. Relative "
+        "filesystem paths resolve against the selected environment cwd. "
+        "Granted permissions apply automatically to later shell-like commands "
+        "in the current turn, or for the rest of the session if the client "
+        "approves them at session scope."
     )
     input_schema = {
         "type": "object",
@@ -63,6 +69,10 @@ class RequestPermissionsTool(BaseTool):
             "reason": {
                 "type": "string",
                 "description": "Optional short explanation for why additional permissions are needed.",
+            },
+            "environment_id": {
+                "type": "string",
+                "description": "Environment id from <environment_context>. Omit to use the primary environment.",
             },
             "permissions": REQUEST_PERMISSION_PROFILE_SCHEMA,
         },
@@ -85,6 +95,7 @@ class RequestPermissionsTool(BaseTool):
         response = await self._request_manager.request(
             {
                 "reason": None if args.get("reason") in (None, "") else str(args.get("reason")),
+                "environment_id": None if args.get("environment_id") in (None, "") else str(args.get("environment_id")),
                 "permissions": permissions,
             }
         )

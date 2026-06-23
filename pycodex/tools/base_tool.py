@@ -11,36 +11,14 @@ Expected behavior:
 """
 
 import inspect
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from functools import lru_cache
-import json
-from pathlib import Path
 import traceback
 
 from ..protocol import ConversationItem, JSONDict, JSONValue, ToolCall, ToolResult, ToolSpec
 from ..utils import get_debug_dir
 import typing
-
-EXEC_TOOLS_SNAPSHOT_PATH = (
-    Path(__file__).resolve().parent.parent / "prompts" / "exec_tools.json"
-)
-
-
-@lru_cache(maxsize=1)
-def _load_exec_tool_payloads() -> 'typing.Dict[str, JSONDict]':
-    payloads: 'typing.Dict[str, JSONDict]' = {}
-    raw_payloads = EXEC_TOOLS_SNAPSHOT_PATH.read_text(encoding="utf-8")
-    for payload in json.loads(raw_payloads):
-        if not isinstance(payload, dict):
-            continue
-        name = payload.get("name")
-        if isinstance(name, str):
-            payloads[name] = payload
-            continue
-        if payload.get("type") == "web_search":
-            payloads["web_search"] = payload
-    return payloads
 
 
 @dataclass(frozen=True, )
@@ -82,14 +60,10 @@ class BaseTool(ABC):
             options=self.options,
             output_schema=self.output_schema,
             supports_parallel=self.supports_parallel,
-            raw_payload=self.raw_payload(),
         )
 
     def serialize(self) -> 'JSONDict':
         return self.spec().serialize()
-
-    def raw_payload(self) -> 'typing.Union[JSONDict, None]':
-        return _load_exec_tool_payloads().get(self.name)
 
     @abstractmethod
     async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':

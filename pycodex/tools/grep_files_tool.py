@@ -26,18 +26,31 @@ COMMAND_TIMEOUT_SECONDS = 30
 class GrepFilesTool(BaseTool):
     name = "grep_files"
     description = (
-        "Finds files whose contents match the pattern and lists them by "
-        "modification time."
+        "Search file contents with ripgrep and return matching file paths, "
+        "newest first."
     )
     input_schema = {
         "type": "object",
         "properties": {
-            "pattern": {"type": "string"},
-            "include": {"type": "string"},
-            "path": {"type": "string"},
-            "limit": {"type": "integer"},
+            "pattern": {
+                "type": "string",
+                "description": "Regular expression to search for.",
+            },
+            "include": {
+                "type": "string",
+                "description": "Optional glob pattern to limit searched file names.",
+            },
+            "path": {
+                "type": "string",
+                "description": "File or directory to search. Defaults to the tool cwd.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of matching paths to return.",
+            },
         },
         "required": ["pattern"],
+        "additionalProperties": False,
     }
 
     def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':

@@ -940,13 +940,51 @@ def test_get_tools_exec_mode_matches_codex_exec_subset() -> 'None':
     )
 
 
-def test_get_tools_exec_mode_serialization_matches_upstream_snapshot() -> 'None':
-    registry = get_tools(exec_mode=True)
-    expected = json.loads(
-        (Path(__file__).resolve().parents[1] / "pycodex" / "prompts" / "exec_tools.json").read_text()
-    )
+def _tool_payload_by_name(registry: 'ToolRegistry') -> 'typing.Dict[str, typing.Dict[str, object]]':
+    payloads: 'typing.Dict[str, typing.Dict[str, object]]' = {}
+    for payload in [spec.serialize() for spec in registry.model_visible_specs()]:
+        name = payload.get("name") or payload.get("type")
+        assert isinstance(name, str)
+        payloads[name] = payload
+    return payloads
 
-    assert [spec.serialize() for spec in registry.model_visible_specs()] == expected
+
+def test_get_tools_exec_mode_serialization_comes_from_class_specs() -> 'None':
+    registry = get_tools(exec_mode=True)
+    payloads = _tool_payload_by_name(registry)
+
+    exec_command = payloads["exec_command"]
+    assert "output_schema" not in exec_command
+    exec_command_tool = registry.get_tool("exec_command")
+    assert exec_command_tool is not None
+    assert exec_command_tool.output_schema["required"] == ["wall_time_seconds", "output"]
+    assert "sandbox_permissions" not in exec_command["parameters"]["properties"]
+    assert "justification" not in exec_command["parameters"]["properties"]
+    assert "prefix_rule" not in exec_command["parameters"]["properties"]
+
+    write_stdin = payloads["write_stdin"]
+    assert "output_schema" not in write_stdin
+    write_stdin_tool = registry.get_tool("write_stdin")
+    assert write_stdin_tool is not None
+    assert write_stdin_tool.output_schema == exec_command_tool.output_schema
+    assert write_stdin["parameters"]["properties"]["session_id"]["type"] == "number"
+
+    request_user_input = payloads["request_user_input"]
+    assert "autoResolutionMs" in request_user_input["parameters"]["properties"]
+
+    view_image = payloads["view_image"]
+    assert view_image["parameters"]["properties"]["detail"]["enum"] == ["high", "original"]
+    assert "output_schema" not in view_image
+    view_image_tool = registry.get_tool("view_image")
+    assert view_image_tool is not None
+    assert view_image_tool.output_schema["required"] == ["image_url", "detail"]
+
+    close_agent = payloads["close_agent"]
+    assert "output_schema" not in close_agent
+    close_agent_tool = registry.get_tool("close_agent")
+    assert close_agent_tool is not None
+    assert close_agent_tool.output_schema["required"] == ["previous_status"]
+    assert "previous_status" in close_agent_tool.output_schema["properties"]
 
 
 def test_get_subagent_tools_matches_upstream_subset() -> 'None':
@@ -961,18 +999,27 @@ def test_get_subagent_tools_matches_upstream_subset() -> 'None':
     )
 
 
-def test_get_subagent_tools_serialization_matches_upstream_snapshot() -> 'None':
+def test_get_subagent_tools_serialization_comes_from_class_specs() -> 'None':
     registry = get_subagent_tools()
-    expected = json.loads(
-        (
-            Path(__file__).resolve().parents[1]
-            / "pycodex"
-            / "prompts"
-            / "subagent_tools.json"
-        ).read_text()
-    )
+    payloads = _tool_payload_by_name(registry)
 
-    assert [spec.serialize() for spec in registry.model_visible_specs()] == expected
+    assert set(payloads) == {
+        "exec_command",
+        "write_stdin",
+        "update_plan",
+        "apply_patch",
+        "web_search",
+        "view_image",
+    }
+    assert "output_schema" not in payloads["exec_command"]
+    exec_command_tool = registry.get_tool("exec_command")
+    assert exec_command_tool is not None
+    assert exec_command_tool.output_schema["required"] == ["wall_time_seconds", "output"]
+    assert payloads["write_stdin"]["parameters"]["properties"]["session_id"]["type"] == "number"
+    assert payloads["view_image"]["parameters"]["properties"]["detail"]["enum"] == [
+        "high",
+        "original",
+    ]
 
 
 def test_load_codex_dotenv_reads_env_file_and_filters_codex_prefix(tmp_path, monkeypatch) -> 'None':

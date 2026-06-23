@@ -285,7 +285,7 @@ class SubAgentManager:
     async def close_agent(self, agent_id: 'str') -> 'typing.Dict[str, object]':
         managed = self._agents.get(agent_id)
         if managed is None:
-            return {"status": "not_found"}
+            return {"previous_status": "not_found"}
         previous_status = self._status_payload(managed)
         if not managed.worker_task.done():
             managed.queue._agent.interrupt_asap = True
@@ -295,7 +295,7 @@ class SubAgentManager:
         managed.pending_submission_ids.clear()
         async with self._condition:
             self._condition.notify_all()
-        return {"status": previous_status}
+        return {"previous_status": previous_status}
 
     def _next_nickname(self) -> 'str':
         if not self._available_nicknames:

@@ -18,22 +18,39 @@ from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 import typing
 
-DEFAULT_SHELL_TIMEOUT_MS = 30_000
+DEFAULT_SHELL_TIMEOUT_MS = 10_000
 MAX_OUTPUT_CHARS = 12_000
 
 
 class ShellCommandTool(BaseTool):
     name = "shell_command"
-    description = "Runs a shell command string and returns its output."
+    description = (
+        "Runs a shell command and returns its output.\n"
+        "- Always set the `workdir` param when using the shell_command "
+        "function. Do not use `cd` unless absolutely necessary."
+    )
     input_schema = {
         "type": "object",
         "properties": {
-            "command": {"type": "string"},
-            "workdir": {"type": "string"},
-            "timeout_ms": {"type": "integer"},
-            "login": {"type": "boolean"},
+            "command": {
+                "type": "string",
+                "description": "Shell script to run in the user's default shell.",
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Working directory for the command. Defaults to the turn cwd.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Maximum command runtime. Defaults to 10000 ms.",
+            },
+            "login": {
+                "type": "boolean",
+                "description": "True runs with login shell semantics; false disables them. Defaults to true.",
+            },
         },
         "required": ["command"],
+        "additionalProperties": False,
     }
     supports_parallel = False
 

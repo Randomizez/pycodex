@@ -30,22 +30,52 @@ class ReadFileTool(BaseTool):
     input_schema = {
         "type": "object",
         "properties": {
-            "file_path": {"type": "string"},
-            "offset": {"type": "integer"},
-            "limit": {"type": "integer"},
-            "mode": {"type": "string"},
+            "file_path": {
+                "type": "string",
+                "description": "Absolute path to the file to read.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "1-indexed starting line number. Defaults to 1.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of lines to return. Defaults to 2000.",
+            },
+            "mode": {
+                "type": "string",
+                "description": "Read mode. Use `slice` for a line range or `indentation` for an indentation-aware block.",
+            },
             "indentation": {
                 "type": "object",
+                "description": "Options for indentation-aware block mode.",
                 "properties": {
-                    "anchor_line": {"type": "integer"},
-                    "max_levels": {"type": "integer"},
-                    "include_siblings": {"type": "boolean"},
-                    "include_header": {"type": "boolean"},
-                    "max_lines": {"type": "integer"},
+                    "anchor_line": {
+                        "type": "integer",
+                        "description": "1-indexed anchor line for block expansion.",
+                    },
+                    "max_levels": {
+                        "type": "integer",
+                        "description": "How many indentation levels above the anchor to include. Use 0 for file-root scope.",
+                    },
+                    "include_siblings": {
+                        "type": "boolean",
+                        "description": "Whether to include sibling blocks at the same indentation level.",
+                    },
+                    "include_header": {
+                        "type": "boolean",
+                        "description": "Whether to include immediately preceding header/comment lines.",
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Maximum number of lines to return in indentation mode.",
+                    },
                 },
+                "additionalProperties": False,
             },
         },
         "required": ["file_path"],
+        "additionalProperties": False,
     }
 
     async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':

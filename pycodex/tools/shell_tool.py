@@ -25,8 +25,9 @@ MAX_OUTPUT_CHARS = 12_000
 class ShellTool(BaseTool):
     name = "shell"
     description = (
-        "Runs a shell command and returns its output. The command must be passed "
-        "as argv, typically prefixed with ['bash', '-lc'] for shell syntax."
+        "Runs a process from an argv array and returns its output. Use "
+        "`shell_command` for shell-script strings; use this tool when the exact "
+        "argv vector matters."
     )
     input_schema = {
         "type": "object",
@@ -34,11 +35,19 @@ class ShellTool(BaseTool):
             "command": {
                 "type": "array",
                 "items": {"type": "string"},
+                "description": "Command argv to execute.",
             },
-            "workdir": {"type": "string"},
-            "timeout_ms": {"type": "integer"},
+            "workdir": {
+                "type": "string",
+                "description": "Working directory for the command. Defaults to the tool cwd.",
+            },
+            "timeout_ms": {
+                "type": "integer",
+                "description": "Maximum command runtime in milliseconds.",
+            },
         },
         "required": ["command"],
+        "additionalProperties": False,
     }
     supports_parallel = False
 

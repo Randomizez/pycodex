@@ -5,7 +5,7 @@ Original Codex mapping:
 
 Expected behavior:
 - Shut down a spawned agent when it is no longer needed.
-- Return the agent status observed at close time.
+- Return the agent status observed before shutdown was requested.
 """
 
 from ..protocol import JSONDict, JSONValue
@@ -16,9 +16,12 @@ from .base_tool import BaseTool, ToolContext
 CLOSE_AGENT_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
-        "status": AGENT_STATUS_SCHEMA,
+        "previous_status": {
+            "description": "The agent status observed before shutdown was requested.",
+            "allOf": [AGENT_STATUS_SCHEMA],
+        },
     },
-    "required": ["status"],
+    "required": ["previous_status"],
     "additionalProperties": False,
 }
 
@@ -26,7 +29,11 @@ CLOSE_AGENT_OUTPUT_SCHEMA = {
 class CloseAgentTool(BaseTool):
     name = "close_agent"
     description = (
-        "Close an agent when it is no longer needed and return its status."
+        "Close an agent and any open descendants when they are no longer "
+        "needed, and return the target agent's previous status before shutdown "
+        "was requested. Completed agents remain open and count toward the "
+        "concurrency limit until closed. Don't keep agents open for too long "
+        "if they are not needed anymore."
     )
     input_schema = {
         "type": "object",

@@ -7,8 +7,9 @@ from .base_tool import BaseTool, ToolContext
 class IPythonTool(BaseTool):
     name = "ipython"
     description = (
-        "Execute Python code in the current IPython kernel namespace. "
-        "Use this to inspect live Python variables in the user's IPython session."
+        "Execute Python code in the current IPython kernel namespace. Use this "
+        "only when running inside IPython and live notebook/session variables "
+        "need to be inspected."
     )
     input_schema = {
         "type": "object",

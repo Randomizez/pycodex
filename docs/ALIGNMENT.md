@@ -1,16 +1,22 @@
 # Alignment
 
-This document records the current prompt/context alignment work between
-`pycodex` and upstream Codex from `https://github.com/openai/codex`.
+This document records the current alignment work between `pycodex` and upstream
+Codex from `https://github.com/openai/codex`: prompt/context assembly,
+model-visible tool schemas, and observed tool round-trip behavior.
 
 ## Scope
 
-The comparison in this pass focuses on the model-visible prompt assembly:
+The original comparison pass focused on the model-visible prompt assembly:
 
 - `instructions`
 - `input` items
 - developer/contextual user message shape
 - `AGENTS.md` / environment-context injection
+
+The current document also tracks tool alignment at two different layers:
+
+- request-visible payloads captured from real outbound `/responses` requests
+- class-level `BaseTool` descriptions, schemas, and runtime result shapes
 
 It does not claim full request parity for every runtime mode yet.
 
@@ -37,10 +43,45 @@ The repository copy of that helper server now lives at
 The temporary capture artifacts used during debugging are intentionally not part
 of the repository contract and are not documented here as stable project files.
 
+Tool-specific status uses two inputs:
+
+- proxy captures of actual upstream Codex and `pycodex` requests/results
+- source inspection against the latest upstream tool specifications
+
+## Status checkpoint (2026-06-23)
+
+- Latest upstream source checked: `openai/codex` `83c4934`
+  (`2026-06-23 00:31:56 -0700`, `Remove redundant Codex Apps cache guard`).
+- Live request captures in this pass used installed `codex-cli 0.138.0`.
+- Prompt/context parity remains aligned for the compared non-interactive `exec`
+  path and the captured default two-turn `codex-tui` path, modulo dynamic ids.
+- The raw JSON tool fallback files have been deleted:
+  `pycodex/prompts/exec_tools.json` and
+  `pycodex/prompts/subagent_tools.json`.
+- Class-level descriptions/schemas/runtime result shapes have now been refreshed
+  across the default local tool set, not only the tools previously hidden by the
+  JSON fallback.
+- Request-visible tool serialization now comes from class-level `BaseTool`
+  specs. Function-tool `output_schema` remains available as local metadata but
+  is intentionally not serialized into `/responses` requests, matching upstream
+  `ResponsesApiTool.output_schema #[serde(skip)]`.
+- Latest upstream-facing fixes included in the class/runtime layer:
+  `request_user_input.autoResolutionMs` with `[60000, 240000]` clamping,
+  `view_image.detail` (`high` default, `original` opt-in), `close_agent`
+  returning `previous_status`, and `spawn_agent` guidance that spawned agents
+  inherit the current model by default.
+- Post-delete proxy compare:
+  `uv run python tests/compare_tool_schemas.py --root .tmp/tool_schema_proxy_compare_after_fallback_delete_2 --timeout-seconds 240`.
+  The request-visible payloads are now equal for `write_stdin`, `web_search`,
+  `update_plan`, `apply_patch`, and `view_image` on the captured default path.
+  `exec_command` intentionally omits upstream approval/sandbox parameters
+  (`sandbox_permissions`, `justification`, `prefix_rule`) because pycodex skips
+  that authorization path by design.
+
 ## Result
 
-As of this snapshot, prompt/context parity is achieved for the non-interactive
-`exec` comparison:
+As of this snapshot, prompt/context parity is achieved for the compared
+non-interactive `exec` comparison:
 
 - `instructions` match exactly
 - `input` match exactly
@@ -48,10 +89,19 @@ As of this snapshot, prompt/context parity is achieved for the non-interactive
 In other words, the model-visible prompt dump for `pycodex` and upstream Codex
 is currently identical for this comparison scenario.
 
+Tool alignment is also materially improved: all default local tool classes have
+been reviewed/refreshed against the latest upstream-facing specs where a current
+upstream builtin exists. The request-visible payload for the compared official
+tools now comes from class-level specs rather than vendored JSON snapshots.
+
 ## Current non-prompt status
 
 After prompt/context parity, the next comparison layer is the full outbound
-request shape. That work is in progress.
+request shape. That work is still layered:
+
+- request-visible parity for captured paths
+- class-level tool spec/runtime parity after deleting the JSON fallback
+- broader runtime parity for uncaptured modes
 
 At the time of writing:
 
@@ -69,7 +119,10 @@ At the time of writing:
 - transport/header parity is now aligned for the compared path, including the
   sub-agent `x-openai-subagent` header and the observed `workspaces` omission
   on later sub-agent turns
-- tool schema parity is aligned for the compared exec-mode tool subset
+- request-visible tool schema parity is aligned for the compared exec-mode and
+  default TUI captured paths where upstream still exposes the same tool names
+- class-level tool descriptions, input schemas, output schemas, and notable
+  runtime result shapes have been refreshed across the default local tool set
 
 The current implementation already matches:
 
@@ -80,7 +133,8 @@ The current implementation already matches:
 - session-scoped request id headers
 - turn metadata header shape (`turn_id` + `sandbox`)
 - mode-aware `originator` header
-- exact exec-mode tool schema payloads via vendored snapshot at the tool layer
+- exact exec-mode tool schema payloads on the compared path, now generated from
+  class-level tool specs rather than vendored JSON snapshots
 - `User-Agent` string for the compared non-interactive path
 
 The main remaining deltas are now outside the prompt dump itself:
@@ -88,6 +142,9 @@ The main remaining deltas are now outside the prompt dump itself:
 - dynamic run-specific values such as generated session ids and turn ids
 - behavior outside the compared non-interactive `exec` path and the captured
   default two-turn TUI path, especially other runtime modes not yet captured
+- upstream's current default-path migration to `tool_search` / deferred
+  multi-agent tools and goal tools, while `pycodex` still exposes the legacy
+  flat sub-agent tools on the first request
 
 ## Proxy tool-schema compare
 
@@ -102,21 +159,44 @@ The main remaining deltas are now outside the prompt dump itself:
 - 从 `tests/TESTS.md` 的真实 smoke tool 表读取工具顺序
 - 逐个比较这条被抓到的 request path 里真正暴露给模型的 tool schema
 
-在当前默认 CLI non-exec / `codex-tui` 这条被抓到的路径上，已经确认 schema
-一致的工具有：
+注意：这项比较验证的是“这条 request 上模型实际看到的 payload”。raw JSON fallback
+删除后，这项比较已经能证明当前被抓路径里的 official tool payload 来自类内
+`BaseTool` spec。
 
-- `exec_command`
+删除 fallback 后的最新结果：
+
+- command:
+  `env -u VIRTUAL_ENV uv run python tests/compare_tool_schemas.py --root .tmp/tool_schema_proxy_compare_after_fallback_delete_2 --timeout-seconds 240`
+- upstream request:
+  `.tmp/tool_schema_proxy_compare_after_fallback_delete_2/upstream/008_POST_v1_responses.json`
+- `pycodex` request:
+  `.tmp/tool_schema_proxy_compare_after_fallback_delete_2/pycodex/001_POST_v1_responses.json`
+- comparison:
+  `.tmp/tool_schema_proxy_compare_after_fallback_delete_2/comparison.json`
+
+在当前默认 CLI non-exec / `codex-tui` 这条被抓到的路径上，已经确认 request-visible
+schema 一致的工具有：
+
 - `write_stdin`
 - `update_plan`
-- `request_user_input`
 - `apply_patch`
 - `web_search`
 - `view_image`
-- `spawn_agent`
-- `send_input`
-- `resume_agent`
-- `wait_agent`
-- `close_agent`
+
+仍需分层解释的差异：
+
+- `exec_command`：`pycodex` 刻意不暴露 upstream 的
+  `sandbox_permissions` / `justification` / `prefix_rule`，因为当前实现明确跳过
+  approval/sandbox escalation 逻辑；其余参数和运行时默认/范围约束按类内 schema
+  对齐。
+- `request_user_input`：`pycodex` 按 upstream source main 建模，带
+  `autoResolutionMs`；installed `codex-cli 0.138.0` 的 live capture 仍未带该字段。
+- `spawn_agent` / `send_input` / `resume_agent` / `wait_agent` /
+  `close_agent`：upstream 当前首轮 request 不再平铺暴露这些工具，而是暴露
+  `tool_search`，并由 deferred discovery 加载 Multi-agent tools。`pycodex` 仍在首轮
+  request 平铺暴露 legacy sub-agent tools。
+- upstream 当前还额外暴露 `get_goal` / `create_goal` / `update_goal`；`pycodex`
+  尚未实现 goal tools。
 
 同一条被抓到的路径下，当前 upstream Codex 和 `pycodex` 都没有暴露这些工具：
 
@@ -131,6 +211,7 @@ The main remaining deltas are now outside the prompt dump itself:
 
 这里的结论只针对当前被抓到的默认 `codex-tui` request path；它不等价于说这些
 工具在上游全局不存在，只说明这次实际 context capture 没把它们带进首轮请求。
+这些工具的类内 description/schema 状态见下面的 per-tool 表。
 
 ## Tool-call / tool-result schema compare
 
@@ -185,6 +266,8 @@ The main remaining deltas are now outside the prompt dump itself:
   - Plan-mode happy path 现在也已按 upstream 源码建模：handler 会要求每个问题都带
     非空 `options`、自动给每个问题补 `isOther=true`，并把结构化答案序列化成
     JSON 字符串回传到下一轮 `function_call_output.output`，同时补 `success=true`
+  - 类内 schema 已补齐 upstream 最新的 `autoResolutionMs` 字段；runtime 会把非空值
+    clamp 到 `[60000, 240000]` 后交给交互层
   - 当前仓库已经新增 deterministic proxy compare 脚本
     `uv run python tests/compare_request_user_input_roundtrip.py`
   - 该脚本会用同一套固定 origin SSE + proxy capture，同步比较 upstream Codex
@@ -200,7 +283,9 @@ The main remaining deltas are now outside the prompt dump itself:
   - `function_call` item schema 一致
   - 下一轮里的 `function_call_output` schema 一致
   - 当前样本里，两边都会把 tool result 回传成同一个 `input_image` 列表，
-    `image_url` data URL 也一致；当前抓到的默认样本没有显式 `detail`
+    `image_url` data URL 也一致
+  - 类内 schema/runtime 已补齐 upstream 最新的 `detail` 参数：省略时按 `high`
+    返回，显式 `original` 时保留并回传到 `input_image.detail`
 - `spawn_agent`
   - 当前先补齐了一个最小 validation-path：当模型在没有 `message` / `items` 的情况下
     强制调用 `spawn_agent` 时，upstream Codex 和 `pycodex` 现在都会回传同一个固定错误：
@@ -209,6 +294,8 @@ The main remaining deltas are now outside the prompt dump itself:
     `agent_id` / `nickname`
   - 当前 `pycodex` 也已经改成 uuid7 agent id，并接上了与 upstream 同一批候选名的
     默认昵称池；剩余差异主要只在具体抽到哪个昵称这类动态值
+  - 类内 description 已刷新到 upstream 最新方向：spawned agents 默认继承当前模型，
+    不再在 tool desc 里硬编码模型 picker 列表
 - `send_input`
   - `function_call` item schema 一致
   - 下一轮里的 `function_call_output` schema 一致
@@ -221,8 +308,8 @@ The main remaining deltas are now outside the prompt dump itself:
 - `close_agent`
   - `function_call` item schema 一致
   - 下一轮里的 `function_call_output` schema 一致
-  - 当前仓库已把返回键名从 `previous_status` 改成 `status`，与 upstream 当前 happy
-    path 对齐
+  - upstream 最新源码里的输出键名是 `previous_status`；当前仓库的 schema/runtime 已
+    回到 `previous_status`
 - `resume_agent`
   - 真实 happy path 已补抓：子 agent 完成、`close_agent`、`resume_agent`、再
     `send_input` 的完整链路现在已经对齐
@@ -236,8 +323,8 @@ The main remaining deltas are now outside the prompt dump itself:
   - request body 里的 `prompt_cache_key` 现在也改成和 upstream 一样：
     parent thread 维持自己的稳定 session id，而 sub-agent thread 则改用
     `agent_id` 本身，不再错误复用 parent 的 cache key
-  - 这 6 个 sub-agent tool schema 现在也已经固化到
-    `pycodex/prompts/subagent_tools.json`，并由测试逐字节锁定
+  - 这 6 个 sub-agent tool schema 现在来自类内 `BaseTool` spec，并由 CLI
+    serialization 测试覆盖；`pycodex/prompts/subagent_tools.json` 已删除
 - `sub-agent notification`
   - 在 `wait_agent` 之后，upstream 会向 parent thread history 额外注入一条
     `user` message：
@@ -271,30 +358,37 @@ The main remaining deltas are now outside the prompt dump itself:
 - `not exposed`：在当前默认 `codex-tui` 首轮 request path 下两边都没把这个工具带进 `tools`
 - `first-request same`：首轮 `tools` schema 已确认一致
 - `round-trip same`：真实触发后的 `tool_call` / `tool_result` 外层 schema 已确认一致
+- `class aligned`：类内 description/schema/runtime 已按当前 upstream-facing spec 刷新，
+  且不再依赖 raw JSON fallback
+- `local shim`：本地工具有实现和 smoke 覆盖，但当前 upstream 默认 CLI 抓包没有同名
+  official model-visible tool 可直接逐字节对齐
+- `legacy-flat mismatch`：`pycodex` 首轮仍直接暴露 legacy flat tool；upstream 首轮
+  已迁移到 `tool_search` / deferred discovery
 - `pending`：这条工具链还没有补完真实触发对比
 
-| tool | current status | note |
-|---|---|---|
-| `shell` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `shell_command` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `exec_command` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 也已补齐，仅剩动态值差异 |
-| `write_stdin` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 也已补齐，仅剩动态值差异 |
-| `exec` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `wait` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `web_search` | `round-trip same` | `web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
-| `update_plan` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致 |
-| `request_user_input` | `round-trip same (Default mode); Plan mode delta` | Default-mode unavailable 路径已 capture 对齐；Plan-mode deterministic proxy compare 已补做：本机 installed `codex-cli 0.115.0` 的 live capture 里，`function_call` 已一致，`function_call_output` 仅差 `pycodex` 多带 `success=true` |
-| `request_permissions` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `apply_patch` | `round-trip same` | `custom_tool_call` / `custom_tool_call_output` 外层 shape 一致；当前样本里输出包装也已对齐，仅剩具体文件路径差异 |
-| `grep_files` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `read_file` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `list_dir` | `not exposed` | 当前默认 `codex-tui` 首轮路径不带这个工具 |
-| `view_image` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；当前样本里 `input_image` data URL 也一致 |
-| `spawn_agent` | `round-trip same` | validation-path 与 happy-path 都已补抓；剩余主要是动态 agent id / nickname 值 |
-| `send_input` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；仅剩动态 `submission_id` |
-| `resume_agent` | `round-trip same` | 已补抓真实 happy path；`resume_agent` 后的 `pending_init` 返回值、sub-agent tool 子集、sub-agent context 都已对齐 |
-| `wait_agent` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；仅剩动态 agent id |
-| `close_agent` | `round-trip same` | `function_call` / `function_call_output` 外层 shape 一致；parent-thread notification message 也已补齐 |
+| tool | request-visible status | class/runtime status | note |
+|---|---|---|---|
+| `shell` | `not exposed` | `local shim` | 默认 `codex-tui` 首轮路径不带这个工具；类内 argv 执行语义和 schema 已整理，但没有当前 upstream 默认 CLI 同名 payload 可逐字节对齐 |
+| `shell_command` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已刷新为 shell-string command 语义 |
+| `exec_command` | `intentional approval-field delta; round-trip same` | `class aligned except skipped auth` | 删除 fallback 后不再暴露 `sandbox_permissions` / `justification` / `prefix_rule`，这是 pycodex 刻意跳过鉴权逻辑的差异；其余参数按 schema 执行，`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
+| `write_stdin` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
+| `exec` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode custom/freeform desc 和 grammar 已刷新，仍需 code-mode request-visible 抓包复测 |
+| `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
+| `web_search` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 provider-native payload 相等，包含 `search_content_types=["text","image"]`；`web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
+| `update_plan` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致 |
+| `request_user_input` | `round-trip same (Default mode); Plan mode source-aligned` | `class aligned` | Default-mode unavailable 路径已 capture 对齐；Plan-mode 按 upstream main 建模，包含 `success=true` 和 `autoResolutionMs` clamp；本机 installed `codex-cli 0.115.0` live capture 仍少 `success=true` |
+| `request_permissions` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已补 `environment_id` passthrough，交互 handler 仍是最小实现 |
+| `apply_patch` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 custom grammar 相等；`custom_tool_call` / `custom_tool_call_output` 外层 shape 一致；输出包装已对齐，仅剩具体文件路径差异 |
+| `grep_files` | `not exposed` | `local shim` | 默认首轮路径不带；本地文件搜索 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |
+| `read_file` | `not exposed` | `local shim` | 默认首轮路径不带；本地 slice/indentation 读文件 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |
+| `list_dir` | `not exposed` | `local shim` | 默认首轮路径不带；本地目录树 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |
+| `view_image` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致；类内已支持 `detail=high|original`，默认回传 `high` |
+| `spawn_agent` | `legacy-flat mismatch; round-trip same` | `class aligned` | pycodex 首轮仍平铺暴露此工具，upstream 首轮改用 `tool_search`；历史 validation-path 与 happy-path 已补抓；类内 desc 已去掉硬编码模型 picker |
+| `send_input` | `legacy-flat mismatch; round-trip same` | `class aligned` | pycodex 首轮仍平铺暴露此工具，upstream 首轮改用 `tool_search`；历史 round-trip 外层 shape 一致，仅剩动态 `submission_id` |
+| `resume_agent` | `legacy-flat mismatch; round-trip same` | `class aligned` | pycodex 首轮仍平铺暴露此工具，upstream 首轮改用 `tool_search`；已补抓真实 happy path；`pending_init` 返回值、sub-agent tool 子集、sub-agent context 都已对齐 |
+| `wait_agent` | `legacy-flat mismatch; round-trip same` | `class aligned` | pycodex 首轮仍平铺暴露此工具，upstream 首轮改用 `tool_search`；历史 round-trip 外层 shape 一致，仅剩动态 agent id |
+| `close_agent` | `legacy-flat mismatch; round-trip same` | `class aligned` | pycodex 首轮仍平铺暴露此工具，upstream 首轮改用 `tool_search`；schema/runtime 输出为 upstream 当前的 `previous_status`；parent-thread notification message 也已补齐 |
+| `ipython` | `not in default registry` | `local shim` | 这是可选 IPython attach helper，不属于默认 CLI tool 集合；当前没有 upstream default CLI 同名 payload 对齐目标 |
 
 ### Redacted example: request-level diff categories
 
@@ -308,12 +402,19 @@ same:
 - exec-mode tool subset membership
 - request context field presence
 - exec-mode tool schemas
+- current default-path schemas for `write_stdin`, `web_search`, `update_plan`,
+  `apply_patch`, and `view_image`
 - user-agent semantics and compared string
 
 different:
 - dynamic request metadata values
+- intentional `exec_command` approval/sandbox field omission in pycodex
 - transport-layer header casing / normalization
-- paths and modes not yet aligned beyond non-interactive `exec`
+- paths and modes not yet aligned beyond captured `exec` / default TUI paths
+- installed upstream `request_user_input` lacks source-main `autoResolutionMs`
+- upstream default-path tool discovery now exposes `tool_search` instead of
+  legacy flat sub-agent tools
+- upstream default-path goal tools are not implemented locally yet
 ```
 
 ## Redacted examples
@@ -457,7 +558,6 @@ Vendored upstream prompt data:
 - `pycodex/prompts/models.json`
 - `pycodex/prompts/permissions/sandbox_mode/`
 - `pycodex/prompts/permissions/approval_policy/`
-- `pycodex/prompts/exec_tools.json`
 
 Tests:
 
@@ -467,16 +567,31 @@ Tests:
 
 ## What is still out of scope here
 
-Prompt parity is not the same thing as full request parity.
+Prompt/tool-schema parity is not the same thing as full Codex parity.
 
-At the time this file was written, the remaining request-level differences are
-outside the prompt/context dump itself, for example:
+The remaining explicit alignment work is:
 
-- dynamic request metadata values such as generated session ids and turn ids
-- behavior outside the currently aligned non-interactive `exec` path
-- broader runtime features such as sandbox / approvals / compact / memory
-
-Those are the next alignment target after the prompt/context pass.
+- Implement upstream's current default-path `tool_search` / deferred multi-agent
+  discovery, or explicitly decide to keep legacy flat agent tools as a
+  compatibility surface.
+- Add goal tools (`get_goal`, `create_goal`, `update_goal`) if the local CLI is
+  intended to match the current upstream default tool set.
+- Capture/compare code-mode request-visible payloads for `exec` / `wait`, not
+  only their class-level schemas and smoke behavior.
+- Decide whether local helper tools (`shell`, `grep_files`, `read_file`,
+  `list_dir`, optional `ipython`) are intended to stay as local shims or should
+  be replaced/renamed as upstream evolves.
+- Broaden runtime parity beyond the currently aligned non-interactive `exec`
+  path and captured default two-turn TUI path.
+- App-server `AdditionalTools` handling from upstream `6e0c8b4` is not
+  implemented locally; this pass only verified it is not a builtin CLI tool spec
+  change for the local path.
+- Newer multi-agent v2-style tools such as `send_message`, `followup_task`,
+  `interrupt_agent`, and `list_agents` are not implemented in this local tool
+  registry yet.
+- Broader runtime features such as sandbox/approval enforcement, WebSocket/HTTP
+  transport fallback, cancellation markers, MCP/connectors/plugins, memory, and
+  review flows remain partial or out of scope for this pass.
 
 ## Steer semantics
 

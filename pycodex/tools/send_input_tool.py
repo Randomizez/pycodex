@@ -32,7 +32,9 @@ class SendInputTool(BaseTool):
     name = "send_input"
     description = (
         "Send a message to an existing agent. Use interrupt=true to redirect "
-        "work immediately."
+        "work immediately. You should reuse the agent by send_input if you "
+        "believe your assigned task is highly dependent on the context of a "
+        "previous task."
     )
     input_schema = {
         "type": "object",
@@ -48,7 +50,7 @@ class SendInputTool(BaseTool):
             "items": COLLAB_INPUT_ITEMS_SCHEMA,
             "interrupt": {
                 "type": "boolean",
-                "description": "When true, stop the agent's current task and handle this immediately. When false (default), queue this message.",
+                "description": "True interrupts the current task and handles this message immediately; false or omitted queues it.",
             },
         },
         "required": ["id"],

@@ -40,11 +40,8 @@ class ToolSpec:
     options: 'typing.Union[JSONDict, None]' = None
     output_schema: 'typing.Union[JSONDict, None]' = None
     supports_parallel: 'bool' = True
-    raw_payload: 'typing.Union[JSONDict, None]' = None
 
     def serialize(self) -> 'JSONDict':
-        if self.raw_payload is not None:
-            return deepcopy(self.raw_payload)
         if self.tool_type == "web_search":
             payload = {"type": "web_search"}
             if self.options is not None:
@@ -71,8 +68,6 @@ class ToolSpec:
             "parameters": self.input_schema,
             "strict": False,
         }
-        if self.output_schema is not None:
-            payload["output_schema"] = self.output_schema
         return payload
 
 

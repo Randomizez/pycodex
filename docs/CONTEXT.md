@@ -228,7 +228,7 @@ A skill is a set of local instructions to follow that is stored in a `SKILL.md` 
 - `permissions` prompt 的来源目录不同：Codex 从 `codex-rs/protocol/src/prompts/permissions/...` 取，`pycodex` 从 `./pycodex/prompts/permissions/...` 取。
 - `collaboration_mode` block 的来源不同：Codex 用上游协作提示模板，`pycodex` 用 `./pycodex/prompts/collaboration_default.md` / `./pycodex/prompts/collaboration_plan.md`。
 - `skills guidance` 的来源不同：Codex 用上游固定 guidance，`pycodex` 用 `./pycodex/context.py::SKILLS_GUIDANCE`。
-- `tools` 的构造来源不同：Codex 从上游 runtime tool registry 出来，`pycodex` 从 `./pycodex/prompts/exec_tools.json + ToolSpec.serialize()` 出来。
+- `tools` 的构造来源不同：Codex 从上游 runtime tool registry 出来，`pycodex` 从本地 `BaseTool` class specs 经 `ToolSpec.serialize()` 出来。
 
 ### 1.3 首轮请求不变量
 
@@ -462,5 +462,5 @@ ProviderBuiltinToolSchema = {
 当前实现方式：
 
 - 不再使用 prompt 级别的 `serialized_tools` override。
-- 在工具层直接复用上游 snapshot。
-- snapshot 文件位于 `./pycodex/prompts/exec_tools.json`。
+- 不再使用 `pycodex/prompts/exec_tools.json` 这类 raw JSON fallback。
+- 在工具类内维护 description / input schema；`ToolSpec.serialize()` 负责生成 request-visible payload。

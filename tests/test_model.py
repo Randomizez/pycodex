@@ -98,15 +98,7 @@ EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
       "parameters": {
         "type": "object"
       },
-      "strict": false,
-      "output_schema": {
-        "type": "object",
-        "properties": {
-          "text": {
-            "type": "string"
-          }
-        }
-      }
+      "strict": false
     },
     {
       "type": "custom",
@@ -340,10 +332,7 @@ def test_responses_model_client_builds_responses_payload() -> 'None':
         'output': 'patched',
     }
     assert payload['tools'][0]['type'] == 'function'
-    assert payload['tools'][0]['output_schema'] == {
-        'type': 'object',
-        'properties': {'text': {'type': 'string'}},
-    }
+    assert 'output_schema' not in payload['tools'][0]
     assert payload['tools'][1] == {
         'type': 'custom',
         'name': 'apply_patch',

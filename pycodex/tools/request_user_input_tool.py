@@ -20,6 +20,9 @@ from ..runtime_services import RequestUserInputManager
 from .base_tool import BaseTool, StructuredToolOutput, ToolContext
 import typing
 
+MIN_AUTO_RESOLUTION_MS = 60_000
+MAX_AUTO_RESOLUTION_MS = 240_000
+
 REQUEST_USER_INPUT_QUESTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -96,7 +99,11 @@ def request_user_input_tool_description(
         allowed_modes = "Plan mode"
     return (
         "Request user input for one to three short questions and wait for the "
-        f"response. This tool is only available in {allowed_modes}."
+        f"response. Set autoResolutionMs, from {MIN_AUTO_RESOLUTION_MS} to "
+        f"{MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is "
+        "useful but non-blocking and continuing with best judgment is "
+        "acceptable if the user does not answer; omit it when explicit user "
+        f"input is required. This tool is only available in {allowed_modes}."
     )
 
 
@@ -110,6 +117,20 @@ class RequestUserInputTool(BaseTool):
                 "type": "array",
                 "description": "Questions to show the user. Prefer 1 and do not exceed 3",
                 "items": REQUEST_USER_INPUT_QUESTION_SCHEMA,
+            },
+            "autoResolutionMs": {
+                "type": "number",
+                "description": (
+                    "Optional auto-resolution window in milliseconds, from "
+                    f"{MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. "
+                    "Include this only when the question is useful but "
+                    "non-blocking and continuing with best judgment is "
+                    "acceptable if the user does not answer; omit it when "
+                    "explicit user input is required before continuing. Use "
+                    f"{MIN_AUTO_RESOLUTION_MS} for lightly helpful context and "
+                    f"up to {MAX_AUTO_RESOLUTION_MS} when the answer would "
+                    "materially unblock better work."
+                ),
             }
         },
         "required": ["questions"],
@@ -157,6 +178,12 @@ class RequestUserInputTool(BaseTool):
                 for question in questions
             ]
         }
+        auto_resolution_ms = args.get("autoResolutionMs")
+        if auto_resolution_ms not in (None, ""):
+            request_payload["autoResolutionMs"] = min(
+                max(int(auto_resolution_ms), MIN_AUTO_RESOLUTION_MS),
+                MAX_AUTO_RESOLUTION_MS,
+            )
         response = await self._request_manager.request(request_payload)
         if response is None:
             return "request_user_input was cancelled before receiving a response"

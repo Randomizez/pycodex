@@ -16,10 +16,11 @@ from .base_tool import BaseTool, ToolContext
 
 class WebSearchTool(BaseTool):
     name = "web_search"
-    description = "Provider-native web search tool declaration."
+    description = ""
     tool_type = "web_search"
     options = {
         "external_web_access": True,
+        "search_content_types": ["text", "image"],
     }
     supports_parallel = False
 

@@ -21,24 +21,32 @@ VALID_PLAN_STATUSES = {"pending", "in_progress", "completed"}
 class UpdatePlanTool(BaseTool):
     name = "update_plan"
     description = (
-        "Updates the task plan. Provide an optional explanation and a list of "
-        "plan items, each with a step and status. At most one step can be "
-        "in_progress at a time."
+        "Updates the task plan.\n"
+        "Provide an optional explanation and a list of plan items, each with a "
+        "step and status.\n"
+        "At most one step can be in_progress at a time.\n"
     )
     input_schema = {
         "type": "object",
         "properties": {
-            "explanation": {"type": "string"},
+            "explanation": {
+                "type": "string",
+                "description": "Optional explanation for this plan update.",
+            },
             "plan": {
                 "type": "array",
                 "description": "The list of steps",
                 "items": {
                     "type": "object",
                     "properties": {
-                        "step": {"type": "string"},
+                        "step": {
+                            "type": "string",
+                            "description": "Task step text.",
+                        },
                         "status": {
                             "type": "string",
-                            "description": "One of: pending, in_progress, completed",
+                            "enum": ["pending", "in_progress", "completed"],
+                            "description": "Step status.",
                         },
                     },
                     "required": ["step", "status"],

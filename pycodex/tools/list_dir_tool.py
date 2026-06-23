@@ -23,18 +23,31 @@ INDENTATION_SPACES = 2
 class ListDirTool(BaseTool):
     name = "list_dir"
     description = (
-        "Lists entries in a local directory with 1-indexed entry numbers and "
-        "simple type labels."
+        "List entries in a local directory as a stable tree slice with simple "
+        "type labels."
     )
     input_schema = {
         "type": "object",
         "properties": {
-            "dir_path": {"type": "string"},
-            "offset": {"type": "integer"},
-            "limit": {"type": "integer"},
-            "depth": {"type": "integer"},
+            "dir_path": {
+                "type": "string",
+                "description": "Absolute path to the directory to list.",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "1-indexed entry offset for pagination. Defaults to 1.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of entries to return. Defaults to 25.",
+            },
+            "depth": {
+                "type": "integer",
+                "description": "Maximum directory depth to include. Defaults to 2.",
+            },
         },
         "required": ["dir_path"],
+        "additionalProperties": False,
     }
 
     async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':

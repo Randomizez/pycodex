@@ -21,6 +21,9 @@ from .unified_exec_manager import (
 )
 import typing
 
+MIN_EXEC_YIELD_TIME_MS = 250
+MAX_EXEC_YIELD_TIME_MS = 30_000
+
 
 class ExecCommandTool(BaseTool):
     name = "exec_command"
@@ -34,7 +37,19 @@ class ExecCommandTool(BaseTool):
             },
             "workdir": {
                 "type": "string",
-                "description": "Optional working directory to run the command in; defaults to the turn cwd.",
+                "description": "Working directory for the command. Defaults to the turn cwd.",
+            },
+            "tty": {
+                "type": "boolean",
+                "description": "True allocates a PTY for the command; false or omitted uses plain pipes.",
+            },
+            "yield_time_ms": {
+                "type": "number",
+                "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.",
+            },
+            "max_output_tokens": {
+                "type": "number",
+                "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.",
             },
             "shell": {
                 "type": "string",
@@ -42,19 +57,7 @@ class ExecCommandTool(BaseTool):
             },
             "login": {
                 "type": "boolean",
-                "description": "Whether to run the shell with -l/-i semantics. Defaults to true.",
-            },
-            "tty": {
-                "type": "boolean",
-                "description": "Whether to allocate a TTY for the command. Defaults to false (plain pipes); set to true to open a PTY and access TTY process.",
-            },
-            "yield_time_ms": {
-                "type": "integer",
-                "description": "How long to wait (in milliseconds) for output before yielding.",
-            },
-            "max_output_tokens": {
-                "type": "integer",
-                "description": "Maximum number of tokens to return. Excess output will be truncated.",
+                "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true.",
             },
         },
         "required": ["cmd"],
@@ -78,7 +81,13 @@ class ExecCommandTool(BaseTool):
             shell=self._optional_string(args, "shell"),
             login=bool(args.get("login", DEFAULT_LOGIN)),
             tty=bool(args.get("tty", DEFAULT_TTY)),
-            yield_time_ms=int(args.get("yield_time_ms", DEFAULT_EXEC_YIELD_TIME_MS)),
+            yield_time_ms=self._bounded_int(
+                args,
+                "yield_time_ms",
+                DEFAULT_EXEC_YIELD_TIME_MS,
+                MIN_EXEC_YIELD_TIME_MS,
+                MAX_EXEC_YIELD_TIME_MS,
+            ),
             max_output_tokens=self._optional_int(args, "max_output_tokens"),
         )
 
@@ -93,3 +102,14 @@ class ExecCommandTool(BaseTool):
         if value in (None, ""):
             return None
         return int(value)
+
+    def _bounded_int(
+        self,
+        args: 'JSONDict',
+        key: 'str',
+        default: 'int',
+        minimum: 'int',
+        maximum: 'int',
+    ) -> 'int':
+        value = int(args.get(key, default))
+        return min(max(value, minimum), maximum)
