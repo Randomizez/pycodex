@@ -507,7 +507,6 @@ class ResponsesModelClient:
         diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
     ) -> 'ModelResponse':
         items: 'typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]' = []
-        output_text_deltas: 'typing.List[str]' = []
         saw_completed = False
         last_event_type = ""
 
@@ -526,7 +525,6 @@ class ResponsesModelClient:
                 diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
-                output_text_deltas.append(str(payload.get("delta", "")))
                 event_handler(
                     ModelStreamEvent(
                         kind="assistant_delta",
@@ -607,10 +605,7 @@ class ResponsesModelClient:
                 break
 
             if event_type == "response.incomplete":
-                partial_items = self._items_with_partial_output_text(
-                    items,
-                    output_text_deltas,
-                )
+                partial_items = tuple(items)
                 reason = self._response_incomplete_reason(payload)
                 raise ResponsesIncompleteError(
                     self._format_response_incomplete_error(
@@ -631,19 +626,6 @@ class ResponsesModelClient:
             )
 
         return ModelResponse(items=items)
-
-    def _items_with_partial_output_text(
-        self,
-        items: 'typing.Sequence[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]',
-        output_text_deltas: 'typing.Sequence[str]',
-    ) -> 'typing.Tuple[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], ...]':
-        partial_items = list(items)
-        if any(isinstance(item, AssistantMessage) for item in partial_items):
-            return tuple(partial_items)
-        partial_text = "".join(output_text_deltas).strip()
-        if partial_text:
-            partial_items.append(AssistantMessage(text=partial_text))
-        return tuple(partial_items)
 
     def _parse_output_item(
         self,

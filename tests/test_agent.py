@@ -12,6 +12,7 @@ from pycodex import (
     ContextManager,
     ModelResponse,
     ModelStreamEvent,
+    ReasoningItem,
     ResponsesIncompleteError,
     ToolCall,
     ToolRegistry,
@@ -120,11 +121,16 @@ def _auto_compact_context(limit: 'typing.Union[int, None]') -> 'ContextManager':
     )
 
 
-def _conversation_items(prompt) -> 'typing.List[typing.Union[UserMessage, AssistantMessage, ToolCall, ToolResult]]':
+def _conversation_items(
+    prompt,
+) -> 'typing.List[typing.Union[UserMessage, AssistantMessage, ReasoningItem, ToolCall, ToolResult]]':
     return [
         item
         for item in prompt.input
-        if isinstance(item, (UserMessage, AssistantMessage, ToolCall, ToolResult))
+        if isinstance(
+            item,
+            (UserMessage, AssistantMessage, ReasoningItem, ToolCall, ToolResult),
+        )
     ]
 
 
@@ -761,6 +767,111 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> 'None':
         "turn_failed",
     ]
     assert events[-1].payload["error"] == "synthetic client error"
+
+
+@pytest.mark.asyncio
+async def test_agent_records_max_output_incomplete_partial_for_follow_up() -> 'None':
+    class PartialThenContinueModelClient:
+        def __init__(self) -> 'None':
+            self.prompts = []
+            self.call_count = 0
+
+        async def complete(self, prompt, event_handler):
+            self.prompts.append(prompt)
+            self.call_count += 1
+            if self.call_count == 1:
+                event_handler(
+                    ModelStreamEvent(
+                        kind="assistant_delta",
+                        payload={"delta": "partial answer"},
+                    )
+                )
+                raise ResponsesIncompleteError(
+                    "responses stream ended with `response.incomplete`",
+                    [AssistantMessage(text="partial answer")],
+                    reason="max_output_tokens",
+                )
+            if self.call_count == 2:
+                return ModelResponse(items=[AssistantMessage(text="continued answer")])
+            raise AssertionError(f"unexpected call_count={self.call_count}")
+
+    model = PartialThenContinueModelClient()
+    events = []
+    agent = Agent(model, ToolRegistry(), event_handler=events.append)
+
+    with pytest.raises(ResponsesIncompleteError):
+        await agent.run_turn(["write a long answer"])
+
+    assert [type(item).__name__ for item in agent.history] == [
+        "UserMessage",
+        "AssistantMessage",
+    ]
+    assert agent.history[0].text == "write a long answer"
+    assert agent.history[1].text == "partial answer"
+    assert "turn_failed" in [event.kind for event in events]
+
+    result = await agent.run_turn(["continue"])
+
+    assert result.output_text == "continued answer"
+    follow_up_items = _conversation_items(model.prompts[1])
+    assert [type(item).__name__ for item in follow_up_items] == [
+        "UserMessage",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert follow_up_items[0].text == "write a long answer"
+    assert follow_up_items[1].text == "partial answer"
+    assert follow_up_items[2].text == "continue"
+
+
+@pytest.mark.asyncio
+async def test_agent_records_reasoning_done_item_from_incomplete_response() -> 'None':
+    class ReasoningThenContinueModelClient:
+        def __init__(self) -> 'None':
+            self.prompts = []
+            self.call_count = 0
+
+        async def complete(self, prompt, event_handler):
+            self.prompts.append(prompt)
+            self.call_count += 1
+            if self.call_count == 1:
+                raise ResponsesIncompleteError(
+                    "responses stream ended with `response.incomplete`",
+                    [
+                        ReasoningItem(
+                            payload={
+                                "type": "reasoning",
+                                "id": "rs_1",
+                                "summary": [],
+                                "encrypted_content": "encrypted",
+                            }
+                        )
+                    ],
+                    reason="max_output_tokens",
+                )
+            if self.call_count == 2:
+                return ModelResponse(items=[AssistantMessage(text="continued answer")])
+            raise AssertionError(f"unexpected call_count={self.call_count}")
+
+    model = ReasoningThenContinueModelClient()
+    agent = Agent(model, ToolRegistry())
+
+    with pytest.raises(ResponsesIncompleteError):
+        await agent.run_turn(["think for a while"])
+
+    assert [type(item).__name__ for item in agent.history] == [
+        "UserMessage",
+        "ReasoningItem",
+    ]
+
+    await agent.run_turn(["continue"])
+
+    follow_up_items = _conversation_items(model.prompts[1])
+    assert [type(item).__name__ for item in follow_up_items] == [
+        "UserMessage",
+        "ReasoningItem",
+        "UserMessage",
+    ]
 
 
 @pytest.mark.asyncio

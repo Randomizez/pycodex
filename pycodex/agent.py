@@ -5,7 +5,7 @@ import re
 from typing import Callable
 
 from .context import ContextManager
-from .model import ModelClient
+from .model import ModelClient, ResponsesIncompleteError
 from .protocol import (
     AgentEvent,
     AssistantMessage,
@@ -179,16 +179,10 @@ class Agent:
                     item_count=len(response.items),
                 )
 
-                tool_calls: 'typing.List[ToolCall]' = []
-                persisted_response_items: 'typing.List[ConversationItem]' = []
-                for item in response.items:
-                    self._history.append(item)
-                    persisted_response_items.append(item)
-                    if isinstance(item, AssistantMessage):
-                        last_assistant_message = item.text
-                    elif isinstance(item, ToolCall):
-                        tool_calls.append(item)
-                self._persist_history_items(persisted_response_items)
+                recorded_items = self._record_model_response_items(response.items)
+                tool_calls = recorded_items[1]
+                if recorded_items[2] is not None:
+                    last_assistant_message = recorded_items[2]
 
                 if not tool_calls:
                     self._raise_if_interrupt_requested(
@@ -352,6 +346,28 @@ class Agent:
         except Exception:  # pragma: no cover - persistence should not break turns
             return
 
+    def _record_model_response_items(
+        self,
+        items: 'typing.Iterable[object]',
+        include_tool_calls: 'bool' = True,
+    ) -> 'typing.Tuple[typing.Tuple[ConversationItem, ...], typing.List[ToolCall], typing.Union[str, None]]':
+        persisted_response_items: 'typing.List[ConversationItem]' = []
+        tool_calls: 'typing.List[ToolCall]' = []
+        last_assistant_message = None
+        for item in items:
+            if isinstance(item, ToolCall) and not include_tool_calls:
+                continue
+            if not isinstance(item, (AssistantMessage, ToolCall, ReasoningItem)):
+                continue
+            self._history.append(item)
+            persisted_response_items.append(item)
+            if isinstance(item, AssistantMessage):
+                last_assistant_message = item.text
+            elif isinstance(item, ToolCall):
+                tool_calls.append(item)
+        self._persist_history_items(persisted_response_items)
+        return tuple(persisted_response_items), tool_calls, last_assistant_message
+
     def _handle_model_stream_event(self, turn_id: 'str', event: 'ModelStreamEvent') -> 'None':
         if event.kind == "token_count":
             self._remember_token_usage(event.payload.get("usage"))
@@ -397,6 +413,13 @@ class Agent:
                     prompt,
                     lambda event: self._handle_model_stream_event(turn_id, event),
                 )
+            except ResponsesIncompleteError as exc:
+                if exc.reason == "max_output_tokens":
+                    self._record_model_response_items(
+                        exc.partial_items,
+                        include_tool_calls=False,
+                    )
+                raise
             except Exception as exc:
                 error_message = str(exc)
                 if (

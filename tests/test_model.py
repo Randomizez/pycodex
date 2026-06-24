@@ -857,6 +857,9 @@ def test_responses_model_client_raises_response_incomplete_with_partial_items() 
         b'event: response.output_text.delta\n',
         b'data: {"type":"response.output_text.delta","delta":"partial summary"}\n',
         b'\n',
+        b'event: response.output_item.done\n',
+        b'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial summary"}]}}\n',
+        b'\n',
         b'event: response.incomplete\n',
         b'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n',
         b'\n',
@@ -878,6 +881,37 @@ def test_responses_model_client_raises_response_incomplete_with_partial_items() 
         ModelStreamEvent(
             kind='assistant_delta',
             payload={'delta': 'partial summary'},
+        )
+    ]
+
+
+def test_responses_model_client_incomplete_does_not_promote_text_deltas_to_items() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env='DUMMY_KEY',
+    )
+    client = ResponsesModelClient(provider)
+    events: 'typing.List[ModelStreamEvent]' = []
+    stream = [
+        b'event: response.output_text.delta\n',
+        b'data: {"type":"response.output_text.delta","delta":"partial delta only"}\n',
+        b'\n',
+        b'event: response.incomplete\n',
+        b'data: {"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}\n',
+        b'\n',
+    ]
+
+    with pytest.raises(ResponsesIncompleteError) as exc_info:
+        client._parse_stream(stream, events.append)
+
+    assert '- output_items_received: 0' in str(exc_info.value)
+    assert exc_info.value.partial_items == ()
+    assert events == [
+        ModelStreamEvent(
+            kind='assistant_delta',
+            payload={'delta': 'partial delta only'},
         )
     ]
 
