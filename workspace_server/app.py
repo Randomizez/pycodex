@@ -340,11 +340,7 @@ class WebSessionView:
 
         if kind == "tool_completed":
             turn["_thinking_active"] = False
-            if payload.get("is_error"):
-                turn["status"] = "error"
-                turn["error"] = str(payload.get("summary") or payload.get("tool_name") or "tool failed")
-            else:
-                turn["status"] = "running"
+            turn["status"] = "running"
             return
 
         if kind == "turn_completed":

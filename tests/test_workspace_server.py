@@ -7,9 +7,11 @@ import pytest
 from pycodex import (
     Agent,
     AssistantMessage,
+    BaseTool,
     CliSubmissionQueue,
     ModelStreamEvent,
     ModelResponse,
+    ToolCall,
     ToolRegistry,
 )
 from workspace_server import (
@@ -27,6 +29,16 @@ from workspace_server.app import (
 )
 from tests.fakes import ScriptedModelClient
 import time
+
+
+class _FailingWorkspaceTool(BaseTool):
+    name = "fail"
+    description = "Always fails."
+    input_schema = {"type": "object"}
+
+    async def run(self, context, args):
+        del context, args
+        raise RuntimeError("synthetic tool failure")
 
 
 def test_parse_target_accepts_plus_board_suffix(tmp_path) -> None:
@@ -566,6 +578,37 @@ async def test_workspace_session_submits_and_streams_events() -> None:
         assert snapshot["turns"][-1]["thinking"] == ""
     finally:
         link.unsubscribe(subscriber)
+        await link.close()
+
+
+@pytest.mark.asyncio
+async def test_workspace_session_tool_error_is_not_rendered_as_turn_error() -> None:
+    model = ScriptedModelClient(
+        responses=[
+            ModelResponse([ToolCall(call_id="call_1", name="fail", arguments={})]),
+            ModelResponse([AssistantMessage("handled after tool failure")]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(_FailingWorkspaceTool())
+    runtime = CliSubmissionQueue(Agent(model, tools))
+    link = WorkspaceInteractiveSession(runtime)
+    await link.start()
+    try:
+        result = await link.submit("use failing tool")
+        assert result["ok"] is True
+
+        snapshot = await _wait_for_async_snapshot(
+            link,
+            lambda item: item["turns"]
+            and item["turns"][-1]["response"] == "handled after tool failure",
+        )
+        turn = snapshot["turns"][-1]
+        assert turn["prompt"] == "use failing tool"
+        assert turn["response"] == "handled after tool failure"
+        assert turn["status"] == "completed"
+        assert turn["error"] == ""
+    finally:
         await link.close()
 
 

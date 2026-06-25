@@ -195,6 +195,11 @@
       color: #4c4261;
       font-size: 12px;
     }
+    .entry.error {
+      border-color: #e4b6b6;
+      background: #fff7f7;
+      color: #7a2c2c;
+    }
     .text {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -665,7 +670,7 @@
         );
       }
       if (turn.thinking) addEntry("thinking", turn.thinking || "", "thinking", shouldStick);
-      if (turn.error) addEntry("error", turn.error || "", "tool", shouldStick);
+      if (turn.error) addEntry("error", turn.error || "", "error", shouldStick);
     }
 
     async function submitPrompt(text) {
@@ -676,7 +681,7 @@
       });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
-        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        addEntry("error", payload.error || `HTTP ${response.status}`, "error");
         setSpinner("");
         return;
       }
@@ -709,7 +714,7 @@
       const response = await fetch(relativeUrl("api/sessions"), {method: "POST"});
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
-        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        addEntry("error", payload.error || `HTTP ${response.status}`, "error");
         return;
       }
       activeSessionId = payload.session_id || "";
@@ -731,7 +736,7 @@
       });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
-        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        addEntry("error", payload.error || `HTTP ${response.status}`, "error");
         return;
       }
       sessionState.delete(sessionId);
