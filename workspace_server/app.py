@@ -110,6 +110,7 @@ def parse_target(
 
 
 SessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
+SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
 
 
 class WebSessionView:
@@ -530,8 +531,21 @@ class WorkspaceInteractiveSession:
 
     async def close(self) -> None:
         self.view.close()
-        if self._task is not None:
-            await asyncio.gather(self._task, return_exceptions=True)
+        task = self._task
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(task),
+                timeout=SESSION_CLOSE_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            cancel_current = getattr(self.queue, "cancel_current", None)
+            if callable(cancel_current):
+                cancel_current()
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
             self._task = None
 
     async def submit(self, prompt: str, sender: str = "web") -> "typing.Dict[str, object]":
@@ -907,7 +921,8 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
 def _board_prompt_text(board_path: Path) -> str:
     return (
         "Current workspace board file: {0}. "
-        "Changes you make to this file are shown to the user in real time."
+        "Changes you make to this file are shown to the user in real time. "
+        "You can create or modify this file anytime. Reply OK now."
     ).format(_format_board_path_for_prompt(board_path))
 
 

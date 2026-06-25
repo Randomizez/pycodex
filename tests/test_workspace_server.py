@@ -620,6 +620,31 @@ async def test_workspace_session_steer_interruption_is_not_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_session_close_cancels_stuck_turn(monkeypatch) -> None:
+    started = asyncio.Event()
+
+    class _StuckModelClient:
+        model = "stuck-test"
+
+        async def complete(self, _prompt, _event_handler):
+            started.set()
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr("workspace_server.app.SESSION_CLOSE_TIMEOUT_SECONDS", 0.01)
+    runtime = CliSubmissionQueue(Agent(_StuckModelClient(), ToolRegistry()))
+    link = WorkspaceInteractiveSession(runtime)
+    await link.start()
+    result = await link.submit("hang")
+    assert result["ok"] is True
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    await asyncio.wait_for(link.close(), timeout=5.0)
+
+    assert link._task is None
+    assert runtime._current_task is None or runtime._current_task.done()
+
+
+@pytest.mark.asyncio
 async def test_workspace_session_handles_shell_command_before_model() -> None:
     model = ScriptedModelClient(
         responses=[ModelResponse([AssistantMessage("slash response")])]

@@ -65,6 +65,19 @@ class CliSubmissionQueue:
         self._queue_event.set()
         await future
 
+    def cancel_current(self) -> 'None':
+        exc = RuntimeError("submission interrupted")
+        current_task = self._current_task
+        if current_task is not None and not current_task.done():
+            current_task.cancel()
+        for queued in tuple(self._enqueue_queue):
+            self._finish_submission_exception(queued, exc)
+        for queued in tuple(self._steer_queue):
+            self._finish_submission_exception(queued, exc)
+        self._enqueue_queue.clear()
+        self._steer_queue.clear()
+        self._queue_event.set()
+
     async def run_forever(self) -> 'None':
         while True:
             queued = await self._next_submission()
