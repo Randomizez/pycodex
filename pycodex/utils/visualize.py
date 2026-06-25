@@ -409,6 +409,15 @@ class CliSessionView:
         self.finish_stream()
         self._print_line(f"Session: {self._title or 'untitled'}")
 
+    def set_session_title(self, title: "str") -> "None":
+        self.finish_stream()
+        self._title = title or None
+        self._print_line(f"Session: {self._title or 'untitled'}")
+
+    def show_resumed_session(self, title: "str") -> "None":
+        self.write_line(f"Resumed session: {title}")
+        self.show_history()
+
     def load_session_history(
         self,
         title: "typing.Union[str, None]",

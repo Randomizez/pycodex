@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pycodex workspace</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f5f2;
+      --panel: #ffffff;
+      --ink: #1f2528;
+      --muted: #667178;
+      --line: #d8ddd8;
+      --accent: #126b43;
+      --accent-ink: #ffffff;
+      --code: #f6f8fa;
+      --chat-width: min(42vw, 760px);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(360px, 1fr) 8px minmax(340px, var(--chat-width));
+      height: 100vh;
+      min-width: 760px;
+    }
+    .board {
+      border: 0;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+    }
+    .splitter {
+      width: 8px;
+      height: 100vh;
+      border: 0;
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      background: #eef1ed;
+      cursor: col-resize;
+      padding: 0;
+      touch-action: none;
+    }
+    .splitter::after {
+      content: "";
+      display: block;
+      width: 2px;
+      height: 42px;
+      margin: calc(50vh - 21px) auto 0;
+      border-radius: 999px;
+      background: #b9c1ba;
+    }
+    .workspace.resizing,
+    .workspace.resizing * {
+      cursor: col-resize;
+      user-select: none;
+    }
+    .chat {
+      min-width: 0;
+      height: 100vh;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      background: var(--panel);
+    }
+    .topbar {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      display: grid;
+      gap: 10px;
+    }
+    .tabbar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+    }
+    .tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 88px;
+      max-width: 180px;
+      height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #f8faf8;
+      color: var(--ink);
+      padding: 0 7px;
+      font: inherit;
+      cursor: pointer;
+      user-select: none;
+    }
+    .tab:focus-within,
+    .tab-new:focus {
+      outline: 2px solid #9bb7a6;
+      outline-offset: 1px;
+    }
+    .tab.active {
+      border-color: #9bb7a6;
+      background: #edf6f0;
+    }
+    .tab-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      text-align: left;
+    }
+    .tab-close,
+    .tab-new {
+      width: 24px;
+      height: 24px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--muted);
+      padding: 0;
+      line-height: 1;
+      cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .tab-close {
+      width: 18px;
+      height: 18px;
+      border: 0;
+      background: transparent;
+    }
+    .tab-close:hover,
+    .tab-new:hover {
+      color: var(--ink);
+      background: #f3f6f4;
+    }
+    .title { font-weight: 650; }
+    .subtitle {
+      color: var(--muted);
+      font-size: 12px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .log {
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      background: #fbfcfa;
+    }
+    .entry {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      background: #fff;
+    }
+    .entry.user {
+      border-color: #e6d790;
+      background: #fff9d8;
+    }
+    .entry.response,
+    .entry.assistant {
+      border-color: #d9ded9;
+      background: #ffffff;
+    }
+    .entry.thinking {
+      border-color: #b9d9c7;
+      background: #f5fbf6;
+    }
+    .entry.control {
+      border-color: #c8d2dc;
+      background: #f7fafd;
+    }
+    .entry.tool {
+      border-color: #d7d1e6;
+      background: #faf8ff;
+      color: #4c4261;
+      font-size: 12px;
+    }
+    .text {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .markdown {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    .markdown p {
+      margin: 0 0 8px;
+    }
+    .markdown p:last-child,
+    .markdown ul:last-child,
+    .markdown ol:last-child,
+    .markdown pre:last-child,
+    .markdown table:last-child {
+      margin-bottom: 0;
+    }
+    .markdown ul,
+    .markdown ol {
+      margin: 0 0 8px 18px;
+      padding: 0;
+    }
+    .markdown li {
+      margin: 2px 0;
+    }
+    .markdown pre {
+      margin: 0 0 8px;
+      padding: 9px 10px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--code);
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .markdown pre code {
+      padding: 0;
+      border: 0;
+      background: transparent;
+      font-size: 12px;
+    }
+    .markdown table {
+      width: 100%;
+      margin: 0 0 8px;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    .markdown th,
+    .markdown td {
+      border: 1px solid var(--line);
+      padding: 5px 7px;
+      text-align: left;
+      vertical-align: top;
+    }
+    .markdown th {
+      background: #f3f6f4;
+      font-weight: 650;
+    }
+    .markdown a {
+      color: #0b6bcb;
+      text-decoration: none;
+    }
+    .markdown a:hover {
+      text-decoration: underline;
+    }
+    .composer {
+      border-top: 1px solid var(--line);
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      background: #fff;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 88px;
+      max-height: 35vh;
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      font: inherit;
+      line-height: 1.4;
+    }
+    .actions {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+    }
+    .spinner {
+      min-height: 18px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    code {
+      background: var(--code);
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      padding: 1px 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+    @media (max-width: 900px) {
+      body { overflow: auto; height: auto; }
+      .workspace { display: block; min-width: 0; height: auto; }
+      .board { height: 56vh; border-right: 0; border-bottom: 1px solid var(--line); }
+      .splitter { display: none; }
+      .chat { min-height: 44vh; }
+    }
+  </style>
+</head>
+<body>
+  <div class="workspace">
+    <iframe id="boardFrame" class="board" src="board" title="board"></iframe>
+    <button id="splitter" class="splitter" type="button" aria-label="Resize chat panel"></button>
+    <section class="chat" aria-label="pycodex chat">
+      <div class="topbar">
+        <div class="tabbar">
+          <div id="tabs" class="tabs"></div>
+          <button id="newTab" class="tab-new" type="button" title="New session" aria-label="New session">+</button>
+        </div>
+        <div>
+          <div class="title">pycodex</div>
+          <div class="subtitle">Board: <code>__BOARD_LABEL__</code></div>
+        </div>
+      </div>
+      <div id="log" class="log"></div>
+      <form id="composer" class="composer">
+        <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
+        <div class="actions">
+          <div id="spinner" class="spinner"></div>
+        </div>
+      </form>
+    </section>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
+  <script>
+    const log = document.getElementById("log");
+    const spinner = document.getElementById("spinner");
+    const prompt = document.getElementById("prompt");
+    const form = document.getElementById("composer");
+    const boardFrame = document.getElementById("boardFrame");
+    const workspace = document.querySelector(".workspace");
+    const splitter = document.getElementById("splitter");
+    const tabsEl = document.getElementById("tabs");
+    const newTabButton = document.getElementById("newTab");
+    let pollTimer = null;
+    let boardPollTimer = null;
+    let lastBoardSignature = "";
+    let lastRenderedSignature = "";
+    let resizeStart = null;
+    let spinnerTimer = null;
+    let spinnerFrameIndex = 0;
+    let spinnerText = "";
+    let activeSessionId = "";
+    let sessions = [];
+    const sessionState = new Map();
+    let restoreScrollTop = null;
+    const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    const markdownRenderer = window.markdownit
+      ? window.markdownit({html: false, linkify: true, breaks: false})
+      : null;
+
+    function relativeUrl(path) {
+      return new URL(path, window.location.href).toString();
+    }
+
+    function addEntry(_role, text, cls, shouldStick = null) {
+      const stickToBottom = shouldStick === null ? isNearBottom() : shouldStick;
+      const entry = document.createElement("div");
+      entry.className = "entry " + (cls || _role);
+      const body = document.createElement("div");
+      body.className = "text";
+      body.textContent = text || "";
+      entry.appendChild(body);
+      log.appendChild(entry);
+      if (stickToBottom) scrollToBottom();
+      return body;
+    }
+
+    function addMarkdownEntry(role, text, cls, shouldStick = null) {
+      const stickToBottom = shouldStick === null ? isNearBottom() : shouldStick;
+      const entry = document.createElement("div");
+      entry.className = "entry " + (cls || role);
+      const body = document.createElement("div");
+      body.className = "text markdown";
+      renderMarkdownInto(body, text || "");
+      entry.appendChild(body);
+      log.appendChild(entry);
+      if (stickToBottom) scrollToBottom();
+      return body;
+    }
+
+    function renderMarkdownInto(root, source) {
+      if (!markdownRenderer || !window.DOMPurify) {
+        root.textContent = source || "";
+        return;
+      }
+      const dirtyHtml = markdownRenderer.render(String(source || ""));
+      root.innerHTML = window.DOMPurify.sanitize(dirtyHtml, {
+        USE_PROFILES: {html: true},
+        ADD_ATTR: ["target", "rel"],
+      });
+      root.querySelectorAll("a").forEach((anchor) => {
+        anchor.target = "_blank";
+        anchor.rel = "noopener noreferrer";
+      });
+    }
+
+    function loadChatWidth() {
+      const stored = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
+      if (stored > 0) setChatWidth(stored);
+    }
+
+    function setChatWidth(width) {
+      const viewportWidth = window.innerWidth || 0;
+      const minWidth = Math.min(340, Math.max(260, viewportWidth - 420));
+      const maxWidth = Math.max(minWidth, viewportWidth - 420);
+      const nextWidth = Math.max(minWidth, Math.min(maxWidth, Math.round(width)));
+      workspace.style.setProperty("--chat-width", `${nextWidth}px`);
+      window.localStorage.setItem("pycodex.workspace.chatWidth", String(nextWidth));
+    }
+
+    function startResize(event) {
+      if (!workspace || window.innerWidth <= 900) return;
+      const chatWidth = document.querySelector(".chat").getBoundingClientRect().width;
+      resizeStart = { pointerId: event.pointerId, startX: event.clientX, startWidth: chatWidth };
+      splitter.setPointerCapture(event.pointerId);
+      workspace.classList.add("resizing");
+      event.preventDefault();
+    }
+
+    function updateResize(event) {
+      if (!resizeStart) return;
+      const delta = resizeStart.startX - event.clientX;
+      setChatWidth(resizeStart.startWidth + delta);
+      event.preventDefault();
+    }
+
+    function endResize(event) {
+      if (!resizeStart) return;
+      try {
+        splitter.releasePointerCapture(resizeStart.pointerId);
+      } catch (_error) {
+        // Pointer capture can already be released by the browser.
+      }
+      resizeStart = null;
+      workspace.classList.remove("resizing");
+      event.preventDefault();
+    }
+
+    function setSpinner(text) {
+      spinnerText = String(text || "").trim();
+      spinnerFrameIndex = 0;
+      renderSpinner();
+      if (spinnerText && !spinnerTimer) {
+        spinnerTimer = setInterval(renderSpinner, 120);
+      }
+      if (!spinnerText && spinnerTimer) {
+        clearInterval(spinnerTimer);
+        spinnerTimer = null;
+      }
+    }
+
+    function renderSpinner() {
+      if (!spinnerText) {
+        spinner.textContent = "";
+        return;
+      }
+      const frame = spinnerFrames[spinnerFrameIndex % spinnerFrames.length];
+      spinnerFrameIndex += 1;
+      spinner.textContent = `${frame} ${spinnerText}`;
+    }
+
+    function isNearBottom() {
+      return log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+    }
+
+    function scrollToBottom() {
+      log.scrollTop = log.scrollHeight;
+    }
+
+    function stateForSession(sessionId) {
+      const key = String(sessionId || "");
+      if (!sessionState.has(key)) {
+        sessionState.set(key, {lastRenderedSignature: "", scrollTop: 0, draft: ""});
+      }
+      return sessionState.get(key);
+    }
+
+    function saveActiveSessionUiState() {
+      if (!activeSessionId) return;
+      const state = stateForSession(activeSessionId);
+      state.scrollTop = log.scrollTop;
+      state.draft = prompt.value;
+      state.lastRenderedSignature = lastRenderedSignature;
+    }
+
+    function updateSessions(nextSessions) {
+      sessions = Array.isArray(nextSessions) ? nextSessions : sessions;
+      if (!activeSessionId && sessions.length) {
+        activeSessionId = sessions[0].id || "";
+      }
+      renderTabs();
+    }
+
+    function renderTabs() {
+      tabsEl.textContent = "";
+      sessions.forEach((session, index) => {
+        const sessionId = session.id || "";
+        const tab = document.createElement("div");
+        tab.className = "tab" + (sessionId === activeSessionId ? " active" : "");
+        tab.title = session.title || `Session ${index + 1}`;
+        tab.setAttribute("role", "tab");
+        tab.setAttribute("aria-selected", sessionId === activeSessionId ? "true" : "false");
+        tab.addEventListener("click", () => switchSession(sessionId));
+
+        const label = document.createElement("span");
+        label.className = "tab-label";
+        label.textContent = session.title || `Session ${index + 1}`;
+        tab.appendChild(label);
+
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "tab-close";
+        close.title = "Close session";
+        close.setAttribute("aria-label", "Close session");
+        close.textContent = "×";
+        close.disabled = sessions.length <= 1;
+        close.addEventListener("click", (event) => {
+          event.stopPropagation();
+          closeSession(sessionId);
+        });
+        tab.appendChild(close);
+        tabsEl.appendChild(tab);
+      });
+    }
+
+    function messageSignature(snapshot) {
+      const turns = (snapshot && snapshot.turns) || [];
+      return JSON.stringify({
+        running: !!snapshot.running,
+        spinner: snapshot.spinner || "",
+        title: snapshot.title || "",
+        turns: turns.map((item) => [
+          item.submission_id || "",
+          item.turn_id || "",
+          item.prompt || "",
+          item.response || "",
+          item.thinking || "",
+          item.status || "",
+          item.error || "",
+          item.kind || "",
+        ]),
+      });
+    }
+
+    async function pollSession() {
+      try {
+        const path = activeSessionId
+          ? `api/session?session_id=${encodeURIComponent(activeSessionId)}`
+          : "api/session";
+        const response = await fetch(relativeUrl(path));
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        if (payload.session_id && payload.session_id !== activeSessionId) {
+          activeSessionId = payload.session_id;
+        }
+        updateSessions(payload.sessions || []);
+        renderSnapshot(payload.snapshot);
+      } catch (error) {
+        setSpinner(`poll error: ${error.message}`);
+      }
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollSession();
+      pollTimer = setInterval(pollSession, 2000);
+    }
+
+    function stopPolling() {
+      if (!pollTimer) return;
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    async function pollBoard() {
+      try {
+        const response = await fetch(relativeUrl("api/board"));
+        if (!response.ok) return;
+        const payload = await response.json();
+        if (!payload.exists) return;
+        const signature = `${payload.mtime_ns || ""}:${payload.size || ""}`;
+        if (!lastBoardSignature) {
+          lastBoardSignature = signature;
+          return;
+        }
+        if (signature !== lastBoardSignature) {
+          lastBoardSignature = signature;
+          boardFrame.src = `board?t=${Date.now()}`;
+        }
+      } catch (_error) {
+        return;
+      }
+    }
+
+    function startBoardPolling() {
+      if (boardPollTimer) return;
+      pollBoard();
+      boardPollTimer = setInterval(pollBoard, 2000);
+    }
+
+    function renderSnapshot(snapshot) {
+      if (!snapshot) return;
+      const state = stateForSession(activeSessionId);
+      const signature = messageSignature(snapshot);
+      if (signature === state.lastRenderedSignature) {
+        setSpinner(snapshot.spinner || "");
+        return;
+      }
+      state.lastRenderedSignature = signature;
+      lastRenderedSignature = signature;
+      const shouldStick = isNearBottom();
+      const previousScrollTop = log.scrollTop;
+      log.textContent = "";
+      const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+      if (turns.length) {
+        turns.forEach((turn) => renderTurn(turn, shouldStick));
+      }
+      setSpinner(snapshot.spinner || "");
+      if (restoreScrollTop !== null) {
+        log.scrollTop = Math.min(
+          restoreScrollTop,
+          Math.max(0, log.scrollHeight - log.clientHeight),
+        );
+        restoreScrollTop = null;
+      } else if (shouldStick) {
+        scrollToBottom();
+      } else {
+        log.scrollTop = Math.min(
+          previousScrollTop,
+          Math.max(0, log.scrollHeight - log.clientHeight),
+        );
+      }
+      state.scrollTop = log.scrollTop;
+    }
+
+    function renderTurn(turn, shouldStick) {
+      const isControl = turn.kind === "control";
+      if (turn.prompt) {
+        addEntry(
+          isControl ? "command" : "prompt",
+          turn.prompt || "",
+          isControl ? "control" : "user",
+          shouldStick,
+        );
+      }
+      if (turn.response) {
+        addMarkdownEntry(
+          isControl ? "result" : "response",
+          turn.response || "",
+          isControl ? "control" : "response",
+          shouldStick,
+        );
+      }
+      if (turn.thinking) addEntry("thinking", turn.thinking || "", "thinking", shouldStick);
+      if (turn.error) addEntry("error", turn.error || "", "tool", shouldStick);
+    }
+
+    async function submitPrompt(text) {
+      const response = await fetch(relativeUrl("api/session/message"), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({prompt: text, sender: "web", session_id: activeSessionId}),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        setSpinner("");
+        return;
+      }
+      if (payload.snapshot) {
+        if (payload.sessions) updateSessions(payload.sessions);
+        renderSnapshot(payload.snapshot);
+      } else {
+        setSpinner("");
+      }
+      startPolling();
+    }
+
+    async function switchSession(sessionId) {
+      if (!sessionId || sessionId === activeSessionId) return;
+      saveActiveSessionUiState();
+      activeSessionId = sessionId;
+      const state = stateForSession(sessionId);
+      state.lastRenderedSignature = "";
+      lastRenderedSignature = "";
+      prompt.value = state.draft || "";
+      log.textContent = "";
+      setSpinner("");
+      restoreScrollTop = state.scrollTop || 0;
+      await pollSession();
+      renderTabs();
+    }
+
+    async function createSession() {
+      saveActiveSessionUiState();
+      const response = await fetch(relativeUrl("api/sessions"), {method: "POST"});
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        return;
+      }
+      activeSessionId = payload.session_id || "";
+      const state = stateForSession(activeSessionId);
+      state.draft = "";
+      state.scrollTop = 0;
+      state.lastRenderedSignature = "";
+      lastRenderedSignature = "";
+      prompt.value = "";
+      restoreScrollTop = 0;
+      updateSessions(payload.sessions || []);
+      renderSnapshot(payload.snapshot);
+    }
+
+    async function closeSession(sessionId) {
+      if (!sessionId || sessions.length <= 1) return;
+      const response = await fetch(relativeUrl(`api/sessions/${encodeURIComponent(sessionId)}`), {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        addEntry("error", payload.error || `HTTP ${response.status}`, "tool");
+        return;
+      }
+      sessionState.delete(sessionId);
+      updateSessions(payload.sessions || []);
+      if (activeSessionId === sessionId) {
+        activeSessionId = sessions.length ? sessions[0].id || "" : "";
+        lastRenderedSignature = "";
+        prompt.value = "";
+        log.textContent = "";
+        await pollSession();
+      } else {
+        renderTabs();
+      }
+    }
+
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const text = prompt.value.trim();
+      if (!text) return;
+      prompt.value = "";
+      stateForSession(activeSessionId).draft = "";
+      submitPrompt(text);
+    });
+
+    prompt.addEventListener("input", () => {
+      stateForSession(activeSessionId).draft = prompt.value;
+    });
+
+    log.addEventListener("scroll", () => {
+      if (!activeSessionId) return;
+      stateForSession(activeSessionId).scrollTop = log.scrollTop;
+    });
+
+    prompt.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        form.requestSubmit();
+      }
+    });
+
+    splitter.addEventListener("pointerdown", startResize);
+    splitter.addEventListener("pointermove", updateResize);
+    splitter.addEventListener("pointerup", endResize);
+    splitter.addEventListener("pointercancel", endResize);
+    newTabButton.addEventListener("click", createSession);
+    window.addEventListener("resize", () => {
+      const current = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
+      if (current > 0) setChatWidth(current);
+    });
+
+    loadChatWidth();
+    startPolling();
+    startBoardPolling();
+  </script>
+</body>
+</html>

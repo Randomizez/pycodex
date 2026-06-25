@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 pycodex = "pycodex.cli:main"
+pycodex-ws = "workspace_server:main"
 
 [dependency-groups]
 dev = [
@@ -43,7 +44,8 @@ package = true
 default-groups = []
 
 [tool.hatch.build.targets.wheel]
-packages = ["pycodex", "responses_server"]
+packages = ["pycodex", "responses_server", "workspace_server"]
+artifacts = ["workspace_server/workspace.html"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

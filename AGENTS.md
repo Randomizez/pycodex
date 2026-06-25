@@ -18,6 +18,7 @@
 - 真实 vLLM `0.19.0` 的 `/v1/messages` 会对缺失 `max_tokens` 直接返回 `400`；messages 适配层必须总是补这个字段。当前约定是优先透传请求里的 `max_output_tokens`/`max_tokens`，否则回退到默认 `32000`。
 - 对 vLLM chat-completions 打开 `return_token_ids=true` 时，streaming `prompt_token_ids` 只出现在首个 chunk，后续每个 chunk 的 `choices[*].token_ids` 都是 decode delta；要在 `responses_server` 侧导出 trajectory 时，按“首个 `prompt_token_ids` + 按序拼接所有 chunk 的 `token_ids`”重建即可。
 - `pycodex` 默认是最小交互 CLI；无 prompt 时进入 REPL，并通过 `AgentRuntime` 跑外层提交循环。当前会显示最小事件流、assistant 流式输出、简单 title/history（`/title`, `/history`），并默认注册一组与原版一一对应的本地工具子集。
+- Web workspace lives in the standalone `workspace_server/` package and is launched with `pycodex-ws --listen <host:port> --board <html>`, not through `pycodex` CLI dispatch. CLI and web share `pycodex.interactive_session.run_interactive_session`; slash-command semantics such as `/resume`, `/compact`, `/model`, and `/link` belong to that shared interactive shell loop, while workspace only supplies a web view/input adapter and tab/session lifecycle.
 - 交互 CLI 的事件流展示优先表达用户可感知的阶段（例如工具开始/完成、模型回看工具结果），不要直接把内部 `iteration` 计数暴露成主要状态文案；`iterations` 应继续保留在 `TurnResult` 等程序化结果里。
 - 在交互 CLI 里，`stream_error` 表示当前 Responses stream attempt 失败且模型客户端可能马上自动重试；不要在这个事件上 `finish_stream()` 输出当前 assistant delta buffer，否则第一次失败 attempt 的文本和重试成功后的最终回复会重复显示。真正 fatal 的失败仍由 `turn_failed` 走通用 flush，保留 partial 输出。
 - prompt/context 相关逻辑统一放在 `pycodex/context.py`：`AgentLoop` 只维护真实会话历史；每轮请求前由 `ContextManager` 注入 base instructions、developer message、`AGENTS.md` 指令和 `<environment_context>`，且这些注入项不写回 history。

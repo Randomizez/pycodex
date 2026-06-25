@@ -1169,6 +1169,34 @@ async def test_run_interactive_session_queue_command_enqueues_turn(
 
 
 @pytest.mark.asyncio
+async def test_run_interactive_session_queue_command_preserves_json_output(
+    monkeypatch,
+) -> 'None':
+    model = ScriptedModelClient(
+        [ModelResponse(items=[AssistantMessage(text="queued json")])]
+    )
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/queue again", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(
+        runtime,
+        True,
+    )
+
+    assert code == 0
+    assert "[steer] queued: again" in line_output
+    assert any('"output_text": "queued json"' in line for line in line_output)
+    assert stream_chunks == []
+
+
+@pytest.mark.asyncio
 async def test_run_interactive_session_keeps_status_inactive_while_waiting_for_input(
     monkeypatch,
 ) -> 'None':
@@ -1233,6 +1261,27 @@ async def test_run_interactive_session_supports_history_and_title_commands(
     assert "Session: hello there" in line_output
     assert "[1]U> hello there" in line_output
     assert "[1]A> done" in line_output
+    assert stream_chunks == []
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_session_supports_title_rename_command(
+    monkeypatch,
+) -> 'None':
+    runtime = CliSubmissionQueue(Agent(ScriptedModelClient([]), ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/title tab1", "/title", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(runtime, False)
+
+    assert code == 0
+    assert line_output.count("Session: tab1") == 2
     assert stream_chunks == []
 
 
@@ -2304,6 +2353,56 @@ async def test_run_interactive_session_rejects_model_switch_while_steer_work_pen
     assert "Session: hello" in line_output
     assert "Cannot change model while work is running or queued in steer mode." in line_output
     assert "assistant> demo-model" in line_output
+    assert stream_chunks == []
+
+
+@pytest.mark.asyncio
+async def test_run_interactive_session_link_command_is_handled_by_cli_shell(
+    monkeypatch,
+) -> 'None':
+    calls = []
+
+    class _FakeFeishuLink:
+        session_key = "feishu:tenant:user:default"
+        message_id = "om_cli"
+
+        def __init__(self, queue, target):
+            self.queue = queue
+            self.target = target
+            self.detached = False
+            self.stopped = False
+            calls.append(self)
+
+        async def start_async(self):
+            return self
+
+        def detach(self):
+            self.detached = True
+
+        def stop(self):
+            self.stopped = True
+
+    monkeypatch.setattr("pycodex.feishu_link.PycodexRuntimeLink", _FakeFeishuLink)
+
+    runtime = CliSubmissionQueue(Agent(ScriptedModelClient([]), ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    _install_test_cli_view(
+        monkeypatch,
+        ["/link user@example.com", "/unlink", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(runtime, False)
+
+    assert code == 0
+    assert calls[0].queue is runtime
+    assert calls[0].target == "user@example.com"
+    assert "Linked Feishu card: session_key=feishu:tenant:user:default message_id=om_cli" in line_output
+    assert "Unlinked Feishu card." in line_output
+    assert calls[0].detached is True
+    assert calls[0].stopped is False
     assert stream_chunks == []
 
 

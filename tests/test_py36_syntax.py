@@ -6,7 +6,7 @@ import pytest
 
 
 def _iter_python_files():
-    for root in ["pycodex", "responses_server", "tests"]:
+    for root in ["pycodex", "responses_server", "workspace_server", "tests"]:
         for dirpath, _dirnames, filenames in os.walk(root):
             for filename in filenames:
                 if filename.endswith(".py"):

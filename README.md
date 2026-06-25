@@ -144,12 +144,15 @@ pycodex --put @127.0.0.1:5577
 pycodex --put /data/.codex/@127.0.0.1:5577
 pycodex --call SECRET-CALLID@127.0.0.1:5577 "Reply with exactly OK."
 pycodex doctor
+pycodex-ws --listen 0.0.0.0:6007 --board ./board.html
 ```
 
 Current behavior:
 
 - with no argv prompt and a TTY stdin, enter interactive mode
 - with an argv prompt or piped stdin, run a single turn
+- `pycodex-ws` starts the standalone browser workspace with a board pane and a
+  pycodex session pane
 - interactive mode supports `/exit` and `/quit`
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
