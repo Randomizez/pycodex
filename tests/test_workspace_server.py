@@ -509,6 +509,40 @@ def test_workspace_app_accepts_session_factory(tmp_path) -> None:
     assert second_message["snapshot"]["turns"][-1]["prompt"] == "second"
 
 
+def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+
+    class _SummaryOnlyLink:
+        async def start(self):
+            return self
+
+        async def close(self):
+            return None
+
+        def summary(self):
+            return {
+                "title": "summary title",
+                "running": True,
+                "spinner": "thinking",
+                "turn_count": 123,
+            }
+
+        def snapshot(self):
+            raise AssertionError("session list should not build a full snapshot")
+
+    app = create_app(lambda: _SummaryOnlyLink(), board)
+
+    with TestClient(app) as client:
+        response = client.get("/api/sessions")
+
+    assert response.status_code == 200
+    assert response.json()["sessions"][0]["title"] == "summary title"
+    assert response.json()["sessions"][0]["running"] is True
+    assert response.json()["sessions"][0]["spinner"] == "thinking"
+    assert response.json()["sessions"][0]["turn_count"] == 123
+
+
 def test_workspace_app_websocket_ping(tmp_path) -> None:
     board = tmp_path / "board.html"
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")

@@ -291,6 +291,14 @@ class WebSessionView:
             "turns": [_public_turn(turn) for turn in self._turns[-80:]],
         }
 
+    def summary(self) -> "typing.Dict[str, object]":
+        return {
+            "running": bool(self._spinner_status),
+            "spinner": self._spinner_status,
+            "title": self._title,
+            "turn_count": len(self._turns),
+        }
+
     def _apply_runtime_event(self, event: "AgentEvent") -> None:
         kind = str(getattr(event, "kind", "") or "")
         payload = getattr(event, "payload", {})
@@ -561,6 +569,12 @@ class WorkspaceInteractiveSession:
         snapshot["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
         return snapshot
 
+    def summary(self) -> "typing.Dict[str, object]":
+        summary = self.view.summary()
+        agent = getattr(self.queue, "_agent", None)
+        summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
+        return summary
+
 
 class WorkspaceSessionManager:
     def __init__(self, session_factory: "SessionFactory") -> None:
@@ -618,14 +632,14 @@ class WorkspaceSessionManager:
         result = []
         for session_id in self._session_order:
             session = self._sessions[session_id]
-            snapshot = _session_snapshot(session)
+            summary = _session_summary(session)
             result.append(
                 {
                     "id": session_id,
-                    "title": snapshot.get("title") or "pycodex",
-                    "running": bool(snapshot.get("running")),
-                    "spinner": snapshot.get("spinner") or "",
-                    "turn_count": len(snapshot.get("turns") or []),
+                    "title": summary.get("title") or "pycodex",
+                    "running": bool(summary.get("running")),
+                    "spinner": summary.get("spinner") or "",
+                    "turn_count": summary.get("turn_count") or 0,
                 }
             )
         return result
@@ -814,6 +828,19 @@ def create_app(
 
 def _session_snapshot(session) -> "typing.Dict[str, object]":
     return typing.cast("typing.Dict[str, object]", session.snapshot())
+
+
+def _session_summary(session) -> "typing.Dict[str, object]":
+    summary = getattr(session, "summary", None)
+    if callable(summary):
+        return typing.cast("typing.Dict[str, object]", summary())
+    snapshot = _session_snapshot(session)
+    return {
+        "title": snapshot.get("title") or "",
+        "running": bool(snapshot.get("running")),
+        "spinner": snapshot.get("spinner") or "",
+        "turn_count": len(snapshot.get("turns") or []),
+    }
 
 
 def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]":

@@ -351,6 +351,8 @@
     const newTabButton = document.getElementById("newTab");
     let pollTimer = null;
     let boardPollTimer = null;
+    let pollInFlight = false;
+    let boardPollInFlight = false;
     let lastBoardSignature = "";
     let lastRenderedSignature = "";
     let resizeStart = null;
@@ -561,6 +563,8 @@
     }
 
     async function pollSession() {
+      if (pollInFlight) return;
+      pollInFlight = true;
       try {
         const path = activeSessionId
           ? `api/session?session_id=${encodeURIComponent(activeSessionId)}`
@@ -575,6 +579,8 @@
         renderSnapshot(payload.snapshot);
       } catch (error) {
         setSpinner(`poll error: ${error.message}`);
+      } finally {
+        pollInFlight = false;
       }
     }
 
@@ -591,6 +597,8 @@
     }
 
     async function pollBoard() {
+      if (boardPollInFlight) return;
+      boardPollInFlight = true;
       try {
         const response = await fetch(relativeUrl("api/board"));
         if (!response.ok) return;
@@ -607,6 +615,8 @@
         }
       } catch (_error) {
         return;
+      } finally {
+        boardPollInFlight = false;
       }
     }
 
