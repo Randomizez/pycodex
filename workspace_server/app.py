@@ -247,11 +247,10 @@ class WebSessionView:
         self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
 
     def show_steer_queued(self, turn_id: str, prompt: str) -> None:
-        self.write_line("[steer] queued: {0}".format(shorten_title(prompt, limit=72)))
+        del turn_id, prompt
 
     def schedule_steer_inserted(self, turn_id: str, prompt: str) -> None:
-        del turn_id
-        self.write_line("[steer] inserted: {0}".format(shorten_title(prompt, limit=72)))
+        del turn_id, prompt
 
     def set_context_window_tokens(
         self,
@@ -300,7 +299,7 @@ class WebSessionView:
         turn_id = str(payload.get("turn_id") or getattr(event, "turn_id", "") or "")
         submission_id = str(payload.get("submission_id") or turn_id or "")
         turn = self._turns_by_submission_id.get(submission_id)
-        if turn is None and turn_id:
+        if turn is None and turn_id and not submission_id:
             turn = self._turns_by_turn_id.get(turn_id)
 
         if kind == "turn_started":
@@ -434,7 +433,7 @@ class WebSessionView:
         submission_id = str(submission_id or "").strip()
         turn_id = str(turn_id or submission_id).strip()
         turn = self._turns_by_submission_id.get(submission_id)
-        if turn is None and turn_id:
+        if turn is None and turn_id and not submission_id:
             turn = self._turns_by_turn_id.get(turn_id)
         if turn is None:
             turn = {

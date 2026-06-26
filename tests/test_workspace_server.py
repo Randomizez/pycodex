@@ -663,6 +663,75 @@ async def test_workspace_session_steer_interruption_is_not_error() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_session_steer_does_not_overwrite_active_tool_turn() -> None:
+    first_request_started = asyncio.Event()
+    release_first_request = asyncio.Event()
+
+    class _DelayedToolModelClient:
+        model = "delayed-tool-test"
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        async def complete(self, _prompt, _event_handler):
+            self.call_count += 1
+            if self.call_count == 1:
+                return ModelResponse(
+                    [ToolCall(call_id="call_1", name="wait", arguments={})]
+                )
+            if self.call_count == 2:
+                first_request_started.set()
+                await release_first_request.wait()
+                return ModelResponse([AssistantMessage("first done")])
+            return ModelResponse([AssistantMessage("second done")])
+
+    class _WaitTool(BaseTool):
+        name = "wait"
+        description = "Wait briefly."
+        input_schema = {"type": "object"}
+
+        async def run(self, context, args):
+            del context, args
+            return "ready"
+
+    tools = ToolRegistry()
+    tools.register(_WaitTool())
+    runtime = CliSubmissionQueue(Agent(_DelayedToolModelClient(), tools))
+    link = WorkspaceInteractiveSession(runtime)
+    await link.start()
+    try:
+        first_result = await link.submit("first")
+        assert first_result["ok"] is True
+        await first_request_started.wait()
+
+        second_result = await link.submit("second")
+        assert second_result["ok"] is True
+        release_first_request.set()
+
+        snapshot = await _wait_for_async_snapshot(
+            link,
+            lambda item: len(
+                [turn for turn in item["turns"] if turn["kind"] == "assistant"]
+            )
+            == 2
+            and item["turns"][-1]["response"] == "second done",
+        )
+        assistant_turns = [
+            turn for turn in snapshot["turns"] if turn["kind"] == "assistant"
+        ]
+        assert [turn["prompt"] for turn in assistant_turns] == ["first", "second"]
+        assert [turn["response"] for turn in assistant_turns] == [
+            "first done",
+            "second done",
+        ]
+        assert all(not turn["error"] for turn in assistant_turns)
+        assert "[steer]" not in json.dumps(snapshot)
+    finally:
+        release_first_request.set()
+        await link.close()
+
+
+@pytest.mark.asyncio
 async def test_workspace_session_close_cancels_stuck_turn(monkeypatch) -> None:
     started = asyncio.Event()
 
