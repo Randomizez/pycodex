@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "python-codex"
-version = "0.1.14"
+version = "0.1.15"
 description = "A minimal Python extraction of Codex's main agent loop"
 readme = "README.md"
 requires-python = ">=3.6.2"
@@ -46,6 +46,9 @@ default-groups = []
 [tool.hatch.build.targets.wheel]
 packages = ["pycodex", "responses_server", "workspace_server"]
 artifacts = ["workspace_server/workspace.html"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [".venv*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
