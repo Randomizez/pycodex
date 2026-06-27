@@ -165,6 +165,9 @@ class CliSubmissionQueue:
 
     async def _next_submission(self) -> '_QueuedSubmission':
         while True:
+            if self._agent._turn_running and not self._has_queue_active_turn():
+                await self._wait_for_agent_idle()
+                continue
             async with self._queue_lock:
                 queued: 'typing.Union[_QueuedSubmission, None]' = None
                 if self._steer_queue:
@@ -197,8 +200,15 @@ class CliSubmissionQueue:
                 future.set_exception(exc)
 
     def _has_active_turn(self) -> 'bool':
+        return self._has_queue_active_turn() or self._agent._turn_running
+
+    def _has_queue_active_turn(self) -> 'bool':
         current_task = self._current_task
         return current_task is not None and not current_task.done()
+
+    async def _wait_for_agent_idle(self) -> 'None':
+        while self._agent._turn_running:
+            await asyncio.sleep(0.01)
 
     def _handle_agent_event(self, event: 'AgentEvent') -> 'None':
         queued = self._current_submission

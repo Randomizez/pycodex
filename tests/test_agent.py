@@ -19,6 +19,7 @@ from pycodex import (
     ToolResult,
     UserMessage,
 )
+from pycodex.agent import TurnInterrupted
 from pycodex.tools import ExecCommandTool, UnifiedExecManager
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX
 from tests.fakes import ScriptedModelClient
@@ -671,6 +672,89 @@ async def test_agent_maybe_invoke_noops_while_active() -> 'None':
         assert model.call_count == 1
     finally:
         release_request.set()
+
+
+@pytest.mark.asyncio
+async def test_runtime_waits_for_agent_background_turn_before_next_submission() -> 'None':
+    tool_started = asyncio.Event()
+    release_tool = asyncio.Event()
+    second_request_started = asyncio.Event()
+
+    class _DelayedModelClient:
+        def __init__(self) -> 'None':
+            self.prompts = []
+            self.call_count = 0
+
+        async def complete(self, prompt, event_handler):
+            del event_handler
+            self.prompts.append(prompt)
+            self.call_count += 1
+            if self.call_count == 1:
+                return ModelResponse(
+                    items=[ToolCall(call_id="call_1", name="block", arguments={})]
+                )
+            second_request_started.set()
+            return ModelResponse(items=[AssistantMessage(text="queued done")])
+
+    class _BlockingTool(BaseTool):
+        name = "block"
+        description = "Block until released."
+        input_schema = {"type": "object"}
+
+        async def run(self, context, args):
+            del context, args
+            tool_started.set()
+            await release_tool.wait()
+            return "tool done"
+
+    model = _DelayedModelClient()
+    tools = ToolRegistry()
+    tools.register(_BlockingTool())
+    agent = Agent(model, tools)
+    runtime = CliSubmissionQueue(agent)
+
+    background_turn = asyncio.create_task(agent.run_turn(["background"]))
+    await tool_started.wait()
+    worker = asyncio.create_task(runtime.run_forever())
+    shutdown_sent = False
+    try:
+        _submission_id, queued_future = await runtime.enqueue_user_turn(
+            "queued",
+            queue="steer",
+        )
+        await asyncio.sleep(0.05)
+
+        assert model.call_count == 1
+        assert not second_request_started.is_set()
+
+        release_tool.set()
+        with pytest.raises(TurnInterrupted):
+            await background_turn
+        queued_result = await queued_future
+
+        assert queued_result is not None
+        assert queued_result.output_text == "queued done"
+        assert model.call_count == 2
+        prompt_items = _conversation_items(model.prompts[1])
+        assert [type(item).__name__ for item in prompt_items[-4:]] == [
+            "UserMessage",
+            "ToolCall",
+            "ToolResult",
+            "UserMessage",
+        ]
+        assert prompt_items[-4].text == "background"
+        assert prompt_items[-3].call_id == "call_1"
+        assert prompt_items[-2].call_id == "call_1"
+        assert prompt_items[-1].text == "queued"
+
+        await runtime.shutdown()
+        shutdown_sent = True
+    finally:
+        release_tool.set()
+        await asyncio.gather(background_turn, return_exceptions=True)
+        if not shutdown_sent and not worker.done():
+            await runtime.shutdown()
+        await worker
 
 
 @pytest.mark.asyncio

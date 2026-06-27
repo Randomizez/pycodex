@@ -219,6 +219,9 @@ class Agent:
         except TurnInterrupted:
             self._turn_running = False
             raise
+        except asyncio.CancelledError:
+            self._turn_running = False
+            raise
         except Exception as exc:
             context_usage = _usage_from_context_length_error(str(exc))
             if context_usage is not None:
