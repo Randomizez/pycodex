@@ -1,5 +1,7 @@
 import asyncio
 import json
+import threading
+import time as time_module
 
 from fastapi.testclient import TestClient
 import pytest
@@ -16,6 +18,7 @@ from pycodex import (
 )
 from workspace_server import (
     WebSessionView,
+    ThreadedWorkspaceInteractiveSession,
     WorkspaceInteractiveSession,
     WorkspaceSessionManager,
     build_parser,
@@ -225,6 +228,8 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert 'id="spinner"' in response.text
     assert ">Send<" not in response.text
     assert "Enter sends. Shift+Enter adds a newline." not in response.text
+    assert "compositionstart" in response.text
+    assert "event.isComposing" in response.text
     assert "__BOARD_LABEL__" not in response.text
 
 
@@ -811,6 +816,99 @@ async def test_workspace_session_handles_shell_command_before_model() -> None:
         assert model.call_count == 0
     finally:
         await link.close()
+
+
+@pytest.mark.asyncio
+async def test_threaded_workspace_session_runs_turn_in_worker_thread() -> None:
+    server_thread = threading.get_ident()
+    model_thread = None
+
+    class _ThreadRecordingModel:
+        model = "thread-test"
+
+        async def complete(self, _prompt, _event_handler):
+            nonlocal model_thread
+            model_thread = threading.get_ident()
+            return ModelResponse([AssistantMessage("threaded response")])
+
+    def build_session():
+        return WorkspaceInteractiveSession(
+            CliSubmissionQueue(Agent(_ThreadRecordingModel(), ToolRegistry()))
+        )
+
+    link = ThreadedWorkspaceInteractiveSession(build_session, asyncio.get_running_loop())
+    await link.start()
+    try:
+        result = await link.submit("hello")
+        assert result["ok"] is True
+
+        snapshot = await _wait_for_async_snapshot(
+            link,
+            lambda item: item["turns"]
+            and item["turns"][-1]["response"] == "threaded response",
+        )
+        assert snapshot["turns"][-1]["prompt"] == "hello"
+        assert model_thread is not None
+        assert model_thread != server_thread
+    finally:
+        await link.close()
+
+
+def test_workspace_app_threaded_session_blocking_turn_does_not_block_other_session(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+
+    class _BlockingModel:
+        model = "blocking-test"
+
+        async def complete(self, _prompt, _event_handler):
+            time_module.sleep(0.4)
+            return ModelResponse([AssistantMessage("blocked done")])
+
+    class _FastModel:
+        model = "fast-test"
+
+        async def complete(self, _prompt, _event_handler):
+            return ModelResponse([AssistantMessage("fast done")])
+
+    created = 0
+
+    def build_link():
+        nonlocal created
+        created += 1
+        model = _BlockingModel() if created == 1 else _FastModel()
+
+        def build_session():
+            return WorkspaceInteractiveSession(
+                CliSubmissionQueue(Agent(model, ToolRegistry()))
+            )
+
+        return ThreadedWorkspaceInteractiveSession(
+            build_session,
+            asyncio.get_running_loop(),
+        )
+
+    app = create_app(WorkspaceSessionManager(build_link), board)
+
+    with TestClient(app) as client:
+        first_id = client.get("/api/sessions").json()["sessions"][0]["id"]
+        second_id = client.post("/api/sessions").json()["session_id"]
+        first_started = time_module.perf_counter()
+        client.post(
+            "/api/session/message",
+            json={"session_id": first_id, "prompt": "block"},
+        )
+        elapsed = time_module.perf_counter() - first_started
+        assert elapsed < 0.25
+
+        response_started = time_module.perf_counter()
+        response = client.get(
+            "/api/session?session_id={0}".format(second_id)
+        )
+        elapsed = time_module.perf_counter() - response_started
+
+    assert response.status_code == 200
+    assert elapsed < 0.25
 
 
 class _DormantLink:

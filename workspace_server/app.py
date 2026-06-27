@@ -3,6 +3,7 @@ import asyncio
 import html
 import json
 import os
+import threading
 import tempfile
 from uuid import uuid4
 from dataclasses import asdict, is_dataclass
@@ -109,7 +110,8 @@ def parse_target(
     return host, port, board_path
 
 
-SessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
+SessionFactory = typing.Callable[[], object]
+ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
 SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
 
 
@@ -125,12 +127,21 @@ class WebSessionView:
         self._spinner_status = ""
         self._stream_buffer = ""
         self._closed = False
+        self._server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
+        self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
+        self._lock = threading.RLock()
+
+    def attach_server_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
+        self._server_loop = loop
+
+    def attach_worker_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
+        self._worker_loop = loop
 
     async def submit(self, prompt: str) -> "typing.Dict[str, object]":
         prompt = str(prompt or "").strip()
         if not prompt:
             return {"ok": False, "error": "prompt is empty"}
-        await self._input_queue.put(prompt)
+        await self._put_input(prompt)
         await self._publish(
             {
                 "type": "input",
@@ -139,6 +150,18 @@ class WebSessionView:
             }
         )
         return {"ok": True, "type": "submitted", "snapshot": self.snapshot()}
+
+    async def _put_input(self, item: object) -> None:
+        worker_loop = self._worker_loop
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if worker_loop is None or worker_loop is running_loop:
+            await self._input_queue.put(item)
+            return
+        future = asyncio.run_coroutine_threadsafe(self._input_queue.put(item), worker_loop)
+        await asyncio.wrap_future(future)
 
     async def poll_prompt(self, prompt: "typing.Union[str, None]" = None) -> "typing.Union[str, None]":
         del prompt
@@ -161,42 +184,49 @@ class WebSessionView:
         return str(item)
 
     def handle_event(self, event: "AgentEvent") -> None:
-        self._apply_runtime_event(event)
-        payload = {
-            "type": "event",
-            "kind": str(getattr(event, "kind", "")),
-            "turn_id": str(getattr(event, "turn_id", "")),
-            "payload": _json_safe(getattr(event, "payload", {})),
-            "snapshot": self.snapshot(),
-        }
-        if payload["kind"] == "tool_completed":
-            payload["summary"] = tool_summary(getattr(event, "payload", {}))
+        with self._lock:
+            self._apply_runtime_event(event)
+            payload = {
+                "type": "event",
+                "kind": str(getattr(event, "kind", "")),
+                "turn_id": str(getattr(event, "turn_id", "")),
+                "payload": _json_safe(getattr(event, "payload", {})),
+                "snapshot": self.snapshot(),
+            }
+            if payload["kind"] == "tool_completed":
+                payload["summary"] = tool_summary(getattr(event, "payload", {}))
         self._publish_nowait(payload)
 
     def finish_stream(self) -> None:
-        if not self._stream_buffer:
-            return
-        active_turn = self._last_active_turn()
-        if active_turn is not None and not active_turn.get("response"):
-            active_turn["response"] = self._stream_buffer
-            active_turn["thinking"] = ""
-            active_turn["_thinking_active"] = False
-        self._stream_buffer = ""
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            if not self._stream_buffer:
+                return
+            active_turn = self._last_active_turn()
+            if active_turn is not None and not active_turn.get("response"):
+                active_turn["response"] = self._stream_buffer
+                active_turn["thinking"] = ""
+                active_turn["_thinking_active"] = False
+            self._stream_buffer = ""
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def write_line(self, text: str) -> None:
-        text = str(text or "")
-        turn = self._new_control_turn(text)
-        turn["response"] = text
-        turn["status"] = "completed"
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            text = str(text or "")
+            turn = self._new_control_turn(text)
+            turn["response"] = text
+            turn["status"] = "completed"
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def show_error(self, text: str) -> None:
         self.finish_stream()
-        turn = self._new_control_turn("")
-        turn["error"] = str(text or "")
-        turn["status"] = "error"
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            turn = self._new_control_turn("")
+            turn["error"] = str(text or "")
+            turn["status"] = "error"
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def show_history(self) -> None:
         self.finish_stream()
@@ -219,12 +249,16 @@ class WebSessionView:
 
     def set_session_title(self, title: str) -> None:
         self.finish_stream()
-        self._title = str(title or "").strip()
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            self._title = str(title or "").strip()
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def show_resumed_session(self, title: str) -> None:
-        self._title = str(title or "")
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            self._title = str(title or "")
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def load_session_history(
         self,
@@ -232,19 +266,21 @@ class WebSessionView:
         history: "typing.Iterable[typing.Tuple[str, str]]",
     ) -> None:
         self.finish_stream()
-        self._title = title or ""
-        self._turns = []
-        self._turns_by_submission_id = {}
-        self._turns_by_turn_id = {}
-        self._events = []
-        for prompt, response in history:
-            submission_id = uuid7_string()
-            turn = self._ensure_turn(submission_id, submission_id, str(prompt or ""))
-            turn["response"] = str(response or "")
-            turn["status"] = "completed"
-            turn["queue"] = "history"
-            turn["sender"] = "resume"
-        self._publish_nowait({"type": "snapshot", "snapshot": self.snapshot()})
+        with self._lock:
+            self._title = title or ""
+            self._turns = []
+            self._turns_by_submission_id = {}
+            self._turns_by_turn_id = {}
+            self._events = []
+            for prompt, response in history:
+                submission_id = uuid7_string()
+                turn = self._ensure_turn(submission_id, submission_id, str(prompt or ""))
+                turn["response"] = str(response or "")
+                turn["status"] = "completed"
+                turn["queue"] = "history"
+                turn["sender"] = "resume"
+            event = {"type": "snapshot", "snapshot": self.snapshot()}
+        self._publish_nowait(event)
 
     def show_steer_queued(self, turn_id: str, prompt: str) -> None:
         del turn_id, prompt
@@ -260,44 +296,52 @@ class WebSessionView:
 
     def subscribe(self) -> "asyncio.Queue":
         queue: "asyncio.Queue" = asyncio.Queue()
-        self._subscribers.add(queue)
-        queue.put_nowait(
-            {
+        with self._lock:
+            self._subscribers.add(queue)
+            event = {
                 "type": "hello",
                 "events": list(self._events[-200:]),
                 "snapshot": self.snapshot(),
             }
-        )
+        queue.put_nowait(event)
         return queue
 
     def unsubscribe(self, queue: "asyncio.Queue") -> None:
-        self._subscribers.discard(queue)
+        with self._lock:
+            self._subscribers.discard(queue)
 
     def close(self) -> None:
-        self._closed = True
-        self._input_queue.put_nowait(None)
-        for subscriber in tuple(self._subscribers):
-            subscriber.put_nowait(None)
-        self._subscribers.clear()
+        with self._lock:
+            self._closed = True
+            subscribers = tuple(self._subscribers)
+            self._subscribers.clear()
+        worker_loop = self._worker_loop
+        if worker_loop is None:
+            self._input_queue.put_nowait(None)
+        else:
+            asyncio.run_coroutine_threadsafe(self._input_queue.put(None), worker_loop)
+        self._publish_to_queues(subscribers, None)
 
     def snapshot(self) -> "typing.Dict[str, object]":
-        return {
-            "running": bool(self._spinner_status),
-            "status": self._spinner_status,
-            "status_kind": "spinner" if self._spinner_status else "idle",
-            "spinner": self._spinner_status,
-            "model": "pycodex",
-            "title": self._title,
-            "turns": [_public_turn(turn) for turn in self._turns[-80:]],
-        }
+        with self._lock:
+            return {
+                "running": bool(self._spinner_status),
+                "status": self._spinner_status,
+                "status_kind": "spinner" if self._spinner_status else "idle",
+                "spinner": self._spinner_status,
+                "model": "pycodex",
+                "title": self._title,
+                "turns": [_public_turn(turn) for turn in self._turns[-80:]],
+            }
 
     def summary(self) -> "typing.Dict[str, object]":
-        return {
-            "running": bool(self._spinner_status),
-            "spinner": self._spinner_status,
-            "title": self._title,
-            "turn_count": len(self._turns),
-        }
+        with self._lock:
+            return {
+                "running": bool(self._spinner_status),
+                "spinner": self._spinner_status,
+                "title": self._title,
+                "turn_count": len(self._turns),
+            }
 
     def _apply_runtime_event(self, event: "AgentEvent") -> None:
         kind = str(getattr(event, "kind", "") or "")
@@ -492,11 +536,29 @@ class WebSessionView:
         return None
 
     def _publish_nowait(self, event: "typing.Dict[str, object]") -> None:
-        self._events.append(event)
-        if len(self._events) > 500:
-            del self._events[:-500]
-        for subscriber in tuple(self._subscribers):
-            subscriber.put_nowait(event)
+        with self._lock:
+            self._events.append(event)
+            if len(self._events) > 500:
+                del self._events[:-500]
+            subscribers = tuple(self._subscribers)
+        self._publish_to_queues(subscribers, event)
+
+    def _publish_to_queues(
+        self,
+        queues: "typing.Iterable[asyncio.Queue]",
+        event: "typing.Union[typing.Dict[str, object], None]",
+    ) -> None:
+        loop = self._server_loop
+        if loop is None:
+            for queue in queues:
+                queue.put_nowait(event)
+            return
+
+        def publish() -> None:
+            for queue in queues:
+                queue.put_nowait(event)
+
+        loop.call_soon_threadsafe(publish)
 
     async def _publish(self, event: "typing.Dict[str, object]") -> None:
         self._publish_nowait(event)
@@ -572,6 +634,118 @@ class WorkspaceInteractiveSession:
     def summary(self) -> "typing.Dict[str, object]":
         summary = self.view.summary()
         agent = getattr(self.queue, "_agent", None)
+        summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
+        return summary
+
+
+class ThreadedWorkspaceInteractiveSession:
+    def __init__(
+        self,
+        session_factory: "ThreadedSessionFactory",
+        server_loop: "asyncio.AbstractEventLoop",
+    ) -> None:
+        self._session_factory = session_factory
+        self._server_loop = server_loop
+        self._view = WebSessionView()
+        self._view.attach_server_loop(server_loop)
+        self._thread: "typing.Union[threading.Thread, None]" = None
+        self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
+        self._ready = threading.Event()
+        self._closed = threading.Event()
+        self._startup_error: "typing.Union[BaseException, None]" = None
+        self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
+
+    async def start(self) -> "ThreadedWorkspaceInteractiveSession":
+        if self._thread is not None:
+            return self
+        self._thread = threading.Thread(
+            target=self._thread_main,
+            name="pycodex-workspace-session",
+            daemon=True,
+        )
+        self._thread.start()
+        await asyncio.to_thread(self._ready.wait)
+        if self._startup_error is not None:
+            raise RuntimeError("workspace session thread failed to start") from self._startup_error
+        return self
+
+    def _thread_main(self) -> None:
+        loop = asyncio.new_event_loop()
+        self._worker_loop = loop
+        self._view.attach_worker_loop(loop)
+        asyncio.set_event_loop(loop)
+        try:
+            session = self._session_factory()
+            session.view = self._view
+            self._session = session
+            loop.run_until_complete(session.start())
+            self._ready.set()
+            loop.run_forever()
+        except BaseException as exc:
+            self._startup_error = exc
+            self._ready.set()
+        finally:
+            session = self._session
+            if session is not None:
+                try:
+                    loop.run_until_complete(session.close())
+                except BaseException:
+                    pass
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            asyncio.set_event_loop(None)
+            loop.close()
+            self._closed.set()
+
+    async def close(self) -> None:
+        session = self._session
+        loop = self._worker_loop
+        if session is not None and loop is not None and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(session.close(), loop)
+            try:
+                await asyncio.wait_for(
+                    asyncio.wrap_future(future),
+                    timeout=SESSION_CLOSE_TIMEOUT_SECONDS + 1.0,
+                )
+            except (asyncio.TimeoutError, RuntimeError):
+                cancel_current = getattr(getattr(session, "queue", None), "cancel_current", None)
+                if callable(cancel_current):
+                    cancel_current()
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        thread = self._thread
+        if thread is not None:
+            await asyncio.to_thread(thread.join, SESSION_CLOSE_TIMEOUT_SECONDS + 1.0)
+        self._thread = None
+
+    async def submit(self, prompt: str, sender: str = "web") -> "typing.Dict[str, object]":
+        del sender
+        result = await self._view.submit(prompt)
+        result["snapshot"] = self.snapshot()
+        return result
+
+    def subscribe(self) -> "asyncio.Queue":
+        return self._view.subscribe()
+
+    def unsubscribe(self, queue: "asyncio.Queue") -> None:
+        self._view.unsubscribe(queue)
+
+    def snapshot(self) -> "typing.Dict[str, object]":
+        snapshot = self._view.snapshot()
+        session = self._session
+        queue = getattr(session, "queue", None)
+        agent = getattr(queue, "_agent", None)
+        snapshot["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
+        return snapshot
+
+    def summary(self) -> "typing.Dict[str, object]":
+        summary = self._view.summary()
+        session = self._session
+        queue = getattr(session, "queue", None)
+        agent = getattr(queue, "_agent", None)
         summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
         return summary
 
@@ -751,7 +925,9 @@ def create_app(
         return JSONResponse({"ok": True, "sessions": manager.list_sessions()})
 
     @app.get("/api/session")
-    async def session(session_id: "typing.Union[str, None]" = None) -> JSONResponse:
+    async def session(
+        session_id: "typing.Union[str, None]" = None,
+    ) -> JSONResponse:
         try:
             resolved_id = manager.resolve_session_id(session_id)
             link = manager.get(resolved_id)
@@ -766,7 +942,9 @@ def create_app(
         )
 
     @app.post("/api/session/message")
-    async def message(payload: "typing.Dict[str, object]") -> JSONResponse:
+    async def message(
+        payload: "typing.Dict[str, object]",
+    ) -> JSONResponse:
         session_id = str(payload.get("session_id") or "")
         try:
             link = manager.get(session_id or None)
@@ -906,7 +1084,7 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
         raise ValueError("board parent directory does not exist: {0}".format(board_path.parent))
 
     configure_loguru()
-    def session_factory() -> "WorkspaceInteractiveSession":
+    def build_session() -> "WorkspaceInteractiveSession":
         model = build_model(
             config_path=args.config,
             profile=args.profile,
@@ -928,6 +1106,9 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             config_path=args.config,
             initial_prompt=initial_prompt,
         )
+
+    def session_factory() -> "ThreadedWorkspaceInteractiveSession":
+        return ThreadedWorkspaceInteractiveSession(build_session, asyncio.get_running_loop())
 
     app = create_app(WorkspaceSessionManager(session_factory), board_path)
     print(

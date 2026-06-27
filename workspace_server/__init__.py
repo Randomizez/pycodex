@@ -1,4 +1,5 @@
 from .app import (
+    ThreadedWorkspaceInteractiveSession,
     WebSessionView,
     WorkspaceInteractiveSession,
     WorkspaceSessionManager,
@@ -10,6 +11,7 @@ from .app import (
 )
 
 __all__ = [
+    "ThreadedWorkspaceInteractiveSession",
     "WebSessionView",
     "WorkspaceInteractiveSession",
     "WorkspaceSessionManager",
