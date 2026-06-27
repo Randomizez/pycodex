@@ -20,6 +20,10 @@ from pycodex.cli import build_agent, build_cli_queue, build_model, configure_log
 from pycodex.interactive_session import run_interactive_session
 from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.protocol import AgentEvent, ToolCall
+from pycodex.utils.session_persist import (
+    SessionRolloutRecorder,
+    load_resumed_session_path,
+)
 from pycodex.utils import uuid7_string
 from pycodex.utils.visualize import IDLE_LISTENING_STATUS, shorten_title, tool_summary
 import typing
@@ -34,6 +38,55 @@ JSONValue = typing.Union[
     typing.List["JSONValue"],
     typing.Dict[str, "JSONValue"],
 ]
+
+
+class WorkspaceStateStore:
+    def __init__(self, board_path: "typing.Union[Path, None]") -> None:
+        self.path = None if board_path is None else board_path.with_suffix(".pycodex-ws.json")
+
+    def load_tabs(self) -> "typing.List[typing.Dict[str, str]]":
+        if self.path is None or not self.path.is_file():
+            return []
+
+        try:
+            payload = json.loads(
+                self.path.read_text(encoding="utf-8", errors="replace") or "{}"
+            )
+        except (OSError, ValueError):
+            return []
+
+        tabs = payload.get("tabs") if isinstance(payload, dict) else None
+        if not isinstance(tabs, list):
+            return []
+
+        result = []
+        for tab in tabs:
+            if not isinstance(tab, dict):
+                continue
+            title = str(tab.get("title") or "").strip()
+            rollout_path = str(tab.get("rollout_path") or "").strip()
+            if title or rollout_path:
+                result.append({"title": title, "rollout_path": rollout_path})
+        return result
+
+    def save_tabs(self, tabs: "typing.Iterable[typing.Dict[str, str]]") -> None:
+        if self.path is None:
+            return
+
+        state_tabs = [
+            {
+                "title": str(tab.get("title") or ""),
+                "rollout_path": str(tab.get("rollout_path") or ""),
+            }
+            for tab in tabs
+        ]
+        payload = json.dumps(
+            {"version": 1, "tabs": state_tabs},
+            ensure_ascii=False,
+            indent=2,
+        ) + "\n"
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(payload, encoding="utf-8")
 
 
 def build_parser() -> "argparse.ArgumentParser":
@@ -113,6 +166,7 @@ def parse_target(
 SessionFactory = typing.Callable[[], object]
 ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
 SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
+SPINNER_STATUS_PREVIEW_LIMIT = 180
 
 
 class WebSessionView:
@@ -229,7 +283,6 @@ class WebSessionView:
         self._publish_nowait(event)
 
     def show_history(self) -> None:
-        self.finish_stream()
         assistant_turns = [turn for turn in self._turns if turn.get("kind") != "control"]
         if not assistant_turns:
             self.write_line("No history yet.")
@@ -244,19 +297,21 @@ class WebSessionView:
         self.write_line("\n".join(lines))
 
     def show_title(self) -> None:
-        self.finish_stream()
         self.write_line("Session: {0}".format(self._title or "untitled"))
 
     def set_session_title(self, title: str) -> None:
-        self.finish_stream()
         with self._lock:
-            self._title = str(title or "").strip()
-            event = {"type": "snapshot", "snapshot": self.snapshot()}
+            self._set_title(title)
+            event = {
+                "type": "title_changed",
+                "title": self._title,
+                "snapshot": self.snapshot(),
+            }
         self._publish_nowait(event)
 
     def show_resumed_session(self, title: str) -> None:
         with self._lock:
-            self._title = str(title or "")
+            self._set_title(title)
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self._publish_nowait(event)
 
@@ -267,7 +322,7 @@ class WebSessionView:
     ) -> None:
         self.finish_stream()
         with self._lock:
-            self._title = title or ""
+            self._set_title(title)
             self._turns = []
             self._turns_by_submission_id = {}
             self._turns_by_turn_id = {}
@@ -360,7 +415,7 @@ class WebSessionView:
                 str(item) for item in payload.get("user_texts", []) or []
             )
             if not self._title and str(prompt or "").strip():
-                self._title = shorten_title(str(prompt or ""))
+                self._set_title(shorten_title(str(prompt or "")))
             turn = self._ensure_turn(submission_id, turn_id, str(prompt or ""))
             turn["status"] = "running"
             turn["thinking"] = ""
@@ -444,7 +499,7 @@ class WebSessionView:
                 self._set_spinner_status(
                     shorten_title(
                         "calling {0}({1})".format(tool_name, call.arguments),
-                        limit=72,
+                        limit=SPINNER_STATUS_PREVIEW_LIMIT,
                     )
                 )
             elif tool_name:
@@ -525,6 +580,9 @@ class WebSessionView:
         turn["prompt"] = ""
         return turn
 
+    def _set_title(self, title: "typing.Union[str, None]") -> None:
+        self._title = str(title or "").strip()
+
     def _last_active_turn(self) -> "typing.Union[typing.Dict[str, object], None]":
         for turn in reversed(self._turns):
             if turn.get("kind") != "control" and turn.get("status") not in {
@@ -578,7 +636,10 @@ class WorkspaceInteractiveSession:
         self._task: "typing.Union[asyncio.Task[int], None]" = None
         self._initial_prompt_submitted = False
 
-    async def start(self) -> "WorkspaceInteractiveSession":
+    async def start(
+        self,
+        submit_initial_prompt: bool = True,
+    ) -> "WorkspaceInteractiveSession":
         if self._task is None:
             self._task = asyncio.create_task(
                 run_interactive_session(
@@ -589,7 +650,11 @@ class WorkspaceInteractiveSession:
                     show_banner=False,
                 )
             )
-        if self.initial_prompt and not self._initial_prompt_submitted:
+        if (
+            submit_initial_prompt
+            and self.initial_prompt
+            and not self._initial_prompt_submitted
+        ):
             self._initial_prompt_submitted = True
             await self.view.submit(self.initial_prompt)
         return self
@@ -637,6 +702,24 @@ class WorkspaceInteractiveSession:
         summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
         return summary
 
+    def rollout_path(self) -> str:
+        recorder = getattr(getattr(self.queue, "_agent", None), "_rollout_recorder", None)
+        path = getattr(recorder, "rollout_path", None)
+        return "" if path is None else str(path)
+
+    async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
+        resumed = load_resumed_session_path(rollout_path, thread_name=title or None)
+        agent = self.queue._agent
+        agent.replace_history(resumed["history"])
+        model_client = getattr(agent, "_model_client", None)
+        if hasattr(model_client, "_session_id"):
+            model_client._session_id = str(resumed["session_id"])
+        agent.set_rollout_recorder(SessionRolloutRecorder.resume(resumed["rollout_path"]))
+        self.view.load_session_history(
+            str(title or resumed["title"]),
+            tuple(resumed["turns"]),
+        )
+
 
 class ThreadedWorkspaceInteractiveSession:
     def __init__(
@@ -654,10 +737,15 @@ class ThreadedWorkspaceInteractiveSession:
         self._closed = threading.Event()
         self._startup_error: "typing.Union[BaseException, None]" = None
         self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
+        self._submit_initial_prompt = True
 
-    async def start(self) -> "ThreadedWorkspaceInteractiveSession":
+    async def start(
+        self,
+        submit_initial_prompt: bool = True,
+    ) -> "ThreadedWorkspaceInteractiveSession":
         if self._thread is not None:
             return self
+        self._submit_initial_prompt = submit_initial_prompt
         self._thread = threading.Thread(
             target=self._thread_main,
             name="pycodex-workspace-session",
@@ -678,7 +766,9 @@ class ThreadedWorkspaceInteractiveSession:
             session = self._session_factory()
             session.view = self._view
             self._session = session
-            loop.run_until_complete(session.start())
+            loop.run_until_complete(
+                session.start(submit_initial_prompt=self._submit_initial_prompt)
+            )
             self._ready.set()
             loop.run_forever()
         except BaseException as exc:
@@ -749,31 +839,84 @@ class ThreadedWorkspaceInteractiveSession:
         summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
         return summary
 
+    def rollout_path(self) -> str:
+        if self._session is None:
+            return ""
+        return self._session.rollout_path()
+
+    async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
+        session = self._session
+        loop = self._worker_loop
+        if session is None or loop is None:
+            return
+
+        future = asyncio.run_coroutine_threadsafe(
+            session.restore_from_rollout(rollout_path, title=title),
+            loop,
+        )
+        await asyncio.wrap_future(future)
+
 
 class WorkspaceSessionManager:
-    def __init__(self, session_factory: "SessionFactory") -> None:
+    def __init__(
+        self,
+        session_factory: "SessionFactory",
+        board_path: "typing.Union[Path, None]" = None,
+    ) -> None:
         self._session_factory = session_factory
         self._sessions: "typing.Dict[str, WorkspaceInteractiveSession]" = {}
         self._session_order: "typing.List[str]" = []
+        self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
+        self._persisted_titles: "typing.Dict[str, str]" = {}
         self._lock = asyncio.Lock()
+        self._state_store = WorkspaceStateStore(board_path)
 
     async def start(self) -> None:
-        await self.create_session()
+        state_tabs = self._state_store.load_tabs()
+        if not state_tabs:
+            await self.create_session()
+            return
+        for tab in state_tabs:
+            await self.create_session(
+                title=str(tab.get("title") or ""),
+                rollout_path=str(tab.get("rollout_path") or ""),
+            )
 
     async def close(self) -> None:
         sessions = list(self._sessions.values())
+        watchers = list(self._state_watchers.values())
         self._sessions.clear()
         self._session_order = []
+        self._state_watchers.clear()
+        self._persisted_titles.clear()
+        for watcher in watchers:
+            watcher.cancel()
+        if watchers:
+            await asyncio.gather(*watchers, return_exceptions=True)
         for session in sessions:
             await session.close()
 
-    async def create_session(self) -> str:
+    async def create_session(
+        self,
+        title: str = "",
+        rollout_path: str = "",
+    ) -> str:
         async with self._lock:
             session_id = uuid7_string()
             session = self._session_factory()
-            await session.start()
+            await session.start(submit_initial_prompt=not bool(rollout_path))
+
+            if rollout_path:
+                await session.restore_from_rollout(rollout_path, title=title)
+
             self._sessions[session_id] = session
             self._session_order.append(session_id)
+            self._persisted_titles[session_id] = str(
+                _session_summary(session).get("title") or ""
+            )
+            self._state_watchers[session_id] = asyncio.create_task(
+                self._watch_session_title(session_id, session)
+            )
             return session_id
 
     async def close_session(self, session_id: str) -> None:
@@ -783,10 +926,47 @@ class WorkspaceSessionManager:
             session = self._sessions.pop(session_id, None)
             if session is None:
                 raise KeyError(session_id)
+            watcher = self._state_watchers.pop(session_id, None)
+            self._persisted_titles.pop(session_id, None)
             self._session_order = [
                 item for item in self._session_order if item != session_id
             ]
+        if watcher is not None:
+            watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
         await session.close()
+        self.persist_workspace_state()
+
+    async def _watch_session_title(self, session_id: str, session) -> None:
+        subscriber = session.subscribe()
+        try:
+            while True:
+                event = await subscriber.get()
+                if event is None:
+                    return
+                if not isinstance(event, dict) or event.get("type") != "title_changed":
+                    continue
+                title = str(event.get("title") or "")
+                if title == self._persisted_titles.get(session_id, ""):
+                    continue
+                self._persisted_titles[session_id] = title
+                self.persist_workspace_state()
+        finally:
+            session.unsubscribe(subscriber)
+
+    def persist_workspace_state(self) -> None:
+        tabs = []
+        for session_id in self._session_order:
+            session = self._sessions.get(session_id)
+            if session is None:
+                continue
+            summary = _session_summary(session)
+            title = str(summary.get("title") or "").strip()
+            rollout_path = str(session.rollout_path() or "")
+            if not title and not rollout_path:
+                continue
+            tabs.append({"title": title, "rollout_path": rollout_path})
+        self._state_store.save_tabs(tabs)
 
     def get(self, session_id: "typing.Union[str, None]" = None) -> "WorkspaceInteractiveSession":
         resolved_id = self.resolve_session_id(session_id)
@@ -826,7 +1006,7 @@ def create_app(
     manager = (
         session_source
         if isinstance(session_source, WorkspaceSessionManager)
-        else WorkspaceSessionManager(session_source)
+        else WorkspaceSessionManager(session_source, board_path)
     )
 
     if asynccontextmanager is not None:
@@ -1110,7 +1290,7 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
     def session_factory() -> "ThreadedWorkspaceInteractiveSession":
         return ThreadedWorkspaceInteractiveSession(build_session, asyncio.get_running_loop())
 
-    app = create_app(WorkspaceSessionManager(session_factory), board_path)
+    app = create_app(WorkspaceSessionManager(session_factory, board_path), board_path)
     print(
         "pycodex workspace listening on http://{0}:{1}".format(host, port),
         flush=True,

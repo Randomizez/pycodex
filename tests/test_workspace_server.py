@@ -16,6 +16,7 @@ from pycodex import (
     ToolCall,
     ToolRegistry,
 )
+from pycodex.utils.session_persist import SessionRolloutRecorder
 from workspace_server import (
     WebSessionView,
     ThreadedWorkspaceInteractiveSession,
@@ -26,6 +27,8 @@ from workspace_server import (
     parse_target,
 )
 from workspace_server.app import (
+    SPINNER_STATUS_PREVIEW_LIMIT,
+    WorkspaceStateStore,
     _board_prompt_text,
     _default_board_path,
     _format_board_path_for_prompt,
@@ -231,6 +234,30 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "compositionstart" in response.text
     assert "event.isComposing" in response.text
     assert "__BOARD_LABEL__" not in response.text
+    assert 'id="splitter"' in response.text
+    assert "centerSplit" in response.text
+    assert "mobile-switch" not in response.text
+
+
+def test_workspace_spinner_tool_call_preview_is_longer_than_title() -> None:
+    view = WebSessionView()
+    call = ToolCall(
+        call_id="call_1",
+        name="exec_command",
+        arguments={"cmd": "x" * 140},
+    )
+
+    view.handle_event(
+        ModelStreamEvent(
+            kind="tool_started",
+            payload={"tool_name": "exec_command", "call": call},
+        )
+    )
+
+    spinner = str(view.snapshot()["spinner"])
+    assert len(spinner) > 72
+    assert len(spinner) <= SPINNER_STATUS_PREVIEW_LIMIT
+    assert spinner.startswith("calling exec_command(")
 
 
 def test_workspace_app_message_uses_shared_interactive_commands(tmp_path) -> None:
@@ -356,6 +383,284 @@ def test_workspace_app_title_command_updates_tab_name(tmp_path) -> None:
     assert snapshot["turns"] == []
     assert sessions[0]["title"] == "tab1"
     assert model.call_count == 0
+
+
+def test_workspace_app_title_command_persists_tab_state_to_sidecar(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board_html = "<!doctype html><body><h1>Board</h1></body>"
+    board.write_text(board_html, encoding="utf-8")
+    codex_home = tmp_path / "codex-home"
+    session_id = "33333333-3333-4333-8333-333333333333"
+    recorder = SessionRolloutRecorder.create(
+        codex_home,
+        session_id,
+        tmp_path,
+        "test",
+        None,
+        "base",
+    )
+
+    def build_session():
+        runtime = CliSubmissionQueue(
+            Agent(
+                ScriptedModelClient([ModelResponse([AssistantMessage("unused")])]),
+                ToolRegistry(),
+                rollout_recorder=recorder,
+            )
+        )
+        return WorkspaceInteractiveSession(runtime)
+
+    app = create_app(WorkspaceSessionManager(build_session, board), board)
+
+    with TestClient(app) as client:
+        response = client.post("/api/session/message", json={"prompt": "/title tab1"})
+        snapshot = _wait_for_snapshot(client, lambda item: item["title"] == "tab1")
+
+    assert response.status_code == 200
+    assert snapshot["title"] == "tab1"
+    assert board.read_text(encoding="utf-8") == board_html
+    assert WorkspaceStateStore(board).path == tmp_path / "board.pycodex-ws.json"
+    assert WorkspaceStateStore(board).load_tabs() == [
+        {"title": "tab1", "rollout_path": str(recorder.rollout_path)}
+    ]
+
+
+def test_workspace_app_auto_title_does_not_persist_tab_state(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><body><h1>Board</h1></body>", encoding="utf-8")
+    recorder = SessionRolloutRecorder.create(
+        tmp_path / "codex-home",
+        "55555555-5555-4555-8555-555555555555",
+        tmp_path,
+        "test",
+        None,
+        "base",
+    )
+
+    def build_session():
+        runtime = CliSubmissionQueue(
+            Agent(
+                ScriptedModelClient([ModelResponse([AssistantMessage("auto title done")])]),
+                ToolRegistry(),
+                rollout_recorder=recorder,
+            )
+        )
+        return WorkspaceInteractiveSession(runtime)
+
+    app = create_app(WorkspaceSessionManager(build_session, board), board)
+    state_store = WorkspaceStateStore(board)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/session/message",
+            json={"prompt": "please create an automatic title"},
+        )
+        snapshot = _wait_for_snapshot(
+            client,
+            lambda item: item["title"]
+            and item["turns"]
+            and item["turns"][-1]["response"] == "auto title done",
+        )
+
+    assert response.status_code == 200
+    assert snapshot["title"]
+    assert state_store.load_tabs() == []
+
+
+def test_workspace_app_restores_tabs_from_board_state(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    codex_home = tmp_path / "codex-home"
+    thread_id = "44444444-4444-4444-8444-444444444444"
+    rollout_path = (
+        codex_home
+        / "sessions"
+        / "2026"
+        / "04"
+        / "07"
+        / "rollout-2026-04-07T00-00-00-{0}.jsonl".format(thread_id)
+    )
+    rollout_path.parent.mkdir(parents=True, exist_ok=True)
+    rollout_path.write_text(
+        "\n".join(
+            json.dumps(item)
+            for item in [
+                {"type": "session_meta", "payload": {"id": thread_id}},
+                {
+                    "type": "event_msg",
+                    "payload": {"type": "user_message", "message": "old prompt"},
+                },
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "old answer"}],
+                    },
+                },
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    board.write_text("<!doctype html><body><h1>Board</h1></body>", encoding="utf-8")
+    WorkspaceStateStore(board).save_tabs(
+        [{"title": "restored tab", "rollout_path": str(rollout_path)}]
+    )
+
+    def build_session():
+        runtime = CliSubmissionQueue(
+            Agent(ScriptedModelClient([]), ToolRegistry())
+        )
+        return WorkspaceInteractiveSession(runtime)
+
+    app = create_app(WorkspaceSessionManager(build_session, board), board)
+
+    with TestClient(app) as client:
+        snapshot = client.get("/api/session").json()["snapshot"]
+        sessions = client.get("/api/sessions").json()["sessions"]
+
+    assert snapshot["title"] == "restored tab"
+    assert snapshot["turns"][0]["prompt"] == "old prompt"
+    assert snapshot["turns"][0]["response"] == "old answer"
+    assert sessions[0]["title"] == "restored tab"
+
+
+def test_workspace_app_restore_tabs_skips_initial_prompt(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><body><h1>Board</h1></body>", encoding="utf-8")
+    rollout_path = tmp_path / "rollout.jsonl"
+    rollout_path.write_text("", encoding="utf-8")
+    WorkspaceStateStore(board).save_tabs(
+        [{"title": "restored tab", "rollout_path": str(rollout_path)}]
+    )
+    started_with = []
+
+    class _RestoreLink:
+        async def start(self, submit_initial_prompt=True):
+            started_with.append(submit_initial_prompt)
+            return self
+
+        async def close(self):
+            return None
+
+        async def restore_from_rollout(self, _rollout_path, title=""):
+            del title
+            return None
+
+        def summary(self):
+            return {
+                "title": "restored tab",
+                "running": False,
+                "spinner": "",
+                "turn_count": 0,
+            }
+
+        def snapshot(self):
+            return {
+                "running": False,
+                "status": "",
+                "status_kind": "idle",
+                "spinner": "",
+                "model": "test",
+                "title": "restored tab",
+                "turns": [],
+            }
+
+        def rollout_path(self):
+            return str(rollout_path)
+
+        def subscribe(self):
+            queue = asyncio.Queue()
+            queue.put_nowait({"type": "hello", "events": [], "snapshot": self.snapshot()})
+            return queue
+
+        def unsubscribe(self, _queue):
+            return None
+
+        async def submit(self, prompt, sender="web"):
+            del prompt, sender
+            return {"ok": True, "type": "submitted", "snapshot": self.snapshot()}
+
+    app = create_app(WorkspaceSessionManager(_RestoreLink, board), board)
+
+    with TestClient(app) as client:
+        assert client.get("/api/sessions").status_code == 200
+
+    assert started_with == [False]
+
+
+def test_workspace_app_close_persists_remaining_tab_state_to_sidecar(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><body><h1>Board</h1></body>", encoding="utf-8")
+    created = []
+
+    class _PersistentLink:
+        def __init__(self, label: str, rollout_path) -> None:
+            self.label = label
+            self._rollout_path = rollout_path
+            self.closed = False
+
+        async def start(self, submit_initial_prompt=True):
+            del submit_initial_prompt
+            return self
+
+        async def close(self):
+            self.closed = True
+            return None
+
+        def snapshot(self):
+            return {
+                "running": False,
+                "status": "",
+                "status_kind": "idle",
+                "spinner": "",
+                "model": "test",
+                "title": self.label,
+                "turns": [],
+            }
+
+        def rollout_path(self) -> str:
+            return str(self._rollout_path)
+
+        async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
+            self._rollout_path = rollout_path
+            if title:
+                self.label = str(title or "")
+
+        def subscribe(self):
+            queue = asyncio.Queue()
+            queue.put_nowait({"type": "hello", "events": [], "snapshot": self.snapshot()})
+            return queue
+
+        def unsubscribe(self, _queue):
+            return None
+
+    def build_link():
+        index = len(created) + 1
+        rollout_path = tmp_path / "rollout-{0}.jsonl".format(index)
+        rollout_path.write_text("", encoding="utf-8")
+        link = _PersistentLink("tab-{0}".format(index), rollout_path)
+        created.append(link)
+        return link
+
+    app = create_app(build_link, board)
+    state_store = WorkspaceStateStore(board)
+
+    with TestClient(app) as client:
+        initial = client.get("/api/sessions").json()["sessions"]
+        second_id = client.post("/api/sessions").json()["session_id"]
+
+        assert state_store.load_tabs() == []
+
+        response = client.delete("/api/sessions/{0}".format(second_id))
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert created[1].closed is True
+    assert state_store.load_tabs() == [
+        {"title": "tab-1", "rollout_path": str(created[0]._rollout_path)}
+    ]
+    assert initial[0]["title"] == "tab-1"
 
 
 def test_workspace_app_resume_renders_only_restored_turns(tmp_path) -> None:
@@ -519,11 +824,27 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
 
     class _SummaryOnlyLink:
-        async def start(self):
+        async def start(self, submit_initial_prompt=True):
+            del submit_initial_prompt
             return self
 
         async def close(self):
             return None
+
+        def subscribe(self):
+            queue = asyncio.Queue()
+            queue.put_nowait({"type": "hello", "events": [], "snapshot": {}})
+            return queue
+
+        def unsubscribe(self, _queue):
+            return None
+
+        async def restore_from_rollout(self, _rollout_path, title=""):
+            del title
+            return None
+
+        def rollout_path(self):
+            return ""
 
         def summary(self):
             return {
@@ -648,6 +969,58 @@ async def test_workspace_session_tool_error_is_not_rendered_as_turn_error() -> N
         assert turn["status"] == "completed"
         assert turn["error"] == ""
     finally:
+        await link.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/title renamed", "/title", "/history"])
+async def test_workspace_control_command_does_not_finish_active_thinking(
+    command: str,
+) -> None:
+    request_started = asyncio.Event()
+    release_request = asyncio.Event()
+
+    class _StreamingModelClient:
+        model = "streaming-test"
+
+        async def complete(self, _prompt, event_handler):
+            event_handler(ModelStreamEvent(kind="assistant_delta", payload={"delta": "thinking"}))
+            request_started.set()
+            await release_request.wait()
+            return ModelResponse([AssistantMessage("final")])
+
+    runtime = CliSubmissionQueue(Agent(_StreamingModelClient(), ToolRegistry()))
+    link = WorkspaceInteractiveSession(runtime)
+    await link.start()
+    try:
+        result = await link.submit("work")
+        assert result["ok"] is True
+        await request_started.wait()
+
+        command_result = await link.submit(command)
+        assert command_result["ok"] is True
+
+        snapshot = await _wait_for_async_snapshot(
+            link,
+            lambda item: (
+                command != "/title renamed" or item["title"] == "renamed"
+            )
+            and any(
+                turn["kind"] == "assistant"
+                and turn["prompt"] == "work"
+                and turn["thinking"] == "thinking"
+                for turn in item["turns"]
+            ),
+        )
+        turn = next(
+            turn
+            for turn in snapshot["turns"]
+            if turn["kind"] == "assistant" and turn["prompt"] == "work"
+        )
+        assert turn["response"] == ""
+        assert turn["thinking"] == "thinking"
+    finally:
+        release_request.set()
         await link.close()
 
 
@@ -917,7 +1290,8 @@ class _DormantLink:
         self.closed = False
         self.prompts = []
 
-    async def start(self):
+    async def start(self, submit_initial_prompt=True):
+        del submit_initial_prompt
         return self
 
     async def close(self):
@@ -973,6 +1347,13 @@ class _DormantLink:
     def unsubscribe(self, _queue):
         return None
 
+    async def restore_from_rollout(self, _rollout_path, title=""):
+        if title:
+            self.label = str(title or "")
+
+    def rollout_path(self):
+        return ""
+
     async def submit(self, prompt, sender="web"):
         self.prompts.append(prompt)
         snapshot = self._snapshot()
@@ -980,7 +1361,8 @@ class _DormantLink:
 
 
 class _ScrollAwareLink:
-    async def start(self):
+    async def start(self, submit_initial_prompt=True):
+        del submit_initial_prompt
         return self
 
     async def close(self):
@@ -1020,6 +1402,13 @@ class _ScrollAwareLink:
 
     def unsubscribe(self, _queue):
         return None
+
+    async def restore_from_rollout(self, _rollout_path, title=""):
+        del title
+        return None
+
+    def rollout_path(self):
+        return ""
 
     async def submit(self, prompt, sender="web"):
         return {"ok": True, "type": "control", "snapshot": self._snapshot()}

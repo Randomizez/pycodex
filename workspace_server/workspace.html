@@ -16,11 +16,12 @@
       --accent-ink: #ffffff;
       --code: #f6f8fa;
       --chat-width: min(42vw, 760px);
+      --splitter-width: 8px;
     }
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      height: 100vh;
+      height: 100dvh;
       overflow: hidden;
       background: var(--bg);
       color: var(--ink);
@@ -28,9 +29,12 @@
     }
     .workspace {
       display: grid;
-      grid-template-columns: minmax(360px, 1fr) 8px minmax(340px, var(--chat-width));
-      height: 100vh;
-      min-width: 760px;
+      grid-template-columns: minmax(0, 1fr) var(--splitter-width) var(--chat-width);
+      height: 100dvh;
+      min-width: 0;
+    }
+    .workspace.collapsed .splitter::after {
+      background: #7e9187;
     }
     .board {
       border: 0;
@@ -40,7 +44,7 @@
     }
     .splitter {
       width: 8px;
-      height: 100vh;
+      height: 100dvh;
       border: 0;
       border-left: 1px solid var(--line);
       border-right: 1px solid var(--line);
@@ -54,7 +58,7 @@
       display: block;
       width: 2px;
       height: 42px;
-      margin: calc(50vh - 21px) auto 0;
+      margin: calc(50dvh - 21px) auto 0;
       border-radius: 999px;
       background: #b9c1ba;
     }
@@ -64,8 +68,9 @@
       user-select: none;
     }
     .chat {
+      position: relative;
       min-width: 0;
-      height: 100vh;
+      height: 100dvh;
       overflow: hidden;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
@@ -267,7 +272,7 @@
     }
     .composer {
       border-top: 1px solid var(--line);
-      padding: 12px;
+      padding: 12px 12px 28px;
       display: grid;
       gap: 8px;
       background: #fff;
@@ -289,6 +294,10 @@
       align-items: center;
     }
     .spinner {
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: 6px;
       min-height: 18px;
       color: var(--muted);
       font-size: 12px;
@@ -306,10 +315,7 @@
     }
     @media (max-width: 900px) {
       body { overflow: auto; height: auto; }
-      .workspace { display: block; min-width: 0; height: auto; }
-      .board { height: 56vh; border-right: 0; border-bottom: 1px solid var(--line); }
-      .splitter { display: none; }
-      .chat { min-height: 44vh; }
+      .workspace { min-width: 0; }
     }
   </style>
 </head>
@@ -331,10 +337,8 @@
       <div id="log" class="log"></div>
       <form id="composer" class="composer">
         <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
-        <div class="actions">
-          <div id="spinner" class="spinner"></div>
-        </div>
       </form>
+      <div id="spinner" class="spinner"></div>
     </section>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
@@ -364,6 +368,7 @@
     let isComposing = false;
     const sessionState = new Map();
     let restoreScrollTop = null;
+    let suppressScrollSave = false;
     const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     const markdownRenderer = window.markdownit
       ? window.markdownit({html: false, linkify: true, breaks: false})
@@ -420,17 +425,36 @@
       if (stored > 0) setChatWidth(stored);
     }
 
+    function centerSplit() {
+      setChatWidth(Math.max(0, (window.innerWidth - 8) / 2));
+    }
+
     function setChatWidth(width) {
       const viewportWidth = window.innerWidth || 0;
-      const minWidth = Math.min(340, Math.max(260, viewportWidth - 420));
-      const maxWidth = Math.max(minWidth, viewportWidth - 420);
-      const nextWidth = Math.max(minWidth, Math.min(maxWidth, Math.round(width)));
+      const splitterWidth = 8;
+      const gutterWidth = Math.min(24, Math.max(12, Math.round(viewportWidth * 0.06)));
+      const availableWidth = Math.max(0, viewportWidth - splitterWidth);
+      const maxChatWidth = Math.max(gutterWidth, availableWidth - gutterWidth);
+      const collapseWidth = Math.min(
+        280,
+        Math.max(120, Math.round(viewportWidth * 0.25)),
+      );
+      let nextWidth = Math.max(gutterWidth, Math.min(maxChatWidth, Math.round(width)));
+      let collapsed = false;
+      if (nextWidth < collapseWidth) {
+        nextWidth = gutterWidth;
+        collapsed = true;
+      } else if (availableWidth - nextWidth < collapseWidth) {
+        nextWidth = maxChatWidth;
+        collapsed = true;
+      }
       workspace.style.setProperty("--chat-width", `${nextWidth}px`);
+      workspace.classList.toggle("collapsed", collapsed);
       window.localStorage.setItem("pycodex.workspace.chatWidth", String(nextWidth));
     }
 
     function startResize(event) {
-      if (!workspace || window.innerWidth <= 900) return;
+      if (!workspace) return;
       const chatWidth = document.querySelector(".chat").getBoundingClientRect().width;
       resizeStart = { pointerId: event.pointerId, startX: event.clientX, startWidth: chatWidth };
       splitter.setPointerCapture(event.pointerId);
@@ -546,11 +570,8 @@
 
     function messageSignature(snapshot) {
       const turns = (snapshot && snapshot.turns) || [];
-      return JSON.stringify({
-        running: !!snapshot.running,
-        spinner: snapshot.spinner || "",
-        title: snapshot.title || "",
-        turns: turns.map((item) => [
+      return JSON.stringify(
+        turns.map((item) => [
           item.submission_id || "",
           item.turn_id || "",
           item.prompt || "",
@@ -560,19 +581,23 @@
           item.error || "",
           item.kind || "",
         ]),
-      });
+      );
     }
 
     async function pollSession() {
       if (pollInFlight) return;
       pollInFlight = true;
+      const requestedSessionId = activeSessionId;
       try {
-        const path = activeSessionId
-          ? `api/session?session_id=${encodeURIComponent(activeSessionId)}`
+        const path = requestedSessionId
+          ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
           : "api/session";
         const response = await fetch(relativeUrl(path));
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
+        if (requestedSessionId && requestedSessionId !== activeSessionId) {
+          return;
+        }
         if (payload.session_id && payload.session_id !== activeSessionId) {
           activeSessionId = payload.session_id;
         }
@@ -639,25 +664,30 @@
       lastRenderedSignature = signature;
       const shouldStick = isNearBottom();
       const previousScrollTop = log.scrollTop;
-      log.textContent = "";
-      const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
-      if (turns.length) {
-        turns.forEach((turn) => renderTurn(turn, shouldStick));
-      }
-      setSpinner(snapshot.spinner || "");
-      if (restoreScrollTop !== null) {
-        log.scrollTop = Math.min(
-          restoreScrollTop,
-          Math.max(0, log.scrollHeight - log.clientHeight),
-        );
-        restoreScrollTop = null;
-      } else if (shouldStick) {
-        scrollToBottom();
-      } else {
-        log.scrollTop = Math.min(
-          previousScrollTop,
-          Math.max(0, log.scrollHeight - log.clientHeight),
-        );
+      suppressScrollSave = true;
+      try {
+        log.textContent = "";
+        const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+        if (turns.length) {
+          turns.forEach((turn) => renderTurn(turn, shouldStick));
+        }
+        setSpinner(snapshot.spinner || "");
+        if (restoreScrollTop !== null) {
+          log.scrollTop = Math.min(
+            restoreScrollTop,
+            Math.max(0, log.scrollHeight - log.clientHeight),
+          );
+          restoreScrollTop = null;
+        } else if (shouldStick) {
+          scrollToBottom();
+        } else {
+          log.scrollTop = Math.min(
+            previousScrollTop,
+            Math.max(0, log.scrollHeight - log.clientHeight),
+          );
+        }
+      } finally {
+        suppressScrollSave = false;
       }
       state.scrollTop = log.scrollTop;
     }
@@ -713,7 +743,9 @@
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";
       prompt.value = state.draft || "";
+      suppressScrollSave = true;
       log.textContent = "";
+      suppressScrollSave = false;
       setSpinner("");
       restoreScrollTop = state.scrollTop || 0;
       await pollSession();
@@ -756,7 +788,9 @@
         activeSessionId = sessions.length ? sessions[0].id || "" : "";
         lastRenderedSignature = "";
         prompt.value = "";
+        suppressScrollSave = true;
         log.textContent = "";
+        suppressScrollSave = false;
         await pollSession();
       } else {
         renderTabs();
@@ -785,6 +819,7 @@
     });
 
     log.addEventListener("scroll", () => {
+      if (suppressScrollSave) return;
       if (!activeSessionId) return;
       stateForSession(activeSessionId).scrollTop = log.scrollTop;
     });
@@ -801,6 +836,7 @@
     splitter.addEventListener("pointermove", updateResize);
     splitter.addEventListener("pointerup", endResize);
     splitter.addEventListener("pointercancel", endResize);
+    splitter.addEventListener("dblclick", centerSplit);
     newTabButton.addEventListener("click", createSession);
     window.addEventListener("resize", () => {
       const current = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);

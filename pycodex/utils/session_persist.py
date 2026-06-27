@@ -198,7 +198,18 @@ def load_resumed_session(
     session = sessions[resume_index - 1]
     thread_id = session["thread_id"]
     rollout_path = Path(session["rollout_path"])
-    thread_name = _latest_thread_names_by_id(codex_home).get(thread_id)
+    return load_resumed_session_path(
+        rollout_path,
+        thread_name=_latest_thread_names_by_id(codex_home).get(thread_id),
+    )
+
+
+def load_resumed_session_path(
+    rollout_path: 'typing.Union[str, Path]',
+    thread_name: 'typing.Union[str, None]' = None,
+) -> 'typing.Dict[str, object]':
+    rollout_path = Path(rollout_path)
+    thread_id = _thread_id_from_rollout_path(rollout_path) or ""
     session_id = thread_id
     history: 'typing.List[ConversationItem]' = []
     saw_user_turn = False
