@@ -234,6 +234,8 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "compositionstart" in response.text
     assert "event.isComposing" in response.text
     assert "__BOARD_LABEL__" not in response.text
+    assert "boardbar" in response.text
+    assert "pycodex</div>" not in response.text
     assert 'id="splitter"' in response.text
     assert "centerSplit" in response.text
     assert "mobile-switch" not in response.text

@@ -36,8 +36,26 @@
     .workspace.collapsed .splitter::after {
       background: #7e9187;
     }
+    .board-pane {
+      min-width: 0;
+      height: 100dvh;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: #fff;
+    }
+    .boardbar {
+      min-width: 0;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 12px;
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .board {
       border: 0;
+      min-width: 0;
       width: 100%;
       height: 100%;
       background: #fff;
@@ -77,6 +95,7 @@
       background: var(--panel);
     }
     .topbar {
+      min-width: 0;
       padding: 12px 14px;
       border-bottom: 1px solid var(--line);
       display: grid;
@@ -153,14 +172,6 @@
       color: var(--ink);
       background: #f3f6f4;
     }
-    .title { font-weight: 650; }
-    .subtitle {
-      color: var(--muted);
-      font-size: 12px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
     .log {
       min-height: 0;
       overflow-y: auto;
@@ -172,6 +183,7 @@
       background: #fbfcfa;
     }
     .entry {
+      min-width: 0;
       border: 1px solid var(--line);
       border-radius: 6px;
       padding: 10px 11px;
@@ -271,6 +283,7 @@
       text-decoration: underline;
     }
     .composer {
+      min-width: 0;
       border-top: 1px solid var(--line);
       padding: 12px 12px 28px;
       display: grid;
@@ -278,6 +291,7 @@
       background: #fff;
     }
     textarea {
+      min-width: 0;
       resize: vertical;
       min-height: 88px;
       max-height: 35vh;
@@ -321,17 +335,16 @@
 </head>
 <body>
   <div class="workspace">
-    <iframe id="boardFrame" class="board" src="board" title="board"></iframe>
+    <section class="board-pane" aria-label="workspace board">
+      <div class="boardbar">Board: <code>__BOARD_LABEL__</code></div>
+      <iframe id="boardFrame" class="board" src="board" title="board"></iframe>
+    </section>
     <button id="splitter" class="splitter" type="button" aria-label="Resize chat panel"></button>
     <section class="chat" aria-label="pycodex chat">
       <div class="topbar">
         <div class="tabbar">
           <div id="tabs" class="tabs"></div>
           <button id="newTab" class="tab-new" type="button" title="New session" aria-label="New session">+</button>
-        </div>
-        <div>
-          <div class="title">pycodex</div>
-          <div class="subtitle">Board: <code>__BOARD_LABEL__</code></div>
         </div>
       </div>
       <div id="log" class="log"></div>
@@ -515,7 +528,7 @@
     function stateForSession(sessionId) {
       const key = String(sessionId || "");
       if (!sessionState.has(key)) {
-        sessionState.set(key, {lastRenderedSignature: "", scrollTop: 0, draft: ""});
+        sessionState.set(key, {lastRenderedSignature: "", scrollTop: null, draft: ""});
       }
       return sessionState.get(key);
     }
@@ -523,7 +536,9 @@
     function saveActiveSessionUiState() {
       if (!activeSessionId) return;
       const state = stateForSession(activeSessionId);
-      state.scrollTop = log.scrollTop;
+      if (log.scrollHeight > log.clientHeight) {
+        state.scrollTop = log.scrollTop;
+      }
       state.draft = prompt.value;
       state.lastRenderedSignature = lastRenderedSignature;
     }
@@ -747,7 +762,7 @@
       log.textContent = "";
       suppressScrollSave = false;
       setSpinner("");
-      restoreScrollTop = state.scrollTop || 0;
+      restoreScrollTop = state.scrollTop;
       await pollSession();
       renderTabs();
     }
@@ -763,11 +778,11 @@
       activeSessionId = payload.session_id || "";
       const state = stateForSession(activeSessionId);
       state.draft = "";
-      state.scrollTop = 0;
+      state.scrollTop = null;
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";
       prompt.value = "";
-      restoreScrollTop = 0;
+      restoreScrollTop = null;
       updateSessions(payload.sessions || []);
       renderSnapshot(payload.snapshot);
     }
