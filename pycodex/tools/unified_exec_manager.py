@@ -21,15 +21,18 @@ from pathlib import Path
 from loguru import logger
 
 from ..compat import shlex_join, stream_writer_is_closing
+from ..utils.truncation import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    approx_token_count,
+    formatted_truncate_text,
+)
 import typing
 
 DEFAULT_EXEC_YIELD_TIME_MS = 10_000
 DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250
-DEFAULT_MAX_OUTPUT_TOKENS = 10_000
 DEFAULT_LOGIN = True
 DEFAULT_TTY = False
 DEFAULT_SESSION_ID_START = 1000
-APPROX_BYTES_PER_TOKEN = 4
 UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024
 UNIFIED_EXEC_OUTPUT_SCHEMA = {
     "type": "object",
@@ -62,94 +65,6 @@ UNIFIED_EXEC_OUTPUT_SCHEMA = {
     "required": ["wall_time_seconds", "output"],
     "additionalProperties": False,
 }
-
-
-def _approx_token_count(text: 'str') -> 'int':
-    if not text:
-        return 0
-    byte_length = len(text.encode("utf-8"))
-    return max(1, (byte_length + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN)
-
-
-def _approx_bytes_for_tokens(token_count: 'int') -> 'int':
-    return max(token_count, 0) * APPROX_BYTES_PER_TOKEN
-
-
-def _approx_tokens_from_byte_count(byte_count: 'int') -> 'int':
-    if byte_count <= 0:
-        return 0
-    return (byte_count + APPROX_BYTES_PER_TOKEN - 1) // APPROX_BYTES_PER_TOKEN
-
-
-def _split_budget(byte_budget: 'int') -> 'typing.Tuple[int, int]':
-    left_budget = byte_budget // 2
-    return left_budget, byte_budget - left_budget
-
-
-def _split_string(
-    text: 'str',
-    beginning_bytes: 'int',
-    end_bytes: 'int',
-) -> 'typing.Tuple[str, str]':
-    if not text:
-        return "", ""
-
-    total_bytes = len(text.encode("utf-8"))
-    tail_start_target = max(total_bytes - end_bytes, 0)
-    prefix_end = 0
-    suffix_start = len(text)
-    suffix_started = False
-    current_byte = 0
-
-    for index, char in enumerate(text):
-        char_bytes = len(char.encode("utf-8"))
-        char_start = current_byte
-        char_end = current_byte + char_bytes
-        if char_end <= beginning_bytes:
-            prefix_end = index + 1
-            current_byte = char_end
-            continue
-        if char_start >= tail_start_target:
-            if not suffix_started:
-                suffix_start = index
-                suffix_started = True
-            current_byte = char_end
-            continue
-        current_byte = char_end
-
-    if suffix_start < prefix_end:
-        suffix_start = prefix_end
-
-    return text[:prefix_end], text[suffix_start:]
-
-
-def _truncate_text(text: 'str', max_tokens: 'int') -> 'str':
-    if not text:
-        return ""
-
-    max_bytes = _approx_bytes_for_tokens(max_tokens)
-    total_bytes = len(text.encode("utf-8"))
-    if total_bytes <= max_bytes:
-        return text
-
-    removed_tokens = _approx_tokens_from_byte_count(total_bytes - max_bytes)
-    marker = f"\u2026{removed_tokens} tokens truncated\u2026"
-    if max_bytes == 0:
-        return marker
-
-    left_budget, right_budget = _split_budget(max_bytes)
-    prefix, suffix = _split_string(text, left_budget, right_budget)
-    return f"{prefix}{marker}{suffix}"
-
-
-def _formatted_truncate_text(text: 'str', max_tokens: 'int') -> 'str':
-    byte_budget = _approx_bytes_for_tokens(max_tokens)
-    if len(text.encode("utf-8")) <= byte_budget:
-        return text
-
-    total_lines = len(text.splitlines())
-    return f"Total output lines: {total_lines}\n\n{_truncate_text(text, max_tokens)}"
-
 
 @dataclass
 class _HeadTailBuffer:
@@ -431,11 +346,11 @@ class UnifiedExecManager:
         return [shell_path, "-lc" if login else "-c", cmd]
 
     def _estimate_token_count(self, output: 'str') -> 'typing.Union[int, None]':
-        return _approx_token_count(output)
+        return approx_token_count(output)
 
     def _truncate_output(self, output: 'str', max_output_tokens: 'typing.Union[int, None]') -> 'str':
         token_budget = DEFAULT_MAX_OUTPUT_TOKENS if max_output_tokens is None else max_output_tokens
-        return _formatted_truncate_text(output, max(token_budget, 0))
+        return formatted_truncate_text(output, max(token_budget, 0))
 
     def _tty_echo(self, chars: 'str') -> 'bytes':
         normalized = chars.replace("\n", "\r\n")

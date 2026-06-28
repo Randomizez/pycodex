@@ -21,11 +21,11 @@ from loguru import logger
 
 from ..compat import is_ascii, stream_writer_is_closing
 from ..protocol import JSONDict, JSONValue, ToolCall
+from ..utils.truncation import DEFAULT_MAX_OUTPUT_TOKENS
 from .base_tool import StructuredToolOutput, ToolContext, ToolRegistry
 import typing
 
 DEFAULT_WAIT_YIELD_TIME_MS = 10_000
-DEFAULT_MAX_OUTPUT_TOKENS = 10_000
 CHARS_PER_TOKEN = 4
 EXEC_PRAGMA_PREFIX = "// @exec:"
 WAIT_COMPLETION_GRACE_SECONDS = 0.02

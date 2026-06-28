@@ -286,6 +286,27 @@ async def test_exec_command_tool_clamps_yield_time_to_schema_range() -> 'None':
 
 
 @pytest.mark.asyncio
+async def test_exec_command_tool_passes_optional_max_output_tokens() -> 'None':
+    class RecordingManager:
+        def __init__(self) -> 'None':
+            self.calls = []
+
+        async def exec_command(self, **kwargs):
+            self.calls.append(kwargs)
+            return "ok"
+
+    manager = RecordingManager()
+    tool = ExecCommandTool(manager)
+    context = ToolContext(turn_id="turn_exec_max_output", history=())
+
+    await tool.run(context, {"cmd": "true"})
+    assert manager.calls[-1]["max_output_tokens"] is None
+
+    await tool.run(context, {"cmd": "true", "max_output_tokens": 0})
+    assert manager.calls[-1]["max_output_tokens"] == 0
+
+
+@pytest.mark.asyncio
 async def test_exec_command_tool_returns_session_for_long_running_process(tmp_path) -> 'None':
     registry = make_registry(tmp_path)
     result = await registry.execute(
@@ -359,6 +380,27 @@ async def test_write_stdin_tool_clamps_yield_time_to_schema_range() -> 'None':
     result = await tool.run(context, {"session_id": 1000, "yield_time_ms": 999_999})
     assert result == "ok"
     assert manager.calls[-1]["yield_time_ms"] == 300_000
+
+
+@pytest.mark.asyncio
+async def test_write_stdin_tool_passes_optional_max_output_tokens() -> 'None':
+    class RecordingManager:
+        def __init__(self) -> 'None':
+            self.calls = []
+
+        async def write_stdin(self, **kwargs):
+            self.calls.append(kwargs)
+            return "ok"
+
+    manager = RecordingManager()
+    tool = WriteStdinTool(manager)
+    context = ToolContext(turn_id="turn_write_max_output", history=())
+
+    await tool.run(context, {"session_id": 1000})
+    assert manager.calls[-1]["max_output_tokens"] is None
+
+    await tool.run(context, {"session_id": 1000, "max_output_tokens": 0})
+    assert manager.calls[-1]["max_output_tokens"] == 0
 
 
 @pytest.mark.asyncio

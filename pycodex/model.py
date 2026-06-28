@@ -298,13 +298,20 @@ class ResponsesModelClient:
                     prompt,
                     event_handler,
                 )
-            except ResponsesRetryableError as exc:
-                if _is_context_length_error_message(str(exc)):
+            except (ResponsesRetryableError, ResponsesIncompleteError) as exc:
+                if (
+                    isinstance(exc, ResponsesRetryableError)
+                    and _is_context_length_error_message(str(exc))
+                ):
                     raise ResponsesApiError(str(exc)) from exc
                 if retries >= max_retries:
                     raise
                 retries += 1
-                delay_seconds = exc.retry_delay_seconds
+                delay_seconds = (
+                    exc.retry_delay_seconds
+                    if isinstance(exc, ResponsesRetryableError)
+                    else None
+                )
                 if delay_seconds is None:
                     delay_seconds = self._retry_delay_seconds(retries)
                 event_handler(

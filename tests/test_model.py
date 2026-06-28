@@ -1013,6 +1013,100 @@ async def test_responses_model_client_retries_retryable_stream_failures() -> 'No
 
 
 @pytest.mark.asyncio
+async def test_responses_model_client_retries_incomplete_stream_without_changing_session() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        stream_max_retries=1,
+    )
+    client = ResponsesModelClient(
+        provider,
+        session_id='00000000-0000-7000-8000-000000000000',
+    )
+    requests_seen: 'typing.List[typing.Tuple[str, str]]' = []
+
+    class _IncompleteResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.incomplete'
+            yield (
+                b'data: {"type":"response.incomplete",'
+                b'"response":{"incomplete_details":{"reason":"max_output_tokens"}}}'
+            )
+            yield b''
+
+    class _SuccessfulResponse:
+        status_code = 200
+        text = ''
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b'event: response.output_item.done'
+            yield (
+                b'data: {"type":"response.output_item.done","item":{"type":"message",'
+                b'"role":"assistant","content":[{"type":"output_text","text":"done"}]}}'
+            )
+            yield b''
+            yield b'event: response.completed'
+            yield b'data: {"type":"response.completed"}'
+            yield b''
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, timeout, allow_redirects, settings
+        body = json.loads(request.body.decode('utf-8'))
+        requests_seen.append((request.headers['session_id'], body['prompt_cache_key']))
+        if len(requests_seen) == 1:
+            return _IncompleteResponse()
+        return _SuccessfulResponse()
+
+    requests.Session.send = fake_send
+    try:
+        events: 'typing.List[ModelStreamEvent]' = []
+        response = await client.complete(
+            Prompt(input=[UserMessage(text='hi')], tools=[]),
+            events.append,
+        )
+    finally:
+        requests.Session.send = original_send
+
+    assert [item.text for item in response.items if isinstance(item, AssistantMessage)] == ['done']
+    assert requests_seen == [
+        (
+            '00000000-0000-7000-8000-000000000000',
+            '00000000-0000-7000-8000-000000000000',
+        ),
+        (
+            '00000000-0000-7000-8000-000000000000',
+            '00000000-0000-7000-8000-000000000000',
+        ),
+    ]
+    assert events[0].kind == 'stream_error'
+    assert events[0].payload['message'] == 'Reconnecting... 1/1'
+    assert 'response.incomplete' in events[0].payload['error']
+
+
+@pytest.mark.asyncio
 async def test_responses_model_client_does_not_retry_context_length_failed_stream() -> 'None':
     provider = ResponsesProviderConfig(
         model='demo-model',

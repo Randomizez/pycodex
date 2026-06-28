@@ -5,7 +5,7 @@ import re
 from typing import Callable
 
 from .context import ContextManager
-from .model import ModelClient, ResponsesIncompleteError
+from .model import ModelClient
 from .protocol import (
     AgentEvent,
     AssistantMessage,
@@ -18,6 +18,7 @@ from .protocol import (
     UserMessage,
 )
 from .tools import ExecCommandTool, ToolContext, ToolRegistry, UnifiedExecManager
+from .utils.truncation import truncate_tool_results_for_history
 from .utils import uuid7_string
 import typing
 
@@ -206,6 +207,7 @@ class Agent:
                     )
 
                 tool_results = await self._execute_tool_batch(turn_id, tool_calls)
+                tool_results = truncate_tool_results_for_history(tool_results)
                 self._history.extend(tool_results)
                 self._persist_history_items(tool_results)
                 follow_up_messages = self._build_follow_up_messages(tool_results)
@@ -352,14 +354,11 @@ class Agent:
     def _record_model_response_items(
         self,
         items: 'typing.Iterable[object]',
-        include_tool_calls: 'bool' = True,
     ) -> 'typing.Tuple[typing.Tuple[ConversationItem, ...], typing.List[ToolCall], typing.Union[str, None]]':
         persisted_response_items: 'typing.List[ConversationItem]' = []
         tool_calls: 'typing.List[ToolCall]' = []
         last_assistant_message = None
         for item in items:
-            if isinstance(item, ToolCall) and not include_tool_calls:
-                continue
             if not isinstance(item, (AssistantMessage, ToolCall, ReasoningItem)):
                 continue
             self._history.append(item)
@@ -416,13 +415,6 @@ class Agent:
                     prompt,
                     lambda event: self._handle_model_stream_event(turn_id, event),
                 )
-            except ResponsesIncompleteError as exc:
-                if exc.reason == "max_output_tokens":
-                    self._record_model_response_items(
-                        exc.partial_items,
-                        include_tool_calls=False,
-                    )
-                raise
             except Exception as exc:
                 error_message = str(exc)
                 if (

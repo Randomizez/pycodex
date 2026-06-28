@@ -20,6 +20,7 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.agent import TurnInterrupted
+from pycodex.tools.base_tool import StructuredToolOutput
 from pycodex.tools import ExecCommandTool, UnifiedExecManager
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX
 from tests.fakes import ScriptedModelClient
@@ -86,6 +87,29 @@ class WaitAgentNotificationTool(BaseTool):
         }
 
 
+class LongOutputTool(BaseTool):
+    name = "long_output"
+    description = "Returns a long string."
+    input_schema = {"type": "object"}
+
+    async def run(self, context, args):
+        del context
+        return str(args["text"])
+
+
+class ContentItemsTool(BaseTool):
+    name = "content_items"
+    description = "Returns structured content items."
+    input_schema = {"type": "object"}
+
+    async def run(self, context, args):
+        del context
+        return StructuredToolOutput(
+            output="structured output",
+            content_items=tuple(args["content_items"]),
+        )
+
+
 class UsageModelClient:
     def __init__(
         self,
@@ -117,6 +141,14 @@ class UsageModelClient:
 def _auto_compact_context(limit: 'typing.Union[int, None]') -> 'ContextManager':
     return ContextManager(
         config=ContextConfig(model_auto_compact_token_limit=limit),
+        include_permissions_instructions=False,
+        include_skills_instructions=False,
+    )
+
+
+def _model_context(model: 'str') -> 'ContextManager':
+    return ContextManager(
+        config=ContextConfig(model=model),
         include_permissions_instructions=False,
         include_skills_instructions=False,
     )
@@ -555,6 +587,120 @@ async def test_wait_agent_injects_subagent_notification_into_history() -> 'None'
 
 
 @pytest.mark.asyncio
+async def test_agent_truncates_tool_output_before_history_follow_up() -> 'None':
+    long_output = "0123456789" * 7000
+    model = ScriptedModelClient(
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="call_long",
+                        name="long_output",
+                        arguments={"text": long_output},
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="done")]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(LongOutputTool())
+
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
+
+    result = await agent.run_turn(["run long tool"])
+
+    assert result.output_text == "done"
+    tool_result = next(item for item in result.history if isinstance(item, ToolResult))
+    assert isinstance(tool_result.output, str)
+    assert tool_result.output != long_output
+    assert "tokens truncated" in tool_result.output
+
+    follow_up_items = _conversation_items(model.prompts[1])
+    prompt_tool_result = next(
+        item for item in follow_up_items if isinstance(item, ToolResult)
+    )
+    assert prompt_tool_result.output == tool_result.output
+
+
+@pytest.mark.asyncio
+async def test_agent_truncates_tool_content_items_for_history() -> 'None':
+    model = ScriptedModelClient(
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="call_content",
+                        name="content_items",
+                        arguments={
+                            "content_items": [
+                                {"type": "input_text", "text": "a" * 60000},
+                                {"type": "input_image", "image_url": "file:///tmp/x.png"},
+                                {"type": "input_text", "text": "b" * 5000},
+                            ]
+                        },
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="done")]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(ContentItemsTool())
+
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
+
+    await agent.run_turn(["run content tool"])
+
+    tool_result = next(item for item in agent.history if isinstance(item, ToolResult))
+    assert tool_result.content_items is not None
+    assert tool_result.content_items[0]["type"] == "input_text"
+    assert "tokens truncated" in tool_result.content_items[0]["text"]
+    assert tool_result.content_items[1] == {
+        "type": "input_image",
+        "image_url": "file:///tmp/x.png",
+    }
+    assert tool_result.content_items[2] == {
+        "type": "input_text",
+        "text": "[omitted 1 text items ...]",
+    }
+
+
+@pytest.mark.asyncio
+async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> 'None':
+    model = ScriptedModelClient(
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="call_wait",
+                        name="wait_agent",
+                        arguments={"ids": ["agent_x"]},
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="done")]),
+        ]
+    )
+    tools = ToolRegistry()
+    tools.register(WaitAgentNotificationTool())
+
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
+
+    await agent.run_turn(["check subagent"])
+
+    tool_result = next(item for item in agent.history if isinstance(item, ToolResult))
+    assert isinstance(tool_result.output, dict)
+    notification = next(
+        item
+        for item in agent.history
+        if isinstance(item, UserMessage)
+        and item.text.startswith("<subagent_notification>\n")
+    )
+    assert "019d0000-0000-7000-8000-000000000000" in notification.text
+
+
+@pytest.mark.asyncio
 async def test_runtime_submission_loop_processes_turn_and_shutdown() -> 'None':
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     tools = ToolRegistry()
@@ -854,7 +1000,7 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_records_max_output_incomplete_partial_for_follow_up() -> 'None':
+async def test_agent_drops_max_output_incomplete_partial_for_follow_up() -> 'None':
     class PartialThenContinueModelClient:
         def __init__(self) -> 'None':
             self.prompts = []
@@ -888,10 +1034,8 @@ async def test_agent_records_max_output_incomplete_partial_for_follow_up() -> 'N
 
     assert [type(item).__name__ for item in agent.history] == [
         "UserMessage",
-        "AssistantMessage",
     ]
     assert agent.history[0].text == "write a long answer"
-    assert agent.history[1].text == "partial answer"
     assert "turn_failed" in [event.kind for event in events]
 
     result = await agent.run_turn(["continue"])
@@ -900,16 +1044,14 @@ async def test_agent_records_max_output_incomplete_partial_for_follow_up() -> 'N
     follow_up_items = _conversation_items(model.prompts[1])
     assert [type(item).__name__ for item in follow_up_items] == [
         "UserMessage",
-        "AssistantMessage",
         "UserMessage",
     ]
     assert follow_up_items[0].text == "write a long answer"
-    assert follow_up_items[1].text == "partial answer"
-    assert follow_up_items[2].text == "continue"
+    assert follow_up_items[1].text == "continue"
 
 
 @pytest.mark.asyncio
-async def test_agent_records_reasoning_done_item_from_incomplete_response() -> 'None':
+async def test_agent_drops_reasoning_done_item_from_incomplete_response() -> 'None':
     class ReasoningThenContinueModelClient:
         def __init__(self) -> 'None':
             self.prompts = []
@@ -945,7 +1087,6 @@ async def test_agent_records_reasoning_done_item_from_incomplete_response() -> '
 
     assert [type(item).__name__ for item in agent.history] == [
         "UserMessage",
-        "ReasoningItem",
     ]
 
     await agent.run_turn(["continue"])
@@ -953,7 +1094,6 @@ async def test_agent_records_reasoning_done_item_from_incomplete_response() -> '
     follow_up_items = _conversation_items(model.prompts[1])
     assert [type(item).__name__ for item in follow_up_items] == [
         "UserMessage",
-        "ReasoningItem",
         "UserMessage",
     ]
 
