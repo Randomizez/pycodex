@@ -374,6 +374,41 @@ def test_build_agent_overrides_provider_for_managed_responses_url(
     assert os.environ[LOCAL_RESPONSES_SERVER_API_KEY_ENV] == "dummy"
 
 
+@pytest.mark.asyncio
+async def test_build_agent_passes_extra_contextual_user_messages(tmp_path) -> 'None':
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "demo-model"',
+                'model_provider = "demo"',
+                "[model_providers.demo]",
+                'base_url = "https://example.com/v1"',
+                'env_key = "DUMMY_KEY"',
+            ]
+        )
+    )
+    client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
+
+    agent = build_agent(
+        client,
+        config_path=str(config_path),
+        extra_contextual_user_messages=["workspace context"],
+    )
+    await agent.run_turn(["hello"])
+
+    contextual_messages = [
+        item
+        for item in client.prompts[0].input
+        if isinstance(item, ContextMessage) and item.role == "user"
+    ]
+    assert contextual_messages
+    assert contextual_messages[0].content_items is not None
+    assert "workspace context" in [
+        item["text"] for item in contextual_messages[0].content_items
+    ]
+
+
 def test_build_model_can_be_called_without_arguments(monkeypatch) -> 'None':
     captured = {}
     fake_client = object()

@@ -11,6 +11,8 @@ from pycodex import (
     AssistantMessage,
     BaseTool,
     CliSubmissionQueue,
+    ContextManager,
+    ContextMessage,
     ModelStreamEvent,
     ModelResponse,
     ToolCall,
@@ -29,7 +31,7 @@ from workspace_server import (
 from workspace_server.app import (
     SPINNER_STATUS_PREVIEW_LIMIT,
     WorkspaceStateStore,
-    _board_prompt_text,
+    _board_context_text,
     _default_board_path,
     _format_board_path_for_prompt,
 )
@@ -115,31 +117,48 @@ def test_workspace_formats_board_prompt_path_relative_to_cwd(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_workspace_initial_board_prompt_uses_normal_submission_flow(tmp_path) -> None:
+async def test_workspace_start_does_not_submit_board_context(tmp_path) -> None:
     board = tmp_path / "board.html"
     board.write_text("<html>board</html>", encoding="utf-8")
     model = ScriptedModelClient([ModelResponse([AssistantMessage("noted")])])
-    prompt_text = _board_prompt_text(board)
-    assert "Current workspace board file:" in prompt_text
-    assert "shown to the user in real time" in prompt_text
+    context_text = _board_context_text(board)
+    assert "Current workspace board file:" in context_text
+    assert "shown to the user in real time" in context_text
     session = WorkspaceInteractiveSession(
-        CliSubmissionQueue(Agent(model, ToolRegistry())),
-        initial_prompt=prompt_text,
+        CliSubmissionQueue(
+            Agent(
+                model,
+                ToolRegistry(),
+                context_manager=ContextManager(
+                    extra_contextual_user_messages=[context_text],
+                    include_permissions_instructions=False,
+                    include_skills_instructions=False,
+                ),
+            )
+        ),
     )
 
     await session.start()
     try:
+        await asyncio.sleep(0.05)
+        assert session.snapshot()["turns"] == []
+        assert model.call_count == 0
+        await session.submit("hello")
         snapshot = await _wait_for_async_snapshot(
             session,
             lambda item: item["turns"]
-            and item["turns"][0]["prompt"] == prompt_text
+            and item["turns"][0]["prompt"] == "hello"
             and item["turns"][0]["response"] == "noted",
         )
     finally:
         await session.close()
 
     assert snapshot["turns"][0]["sender"] == "web"
-    assert model.prompts[0].input[-1].text == prompt_text
+    assert model.prompts[0].input[-1].text == "hello"
+    contextual_message = model.prompts[0].input[-2]
+    assert isinstance(contextual_message, ContextMessage)
+    assert contextual_message.content_items is not None
+    assert context_text in [item["text"] for item in contextual_message.content_items]
 
 
 def test_workspace_app_serves_board(tmp_path) -> None:
@@ -527,7 +546,7 @@ def test_workspace_app_restores_tabs_from_board_state(tmp_path) -> None:
     assert sessions[0]["title"] == "restored tab"
 
 
-def test_workspace_app_restore_tabs_skips_initial_prompt(tmp_path) -> None:
+def test_workspace_app_restore_tabs_starts_session_then_restores(tmp_path) -> None:
     board = tmp_path / "board.html"
     board.write_text("<!doctype html><body><h1>Board</h1></body>", encoding="utf-8")
     rollout_path = tmp_path / "rollout.jsonl"
@@ -535,11 +554,11 @@ def test_workspace_app_restore_tabs_skips_initial_prompt(tmp_path) -> None:
     WorkspaceStateStore(board).save_tabs(
         [{"title": "restored tab", "rollout_path": str(rollout_path)}]
     )
-    started_with = []
+    started = []
 
     class _RestoreLink:
-        async def start(self, submit_initial_prompt=True):
-            started_with.append(submit_initial_prompt)
+        async def start(self):
+            started.append(True)
             return self
 
         async def close(self):
@@ -588,7 +607,7 @@ def test_workspace_app_restore_tabs_skips_initial_prompt(tmp_path) -> None:
     with TestClient(app) as client:
         assert client.get("/api/sessions").status_code == 200
 
-    assert started_with == [False]
+    assert started == [True]
 
 
 def test_workspace_app_close_persists_remaining_tab_state_to_sidecar(tmp_path) -> None:
@@ -602,8 +621,7 @@ def test_workspace_app_close_persists_remaining_tab_state_to_sidecar(tmp_path) -
             self._rollout_path = rollout_path
             self.closed = False
 
-        async def start(self, submit_initial_prompt=True):
-            del submit_initial_prompt
+        async def start(self):
             return self
 
         async def close(self):
@@ -826,8 +844,7 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
 
     class _SummaryOnlyLink:
-        async def start(self, submit_initial_prompt=True):
-            del submit_initial_prompt
+        async def start(self):
             return self
 
         async def close(self):
@@ -1292,8 +1309,7 @@ class _DormantLink:
         self.closed = False
         self.prompts = []
 
-    async def start(self, submit_initial_prompt=True):
-        del submit_initial_prompt
+    async def start(self):
         return self
 
     async def close(self):
@@ -1363,8 +1379,7 @@ class _DormantLink:
 
 
 class _ScrollAwareLink:
-    async def start(self, submit_initial_prompt=True):
-        del submit_initial_prompt
+    async def start(self):
         return self
 
     async def close(self):

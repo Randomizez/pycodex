@@ -627,19 +627,13 @@ class WorkspaceInteractiveSession:
         self,
         queue,
         config_path: "typing.Union[str, None]" = None,
-        initial_prompt: "typing.Union[str, None]" = None,
     ) -> None:
         self.queue = queue
         self.config_path = config_path
-        self.initial_prompt = str(initial_prompt or "").strip()
         self.view = WebSessionView()
         self._task: "typing.Union[asyncio.Task[int], None]" = None
-        self._initial_prompt_submitted = False
 
-    async def start(
-        self,
-        submit_initial_prompt: bool = True,
-    ) -> "WorkspaceInteractiveSession":
+    async def start(self) -> "WorkspaceInteractiveSession":
         if self._task is None:
             self._task = asyncio.create_task(
                 run_interactive_session(
@@ -650,13 +644,6 @@ class WorkspaceInteractiveSession:
                     show_banner=False,
                 )
             )
-        if (
-            submit_initial_prompt
-            and self.initial_prompt
-            and not self._initial_prompt_submitted
-        ):
-            self._initial_prompt_submitted = True
-            await self.view.submit(self.initial_prompt)
         return self
 
     async def close(self) -> None:
@@ -737,15 +724,10 @@ class ThreadedWorkspaceInteractiveSession:
         self._closed = threading.Event()
         self._startup_error: "typing.Union[BaseException, None]" = None
         self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
-        self._submit_initial_prompt = True
 
-    async def start(
-        self,
-        submit_initial_prompt: bool = True,
-    ) -> "ThreadedWorkspaceInteractiveSession":
+    async def start(self) -> "ThreadedWorkspaceInteractiveSession":
         if self._thread is not None:
             return self
-        self._submit_initial_prompt = submit_initial_prompt
         self._thread = threading.Thread(
             target=self._thread_main,
             name="pycodex-workspace-session",
@@ -766,9 +748,7 @@ class ThreadedWorkspaceInteractiveSession:
             session = self._session_factory()
             session.view = self._view
             self._session = session
-            loop.run_until_complete(
-                session.start(submit_initial_prompt=self._submit_initial_prompt)
-            )
+            loop.run_until_complete(session.start())
             self._ready.set()
             loop.run_forever()
         except BaseException as exc:
@@ -904,7 +884,7 @@ class WorkspaceSessionManager:
         async with self._lock:
             session_id = uuid7_string()
             session = self._session_factory()
-            await session.start(submit_initial_prompt=not bool(rollout_path))
+            await session.start()
 
             if rollout_path:
                 await session.restore_from_rollout(rollout_path, title=title)
@@ -1279,12 +1259,13 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             profile=args.profile,
             system_prompt=args.system_prompt,
             session_mode="tui",
+            extra_contextual_user_messages=(
+                [_board_context_text(board_path)] if board_path is not None else []
+            ),
         )
-        initial_prompt = _board_prompt_text(board_path) if board_path is not None else None
         return WorkspaceInteractiveSession(
             build_cli_queue(agent),
             config_path=args.config,
-            initial_prompt=initial_prompt,
         )
 
     def session_factory() -> "ThreadedWorkspaceInteractiveSession":
@@ -1301,11 +1282,11 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
     return 0
 
 
-def _board_prompt_text(board_path: Path) -> str:
+def _board_context_text(board_path: Path) -> str:
     return (
         "Current workspace board file: {0}. "
         "Changes you make to this file are shown to the user in real time. "
-        "You can create or modify this file anytime. Reply OK now."
+        "You can create or modify this file anytime."
     ).format(_format_board_path_for_prompt(board_path))
 
 

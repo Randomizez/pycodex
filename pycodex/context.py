@@ -149,6 +149,7 @@ class ContextManager:
         include_permissions_instructions: 'bool' = True,
         include_skills_instructions: 'bool' = True,
         network_access: 'str' = "enabled",
+        extra_contextual_user_messages: 'typing.Iterable[str]' = (),
     ) -> 'None':
         self.cwd = Path.cwd().resolve()
         self._shell = get_shell_name()
@@ -166,6 +167,14 @@ class ContextManager:
         self._include_permissions_instructions = include_permissions_instructions
         self._include_skills_instructions = include_skills_instructions
         self._network_access = network_access
+        self._extra_contextual_user_messages = tuple(
+            text
+            for text in (
+                _normalize_text(message)
+                for message in extra_contextual_user_messages
+            )
+            if text is not None
+        )
         self._default_base_instructions = DEFAULT_BASE_INSTRUCTIONS_PATH.read_text(
             encoding="utf-8"
         )
@@ -183,6 +192,7 @@ class ContextManager:
         include_permissions_instructions: 'bool' = True,
         include_skills_instructions: 'bool' = True,
         network_access: 'str' = "enabled",
+        extra_contextual_user_messages: 'typing.Iterable[str]' = (),
     ) -> 'ContextManager':
         config = ContextConfig.from_codex_config(config_path, profile)
         return cls(
@@ -193,6 +203,7 @@ class ContextManager:
             include_permissions_instructions=include_permissions_instructions,
             include_skills_instructions=include_skills_instructions,
             network_access=network_access,
+            extra_contextual_user_messages=extra_contextual_user_messages,
         )
 
     @property
@@ -421,6 +432,7 @@ class ContextManager:
                 )
             )
         sections.append(self._serialize_environment_context())
+        sections.extend(self._extra_contextual_user_messages)
         if not sections:
             return []
         return [

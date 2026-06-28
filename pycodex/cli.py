@@ -289,6 +289,7 @@ def build_agent(
     system_prompt: 'typing.Union[str, None]' = None,
     session_mode: 'CliSessionMode' = "exec",
     collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
+    extra_contextual_user_messages: 'typing.Iterable[str]' = (),
 ) -> 'Agent':
     config_path = str(config_path)
     context_manager = ContextManager.from_codex_config(
@@ -297,6 +298,7 @@ def build_agent(
         base_instructions_override=system_prompt,
         collaboration_mode=collaboration_mode,
         include_collaboration_instructions=session_mode == "tui",
+        extra_contextual_user_messages=extra_contextual_user_messages,
     )
     session_id = getattr(client, "_session_id", None) or uuid7_string()
     if hasattr(client, "_session_id"):
@@ -306,6 +308,7 @@ def build_agent(
         profile,
         base_instructions_override=system_prompt,
         include_collaboration_instructions=False,
+        extra_contextual_user_messages=extra_contextual_user_messages,
     )
     runtime_environment = create_agent_runtime_environment()
     runtime_environment.request_user_input_manager.set_handler(None)

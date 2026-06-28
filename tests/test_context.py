@@ -247,6 +247,26 @@ def test_context_manager_builds_plan_mode_collaboration_message(tmp_path, monkey
     assert developer_texts[1].endswith("</collaboration_mode>")
 
 
+def test_context_manager_includes_extra_contextual_user_messages() -> 'None':
+    manager = ContextManager(
+        extra_contextual_user_messages=[
+            "",
+            "Current workspace board file: ./board.html",
+        ],
+        include_permissions_instructions=False,
+        include_skills_instructions=False,
+    )
+
+    prompt = manager.build_prompt([UserMessage(text="hello")], [], True)
+
+    contextual_user_message = prompt.input[0]
+    assert isinstance(contextual_user_message, ContextMessage)
+    assert contextual_user_message.content_items is not None
+    texts = [item["text"] for item in contextual_user_message.content_items]
+    assert texts[-1] == "Current workspace board file: ./board.html"
+    assert prompt.input[-1] == UserMessage(text="hello")
+
+
 @pytest.mark.asyncio
 async def test_agent_injects_context_without_polluting_history(
     tmp_path,
