@@ -48,7 +48,7 @@ from pycodex.cli import (
 from pycodex.portable import DEFAULT_ENTRY_CONFIG, upload_codex_home
 from pycodex.portable_server import CodexStorageServer
 from pycodex.utils.compactor import SUMMARY_PREFIX
-from pycodex.utils.session_persist import load_resumed_session
+from pycodex.utils.session_persist import load_resumed_session, load_resumed_session_path
 from pycodex.utils.toolcall_visualize import colorize_tool_message, tool_summary
 from pycodex.utils.visualize import colorize_cli_message
 from tests.fake_responses_server import CaptureStore, build_handler
@@ -1753,6 +1753,70 @@ def test_load_resumed_session_applies_compacted_replacement_history(
         ("kept user", ""),
         (f"{SUMMARY_PREFIX}\ncheckpoint summary", ""),
         ("after compact", "after answer"),
+    )
+
+
+def test_load_resumed_session_trims_incomplete_tool_call_tail(
+    tmp_path,
+) -> 'None':
+    codex_home = tmp_path / ".codex"
+    thread_id = "00000000-0000-7000-8000-000000000000"
+    rollout_path = _write_test_rollout(
+        codex_home,
+        thread_id,
+        [
+            {"type": "session_meta", "payload": {"id": thread_id}},
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "first prompt"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "first answer"}],
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "second prompt"},
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "about to tool"}],
+                    "content": [],
+                },
+            },
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "function_call",
+                    "call_id": "call_unfinished",
+                    "name": "exec_command",
+                    "arguments": json.dumps({"cmd": "sleep 60"}),
+                },
+            },
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": "continue"},
+            },
+        ],
+    )
+
+    resumed = load_resumed_session_path(rollout_path)
+
+    assert [type(item).__name__ for item in resumed["history"]] == [
+        "UserMessage",
+        "AssistantMessage",
+        "UserMessage",
+    ]
+    assert resumed["turns"] == (
+        ("first prompt", "first answer"),
+        ("second prompt", ""),
     )
 
 

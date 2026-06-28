@@ -256,6 +256,10 @@ def load_resumed_session_path(
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
 
+    history = _trim_incomplete_tool_call_tail(history)
+    if not history:
+        raise ValueError(f"No resumable history found in {rollout_path}")
+
     turns = conversation_history_to_turns(history)
     title = thread_name or (shorten_title(turns[0][0]) if turns else thread_id)
     return {
@@ -286,6 +290,32 @@ def conversation_history_to_turns(
     if current_user_text is not None:
         turns.append((current_user_text, current_assistant_text))
     return tuple(turns)
+
+
+def _trim_incomplete_tool_call_tail(
+    history: 'typing.List[ConversationItem]',
+) -> 'typing.List[ConversationItem]':
+    pending_call_ids: 'typing.Set[str]' = set()
+    call_indexes: 'typing.Dict[str, int]' = {}
+
+    for index, item in enumerate(history):
+        if isinstance(item, ToolCall):
+            pending_call_ids.add(item.call_id)
+            call_indexes[item.call_id] = index
+            continue
+        if isinstance(item, ToolResult):
+            pending_call_ids.discard(item.call_id)
+
+    if not pending_call_ids:
+        return history
+
+    trim_start = min(call_indexes[call_id] for call_id in pending_call_ids)
+    while trim_start > 0 and isinstance(
+        history[trim_start - 1],
+        (AssistantMessage, ReasoningItem, ToolCall),
+    ):
+        trim_start -= 1
+    return history[:trim_start]
 
 
 def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
