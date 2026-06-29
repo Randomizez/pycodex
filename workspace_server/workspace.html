@@ -7,14 +7,31 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f5f5f2;
+      --bg: #f2f6f3;
       --panel: #ffffff;
-      --ink: #1f2528;
-      --muted: #667178;
-      --line: #d8ddd8;
-      --accent: #126b43;
+      --ink: #1e2529;
+      --muted: #5f6f75;
+      --line: #d2ddd5;
+      --accent: #0f8f55;
       --accent-ink: #ffffff;
-      --code: #f6f8fa;
+      --warn-soft: #fff5cf;
+      --info: #1f6fa4;
+      --info-soft: #edf8ff;
+      --danger: #b23a3a;
+      --danger-soft: #fff1ef;
+      --violet: #6b4fb0;
+      --violet-soft: #f5f0ff;
+      --code: #f3f7f8;
+      --entry-shadow: 0 1px 2px rgba(25, 35, 31, 0.04);
+      --space-1: 2px;
+      --space-2: 4px;
+      --space-3: 6px;
+      --space-4: 8px;
+      --space-5: 10px;
+      --space-6: 12px;
+      --space-7: 14px;
+      --radius-sm: 4px;
+      --radius-md: 6px;
       --chat-width: min(42vw, 760px);
       --splitter-width: 8px;
     }
@@ -34,7 +51,7 @@
       min-width: 0;
     }
     .workspace.collapsed .splitter::after {
-      background: #7e9187;
+      background: #4f6f60;
     }
     .board-pane {
       min-width: 0;
@@ -46,7 +63,7 @@
     .boardbar {
       min-width: 0;
       border-bottom: 1px solid var(--line);
-      padding: 8px 12px;
+      padding: var(--space-4) var(--space-6);
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
@@ -61,24 +78,36 @@
       background: #fff;
     }
     .splitter {
+      position: relative;
       width: 8px;
       height: 100dvh;
       border: 0;
-      border-left: 1px solid var(--line);
-      border-right: 1px solid var(--line);
-      background: #eef1ed;
+      border-left: 1px solid #c1cec6;
+      border-right: 1px solid #c1cec6;
+      background: #dfe8e2;
       cursor: col-resize;
       padding: 0;
       touch-action: none;
     }
     .splitter::after {
       content: "";
-      display: block;
-      width: 2px;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 3px;
       height: 42px;
-      margin: calc(50dvh - 21px) auto 0;
       border-radius: 999px;
-      background: #b9c1ba;
+      background: #7d9588;
+      transform: translate(-50%, -50%);
+    }
+    .splitter:hover,
+    .workspace.resizing .splitter {
+      background: #d3dfd7;
+      border-color: #aebeb4;
+    }
+    .splitter:hover::after,
+    .workspace.resizing .splitter::after {
+      background: #527465;
     }
     .workspace.resizing,
     .workspace.resizing * {
@@ -96,37 +125,38 @@
     }
     .topbar {
       min-width: 0;
-      padding: 12px 14px;
+      padding: var(--space-4) var(--space-7);
       border-bottom: 1px solid var(--line);
       display: grid;
-      gap: 10px;
+      gap: var(--space-4);
     }
     .tabbar {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--space-2);
       min-width: 0;
     }
     .tabs {
       display: flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--space-1);
       min-width: 0;
       overflow-x: auto;
       scrollbar-width: thin;
     }
     .tab {
+      position: relative;
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: var(--space-2);
       min-width: 88px;
       max-width: 180px;
-      height: 28px;
-      border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #f8faf8;
+      height: 31px;
+      border: 1px solid #d5ddd7;
+      border-radius: var(--radius-sm);
+      background: #f6f8f7;
       color: var(--ink);
-      padding: 0 7px;
+      padding: 0 var(--space-3) 0 var(--space-4);
       font: inherit;
       cursor: pointer;
       user-select: none;
@@ -137,8 +167,24 @@
       outline-offset: 1px;
     }
     .tab.active {
-      border-color: #9bb7a6;
-      background: #edf6f0;
+      border-color: #afd6bd;
+      background: #eef7f1;
+      box-shadow: inset 0 -2px 0 var(--accent);
+    }
+    .tab.running::before {
+      content: "";
+      position: absolute;
+      left: 6px;
+      top: 50%;
+      width: 5px;
+      height: 5px;
+      margin-top: -2.5px;
+      border-radius: 999px;
+      background: var(--accent);
+      animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+    .tab.running .tab-label {
+      padding-left: var(--space-4);
     }
     .tab-label {
       min-width: 0;
@@ -150,11 +196,11 @@
     }
     .tab-close,
     .tab-new {
-      width: 24px;
-      height: 24px;
+      width: 31px;
+      height: 31px;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      background: #fff;
+      border-radius: var(--radius-md);
+      background: #eef7f1;
       color: var(--muted);
       padding: 0;
       line-height: 1;
@@ -166,56 +212,79 @@
       height: 18px;
       border: 0;
       background: transparent;
+      opacity: 0.42;
+      font-size: 17px;
+      font-weight: 500;
+      line-height: 18px;
+    }
+    .tab-new {
+      font-size: 22px;
+      font-weight: 400;
+      line-height: 31px;
+    }
+    .tab:hover .tab-close,
+    .tab:focus-within .tab-close,
+    .tab.active .tab-close {
+      opacity: 0.85;
+    }
+    .tab-close:disabled {
+      opacity: 0.22;
+      cursor: default;
     }
     .tab-close:hover,
     .tab-new:hover {
       color: var(--ink);
-      background: #f3f6f4;
+      background: #ffffff;
     }
     .log {
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: 14px;
+      padding: var(--space-6) var(--space-7);
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: var(--space-4);
       background: #fbfcfa;
     }
     .entry {
       min-width: 0;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px 11px;
+      border-radius: var(--radius-sm);
+      padding: var(--space-4) var(--space-5);
       background: #fff;
+      box-shadow: var(--entry-shadow);
     }
     .entry.user {
-      border-color: #e6d790;
-      background: #fff9d8;
+      border-color: #edd17a;
+      background: var(--warn-soft);
+      color: #5a4714;
     }
     .entry.response,
     .entry.assistant {
-      border-color: #d9ded9;
+      border-color: #d0ddd5;
       background: #ffffff;
     }
     .entry.thinking {
-      border-color: #b9d9c7;
-      background: #f5fbf6;
+      border-color: #b9dcc5;
+      background: #f0fbf3;
+      color: #256b43;
+      animation: thinking-breathe 4.8s ease-in-out infinite;
     }
     .entry.control {
-      border-color: #c8d2dc;
-      background: #f7fafd;
+      border-color: #b9d8ea;
+      background: var(--info-soft);
+      color: var(--info);
     }
     .entry.tool {
-      border-color: #d7d1e6;
-      background: #faf8ff;
-      color: #4c4261;
+      border-color: #d7c8f0;
+      background: var(--violet-soft);
+      color: var(--violet);
       font-size: 12px;
     }
     .entry.error {
-      border-color: #e4b6b6;
-      background: #fff7f7;
-      color: #7a2c2c;
+      border-color: #efb4ad;
+      background: var(--danger-soft);
+      color: var(--danger);
     }
     .text {
       white-space: pre-wrap;
@@ -226,7 +295,7 @@
       overflow-wrap: anywhere;
     }
     .markdown p {
-      margin: 0 0 8px;
+      margin: 0 0 var(--space-4);
     }
     .markdown p:last-child,
     .markdown ul:last-child,
@@ -237,17 +306,17 @@
     }
     .markdown ul,
     .markdown ol {
-      margin: 0 0 8px 18px;
+      margin: 0 0 var(--space-4) 18px;
       padding: 0;
     }
     .markdown li {
       margin: 2px 0;
     }
     .markdown pre {
-      margin: 0 0 8px;
-      padding: 9px 10px;
+      margin: 0 0 var(--space-4);
+      padding: var(--space-4) var(--space-5);
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: var(--radius-sm);
       background: var(--code);
       overflow-x: auto;
       white-space: pre;
@@ -260,23 +329,23 @@
     }
     .markdown table {
       width: 100%;
-      margin: 0 0 8px;
+      margin: 0 0 var(--space-4);
       border-collapse: collapse;
       font-size: 13px;
     }
     .markdown th,
     .markdown td {
       border: 1px solid var(--line);
-      padding: 5px 7px;
+      padding: var(--space-3) var(--space-4);
       text-align: left;
       vertical-align: top;
     }
     .markdown th {
-      background: #f3f6f4;
+      background: #eef7f1;
       font-weight: 650;
     }
     .markdown a {
-      color: #0b6bcb;
+      color: #176fa8;
       text-decoration: none;
     }
     .markdown a:hover {
@@ -285,22 +354,31 @@
     .composer {
       min-width: 0;
       border-top: 1px solid var(--line);
-      padding: 12px 12px 28px;
+      padding: var(--space-4) var(--space-6) var(--space-5);
       display: grid;
-      gap: 8px;
+      gap: var(--space-3);
+      align-content: end;
       background: #fff;
     }
     textarea {
       min-width: 0;
       resize: vertical;
-      min-height: 88px;
+      min-height: 40px;
       max-height: 35vh;
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
+      border-radius: var(--radius-sm);
+      padding: var(--space-4) var(--space-5);
+      background: #ffffff;
+      color: var(--ink);
       font: inherit;
       line-height: 1.4;
+      overflow-y: auto;
+    }
+    textarea:focus {
+      border-color: #65b782;
+      box-shadow: 0 0 0 3px rgba(15, 143, 85, 0.13);
+      outline: 0;
     }
     .actions {
       display: flex;
@@ -308,21 +386,79 @@
       align-items: center;
     }
     .spinner {
-      position: absolute;
-      left: 12px;
-      right: 12px;
-      bottom: 6px;
-      min-height: 18px;
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-self: start;
+      align-self: end;
+      max-width: 100%;
+      min-height: 20px;
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      padding: var(--space-1) var(--space-4) var(--space-1) 18px;
+      border-radius: 999px;
+      background: rgba(240, 250, 244, 0.96);
+      border: 1px solid rgba(172, 216, 188, 0.9);
+    }
+    .spinner:empty {
+      display: none;
+    }
+    .spinner:not(:empty) {
+      margin-bottom: var(--space-1);
+    }
+    .spinner:not(:empty)::before {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      margin-top: -3px;
+      border-radius: 999px;
+      background: var(--accent);
+      animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+    @keyframes spinner-pulse {
+      0%, 100% {
+        opacity: 0.45;
+        transform: scale(0.82);
+      }
+      50% {
+        opacity: 1;
+        transform: scale(1.08);
+      }
+    }
+    @keyframes thinking-breathe {
+      0%, 100% {
+        border-color: #b9dcc5;
+        box-shadow: var(--entry-shadow);
+      }
+      50% {
+        border-color: #72d494;
+        box-shadow:
+          0 0 0 2px rgba(22, 168, 90, 0.16),
+          0 2px 7px rgba(25, 35, 31, 0.08);
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .entry.thinking,
+      .tab.running::before,
+      .spinner:not(:empty)::before {
+        animation: none;
+      }
+      .tab.running::before,
+      .spinner:not(:empty)::before {
+        opacity: 0.8;
+        transform: none;
+      }
     }
     code {
       background: var(--code);
       border: 1px solid var(--line);
-      border-radius: 4px;
+      border-radius: var(--radius-sm);
       padding: 1px 4px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
@@ -343,15 +479,15 @@
     <section class="chat" aria-label="pycodex chat">
       <div class="topbar">
         <div class="tabbar">
-          <div id="tabs" class="tabs"></div>
+          <div id="tabs" class="tabs" role="tablist"></div>
           <button id="newTab" class="tab-new" type="button" title="New session" aria-label="New session">+</button>
         </div>
       </div>
       <div id="log" class="log"></div>
       <form id="composer" class="composer">
+        <div id="spinner" class="spinner" role="status" aria-live="polite"></div>
         <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
       </form>
-      <div id="spinner" class="spinner"></div>
     </section>
   </div>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
@@ -373,8 +509,6 @@
     let lastBoardSignature = "";
     let lastRenderedSignature = "";
     let resizeStart = null;
-    let spinnerTimer = null;
-    let spinnerFrameIndex = 0;
     let spinnerText = "";
     let activeSessionId = "";
     let sessions = [];
@@ -382,7 +516,6 @@
     const sessionState = new Map();
     let restoreScrollTop = null;
     let suppressScrollSave = false;
-    const spinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     const markdownRenderer = window.markdownit
       ? window.markdownit({html: false, linkify: true, breaks: false})
       : null;
@@ -496,25 +629,7 @@
 
     function setSpinner(text) {
       spinnerText = String(text || "").trim();
-      spinnerFrameIndex = 0;
-      renderSpinner();
-      if (spinnerText && !spinnerTimer) {
-        spinnerTimer = setInterval(renderSpinner, 120);
-      }
-      if (!spinnerText && spinnerTimer) {
-        clearInterval(spinnerTimer);
-        spinnerTimer = null;
-      }
-    }
-
-    function renderSpinner() {
-      if (!spinnerText) {
-        spinner.textContent = "";
-        return;
-      }
-      const frame = spinnerFrames[spinnerFrameIndex % spinnerFrames.length];
-      spinnerFrameIndex += 1;
-      spinner.textContent = `${frame} ${spinnerText}`;
+      spinner.textContent = spinnerText;
     }
 
     function isNearBottom() {
@@ -523,6 +638,14 @@
 
     function scrollToBottom() {
       log.scrollTop = log.scrollHeight;
+    }
+
+    function resizePrompt() {
+      prompt.style.height = "auto";
+      const minHeight = 40;
+      const maxHeight = Math.max(minHeight, Math.round(window.innerHeight * 0.35));
+      const nextHeight = Math.max(minHeight, Math.min(prompt.scrollHeight, maxHeight));
+      prompt.style.height = `${nextHeight}px`;
     }
 
     function stateForSession(sessionId) {
@@ -556,10 +679,14 @@
       sessions.forEach((session, index) => {
         const sessionId = session.id || "";
         const tab = document.createElement("div");
-        tab.className = "tab" + (sessionId === activeSessionId ? " active" : "");
+        tab.className =
+          "tab" +
+          (sessionId === activeSessionId ? " active" : "") +
+          (session.running ? " running" : "");
         tab.title = session.title || `Session ${index + 1}`;
         tab.setAttribute("role", "tab");
         tab.setAttribute("aria-selected", sessionId === activeSessionId ? "true" : "false");
+        if (session.running) tab.setAttribute("aria-busy", "true");
         tab.addEventListener("click", () => switchSession(sessionId));
 
         const label = document.createElement("span");
@@ -758,6 +885,7 @@
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";
       prompt.value = state.draft || "";
+      resizePrompt();
       suppressScrollSave = true;
       log.textContent = "";
       suppressScrollSave = false;
@@ -782,6 +910,7 @@
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";
       prompt.value = "";
+      resizePrompt();
       restoreScrollTop = null;
       updateSessions(payload.sessions || []);
       renderSnapshot(payload.snapshot);
@@ -803,6 +932,7 @@
         activeSessionId = sessions.length ? sessions[0].id || "" : "";
         lastRenderedSignature = "";
         prompt.value = "";
+        resizePrompt();
         suppressScrollSave = true;
         log.textContent = "";
         suppressScrollSave = false;
@@ -817,12 +947,14 @@
       const text = prompt.value.trim();
       if (!text) return;
       prompt.value = "";
+      resizePrompt();
       stateForSession(activeSessionId).draft = "";
       submitPrompt(text);
     });
 
     prompt.addEventListener("input", () => {
       stateForSession(activeSessionId).draft = prompt.value;
+      resizePrompt();
     });
 
     prompt.addEventListener("compositionstart", () => {
@@ -856,9 +988,11 @@
     window.addEventListener("resize", () => {
       const current = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
       if (current > 0) setChatWidth(current);
+      resizePrompt();
     });
 
     loadChatWidth();
+    resizePrompt();
     startPolling();
     startBoardPolling();
   </script>
