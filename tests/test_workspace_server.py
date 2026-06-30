@@ -194,6 +194,7 @@ def test_workspace_app_missing_board_returns_pending_page(tmp_path) -> None:
     app = create_app(lambda: link, board)
 
     with TestClient(app) as client:
+        shell = client.get("/")
         response = client.get("/board")
         status = client.get("/api/board")
 
@@ -201,6 +202,9 @@ def test_workspace_app_missing_board_returns_pending_page(tmp_path) -> None:
     assert "Board pending" in response.text
     assert str(board) in response.text
     assert status.json() == {"exists": False}
+    assert "let lastBoardSignature = null;" in shell.text
+    assert "if (lastBoardSignature === null)" in shell.text
+    assert "boardFrame.src = `board?t=${Date.now()}`;" in shell.text
 
 
 def test_workspace_app_session_snapshot_uses_turns_not_raw_messages(tmp_path) -> None:

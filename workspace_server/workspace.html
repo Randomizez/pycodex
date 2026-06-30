@@ -608,7 +608,7 @@
     let boardPollTimer = null;
     let pollInFlight = false;
     let boardPollInFlight = false;
-    let lastBoardSignature = "";
+    let lastBoardSignature = null;
     let lastRenderedSignature = "";
     let resizeStart = null;
     let spinnerText = "";
@@ -1054,10 +1054,14 @@
         const response = await fetch(relativeUrl("api/board"));
         if (!response.ok) return;
         const payload = await response.json();
-        if (!payload.exists) return;
+        if (!payload.exists) {
+          lastBoardSignature = null;
+          return;
+        }
         const signature = `${payload.mtime_ns || ""}:${payload.size || ""}`;
-        if (!lastBoardSignature) {
+        if (lastBoardSignature === null) {
           lastBoardSignature = signature;
+          boardFrame.src = `board?t=${Date.now()}`;
           return;
         }
         if (signature !== lastBoardSignature) {
