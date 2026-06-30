@@ -150,8 +150,9 @@ class ContextManager:
         include_skills_instructions: 'bool' = True,
         network_access: 'str' = "enabled",
         extra_contextual_user_messages: 'typing.Iterable[str]' = (),
+        cwd: 'typing.Union[str, Path, None]' = None,
     ) -> 'None':
-        self.cwd = Path.cwd().resolve()
+        self.cwd = Path(cwd or Path.cwd()).resolve()
         self._shell = get_shell_name()
         self._current_date = datetime.now().date().isoformat()
         self._timezone_name = get_timezone_name()
@@ -193,6 +194,7 @@ class ContextManager:
         include_skills_instructions: 'bool' = True,
         network_access: 'str' = "enabled",
         extra_contextual_user_messages: 'typing.Iterable[str]' = (),
+        cwd: 'typing.Union[str, Path, None]' = None,
     ) -> 'ContextManager':
         config = ContextConfig.from_codex_config(config_path, profile)
         return cls(
@@ -204,6 +206,7 @@ class ContextManager:
             include_skills_instructions=include_skills_instructions,
             network_access=network_access,
             extra_contextual_user_messages=extra_contextual_user_messages,
+            cwd=cwd,
         )
 
     @property

@@ -165,6 +165,7 @@ def resolve_prompt_text(prompt_parts: 'Sequence[str]') -> 'str':
 def get_tools(
     runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
     exec_mode: 'bool' = False,
+    cwd: 'typing.Union[str, Path, None]' = None,
 ):
     from .tools import (
         ApplyPatchTool,
@@ -194,8 +195,8 @@ def get_tools(
 
     runtime_environment = runtime_environment or create_agent_runtime_environment()
     registry = Registry()
-    code_mode_manager = CodeModeManager(registry)
-    unified_exec_manager = UnifiedExecManager()
+    code_mode_manager = CodeModeManager(registry, cwd=cwd)
+    unified_exec_manager = UnifiedExecManager(cwd=cwd)
     exec_tool = ExecTool(code_mode_manager)
     wait_tool = WaitTool(code_mode_manager)
     web_search_tool = WebSearchTool()
@@ -211,15 +212,15 @@ def get_tools(
     resume_agent_tool = ResumeAgentTool(runtime_environment.subagent_manager)
     wait_agent_tool = WaitAgentTool(runtime_environment.subagent_manager)
     close_agent_tool = CloseAgentTool(runtime_environment.subagent_manager)
-    apply_patch_tool = ApplyPatchTool()
-    shell_tool = ShellTool()
-    shell_command_tool = ShellCommandTool()
+    apply_patch_tool = ApplyPatchTool(cwd=cwd)
+    shell_tool = ShellTool(cwd=cwd)
+    shell_command_tool = ShellCommandTool(cwd=cwd)
     exec_command_tool = ExecCommandTool(unified_exec_manager)
     write_stdin_tool = WriteStdinTool(unified_exec_manager)
-    grep_files_tool = GrepFilesTool()
+    grep_files_tool = GrepFilesTool(cwd=cwd)
     read_file_tool = ReadFileTool()
     list_dir_tool = ListDirTool()
-    view_image_tool = ViewImageTool()
+    view_image_tool = ViewImageTool(cwd=cwd)
     if exec_mode:
         registry.register(exec_command_tool)
         registry.register(write_stdin_tool)
@@ -258,7 +259,10 @@ def get_tools(
     return registry
 
 
-def get_subagent_tools(runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None):
+def get_subagent_tools(
+    runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
+    cwd: 'typing.Union[str, Path, None]' = None,
+):
     from .tools import (
         ApplyPatchTool,
         ExecCommandTool,
@@ -272,13 +276,13 @@ def get_subagent_tools(runtime_environment: 'typing.Union[AgentRuntimeEnvironmen
 
     runtime_environment = runtime_environment or create_agent_runtime_environment()
     registry = Registry()
-    unified_exec_manager = UnifiedExecManager()
+    unified_exec_manager = UnifiedExecManager(cwd=cwd)
     registry.register(ExecCommandTool(unified_exec_manager))
     registry.register(WriteStdinTool(unified_exec_manager))
     registry.register(UpdatePlanTool(runtime_environment.plan_store))
-    registry.register(ApplyPatchTool())
+    registry.register(ApplyPatchTool(cwd=cwd))
     registry.register(WebSearchTool())
-    registry.register(ViewImageTool())
+    registry.register(ViewImageTool(cwd=cwd))
     return registry
 
 
@@ -290,8 +294,10 @@ def build_agent(
     session_mode: 'CliSessionMode' = "exec",
     collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
     extra_contextual_user_messages: 'typing.Iterable[str]' = (),
+    cwd: 'typing.Union[str, Path, None]' = None,
 ) -> 'Agent':
     config_path = str(config_path)
+    resolved_cwd = Path(cwd or Path.cwd()).resolve()
     context_manager = ContextManager.from_codex_config(
         config_path,
         profile,
@@ -299,6 +305,7 @@ def build_agent(
         collaboration_mode=collaboration_mode,
         include_collaboration_instructions=session_mode == "tui",
         extra_contextual_user_messages=extra_contextual_user_messages,
+        cwd=resolved_cwd,
     )
     session_id = getattr(client, "_session_id", None) or uuid7_string()
     if hasattr(client, "_session_id"):
@@ -309,6 +316,7 @@ def build_agent(
         base_instructions_override=system_prompt,
         include_collaboration_instructions=False,
         extra_contextual_user_messages=extra_contextual_user_messages,
+        cwd=resolved_cwd,
     )
     runtime_environment = create_agent_runtime_environment()
     runtime_environment.request_user_input_manager.set_handler(None)
@@ -343,7 +351,7 @@ def build_agent(
             )
             sub_agent = Agent(
                 nested_client,
-                get_subagent_tools(subagent_agent_runtime_environment),
+                get_subagent_tools(subagent_agent_runtime_environment, cwd=resolved_cwd),
                 subagent_context_manager,
                 initial_history=tuple(initial_history),
                 runtime_environment=subagent_agent_runtime_environment,
@@ -357,7 +365,7 @@ def build_agent(
     )
     return Agent(
         client,
-        get_tools(runtime_environment, exec_mode=True),
+        get_tools(runtime_environment, exec_mode=True, cwd=resolved_cwd),
         context_manager,
         rollout_recorder=rollout_recorder,
         runtime_environment=runtime_environment,

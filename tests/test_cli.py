@@ -975,6 +975,23 @@ def test_get_tools_exec_mode_matches_codex_exec_subset() -> 'None':
     )
 
 
+@pytest.mark.asyncio
+async def test_get_tools_exec_mode_uses_explicit_cwd(tmp_path) -> 'None':
+    registry = get_tools(exec_mode=True, cwd=tmp_path)
+    tool = registry.get_tool("exec_command")
+    assert tool is not None
+
+    output = await tool.run(
+        None,
+        {
+            "cmd": "pwd",
+            "yield_time_ms": 1000,
+        },
+    )
+
+    assert str(tmp_path) in str(output)
+
+
 def _tool_payload_by_name(registry: 'ToolRegistry') -> 'typing.Dict[str, typing.Dict[str, object]]':
     payloads: 'typing.Dict[str, typing.Dict[str, object]]' = {}
     for payload in [spec.serialize() for spec in registry.model_visible_specs()]:

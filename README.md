@@ -144,15 +144,15 @@ pycodex --put @127.0.0.1:5577
 pycodex --put /data/.codex/@127.0.0.1:5577
 pycodex --call SECRET-CALLID@127.0.0.1:5577 "Reply with exactly OK."
 pycodex doctor
-pycodex-ws --listen 0.0.0.0:6007 --board ./board.html
+pycodex-ws --listen 0.0.0.0:6007 --workspace-config ./workspaces.json
 ```
 
 Current behavior:
 
 - with no argv prompt and a TTY stdin, enter interactive mode
 - with an argv prompt or piped stdin, run a single turn
-- `pycodex-ws` starts the standalone browser workspace with a board pane and a
-  pycodex session pane
+- `pycodex-ws` starts the standalone browser workspace manager and serves each
+  workspace with a board pane and a pycodex session pane
 - interactive mode supports `/exit` and `/quit`
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
@@ -186,6 +186,18 @@ Current behavior:
 - `/link <feishu-email|open_id|chat_id>` attaches the current interactive
   session to a Feishu card; multiple sessions in the same pycodex process share
   one Feishu long-connection listener and route card actions by message id
+- `pycodex-ws --workspace-config workspaces.json` serves workspace boards from
+  one process. The JSON file can be either a list or
+  `{"workspaces": [...]}`; each entry uses `board` and `work_dir`, with optional
+  display/URL `id`, and is exposed at `/w/<id>/`. Internally the resolved
+  `board` path is the workspace identity, so adding the same board path twice is
+  rejected even with a different name. Relative `board` and `work_dir` paths
+  resolve from the config file directory. The root path `/` shows a workspaces
+  management page with `add_workspace(name=None, dir="./", board=None)` and
+  `delete(name)` controls; omitted names become `workspace-1`, `workspace-2`,
+  etc. If `board` is omitted when adding a workspace, pycodex assigns a random
+  writable `/tmp/pcws-*.html` board path. Add/delete actions and later
+  session-state saves refresh the JSON file.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;

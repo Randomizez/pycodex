@@ -1,0 +1,551 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pycodex workspaces</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --panel-soft: #f0f3f6;
+      --text: #17202a;
+      --muted: #687483;
+      --line: #dbe1e8;
+      --accent: #0b6bcb;
+      --accent-strong: #0859a8;
+      --danger: #b42318;
+      --danger-soft: #fff0ed;
+      --shadow: 0 14px 36px rgba(24, 39, 75, .08);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101418;
+        --panel: #171d23;
+        --panel-soft: #202832;
+        --text: #eef3f8;
+        --muted: #9aa7b5;
+        --line: #2d3844;
+        --accent: #5aa9ff;
+        --accent-strong: #83bdff;
+        --danger: #ff8c7f;
+        --danger-soft: #321d1b;
+        --shadow: 0 14px 36px rgba(0, 0, 0, .28);
+      }
+    }
+    * {
+      box-sizing: border-box;
+    }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+    }
+    button, input {
+      font: inherit;
+    }
+    button, a.button {
+      display: inline-flex;
+      min-height: 34px;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 7px 11px;
+      background: var(--panel);
+      color: var(--text);
+      text-decoration: none;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+    button.primary:hover {
+      background: var(--accent-strong);
+    }
+    button.danger {
+      border-color: color-mix(in srgb, var(--danger) 30%, var(--line) 70%);
+      background: var(--danger-soft);
+      color: var(--danger);
+    }
+    button:disabled {
+      cursor: default;
+      opacity: .62;
+    }
+    input {
+      width: 100%;
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 8px 10px;
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
+    }
+    input::placeholder {
+      color: color-mix(in srgb, var(--muted) 45%, transparent);
+    }
+    .page {
+      width: min(1180px, calc(100vw - 36px));
+      margin: 0 auto;
+      padding: 24px 0 42px;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 22px;
+    }
+    .brand {
+      min-width: 0;
+    }
+    .brand h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      font-weight: 720;
+      letter-spacing: 0;
+    }
+    .brand p {
+      margin: 5px 0 0;
+      color: var(--muted);
+      line-height: 1.45;
+    }
+    .status {
+      min-width: 220px;
+      max-width: 420px;
+      color: var(--muted);
+      text-align: right;
+      line-height: 1.4;
+    }
+    .status.error {
+      color: var(--danger);
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      padding: 15px 16px;
+    }
+    .panel-title {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 680;
+    }
+    .panel-subtitle {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    form {
+      display: grid;
+      gap: 13px;
+      padding: 16px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 620;
+    }
+    label span {
+      color: var(--muted);
+    }
+    .form-actions {
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      justify-content: flex-end;
+      margin-top: 2px;
+    }
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      padding: 16px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel-soft);
+    }
+    .metric {
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--panel);
+    }
+    .metric-value {
+      display: block;
+      font-size: 20px;
+      font-weight: 720;
+      line-height: 1.1;
+    }
+    .metric-label {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .workspace-list {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+    }
+    .workspace-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+      background: var(--panel);
+    }
+    .workspace-name {
+      min-width: 0;
+    }
+    .workspace-name strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 15px;
+    }
+    .session-count {
+      display: inline-flex;
+      margin-top: 5px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      background: var(--panel-soft);
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .paths {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .path-line {
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      min-width: 0;
+    }
+    .path-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 620;
+    }
+    .path-value {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .empty {
+      display: grid;
+      justify-items: center;
+      gap: 8px;
+      padding: 54px 18px;
+      color: var(--muted);
+      text-align: center;
+    }
+    .empty strong {
+      color: var(--text);
+      font-size: 15px;
+    }
+    @media (max-width: 860px) {
+      .page {
+        width: min(100vw - 24px, 720px);
+        padding-top: 18px;
+      }
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+      .status {
+        min-width: 0;
+        text-align: left;
+      }
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .workspace-row {
+        grid-template-columns: 1fr;
+        align-items: stretch;
+      }
+      .actions {
+        justify-content: flex-start;
+      }
+    }
+    @media (max-width: 520px) {
+      .summary {
+        grid-template-columns: 1fr;
+      }
+      .path-line {
+        grid-template-columns: 1fr;
+      }
+      .path-value {
+        white-space: normal;
+        overflow-wrap: anywhere;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="topbar">
+      <div class="brand">
+        <h1>pycodex workspaces</h1>
+        <p>Manage local boards and working directories served by this process.</p>
+      </div>
+      <div id="status" class="status" role="status"></div>
+    </header>
+
+    <div class="layout">
+      <section class="panel" aria-labelledby="addTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="addTitle" class="panel-title">Add Workspace</h2>
+            <p class="panel-subtitle">Board identifies the workspace. Name is optional.</p>
+          </div>
+        </div>
+        <form id="workspaceForm">
+          <label>Board
+            <input id="boardInput" name="board" placeholder="/tmp/pcws-xxxx.html" spellcheck="false">
+          </label>
+          <label>Directory
+            <input id="dirInput" name="dir" placeholder="./" spellcheck="false">
+          </label>
+          <label>Name <span>optional</span>
+            <input id="nameInput" name="name" autocomplete="off" placeholder="workspace-1" spellcheck="false">
+          </label>
+          <div class="form-actions">
+            <button id="addButton" class="primary" type="submit">Add</button>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="listTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="listTitle" class="panel-title">Workspace Overview</h2>
+            <p class="panel-subtitle">Open a board, inspect paths, or remove a workspace from this process.</p>
+          </div>
+          <button id="refreshButton" type="button">Refresh</button>
+        </div>
+        <div class="summary" aria-label="Workspace summary">
+          <div class="metric">
+            <span id="workspaceCount" class="metric-value">0</span>
+            <span class="metric-label">workspaces</span>
+          </div>
+          <div class="metric">
+            <span id="sessionCount" class="metric-value">0</span>
+            <span class="metric-label">sessions</span>
+          </div>
+          <div class="metric">
+            <span id="activeCount" class="metric-value">0</span>
+            <span class="metric-label">running</span>
+          </div>
+        </div>
+        <div id="workspaceRows" class="workspace-list"></div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const rows = document.getElementById("workspaceRows");
+    const form = document.getElementById("workspaceForm");
+    const statusEl = document.getElementById("status");
+    const nameInput = document.getElementById("nameInput");
+    const dirInput = document.getElementById("dirInput");
+    const boardInput = document.getElementById("boardInput");
+    const addButton = document.getElementById("addButton");
+    const refreshButton = document.getElementById("refreshButton");
+    const workspaceCount = document.getElementById("workspaceCount");
+    const sessionCount = document.getElementById("sessionCount");
+    const activeCount = document.getElementById("activeCount");
+
+    function api(path) {
+      return new URL(path, window.location.href).toString();
+    }
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text || "";
+      statusEl.classList.toggle("error", Boolean(isError));
+    }
+
+    function textNode(tag, className, text) {
+      const node = document.createElement(tag);
+      node.className = className;
+      node.textContent = text || "";
+      return node;
+    }
+
+    function pathLine(label, value) {
+      const row = document.createElement("div");
+      row.className = "path-line";
+      row.appendChild(textNode("span", "path-label", label));
+      const path = textNode("span", "path-value", value || "");
+      path.title = value || "";
+      row.appendChild(path);
+      return row;
+    }
+
+    function renderSummary(workspaces) {
+      const sessions = [];
+      workspaces.forEach((workspace) => {
+        (workspace.sessions || []).forEach((session) => sessions.push(session));
+      });
+      workspaceCount.textContent = String(workspaces.length);
+      sessionCount.textContent = String(sessions.length);
+      activeCount.textContent = String(sessions.filter((session) => session.running).length);
+    }
+
+    function renderEmpty() {
+      const empty = document.createElement("div");
+      empty.className = "empty";
+      empty.appendChild(textNode("strong", "", "No workspaces yet"));
+      empty.appendChild(textNode("span", "", "Add one to open a board and start a pycodex session."));
+      rows.appendChild(empty);
+    }
+
+    function renderWorkspace(workspace) {
+      const row = document.createElement("article");
+      row.className = "workspace-row";
+
+      const name = document.createElement("div");
+      name.className = "workspace-name";
+      name.appendChild(textNode("strong", "", workspace.id || ""));
+      const sessions = Array.isArray(workspace.sessions) ? workspace.sessions : [];
+      name.appendChild(textNode("span", "session-count", `${sessions.length} session${sessions.length === 1 ? "" : "s"}`));
+
+      const paths = document.createElement("div");
+      paths.className = "paths";
+      paths.appendChild(pathLine("Directory", workspace.work_dir || ""));
+      paths.appendChild(pathLine("Board", workspace.board_path || ""));
+
+      const actions = document.createElement("div");
+      actions.className = "actions";
+      const open = document.createElement("a");
+      open.className = "button";
+      open.href = `w/${encodeURIComponent(workspace.id || "")}/`;
+      open.textContent = "Open";
+      const remove = document.createElement("button");
+      remove.className = "danger";
+      remove.type = "button";
+      remove.textContent = "Delete";
+      remove.addEventListener("click", () => deleteWorkspace(workspace.id || ""));
+      actions.appendChild(open);
+      actions.appendChild(remove);
+
+      row.appendChild(name);
+      row.appendChild(paths);
+      row.appendChild(actions);
+      rows.appendChild(row);
+    }
+
+    function render(workspaces) {
+      rows.textContent = "";
+      renderSummary(workspaces);
+      if (!workspaces.length) {
+        renderEmpty();
+        return;
+      }
+      workspaces.forEach(renderWorkspace);
+    }
+
+    async function refresh() {
+      setStatus("Refreshing...");
+      const response = await fetch(api("api/workspaces"));
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || `HTTP ${response.status}`);
+      }
+      render(Array.isArray(payload.workspaces) ? payload.workspaces : []);
+      setStatus("");
+    }
+
+    async function addWorkspace(event) {
+      event.preventDefault();
+      setStatus("");
+      addButton.disabled = true;
+      const response = await fetch(api("api/workspaces"), {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          name: nameInput.value.trim(),
+          dir: dirInput.value.trim() || "./",
+          board: boardInput.value.trim() || null,
+        }),
+      });
+      const payload = await response.json();
+      addButton.disabled = false;
+      if (!response.ok || !payload.ok) {
+        setStatus(payload.error || `HTTP ${response.status}`, true);
+        return;
+      }
+      nameInput.value = "";
+      dirInput.value = "";
+      boardInput.value = "";
+      render(payload.workspaces || []);
+      setStatus(`Added ${(payload.workspace && payload.workspace.id) || "workspace"}.`);
+    }
+
+    async function deleteWorkspace(name) {
+      if (!name) return;
+      setStatus("");
+      const response = await fetch(api(`api/workspaces/${encodeURIComponent(name)}`), {
+        method: "DELETE",
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.ok) {
+        setStatus(payload.error || `HTTP ${response.status}`, true);
+        return;
+      }
+      render(payload.workspaces || []);
+      setStatus(`Deleted ${name}.`);
+    }
+
+    form.addEventListener("submit", addWorkspace);
+    refreshButton.addEventListener("click", () => refresh().catch((error) => setStatus(error.message, true)));
+    refresh().catch((error) => setStatus(error.message, true));
+  </script>
+</body>
+</html>

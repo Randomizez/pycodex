@@ -23,17 +23,22 @@ from pycodex.utils.session_persist import SessionRolloutRecorder
 from workspace_server import (
     WebSessionView,
     ThreadedWorkspaceInteractiveSession,
+    WorkspaceDefinition,
+    WorkspaceEntry,
     WorkspaceInteractiveSession,
+    WorkspaceRegistry,
     WorkspaceSessionManager,
+    WorkspaceStateStore,
     build_parser,
     create_app,
-    parse_target,
+    create_multi_workspace_app,
+    default_board_path,
+    load_workspace_definitions,
+    parse_listen,
 )
 from workspace_server.app import (
     SPINNER_STATUS_PREVIEW_LIMIT,
-    WorkspaceStateStore,
     _board_context_text,
-    _default_board_path,
     _format_board_path_for_prompt,
 )
 from tests.fakes import ScriptedModelClient
@@ -50,31 +55,11 @@ class _FailingWorkspaceTool(BaseTool):
         raise RuntimeError("synthetic tool failure")
 
 
-def test_parse_target_accepts_plus_board_suffix(tmp_path) -> None:
-    board = tmp_path / "board.html"
-    board.write_text("<html>board</html>", encoding="utf-8")
-
-    host, port, board_path = parse_target("0.0.0.0:6008+{0}".format(board))
+def test_parse_listen_accepts_host_port() -> None:
+    host, port = parse_listen("0.0.0.0:6008")
 
     assert host == "0.0.0.0"
     assert port == 6008
-    assert board_path == board.resolve()
-
-
-def test_parse_target_board_argument_overrides_suffix(tmp_path) -> None:
-    suffix_board = tmp_path / "suffix.html"
-    board = tmp_path / "board.html"
-    suffix_board.write_text("<html>suffix</html>", encoding="utf-8")
-    board.write_text("<html>board</html>", encoding="utf-8")
-
-    host, port, board_path = parse_target(
-        "127.0.0.1:6007+{0}".format(suffix_board),
-        str(board),
-    )
-
-    assert host == "127.0.0.1"
-    assert port == 6007
-    assert board_path == board.resolve()
 
 
 def test_workspace_parser_uses_console_script_entry() -> None:
@@ -82,26 +67,31 @@ def test_workspace_parser_uses_console_script_entry() -> None:
 
     assert "pycodex-ws" in help_text
     assert "--listen" in help_text
-    assert "--board" in help_text
+    assert "--workspace-config" in help_text
+    assert "--board" not in help_text
     assert "pycodex serve" not in help_text
 
 
-def test_workspace_parser_accepts_listen_and_board_flags(tmp_path) -> None:
-    board = tmp_path / "board.html"
-    board.write_text("<html>board</html>", encoding="utf-8")
+def test_workspace_parser_defaults_workspace_config() -> None:
+    args = build_parser().parse_args(["--listen", "0.0.0.0:6007"])
+
+    assert args.workspace_config == "./workspaces.json"
+
+
+def test_workspace_parser_accepts_workspace_config_flag(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+    config.write_text("[]", encoding="utf-8")
 
     args = build_parser().parse_args(
-        ["--listen", "0.0.0.0:6007", "--board", str(board)]
+        ["--listen", "0.0.0.0:6007", "--workspace-config", str(config)]
     )
-    host, port, board_path = parse_target(args.listen, args.board)
 
-    assert host == "0.0.0.0"
-    assert port == 6007
-    assert board_path == board.resolve()
+    assert args.workspace_config == str(config)
+    assert parse_listen(args.listen) == ("0.0.0.0", 6007)
 
 
 def test_workspace_default_board_path_is_writable_tmp_html() -> None:
-    board_path = _default_board_path()
+    board_path = default_board_path()
 
     assert board_path.parent.is_dir()
     assert board_path.name.startswith("pcws-")
@@ -115,6 +105,76 @@ def test_workspace_formats_board_prompt_path_relative_to_cwd(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
 
     assert _format_board_path_for_prompt(board) == "./board.html"
+
+
+def test_workspace_formats_board_prompt_path_relative_to_explicit_work_dir(tmp_path) -> None:
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    board = work_dir / "boards" / "board.html"
+    board.parent.mkdir()
+    board.write_text("<html>board</html>", encoding="utf-8")
+
+    assert _format_board_path_for_prompt(board, work_dir=work_dir) == "./boards/board.html"
+
+
+def test_workspace_config_loads_multiple_workspaces_with_relative_paths(tmp_path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    config = tmp_path / "workspaces.json"
+    config.write_text(
+        json.dumps(
+            {
+                "workspaces": [
+                    {
+                        "id": "first",
+                        "board": "first/board.html",
+                        "work_dir": "first",
+                    },
+                    {
+                        "id": "second",
+                        "board": "second/board.html",
+                        "work_dir": "second",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    definitions = load_workspace_definitions(config)
+
+    assert [definition.workspace_id for definition in definitions] == [
+        "first",
+        "second",
+    ]
+    assert definitions[0].board_path == (first_dir / "board.html").resolve()
+    assert definitions[0].work_dir == first_dir.resolve()
+    assert definitions[1].board_path == (second_dir / "board.html").resolve()
+    assert definitions[1].work_dir == second_dir.resolve()
+
+
+def test_workspace_config_allows_missing_file_for_empty_workspace_list(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    assert load_workspace_definitions(config) == []
+
+
+def test_workspace_config_generates_name_when_id_is_missing(tmp_path) -> None:
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    board = tmp_path / "board.html"
+    config = tmp_path / "workspaces.json"
+    config.write_text(
+        json.dumps({"workspaces": [{"board": "board.html", "work_dir": "repo"}]}),
+        encoding="utf-8",
+    )
+
+    definitions = load_workspace_definitions(config)
+
+    assert definitions[0].workspace_id == "workspace-1"
+    assert definitions[0].board_path == board.resolve()
 
 
 @pytest.mark.asyncio
@@ -176,6 +236,275 @@ def test_workspace_app_serves_board(tmp_path) -> None:
     assert "Board" in response.text
 
 
+def test_multi_workspace_app_serves_each_workspace_under_prefix(tmp_path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first_board = first_dir / "board.html"
+    second_board = second_dir / "board.html"
+    first_board.write_text("<!doctype html><title>First</title>", encoding="utf-8")
+    second_board.write_text("<!doctype html><title>Second</title>", encoding="utf-8")
+    first_link = _DormantLink(label="first-link")
+    second_link = _DormantLink(label="second-link")
+    registry = WorkspaceRegistry(
+        [
+            WorkspaceEntry(
+                WorkspaceDefinition("first", first_board, first_dir),
+                WorkspaceSessionManager(lambda: first_link, first_board),
+            ),
+            WorkspaceEntry(
+                WorkspaceDefinition("second", second_board, second_dir),
+                WorkspaceSessionManager(lambda: second_link, second_board),
+            ),
+        ]
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        root = client.get("/")
+        workspaces = client.get("/api/workspaces")
+        first_shell = client.get("/w/first/")
+        first_board_response = client.get("/w/first/board")
+        second_board_response = client.get("/w/second/board")
+        first_session = client.get("/w/first/api/session")
+        second_session = client.get("/w/second/api/session")
+
+    assert root.status_code == 200
+    assert "pycodex workspaces" in root.text
+    assert "workspaceForm" in root.text
+    assert "deleteWorkspace" in root.text
+    assert workspaces.status_code == 200
+    assert [item["id"] for item in workspaces.json()["workspaces"]] == [
+        "first",
+        "second",
+    ]
+    assert "<title>first</title>" in first_shell.text
+    assert "Board: <code>{0}</code>".format(first_board) in first_shell.text
+    assert "First" in first_board_response.text
+    assert "Second" in second_board_response.text
+    assert first_session.json()["snapshot"]["model"] == "first-link"
+    assert second_session.json()["snapshot"]["model"] == "second-link"
+
+
+def test_multi_workspace_app_unknown_workspace_returns_404(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    def build_entry(definition, persist_callback=None):
+        return WorkspaceEntry(
+            definition,
+            WorkspaceSessionManager(
+                lambda: _DormantLink(label=definition.workspace_id),
+                definition.board_path,
+                persist_callback=persist_callback,
+            ),
+        )
+
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=build_entry,
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        response = client.get("/w/new_ws/")
+        workspaces = client.get("/api/workspaces")
+
+    assert response.status_code == 404
+    assert not config.exists()
+    assert workspaces.json()["workspaces"] == []
+
+
+def test_workspaces_manager_api_adds_and_deletes_workspace(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    def build_entry(definition, persist_callback=None):
+        return WorkspaceEntry(
+            definition,
+            WorkspaceSessionManager(
+                lambda: _DormantLink(label=definition.workspace_id),
+                definition.board_path,
+                persist_callback=persist_callback,
+            ),
+        )
+
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=build_entry,
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        add_response = client.post(
+            "/api/workspaces",
+            json={
+                "name": "alpha",
+                "dir": "repos/alpha",
+                "board": "boards/alpha.html",
+            },
+        )
+        workspace_response = client.get("/w/alpha/")
+        list_response = client.get("/api/workspaces")
+        added_config = json.loads(config.read_text(encoding="utf-8"))
+        delete_response = client.delete("/api/workspaces/alpha")
+        final_response = client.get("/api/workspaces")
+
+    assert add_response.status_code == 200
+    assert add_response.json()["ok"] is True
+    assert workspace_response.status_code == 200
+    assert list_response.json()["workspaces"][0]["id"] == "alpha"
+    assert (tmp_path / "repos" / "alpha").is_dir()
+    assert added_config == {
+        "workspaces": [
+            {
+                "id": "alpha",
+                "work_dir": "repos/alpha",
+                "board": "boards/alpha.html",
+            }
+        ]
+    }
+    assert delete_response.status_code == 200
+    assert delete_response.json()["ok"] is True
+    assert final_response.json()["workspaces"] == []
+    assert json.loads(config.read_text(encoding="utf-8")) == {"workspaces": []}
+
+
+def test_workspaces_manager_api_adds_random_board_when_omitted(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    def build_entry(definition, persist_callback=None):
+        return WorkspaceEntry(
+            definition,
+            WorkspaceSessionManager(
+                lambda: _DormantLink(label=definition.workspace_id),
+                definition.board_path,
+                persist_callback=persist_callback,
+            ),
+        )
+
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=build_entry,
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        add_response = client.post(
+            "/api/workspaces",
+            json={"name": "alpha", "dir": "repos/alpha"},
+        )
+        board_response = client.get("/w/alpha/board")
+
+    assert add_response.status_code == 200
+    workspace = add_response.json()["workspace"]
+    board = workspace["board_path"]
+    payload = json.loads(config.read_text(encoding="utf-8"))
+
+    assert board.startswith("/tmp/pcws-")
+    assert board.endswith(".html")
+    assert board_response.status_code == 200
+    assert "Board pending" in board_response.text
+    assert payload["workspaces"][0]["board"] == board
+
+
+def test_workspaces_manager_api_generates_name_when_omitted(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    def build_entry(definition, persist_callback=None):
+        return WorkspaceEntry(
+            definition,
+            WorkspaceSessionManager(
+                lambda: _DormantLink(label=definition.workspace_id),
+                definition.board_path,
+                persist_callback=persist_callback,
+            ),
+        )
+
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=build_entry,
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        add_response = client.post(
+            "/api/workspaces",
+            json={"dir": "repos/alpha", "board": "boards/alpha.html"},
+        )
+        workspace_response = client.get("/w/workspace-1/")
+
+    assert add_response.status_code == 200
+    assert add_response.json()["workspace"]["id"] == "workspace-1"
+    assert workspace_response.status_code == 200
+    assert json.loads(config.read_text(encoding="utf-8"))["workspaces"][0]["id"] == "workspace-1"
+
+
+def test_workspaces_manager_api_rejects_duplicate_board_with_different_name(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+
+    def build_entry(definition, persist_callback=None):
+        return WorkspaceEntry(
+            definition,
+            WorkspaceSessionManager(
+                lambda: _DormantLink(label=definition.workspace_id),
+                definition.board_path,
+                persist_callback=persist_callback,
+            ),
+        )
+
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=build_entry,
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/api/workspaces",
+            json={"name": "alpha", "dir": "repos/alpha", "board": "boards/a.html"},
+        )
+        second = client.post(
+            "/api/workspaces",
+            json={"name": "beta", "dir": "repos/beta", "board": "boards/a.html"},
+        )
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert "board already exists" in second.json()["error"]
+
+
+def test_workspace_registry_persists_existing_workspace_when_session_state_saves(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+    work_dir = tmp_path / "repo"
+    work_dir.mkdir()
+    board = work_dir / "board.html"
+    definition = WorkspaceDefinition("repo", board, work_dir)
+    manager = WorkspaceSessionManager(lambda: _DormantLink(label="repo"), board)
+    registry = WorkspaceRegistry(
+        [WorkspaceEntry(definition, manager)],
+        config_path=config,
+    )
+
+    manager.persist_workspace_state()
+
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    assert payload == {
+        "workspaces": [
+            {
+                "id": "repo",
+                "work_dir": "repo",
+                "board": "repo/board.html",
+            }
+        ]
+    }
+    assert registry.list_workspaces()[0]["id"] == "repo"
+
+
 def test_workspace_app_empty_board_mentions_standalone_entry() -> None:
     link = _DormantLink()
     app = create_app(lambda: link, None)
@@ -184,7 +513,7 @@ def test_workspace_app_empty_board_mentions_standalone_entry() -> None:
         response = client.get("/board")
 
     assert response.status_code == 200
-    assert "pycodex-ws --listen" in response.text
+    assert "workspaces manager page" in response.text
     assert "pycodex serve" not in response.text
 
 

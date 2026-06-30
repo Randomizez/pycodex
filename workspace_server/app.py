@@ -4,8 +4,6 @@ import html
 import json
 import os
 import threading
-import tempfile
-from uuid import uuid4
 from dataclasses import asdict, is_dataclass
 try:
     from contextlib import asynccontextmanager
@@ -14,7 +12,7 @@ except ImportError:  # pragma: no cover - Python 3.6 compatibility
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from pycodex.cli import build_agent, build_cli_queue, build_model, configure_loguru
 from pycodex.interactive_session import run_interactive_session
@@ -31,6 +29,14 @@ from pycodex.utils.visualize import (
     shorten_title,
     tool_summary,
 )
+from .workspaces import (
+    WorkspaceDefinition,
+    WorkspaceEntry,
+    WorkspaceRegistry,
+    WorkspaceSessionManager,
+    load_workspace_definitions,
+    session_snapshot,
+)
 import typing
 
 
@@ -45,55 +51,6 @@ JSONValue = typing.Union[
 ]
 
 
-class WorkspaceStateStore:
-    def __init__(self, board_path: "typing.Union[Path, None]") -> None:
-        self.path = None if board_path is None else board_path.with_suffix(".pycodex-ws.json")
-
-    def load_tabs(self) -> "typing.List[typing.Dict[str, str]]":
-        if self.path is None or not self.path.is_file():
-            return []
-
-        try:
-            payload = json.loads(
-                self.path.read_text(encoding="utf-8", errors="replace") or "{}"
-            )
-        except (OSError, ValueError):
-            return []
-
-        tabs = payload.get("tabs") if isinstance(payload, dict) else None
-        if not isinstance(tabs, list):
-            return []
-
-        result = []
-        for tab in tabs:
-            if not isinstance(tab, dict):
-                continue
-            title = str(tab.get("title") or "").strip()
-            rollout_path = str(tab.get("rollout_path") or "").strip()
-            if title or rollout_path:
-                result.append({"title": title, "rollout_path": rollout_path})
-        return result
-
-    def save_tabs(self, tabs: "typing.Iterable[typing.Dict[str, str]]") -> None:
-        if self.path is None:
-            return
-
-        state_tabs = [
-            {
-                "title": str(tab.get("title") or ""),
-                "rollout_path": str(tab.get("rollout_path") or ""),
-            }
-            for tab in tabs
-        ]
-        payload = json.dumps(
-            {"version": 1, "tabs": state_tabs},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(payload, encoding="utf-8")
-
-
 def build_parser() -> "argparse.ArgumentParser":
     parser = argparse.ArgumentParser(
         prog="pycodex-ws",
@@ -105,9 +62,12 @@ def build_parser() -> "argparse.ArgumentParser":
         help="Bind address as host:port, for example 0.0.0.0:6007.",
     )
     parser.add_argument(
-        "--board",
-        default=None,
-        help="Optional board HTML path. Defaults to a writable random path under /tmp.",
+        "--workspace-config",
+        default="./workspaces.json",
+        help=(
+            "Optional JSON file listing workspaces. Each entry needs `id`, "
+            "`board`, and `work_dir`; routes are served under /w/<id>/."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -146,26 +106,17 @@ def build_parser() -> "argparse.ArgumentParser":
     return parser
 
 
-def parse_target(
-    target: str,
-    board: "typing.Union[str, None]" = None,
-) -> "typing.Tuple[str, int, typing.Union[Path, None]]":
+def parse_listen(target: str) -> "typing.Tuple[str, int]":
     target_text = str(target or "").strip() or "127.0.0.1:6007"
-    board_text = board
-    if "+" in target_text:
-        target_text, suffix = target_text.split("+", 1)
-        if board_text is None:
-            board_text = suffix
     if ":" not in target_text:
-        raise ValueError("workspace target must look like host:port")
+        raise ValueError("workspace listen target must look like host:port")
     host, port_text = target_text.rsplit(":", 1)
     host = host.strip() or "127.0.0.1"
     try:
         port = int(port_text)
     except ValueError as exc:
         raise ValueError("workspace port must be an integer") from exc
-    board_path = Path(board_text).expanduser().resolve() if board_text else None
-    return host, port, board_path
+    return host, port
 
 
 SessionFactory = typing.Callable[[], object]
@@ -870,152 +821,6 @@ class ThreadedWorkspaceInteractiveSession:
         await asyncio.wrap_future(future)
 
 
-class WorkspaceSessionManager:
-    def __init__(
-        self,
-        session_factory: "SessionFactory",
-        board_path: "typing.Union[Path, None]" = None,
-    ) -> None:
-        self._session_factory = session_factory
-        self._sessions: "typing.Dict[str, WorkspaceInteractiveSession]" = {}
-        self._session_order: "typing.List[str]" = []
-        self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
-        self._persisted_titles: "typing.Dict[str, str]" = {}
-        self._lock = asyncio.Lock()
-        self._state_store = WorkspaceStateStore(board_path)
-
-    async def start(self) -> None:
-        state_tabs = self._state_store.load_tabs()
-        if not state_tabs:
-            await self.create_session()
-            return
-        for tab in state_tabs:
-            await self.create_session(
-                title=str(tab.get("title") or ""),
-                rollout_path=str(tab.get("rollout_path") or ""),
-            )
-
-    async def close(self) -> None:
-        sessions = list(self._sessions.values())
-        watchers = list(self._state_watchers.values())
-        self._sessions.clear()
-        self._session_order = []
-        self._state_watchers.clear()
-        self._persisted_titles.clear()
-        for watcher in watchers:
-            watcher.cancel()
-        if watchers:
-            await asyncio.gather(*watchers, return_exceptions=True)
-        for session in sessions:
-            await session.close()
-
-    async def create_session(
-        self,
-        title: str = "",
-        rollout_path: str = "",
-    ) -> str:
-        async with self._lock:
-            session_id = uuid7_string()
-            session = self._session_factory()
-            await session.start()
-
-            if rollout_path:
-                await session.restore_from_rollout(rollout_path, title=title)
-
-            self._sessions[session_id] = session
-            self._session_order.append(session_id)
-            self._persisted_titles[session_id] = str(
-                _session_summary(session).get("title") or ""
-            )
-            self._state_watchers[session_id] = asyncio.create_task(
-                self._watch_session_title(session_id, session)
-            )
-            return session_id
-
-    async def close_session(self, session_id: str) -> None:
-        async with self._lock:
-            if len(self._session_order) <= 1:
-                raise ValueError("cannot close the last session")
-            session = self._sessions.pop(session_id, None)
-            if session is None:
-                raise KeyError(session_id)
-            watcher = self._state_watchers.pop(session_id, None)
-            self._persisted_titles.pop(session_id, None)
-            self._session_order = [
-                item for item in self._session_order if item != session_id
-            ]
-        if watcher is not None:
-            watcher.cancel()
-            await asyncio.gather(watcher, return_exceptions=True)
-        await session.close()
-        self.persist_workspace_state()
-
-    async def _watch_session_title(self, session_id: str, session) -> None:
-        subscriber = session.subscribe()
-        try:
-            while True:
-                event = await subscriber.get()
-                if event is None:
-                    return
-                if not isinstance(event, dict) or event.get("type") != "title_changed":
-                    continue
-                title = str(event.get("title") or "")
-                if title == self._persisted_titles.get(session_id, ""):
-                    continue
-                self._persisted_titles[session_id] = title
-                self.persist_workspace_state()
-        finally:
-            session.unsubscribe(subscriber)
-
-    def persist_workspace_state(self) -> None:
-        tabs = []
-        for session_id in self._session_order:
-            session = self._sessions.get(session_id)
-            if session is None:
-                continue
-            summary = _session_summary(session)
-            title = str(summary.get("title") or "").strip()
-            rollout_path = str(session.rollout_path() or "")
-            if not title and not rollout_path:
-                continue
-            tabs.append({"title": title, "rollout_path": rollout_path})
-        self._state_store.save_tabs(tabs)
-
-    def get(self, session_id: "typing.Union[str, None]" = None) -> "WorkspaceInteractiveSession":
-        resolved_id = self.resolve_session_id(session_id)
-        try:
-            return self._sessions[resolved_id]
-        except KeyError:
-            raise KeyError(resolved_id)
-
-    def resolve_session_id(self, session_id: "typing.Union[str, None]" = None) -> str:
-        if session_id:
-            return str(session_id)
-        if not self._session_order:
-            raise KeyError("no sessions")
-        return self._session_order[0]
-
-    def list_sessions(self) -> "typing.List[typing.Dict[str, object]]":
-        result = []
-        for session_id in self._session_order:
-            session = self._sessions[session_id]
-            summary = _session_summary(session)
-            result.append(
-                {
-                    "id": session_id,
-                    "title": summary.get("title") or "pycodex",
-                    "running": bool(summary.get("running")),
-                    "spinner": summary.get("spinner") or "",
-                    "turn_count": summary.get("turn_count") or 0,
-                    "last_assistant": summary.get("last_assistant") or "",
-                    "context_remaining_percent": summary.get(
-                        "context_remaining_percent"
-                    ),
-                }
-            )
-        return result
-
-
 def create_app(
     session_source: "typing.Union[WorkspaceSessionManager, SessionFactory]",
     board_path: "typing.Union[Path, None]",
@@ -1025,28 +830,163 @@ def create_app(
         if isinstance(session_source, WorkspaceSessionManager)
         else WorkspaceSessionManager(session_source, board_path)
     )
+    app = _create_lifespan_app(manager.start, manager.close)
+    _install_workspace_routes(app, manager, board_path)
+    return app
 
+
+def create_multi_workspace_app(
+    registry: 'WorkspaceRegistry',
+) -> FastAPI:
+    app = _create_lifespan_app(registry.start, registry.close)
+
+    @app.get("/")
+    async def index() -> Response:
+        return _html_response(_render_workspaces_manager_shell())
+
+    @app.get("/favicon.ico")
+    async def favicon() -> Response:
+        return Response(status_code=204)
+
+    @app.get("/api/workspaces")
+    async def workspaces() -> JSONResponse:
+        return JSONResponse({"workspaces": registry.list_workspaces()})
+
+    @app.post("/api/workspaces")
+    async def add_workspace(payload: "typing.Dict[str, object]") -> JSONResponse:
+        try:
+            entry = await registry.add_workspace(
+                str(payload.get("name") or ""),
+                work_dir=str(payload.get("dir") or "./"),
+                board=(
+                    None
+                    if payload.get("board") in (None, "")
+                    else str(payload.get("board"))
+                ),
+            )
+        except ValueError as exc:
+            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+        return JSONResponse(
+            {
+                "ok": True,
+                "workspace": entry.to_dict(),
+                "workspaces": registry.list_workspaces(),
+            }
+        )
+
+    @app.delete("/api/workspaces/{workspace_id}")
+    async def delete_workspace(workspace_id: str) -> JSONResponse:
+        try:
+            await registry.delete_workspace(workspace_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="workspace not found")
+        return JSONResponse({"ok": True, "workspaces": registry.list_workspaces()})
+
+    @app.api_route("/w/{workspace_id}", methods=["GET", "HEAD"])
+    async def workspace_index_redirect(workspace_id: str) -> RedirectResponse:
+        _workspace_entry_or_404(registry, workspace_id)
+        return RedirectResponse(url="/w/{0}/".format(workspace_id), status_code=307)
+
+    @app.api_route("/w/{workspace_id}/", methods=["GET", "HEAD"])
+    async def workspace_index(workspace_id: str) -> HTMLResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _html_response(
+            _render_workspace_shell(
+                entry.definition.board_path,
+                title=entry.definition.workspace_id,
+            )
+        )
+
+    @app.api_route("/w/{workspace_id}/board", methods=["GET", "HEAD"])
+    async def workspace_board(workspace_id: str) -> Response:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _board_response(entry.definition.board_path)
+
+    @app.get("/w/{workspace_id}/api/board")
+    async def workspace_board_status(workspace_id: str) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _board_status_response(entry.definition.board_path)
+
+    @app.get("/w/{workspace_id}/ws/session")
+    async def workspace_websocket_backend_hint(workspace_id: str) -> JSONResponse:
+        _workspace_entry_or_404(registry, workspace_id)
+        return _websocket_backend_hint_response()
+
+    @app.get("/w/{workspace_id}/api/sessions")
+    async def workspace_sessions(workspace_id: str) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _sessions_response(entry.manager)
+
+    @app.post("/w/{workspace_id}/api/sessions")
+    async def workspace_new_session(workspace_id: str) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return await _new_session_response(entry.manager)
+
+    @app.delete("/w/{workspace_id}/api/sessions/{session_id}")
+    async def workspace_delete_session(workspace_id: str, session_id: str) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return await _delete_session_response(entry.manager, session_id)
+
+    @app.get("/w/{workspace_id}/api/session")
+    async def workspace_session(
+        workspace_id: str,
+        session_id: "typing.Union[str, None]" = None,
+    ) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _session_response(entry.manager, session_id)
+
+    @app.post("/w/{workspace_id}/api/session/message")
+    async def workspace_message(
+        workspace_id: str,
+        payload: "typing.Dict[str, object]",
+    ) -> JSONResponse:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return await _message_response(entry.manager, payload)
+
+    @app.websocket("/w/{workspace_id}/ws/session")
+    async def workspace_websocket_session(workspace_id: str, websocket: WebSocket) -> None:
+        try:
+            entry = registry.get(workspace_id)
+        except (KeyError, ValueError):
+            await websocket.close(code=1008)
+            return
+        await _websocket_session_handler(entry.manager, websocket)
+
+    return app
+
+
+def _create_lifespan_app(
+    start: "typing.Callable[[], typing.Awaitable[None]]",
+    close: "typing.Callable[[], typing.Awaitable[None]]",
+) -> FastAPI:
     if asynccontextmanager is not None:
         @asynccontextmanager
         async def lifespan(_app):
-            await manager.start()
+            await start()
             try:
                 yield
             finally:
-                await manager.close()
+                await close()
 
-        app = FastAPI(lifespan=lifespan)
-    else:
-        app = FastAPI()
+        return FastAPI(lifespan=lifespan)
 
-        @app.on_event("startup")
-        async def startup() -> None:
-            await manager.start()
+    app = FastAPI()
 
-        @app.on_event("shutdown")
-        async def shutdown() -> None:
-            await manager.close()
+    @app.on_event("startup")
+    async def startup() -> None:
+        await start()
 
+    @app.on_event("shutdown")
+    async def shutdown() -> None:
+        await close()
+    return app
+
+
+def _install_workspace_routes(
+    app: FastAPI,
+    manager: WorkspaceSessionManager,
+    board_path: "typing.Union[Path, None]",
+) -> None:
     @app.get("/")
     async def index() -> HTMLResponse:
         return _html_response(_render_workspace_shell(board_path))
@@ -1067,157 +1007,173 @@ def create_app(
 
     @app.get("/api/board")
     async def board_status() -> JSONResponse:
-        if board_path is None or not board_path.is_file():
-            return JSONResponse({"exists": False})
-        stat = board_path.stat()
-        return JSONResponse(
-            {
-                "exists": True,
-                "path": str(board_path),
-                "mtime_ns": stat.st_mtime_ns,
-                "size": stat.st_size,
-            }
-        )
+        return _board_status_response(board_path)
 
     @app.get("/ws/session")
     async def websocket_backend_hint() -> JSONResponse:
-        return JSONResponse(
-            {
-                "error": "websocket backend is unavailable; HTTP polling is active",
-            },
-            status_code=426,
-        )
-
-    def _board_response(board_path: "typing.Union[Path, None]") -> Response:
-        if board_path is None:
-            return _html_response(_render_empty_board())
-        if not board_path.is_file():
-            return _html_response(_render_missing_board(board_path))
-        return _html_response(board_path.read_text(encoding="utf-8", errors="replace"))
+        return _websocket_backend_hint_response()
 
     @app.get("/api/sessions")
     async def sessions() -> JSONResponse:
-        return JSONResponse({"sessions": manager.list_sessions()})
+        return _sessions_response(manager)
 
     @app.post("/api/sessions")
     async def new_session() -> JSONResponse:
-        session_id = await manager.create_session()
-        return JSONResponse(
-            {
-                "ok": True,
-                "session_id": session_id,
-                "sessions": manager.list_sessions(),
-                "snapshot": _session_snapshot(manager.get(session_id)),
-            }
-        )
+        return await _new_session_response(manager)
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str) -> JSONResponse:
-        try:
-            await manager.close_session(session_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="session not found")
-        except ValueError as exc:
-            return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
-        return JSONResponse({"ok": True, "sessions": manager.list_sessions()})
+        return await _delete_session_response(manager, session_id)
 
     @app.get("/api/session")
     async def session(
         session_id: "typing.Union[str, None]" = None,
     ) -> JSONResponse:
-        try:
-            resolved_id = manager.resolve_session_id(session_id)
-            link = manager.get(resolved_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="session not found")
-        return JSONResponse(
-            {
-                "session_id": resolved_id,
-                "sessions": manager.list_sessions(),
-                "snapshot": _session_snapshot(link),
-            }
-        )
+        return _session_response(manager, session_id)
 
     @app.post("/api/session/message")
     async def message(
         payload: "typing.Dict[str, object]",
     ) -> JSONResponse:
-        session_id = str(payload.get("session_id") or "")
-        try:
-            link = manager.get(session_id or None)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="session not found")
-        result = await link.submit(str(payload.get("prompt") or ""))
-        if isinstance(result, dict):
-            result.setdefault("sessions", manager.list_sessions())
-        status = 200 if result.get("ok") else 400
-        return JSONResponse(result, status_code=status)
+        return await _message_response(manager, payload)
 
     @app.websocket("/ws/session")
     async def websocket_session(websocket: WebSocket) -> None:
-        await websocket.accept()
-        session_id = str(websocket.query_params.get("session_id") or "")
-        try:
-            link = manager.get(session_id or None)
-        except KeyError:
-            await websocket.close(code=1008)
-            return
-        subscriber = link.subscribe()
-        sender = asyncio.create_task(_send_ws_events(websocket, subscriber))
-        try:
-            while True:
-                data = await websocket.receive_text()
+        await _websocket_session_handler(manager, websocket)
+
+
+def _board_status_response(board_path: "typing.Union[Path, None]") -> JSONResponse:
+    if board_path is None or not board_path.is_file():
+        return JSONResponse({"exists": False})
+    stat = board_path.stat()
+    return JSONResponse(
+        {
+            "exists": True,
+            "path": str(board_path),
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+        }
+    )
+
+
+def _websocket_backend_hint_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "error": "websocket backend is unavailable; HTTP polling is active",
+        },
+        status_code=426,
+    )
+
+
+def _sessions_response(manager: 'WorkspaceSessionManager') -> JSONResponse:
+    return JSONResponse({"sessions": manager.list_sessions()})
+
+
+async def _new_session_response(manager: 'WorkspaceSessionManager') -> JSONResponse:
+    session_id = await manager.create_session()
+    return JSONResponse(
+        {
+            "ok": True,
+            "session_id": session_id,
+            "sessions": manager.list_sessions(),
+            "snapshot": session_snapshot(manager.get(session_id)),
+        }
+    )
+
+
+async def _delete_session_response(
+    manager: 'WorkspaceSessionManager',
+    session_id: str,
+) -> JSONResponse:
+    try:
+        await manager.close_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    return JSONResponse({"ok": True, "sessions": manager.list_sessions()})
+
+
+def _session_response(
+    manager: 'WorkspaceSessionManager',
+    session_id: "typing.Union[str, None]" = None,
+) -> JSONResponse:
+    try:
+        resolved_id = manager.resolve_session_id(session_id)
+        link = manager.get(resolved_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+    return JSONResponse(
+        {
+            "session_id": resolved_id,
+            "sessions": manager.list_sessions(),
+            "snapshot": session_snapshot(link),
+        }
+    )
+
+
+async def _message_response(
+    manager: 'WorkspaceSessionManager',
+    payload: "typing.Dict[str, object]",
+) -> JSONResponse:
+    session_id = str(payload.get("session_id") or "")
+    try:
+        link = manager.get(session_id or None)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="session not found")
+    result = await link.submit(str(payload.get("prompt") or ""))
+    if isinstance(result, dict):
+        result.setdefault("sessions", manager.list_sessions())
+    status = 200 if result.get("ok") else 400
+    return JSONResponse(result, status_code=status)
+
+
+async def _websocket_session_handler(
+    manager: 'WorkspaceSessionManager',
+    websocket: WebSocket,
+) -> None:
+    await websocket.accept()
+    session_id = str(websocket.query_params.get("session_id") or "")
+    try:
+        link = manager.get(session_id or None)
+    except KeyError:
+        await websocket.close(code=1008)
+        return
+    subscriber = link.subscribe()
+    sender = asyncio.create_task(_send_ws_events(websocket, subscriber))
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                payload = json.loads(data)
+            except ValueError:
+                await websocket.send_json({"type": "error", "error": "invalid json"})
+                continue
+            action = str(payload.get("type") or payload.get("action") or "")
+            if action == "send":
+                target_session_id = str(payload.get("session_id") or session_id or "")
                 try:
-                    payload = json.loads(data)
-                except ValueError:
-                    await websocket.send_json({"type": "error", "error": "invalid json"})
-                    continue
-                action = str(payload.get("type") or payload.get("action") or "")
-                if action == "send":
-                    target_session_id = str(payload.get("session_id") or session_id or "")
-                    try:
-                        target_link = manager.get(target_session_id or None)
-                    except KeyError:
-                        await websocket.send_json(
-                            {"type": "error", "error": "session not found"}
-                        )
-                        continue
-                    result = await target_link.submit(
-                        str(payload.get("prompt") or ""),
-                        sender=str(payload.get("sender") or "web"),
+                    target_link = manager.get(target_session_id or None)
+                except KeyError:
+                    await websocket.send_json(
+                        {"type": "error", "error": "session not found"}
                     )
-                    await websocket.send_json({"type": "send_result", "result": result})
-                elif action == "ping":
-                    await websocket.send_json({"type": "pong"})
-                else:
-                    await websocket.send_json({"type": "error", "error": "unknown action"})
-        except WebSocketDisconnect:
-            pass
-        finally:
-            link.unsubscribe(subscriber)
-            sender.cancel()
-            await asyncio.gather(sender, return_exceptions=True)
-
-    return app
-
-
-def _session_snapshot(session) -> "typing.Dict[str, object]":
-    return typing.cast("typing.Dict[str, object]", session.snapshot())
-
-
-def _session_summary(session) -> "typing.Dict[str, object]":
-    summary = getattr(session, "summary", None)
-    if callable(summary):
-        return typing.cast("typing.Dict[str, object]", summary())
-    snapshot = _session_snapshot(session)
-    return {
-        "title": snapshot.get("title") or "",
-        "running": bool(snapshot.get("running")),
-        "spinner": snapshot.get("spinner") or "",
-        "turn_count": len(snapshot.get("turns") or []),
-        "last_assistant": _last_assistant_text(snapshot.get("turns") or []),
-        "context_remaining_percent": snapshot.get("context_remaining_percent"),
-    }
+                    continue
+                result = await target_link.submit(
+                    str(payload.get("prompt") or ""),
+                    sender=str(payload.get("sender") or "web"),
+                )
+                await websocket.send_json({"type": "send_result", "result": result})
+            elif action == "ping":
+                await websocket.send_json({"type": "pong"})
+            else:
+                await websocket.send_json({"type": "error", "error": "unknown action"})
+    except WebSocketDisconnect:
+        pass
+    finally:
+        link.unsubscribe(subscriber)
+        sender.cancel()
+        await asyncio.gather(sender, return_exceptions=True)
 
 
 def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> str:
@@ -1284,15 +1240,70 @@ async def _send_ws_events(websocket: WebSocket, subscriber: "asyncio.Queue") -> 
         await websocket.send_json(event)
 
 
+def _board_response(board_path: "typing.Union[Path, None]") -> Response:
+    if board_path is None:
+        return _html_response(_render_empty_board())
+    if not board_path.is_file():
+        return _html_response(_render_missing_board(board_path))
+    return _html_response(board_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def _workspace_entry_or_404(
+    registry: 'WorkspaceRegistry',
+    workspace_id: str,
+) -> 'WorkspaceEntry':
+    try:
+        return registry.get(workspace_id)
+    except (KeyError, ValueError):
+        raise HTTPException(status_code=404, detail="workspace not found")
+
+
 def run_serve_cli(args: "argparse.Namespace") -> int:
     import uvicorn
 
-    board_arg = args.board if args.board is not None else _default_board_path()
-    host, port, board_path = parse_target(args.listen, board_arg)
-    if board_path is not None and not board_path.parent.is_dir():
-        raise ValueError("board parent directory does not exist: {0}".format(board_path.parent))
-
+    host, port = parse_listen(args.listen)
     configure_loguru()
+
+    definitions = load_workspace_definitions(args.workspace_config)
+    entries = [
+        _build_workspace_entry(definition, args)
+        for definition in definitions
+    ]
+    registry = WorkspaceRegistry(
+        entries,
+        config_path=args.workspace_config,
+        entry_factory=lambda definition, persist_callback: _build_workspace_entry(
+            definition,
+            args,
+            persist_callback,
+        ),
+    )
+    app = create_multi_workspace_app(registry)
+
+    print(
+        "pycodex workspace listening on http://{0}:{1}".format(host, port),
+        flush=True,
+    )
+    for definition in definitions:
+        print(
+            "workspace {0}: board={1} work_dir={2} url=http://{3}:{4}/w/{0}/".format(
+                definition.workspace_id,
+                definition.board_path or "",
+                definition.work_dir,
+                host,
+                port,
+            ),
+            flush=True,
+        )
+    uvicorn.run(app, host=host, port=port, loop="asyncio")
+    return 0
+
+
+def _build_workspace_entry(
+    definition: 'WorkspaceDefinition',
+    args: "argparse.Namespace",
+    persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
+) -> 'WorkspaceEntry':
     def build_session() -> "WorkspaceInteractiveSession":
         model = build_model(
             config_path=args.config,
@@ -1309,8 +1320,11 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             system_prompt=args.system_prompt,
             session_mode="tui",
             extra_contextual_user_messages=(
-                [_board_context_text(board_path)] if board_path is not None else []
+                [_board_context_text(definition.board_path, definition.work_dir)]
+                if definition.board_path is not None
+                else []
             ),
+            cwd=definition.work_dir,
         )
         return WorkspaceInteractiveSession(
             build_cli_queue(agent),
@@ -1320,33 +1334,37 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
     def session_factory() -> "ThreadedWorkspaceInteractiveSession":
         return ThreadedWorkspaceInteractiveSession(build_session, asyncio.get_running_loop())
 
-    app = create_app(WorkspaceSessionManager(session_factory, board_path), board_path)
-    print(
-        "pycodex workspace listening on http://{0}:{1}".format(host, port),
-        flush=True,
+    return WorkspaceEntry(
+        definition=definition,
+        manager=WorkspaceSessionManager(
+            session_factory,
+            definition.board_path,
+            persist_callback=persist_callback,
+        ),
     )
-    if board_path is not None:
-        print("board: {0}".format(board_path), flush=True)
-    uvicorn.run(app, host=host, port=port, loop="asyncio")
-    return 0
 
 
-def _board_context_text(board_path: Path) -> str:
+def _board_context_text(
+    board_path: Path,
+    work_dir: "typing.Union[Path, None]" = None,
+) -> str:
     return (
         "Current workspace board file: {0}. "
         "Changes you make to this file are shown to the user in real time. "
         "You can create or modify this file anytime."
-    ).format(_format_board_path_for_prompt(board_path))
+    ).format(_format_board_path_for_prompt(board_path, work_dir=work_dir))
 
 
-def _default_board_path() -> Path:
-    return Path(tempfile.gettempdir()) / "pcws-{0}.html".format(uuid4().hex[:8])
-
-
-def _format_board_path_for_prompt(board_path: Path) -> str:
+def _format_board_path_for_prompt(
+    board_path: Path,
+    work_dir: "typing.Union[Path, None]" = None,
+) -> str:
     resolved = board_path.resolve()
     try:
-        relative = os.path.relpath(str(resolved), str(Path.cwd().resolve()))
+        relative = os.path.relpath(
+            str(resolved),
+            str(Path(work_dir or Path.cwd()).resolve()),
+        )
     except ValueError:
         return str(resolved)
     if relative == ".":
@@ -1356,20 +1374,32 @@ def _format_board_path_for_prompt(board_path: Path) -> str:
     return "./{0}".format(relative)
 
 
-def _render_workspace_shell(board_path: "typing.Union[Path, None]") -> str:
+def _render_workspace_shell(
+    board_path: "typing.Union[Path, None]",
+    title: "typing.Union[str, None]" = None,
+) -> str:
     board_label = str(board_path) if board_path is not None else "No board"
+    page_title = str(title or "pycodex workspace")
     template = (Path(__file__).with_name("workspace.html")).read_text(
         encoding="utf-8"
     )
-    return template.replace("__BOARD_LABEL__", html.escape(board_label))
+    return (
+        template
+        .replace("__WORKSPACE_TITLE__", html.escape(page_title))
+        .replace("__BOARD_LABEL__", html.escape(board_label))
+    )
+
+
+def _render_workspaces_manager_shell() -> str:
+    return (Path(__file__).with_name("workspaces.html")).read_text(encoding="utf-8")
 
 
 def _render_empty_board() -> str:
     return """<!doctype html>
 <html><head><meta charset="utf-8"><title>No board</title></head>
 <body style="font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px">
-<h1>No board configured</h1>
-<p>Start with <code>pycodex-ws --listen 0.0.0.0:6007 --board ./board.html</code>.</p>
+<h1>No board</h1>
+<p>Add a workspace from the workspaces manager page.</p>
 </body></html>"""
 
 

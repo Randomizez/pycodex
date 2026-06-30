@@ -45,7 +45,10 @@ default-groups = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["pycodex", "responses_server", "workspace_server"]
-artifacts = ["workspace_server/workspace.html"]
+artifacts = [
+    "workspace_server/workspace.html",
+    "workspace_server/workspaces.html",
+]
 
 [tool.hatch.build.targets.sdist]
 exclude = [".venv*"]

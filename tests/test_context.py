@@ -86,6 +86,18 @@ def test_context_manager_reads_auto_compact_limit_from_codex_config(tmp_path) ->
     assert manager.resolve_auto_compact_token_limit() == 12345
 
 
+def test_context_manager_accepts_explicit_cwd(tmp_path, monkeypatch) -> 'None':
+    explicit_cwd = tmp_path / "workspace"
+    explicit_cwd.mkdir()
+    other_cwd = tmp_path / "other"
+    other_cwd.mkdir()
+    monkeypatch.chdir(other_cwd)
+
+    manager = ContextManager(cwd=explicit_cwd)
+
+    assert manager.cwd == explicit_cwd.resolve()
+
+
 @pytest.mark.parametrize(
     "model",
     ["step-3.5-flash", "step-3.5-flash-2603", "step-3.7-flash"],
