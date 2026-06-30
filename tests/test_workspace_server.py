@@ -8,6 +8,7 @@ import pytest
 
 from pycodex import (
     Agent,
+    AgentEvent,
     AssistantMessage,
     BaseTool,
     CliSubmissionQueue,
@@ -239,6 +240,26 @@ def test_workspace_app_session_endpoint_returns_spinner_and_turns(tmp_path) -> N
     assert snapshot["turns"][0]["response"] == "response"
 
 
+def test_workspace_view_tracks_context_remaining_percent() -> None:
+    view = WebSessionView()
+    assert view.snapshot()["context_remaining_percent"] is None
+
+    view.set_context_window_tokens(100_000)
+    assert view.snapshot()["context_remaining_percent"] == 100
+    assert view.summary()["context_remaining_percent"] == 100
+
+    view.handle_event(
+        AgentEvent(
+            kind="token_count",
+            turn_id="turn_1",
+            payload={"usage": {"total_tokens": 20_800}},
+        )
+    )
+
+    assert view.snapshot()["context_remaining_percent"] == 90
+    assert view.summary()["context_remaining_percent"] == 90
+
+
 def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     board = tmp_path / "board.html"
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
@@ -253,12 +274,22 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert 'class="spinner-wrap"' in response.text
     assert 'id="spinner" class="spinner" type="button" role="checkbox"' in response.text
     assert 'id="toast" class="toast" role="status"' in response.text
+    assert response.text.index('class="spinner-wrap"') < response.text.index('id="contextMeter"')
+    assert response.text.index('id="contextMeter"') < response.text.index('id="spinner"')
+    assert 'id="contextMeter" class="context-meter hidden" aria-hidden="true"' in response.text
+    assert 'id="contextMeterValue" class="context-meter-value"' in response.text
+    assert 'contextMeter.style.setProperty("--context-remaining", `${value}%`)' in response.text
+    assert "contextMeter.setAttribute(\"aria-valuenow\"" not in response.text
+    assert "contextMeterValue.textContent = String(value)" in response.text
+    assert "sessionId === activeSessionId && spinnerText" in response.text
     assert "spinner.addEventListener(\"click\", toggleSpinnerNotification)" in response.text
-    assert "new Notification(`${title} done`" in response.text
+    assert "new Notification(`session: ${title}`" in response.text
     assert "body: lastAssistant" in response.text
     assert "notifySessionDone(sessionId, session)" in response.text
     assert "notify-on-done enabled" in response.text
     assert "notify-on-done canceled" in response.text
+    assert "browser notifications blocked" in response.text
+    assert "requestNotificationPermission" in response.text
     assert 'document.addEventListener("visibilitychange"' in response.text
     assert 'document.visibilityState !== "visible"' in response.text
     assert ">Send<" not in response.text
@@ -885,6 +916,7 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
                 "spinner": "thinking",
                 "turn_count": 123,
                 "last_assistant": "latest answer",
+                "context_remaining_percent": 48,
             }
 
         def snapshot(self):
@@ -901,6 +933,7 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
     assert response.json()["sessions"][0]["spinner"] == "thinking"
     assert response.json()["sessions"][0]["turn_count"] == 123
     assert response.json()["sessions"][0]["last_assistant"] == "latest answer"
+    assert response.json()["sessions"][0]["context_remaining_percent"] == 48
 
 
 def test_workspace_app_websocket_ping(tmp_path) -> None:

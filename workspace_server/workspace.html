@@ -136,6 +136,36 @@
       gap: var(--space-2);
       min-width: 0;
     }
+    .context-meter {
+      --context-remaining: 0%;
+      --context-meter-size: 22px;
+      position: relative;
+      display: inline-grid;
+      place-items: center;
+      width: var(--context-meter-size);
+      height: var(--context-meter-size);
+      border-radius: 999px;
+      background: conic-gradient(#4ca56f 0 var(--context-remaining), #cfd8d2 0 100%);
+      color: #335243;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 9px;
+      line-height: 1;
+      flex: 0 0 auto;
+    }
+    .context-meter.hidden {
+      display: none;
+    }
+    .context-meter::before {
+      content: "";
+      position: absolute;
+      inset: 4px;
+      border-radius: 999px;
+      background: #fff;
+    }
+    .context-meter-value {
+      position: relative;
+      z-index: 1;
+    }
     .tabs {
       display: flex;
       align-items: center;
@@ -394,16 +424,20 @@
     }
     .spinner-wrap {
       position: relative;
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
       justify-self: start;
       align-self: end;
       max-width: 100%;
     }
     .spinner {
+      --spinner-pill-height: 22px;
       position: relative;
       display: inline-flex;
       align-items: center;
       max-width: 100%;
-      min-height: 20px;
+      height: var(--spinner-pill-height);
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
@@ -425,7 +459,7 @@
       box-shadow: 0 0 0 3px rgba(15, 143, 85, 0.13);
       outline: 0;
     }
-    .spinner:not(:empty) {
+    .spinner-wrap:has(.spinner:not(:empty)) {
       margin-bottom: var(--space-1);
     }
     .spinner:not(:empty)::before {
@@ -538,6 +572,9 @@
       <form id="composer" class="composer">
         <div class="spinner-wrap">
           <div id="toast" class="toast" role="status" aria-live="polite"></div>
+          <div id="contextMeter" class="context-meter hidden" aria-hidden="true">
+            <span id="contextMeterValue" class="context-meter-value"></span>
+          </div>
           <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
         </div>
         <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
@@ -556,6 +593,8 @@
     const workspace = document.querySelector(".workspace");
     const splitter = document.getElementById("splitter");
     const tabsEl = document.getElementById("tabs");
+    const contextMeter = document.getElementById("contextMeter");
+    const contextMeterValue = document.getElementById("contextMeterValue");
     const newTabButton = document.getElementById("newTab");
     let pollTimer = null;
     let boardPollTimer = null;
@@ -725,6 +764,18 @@
       return "Notification" in window;
     }
 
+    function requestNotificationPermission() {
+      try {
+        const requestResult = Notification.requestPermission();
+        if (requestResult && typeof requestResult.then === "function") {
+          return requestResult;
+        }
+        return Promise.resolve(Notification.permission);
+      } catch (_error) {
+        return Promise.resolve(Notification.permission);
+      }
+    }
+
     function notifySessionDone(sessionId, sessionSummary = null) {
       if (!sessionId) return;
       const state = stateForSession(sessionId);
@@ -749,42 +800,49 @@
     }
 
     function isSessionRunning(sessionId) {
+      if (sessionId === activeSessionId && spinnerText) return true;
       const session = sessionById(sessionId);
       if (session) return Boolean(session.running);
-      return sessionId === activeSessionId && Boolean(spinnerText);
+      return false;
     }
 
     async function toggleSpinnerNotification() {
       const sessionId = activeSessionId;
-      if (!sessionId || !isSessionRunning(sessionId)) return;
+      if (!sessionId || !isSessionRunning(sessionId)) {
+        showToast("notify-on-done unavailable");
+        return;
+      }
       const state = stateForSession(sessionId);
       if (state.notifyWhenDone) {
         state.notifyWhenDone = false;
         showToast("notify-on-done canceled");
-        renderTabs();
         updateSpinnerNotifyUi();
         return;
       }
       if (!notificationAvailable()) {
-        spinner.title = "Browser notifications are unavailable";
+        showToast("browser notifications unavailable");
         return;
       }
       if (Notification.permission === "denied") {
-        spinner.title = "Browser notifications are blocked";
+        showToast("browser notifications blocked");
         return;
       }
+      state.notifyWhenDone = true;
+      showToast("notify-on-done enabled");
+      updateSpinnerNotifyUi();
       if (Notification.permission !== "granted") {
-        const permission = await Notification.requestPermission();
+        const permission = await requestNotificationPermission();
         if (permission !== "granted") {
+          state.notifyWhenDone = false;
           showToast("notify-on-done canceled");
           updateSpinnerNotifyUi();
           return;
         }
       }
-      if (!isSessionRunning(sessionId)) return;
-      state.notifyWhenDone = true;
-      showToast("notify-on-done enabled");
-      renderTabs();
+      if (!isSessionRunning(sessionId)) {
+        state.notifyWhenDone = false;
+        showToast("notify-on-done canceled");
+      }
       updateSpinnerNotifyUi();
     }
 
@@ -848,6 +906,7 @@
         activeSessionId = sessions[0].id || "";
       }
       renderTabs();
+      updateContextMeter();
       updateSpinnerNotifyUi();
     }
 
@@ -892,6 +951,32 @@
         tab.appendChild(close);
         tabsEl.appendChild(tab);
       });
+    }
+
+    function updateContextMeter(snapshot = null) {
+      let percent = null;
+      if (snapshot && snapshot.context_remaining_percent !== undefined) {
+        percent = snapshot.context_remaining_percent;
+      } else {
+        const session = sessionById(activeSessionId);
+        if (session && session.context_remaining_percent !== undefined) {
+          percent = session.context_remaining_percent;
+        }
+      }
+      if (percent === null || percent === undefined || percent === "") {
+        contextMeter.classList.add("hidden");
+        contextMeterValue.textContent = "";
+        return;
+      }
+      const value = Math.max(0, Math.min(100, Math.round(Number(percent))));
+      if (!Number.isFinite(value)) {
+        contextMeter.classList.add("hidden");
+        contextMeterValue.textContent = "";
+        return;
+      }
+      contextMeter.classList.remove("hidden");
+      contextMeter.style.setProperty("--context-remaining", `${value}%`);
+      contextMeterValue.textContent = String(value);
     }
 
     function messageSignature(snapshot) {
@@ -984,6 +1069,7 @@
       const signature = messageSignature(snapshot);
       if (signature === state.lastRenderedSignature) {
         setSpinner(snapshot.spinner || "");
+        updateContextMeter(snapshot);
         return;
       }
       state.lastRenderedSignature = signature;
@@ -998,6 +1084,7 @@
           turns.forEach((turn) => renderTurn(turn, shouldStick));
         }
         setSpinner(snapshot.spinner || "");
+        updateContextMeter(snapshot);
         if (restoreScrollTop !== null) {
           log.scrollTop = Math.min(
             restoreScrollTop,

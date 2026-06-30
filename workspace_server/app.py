@@ -25,7 +25,12 @@ from pycodex.utils.session_persist import (
     load_resumed_session_path,
 )
 from pycodex.utils import uuid7_string
-from pycodex.utils.visualize import IDLE_LISTENING_STATUS, shorten_title, tool_summary
+from pycodex.utils.visualize import (
+    IDLE_LISTENING_STATUS,
+    percent_of_context_window_remaining,
+    shorten_title,
+    tool_summary,
+)
 import typing
 
 
@@ -180,6 +185,8 @@ class WebSessionView:
         self._title = ""
         self._spinner_status = ""
         self._stream_buffer = ""
+        self._context_window_tokens: "typing.Union[int, None]" = None
+        self._context_remaining_percent: "typing.Union[int, None]" = None
         self._closed = False
         self._server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
         self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
@@ -347,7 +354,11 @@ class WebSessionView:
         self,
         context_window_tokens: "typing.Union[int, None]",
     ) -> None:
-        del context_window_tokens
+        with self._lock:
+            self._context_window_tokens = context_window_tokens
+            self._context_remaining_percent = (
+                100 if context_window_tokens is not None else None
+            )
 
     def subscribe(self) -> "asyncio.Queue":
         queue: "asyncio.Queue" = asyncio.Queue()
@@ -386,6 +397,7 @@ class WebSessionView:
                 "spinner": self._spinner_status,
                 "model": "pycodex",
                 "title": self._title,
+                "context_remaining_percent": self._context_remaining_percent,
                 "turns": [_public_turn(turn) for turn in self._turns[-80:]],
             }
 
@@ -397,6 +409,7 @@ class WebSessionView:
                 "title": self._title,
                 "turn_count": len(self._turns),
                 "last_assistant": _last_assistant_text(self._turns),
+                "context_remaining_percent": self._context_remaining_percent,
             }
 
     def _apply_runtime_event(self, event: "AgentEvent") -> None:
@@ -404,6 +417,9 @@ class WebSessionView:
         payload = getattr(event, "payload", {})
         if not isinstance(payload, dict):
             payload = {}
+        if kind == "token_count":
+            self._update_context_window(payload.get("usage"))
+            return
         turn_id = str(payload.get("turn_id") or getattr(event, "turn_id", "") or "")
         submission_id = str(payload.get("submission_id") or turn_id or "")
         turn = self._turns_by_submission_id.get(submission_id)
@@ -475,6 +491,22 @@ class WebSessionView:
             turn["_thinking_active"] = False
             turn["status"] = "interrupted"
             self._stream_buffer = ""
+
+    def _update_context_window(self, usage: "object") -> None:
+        if self._context_window_tokens is None:
+            return
+        if not isinstance(usage, dict):
+            self._context_remaining_percent = None
+            return
+        try:
+            total_tokens = int(usage["total_tokens"])
+        except (KeyError, TypeError, ValueError):
+            self._context_remaining_percent = None
+            return
+        self._context_remaining_percent = percent_of_context_window_remaining(
+            total_tokens,
+            self._context_window_tokens,
+        )
 
     def _apply_spinner_event(
         self,
@@ -976,6 +1008,9 @@ class WorkspaceSessionManager:
                     "spinner": summary.get("spinner") or "",
                     "turn_count": summary.get("turn_count") or 0,
                     "last_assistant": summary.get("last_assistant") or "",
+                    "context_remaining_percent": summary.get(
+                        "context_remaining_percent"
+                    ),
                 }
             )
         return result
@@ -1181,6 +1216,7 @@ def _session_summary(session) -> "typing.Dict[str, object]":
         "spinner": snapshot.get("spinner") or "",
         "turn_count": len(snapshot.get("turns") or []),
         "last_assistant": _last_assistant_text(snapshot.get("turns") or []),
+        "context_remaining_percent": snapshot.get("context_remaining_percent"),
     }
 
 
