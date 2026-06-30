@@ -183,6 +183,9 @@ Current behavior:
   non-persisted follow-up session and submits the file contents as the next
   user instruction; this is intended for side-effect follow-ups such as
   Feishu notifications
+- `/link <feishu-email|open_id|chat_id>` attaches the current interactive
+  session to a Feishu card; multiple sessions in the same pycodex process share
+  one Feishu long-connection listener and route card actions by message id
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;

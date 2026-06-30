@@ -88,18 +88,34 @@ async def _forever():
         await asyncio.sleep(3600)
 
 
-def test_feishu_listener_tracks_one_active_link() -> None:
+def test_feishu_listener_tracks_active_links_by_message_id() -> None:
     listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
     first = _Object(message_id="om_first")
     second = _Object(message_id="om_second")
 
     listener.register(first)
-    assert listener.link is first
-    listener.unregister(first)
-    assert listener.link is None
-
+    assert listener._resolve_link("om_first") is first
     listener.register(second)
-    assert listener.link is second
+    assert listener._resolve_link("om_first") is first
+    assert listener._resolve_link("om_second") is second
+
+    listener.unregister(first)
+    assert listener._resolve_link("om_first") is None
+    assert listener._resolve_link("om_second") is second
+
+    listener.unregister(second)
+    assert listener.empty()
+
+
+def test_feishu_listener_unregisters_link_if_message_id_changes() -> None:
+    listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
+    link = _Object(message_id="om_first")
+
+    listener.register(link)
+    link.message_id = "om_second"
+    listener.unregister(link)
+
+    assert listener.empty()
 
 
 def test_feishu_listener_stops_when_last_link_is_released(monkeypatch) -> None:
@@ -112,7 +128,29 @@ def test_feishu_listener_stops_when_last_link_is_released(monkeypatch) -> None:
 
     _release_feishu_listener(listener, link)
 
-    assert listener.link is None
+    assert listener.empty()
+    assert stopped == [True]
+    assert feishu_link._LISTENER is None
+
+
+def test_feishu_listener_does_not_stop_until_all_links_are_released(monkeypatch) -> None:
+    listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
+    first = _Object(message_id="om_first")
+    second = _Object(message_id="om_second")
+    stopped = []
+    listener.stop = lambda: stopped.append(True)
+    listener.register(first)
+    listener.register(second)
+    monkeypatch.setattr(feishu_link, "_LISTENER", listener)
+
+    _release_feishu_listener(listener, first)
+
+    assert stopped == []
+    assert feishu_link._LISTENER is listener
+    assert listener._resolve_link("om_second") is second
+
+    _release_feishu_listener(listener, second)
+
     assert stopped == [True]
     assert feishu_link._LISTENER is None
 
@@ -129,6 +167,60 @@ def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
 
     assert second is not first
     assert feishu_link._LISTENER is second
+
+
+def test_feishu_listener_routes_card_action_by_message_id(monkeypatch) -> None:
+    listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
+    first = _Object(
+        message_id="om_first",
+        _detached=False,
+        card=_Object(parse_action=lambda event: {"action": "send", "prompt": "first"}),
+    )
+    second = _Object(
+        message_id="om_second",
+        _detached=False,
+        card=_Object(parse_action=lambda event: {"action": "send", "prompt": "second"}),
+    )
+    submitted = []
+
+    async def submit(action):
+        submitted.append(action["prompt"])
+        return {"toast": {"type": "info", "content": action["prompt"]}}
+
+    first._submit = submit
+    second._submit = submit
+
+    def run_coro(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    listener._async_thread.run = run_coro
+
+    listener.register(first)
+    listener.register(second)
+
+    result = listener._handle_card_action(_event("om_second"))
+
+    assert submitted == ["second"]
+    assert result["toast"]["content"] == "second"
+
+
+def test_feishu_listener_rejects_unknown_card_action_message_id() -> None:
+    listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
+    listener.register(_Object(message_id="om_first", _detached=False))
+    listener.register(_Object(message_id="om_second", _detached=False))
+
+    result = listener._handle_card_action(_event("om_stale"))
+
+    assert result == {
+        "toast": {
+            "type": "warning",
+            "content": "pycodex is detached.",
+        }
+    }
 
 
 def test_feishu_listener_replaces_running_sdk_module_loop(monkeypatch) -> None:

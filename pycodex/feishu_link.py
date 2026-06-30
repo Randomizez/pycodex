@@ -224,7 +224,8 @@ class _FeishuCardActionListener:
         self.domain = card.domain
         self.encrypt_key = card.encrypt_key
         self.verification_token = card.verification_token
-        self.link = None
+        self._links = {}
+        self._links_lock = threading.Lock()
         self._async_thread = _AsyncLoopThread()
         self._thread = None
         self._client = None
@@ -250,14 +251,29 @@ class _FeishuCardActionListener:
         self._thread.start()
 
     def register(self, link: PycodexRuntimeLink) -> None:
-        self.link = link
+        message_id = str(getattr(link, "message_id", "") or "").strip()
+        if not message_id:
+            raise RuntimeError("Feishu linked card message_id is required")
+        with self._links_lock:
+            self._links[message_id] = link
 
     def unregister(self, link: PycodexRuntimeLink) -> None:
-        if self.link is link:
-            self.link = None
+        message_id = str(getattr(link, "message_id", "") or "").strip()
+        with self._links_lock:
+            if message_id and self._links.get(message_id) is link:
+                del self._links[message_id]
+                return
+            stale_ids = [
+                registered_id
+                for registered_id, registered_link in self._links.items()
+                if registered_link is link
+            ]
+            for registered_id in stale_ids:
+                del self._links[registered_id]
 
     def empty(self) -> bool:
-        return self.link is None
+        with self._links_lock:
+            return not self._links
 
     def stop(self) -> None:
         self._stop_requested.set()
@@ -329,16 +345,9 @@ class _FeishuCardActionListener:
 
     def _handle_card_action(self, event) -> 'typing.Dict[str, object]':
         try:
-            link = self.link
-            if link is None or link._detached:
-                return {
-                    "toast": {
-                        "type": "warning",
-                        "content": "pycodex is detached.",
-                    }
-                }
             message_id = _event_message_id(event)
-            if message_id and message_id != link.message_id:
+            link = self._resolve_link(message_id)
+            if link is None or link._detached:
                 return {
                     "toast": {
                         "type": "warning",
@@ -354,6 +363,15 @@ class _FeishuCardActionListener:
                     "content": "pycodex error: {0}".format(exc),
                 }
             }
+
+    def _resolve_link(self, message_id):
+        message_id = str(message_id or "").strip()
+        with self._links_lock:
+            if message_id:
+                return self._links.get(message_id)
+            if len(self._links) == 1:
+                return next(iter(self._links.values()))
+            return None
 
 
 def _event_message_id(event) -> "typing.Union[str, None]":
