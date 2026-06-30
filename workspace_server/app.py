@@ -396,6 +396,7 @@ class WebSessionView:
                 "spinner": self._spinner_status,
                 "title": self._title,
                 "turn_count": len(self._turns),
+                "last_assistant": _last_assistant_text(self._turns),
             }
 
     def _apply_runtime_event(self, event: "AgentEvent") -> None:
@@ -974,6 +975,7 @@ class WorkspaceSessionManager:
                     "running": bool(summary.get("running")),
                     "spinner": summary.get("spinner") or "",
                     "turn_count": summary.get("turn_count") or 0,
+                    "last_assistant": summary.get("last_assistant") or "",
                 }
             )
         return result
@@ -1178,7 +1180,18 @@ def _session_summary(session) -> "typing.Dict[str, object]":
         "running": bool(snapshot.get("running")),
         "spinner": snapshot.get("spinner") or "",
         "turn_count": len(snapshot.get("turns") or []),
+        "last_assistant": _last_assistant_text(snapshot.get("turns") or []),
     }
+
+
+def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> str:
+    for turn in reversed(list(turns)):
+        if str(turn.get("kind") or "assistant") == "control":
+            continue
+        response = str(turn.get("response") or "").strip()
+        if response:
+            return response
+    return ""
 
 
 def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]":

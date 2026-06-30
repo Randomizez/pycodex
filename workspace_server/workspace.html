@@ -171,20 +171,26 @@
       background: #eef7f1;
       box-shadow: inset 0 -2px 0 var(--accent);
     }
-    .tab.running::before {
+    .tab-status {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 15px;
+      height: 15px;
+      border: 1px solid transparent;
+      border-radius: 999px;
+      background: transparent;
+      padding: 0;
+      flex: 0 0 auto;
+    }
+    .tab-status::before {
       content: "";
-      position: absolute;
-      left: 6px;
-      top: 50%;
       width: 5px;
       height: 5px;
-      margin-top: -2.5px;
       border-radius: 999px;
       background: var(--accent);
       animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
-    }
-    .tab.running .tab-label {
-      padding-left: var(--space-4);
     }
     .tab-label {
       min-width: 0;
@@ -352,6 +358,7 @@
       text-decoration: underline;
     }
     .composer {
+      position: relative;
       min-width: 0;
       border-top: 1px solid var(--line);
       padding: var(--space-4) var(--space-6) var(--space-5);
@@ -385,12 +392,16 @@
       justify-content: flex-end;
       align-items: center;
     }
+    .spinner-wrap {
+      position: relative;
+      justify-self: start;
+      align-self: end;
+      max-width: 100%;
+    }
     .spinner {
       position: relative;
       display: inline-flex;
       align-items: center;
-      justify-self: start;
-      align-self: end;
       max-width: 100%;
       min-height: 20px;
       color: var(--muted);
@@ -402,9 +413,17 @@
       border-radius: 999px;
       background: rgba(240, 250, 244, 0.96);
       border: 1px solid rgba(172, 216, 188, 0.9);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
     }
     .spinner:empty {
       display: none;
+    }
+    .spinner:focus-visible {
+      border-color: #65b782;
+      box-shadow: 0 0 0 3px rgba(15, 143, 85, 0.13);
+      outline: 0;
     }
     .spinner:not(:empty) {
       margin-bottom: var(--space-1);
@@ -420,6 +439,38 @@
       border-radius: 999px;
       background: var(--accent);
       animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    }
+    .spinner.notify-enabled {
+      color: #0b6b43;
+      background: #e6f4eb;
+      border-color: #4ca56f;
+      box-shadow:
+        inset 0 1px 2px rgba(9, 93, 55, 0.16),
+        inset 0 0 0 1px rgba(15, 143, 85, 0.1);
+    }
+    .toast {
+      position: absolute;
+      left: 0;
+      bottom: 100%;
+      z-index: 5;
+      width: max-content;
+      max-width: min(320px, calc(100vw - var(--space-6) * 2));
+      border: 1px solid #bfd6c8;
+      border-radius: var(--radius-sm);
+      background: #f6fbf8;
+      color: var(--ink);
+      box-shadow: 0 8px 20px rgba(25, 35, 31, 0.12);
+      padding: var(--space-4) var(--space-6);
+      font-size: 12px;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(4px);
+      transition: opacity 120ms ease, transform 120ms ease;
+      margin-bottom: var(--space-3);
+    }
+    .toast.visible {
+      opacity: 1;
+      transform: translateY(0);
     }
     @keyframes spinner-pulse {
       0%, 100% {
@@ -445,11 +496,11 @@
     }
     @media (prefers-reduced-motion: reduce) {
       .entry.thinking,
-      .tab.running::before,
+      .tab-status::before,
       .spinner:not(:empty)::before {
         animation: none;
       }
-      .tab.running::before,
+      .tab-status::before,
       .spinner:not(:empty)::before {
         opacity: 0.8;
         transform: none;
@@ -485,7 +536,10 @@
       </div>
       <div id="log" class="log"></div>
       <form id="composer" class="composer">
-        <div id="spinner" class="spinner" role="status" aria-live="polite"></div>
+        <div class="spinner-wrap">
+          <div id="toast" class="toast" role="status" aria-live="polite"></div>
+          <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
+        </div>
         <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
       </form>
     </section>
@@ -495,6 +549,7 @@
   <script>
     const log = document.getElementById("log");
     const spinner = document.getElementById("spinner");
+    const toast = document.getElementById("toast");
     const prompt = document.getElementById("prompt");
     const form = document.getElementById("composer");
     const boardFrame = document.getElementById("boardFrame");
@@ -510,6 +565,7 @@
     let lastRenderedSignature = "";
     let resizeStart = null;
     let spinnerText = "";
+    let toastTimer = null;
     let activeSessionId = "";
     let sessions = [];
     let isComposing = false;
@@ -627,9 +683,109 @@
       event.preventDefault();
     }
 
-    function setSpinner(text) {
-      spinnerText = String(text || "").trim();
+    function setSpinner(text, options = {}) {
+      const previousText = spinnerText;
+      const nextText = String(text || "").trim();
+      const wasRunning = Boolean(previousText);
+      const isRunning = Boolean(nextText);
+      spinnerText = nextText;
       spinner.textContent = spinnerText;
+      if (wasRunning && !isRunning && !options.suppressDoneNotification) {
+        const state = stateForSession(activeSessionId);
+        if (state.wasRunning) notifySessionDone(activeSessionId);
+      }
+      updateSpinnerNotifyUi();
+    }
+
+    function showToast(text) {
+      if (toastTimer) clearTimeout(toastTimer);
+      toast.textContent = text;
+      toast.classList.add("visible");
+      toastTimer = setTimeout(() => {
+        toastTimer = null;
+        toast.classList.remove("visible");
+      }, 1400);
+    }
+
+    function updateSpinnerNotifyUi() {
+      const state = stateForSession(activeSessionId);
+      const enabled = Boolean(spinnerText && state.notifyWhenDone);
+      spinner.classList.toggle("notify-enabled", enabled);
+      spinner.setAttribute("aria-checked", enabled ? "true" : "false");
+      if (!spinnerText) {
+        spinner.title = "Spinner is idle";
+      } else if (enabled) {
+        spinner.title = "Notify when done is on";
+      } else {
+        spinner.title = "Notify when done is off";
+      }
+    }
+
+    function notificationAvailable() {
+      return "Notification" in window;
+    }
+
+    function notifySessionDone(sessionId, sessionSummary = null) {
+      if (!sessionId) return;
+      const state = stateForSession(sessionId);
+      if (!state.notifyWhenDone) return;
+      state.notifyWhenDone = false;
+      if (!notificationAvailable() || Notification.permission !== "granted") return;
+      const session = sessionSummary || sessionById(sessionId);
+      const title = (session && session.title) || "pycodex";
+      const lastAssistant = (session && session.last_assistant) || "Done.";
+      try {
+        new Notification(`session: ${title}`, {
+          body: lastAssistant,
+          tag: `pycodex-workspace-done-${sessionId}`,
+        });
+      } catch (_error) {
+        return;
+      }
+    }
+
+    function sessionById(sessionId) {
+      return sessions.find((session) => (session.id || "") === sessionId) || null;
+    }
+
+    function isSessionRunning(sessionId) {
+      const session = sessionById(sessionId);
+      if (session) return Boolean(session.running);
+      return sessionId === activeSessionId && Boolean(spinnerText);
+    }
+
+    async function toggleSpinnerNotification() {
+      const sessionId = activeSessionId;
+      if (!sessionId || !isSessionRunning(sessionId)) return;
+      const state = stateForSession(sessionId);
+      if (state.notifyWhenDone) {
+        state.notifyWhenDone = false;
+        showToast("notify-on-done canceled");
+        renderTabs();
+        updateSpinnerNotifyUi();
+        return;
+      }
+      if (!notificationAvailable()) {
+        spinner.title = "Browser notifications are unavailable";
+        return;
+      }
+      if (Notification.permission === "denied") {
+        spinner.title = "Browser notifications are blocked";
+        return;
+      }
+      if (Notification.permission !== "granted") {
+        const permission = await Notification.requestPermission();
+        if (permission !== "granted") {
+          showToast("notify-on-done canceled");
+          updateSpinnerNotifyUi();
+          return;
+        }
+      }
+      if (!isSessionRunning(sessionId)) return;
+      state.notifyWhenDone = true;
+      showToast("notify-on-done enabled");
+      renderTabs();
+      updateSpinnerNotifyUi();
     }
 
     function isNearBottom() {
@@ -651,7 +807,13 @@
     function stateForSession(sessionId) {
       const key = String(sessionId || "");
       if (!sessionState.has(key)) {
-        sessionState.set(key, {lastRenderedSignature: "", scrollTop: null, draft: ""});
+        sessionState.set(key, {
+          lastRenderedSignature: "",
+          scrollTop: null,
+          draft: "",
+          notifyWhenDone: false,
+          wasRunning: false,
+        });
       }
       return sessionState.get(key);
     }
@@ -667,11 +829,26 @@
     }
 
     function updateSessions(nextSessions) {
-      sessions = Array.isArray(nextSessions) ? nextSessions : sessions;
+      const incomingSessions = Array.isArray(nextSessions) ? nextSessions : sessions;
+      incomingSessions.forEach((session) => {
+        const sessionId = session.id || "";
+        if (!sessionId) return;
+        const state = stateForSession(sessionId);
+        const wasRunning = Boolean(state.wasRunning);
+        const isRunning = Boolean(session.running);
+        if (!wasRunning && isRunning) {
+          state.notifyWhenDone = false;
+        } else if (wasRunning && !isRunning) {
+          notifySessionDone(sessionId, session);
+        }
+        state.wasRunning = isRunning;
+      });
+      sessions = incomingSessions;
       if (!activeSessionId && sessions.length) {
         activeSessionId = sessions[0].id || "";
       }
       renderTabs();
+      updateSpinnerNotifyUi();
     }
 
     function renderTabs() {
@@ -688,6 +865,13 @@
         tab.setAttribute("aria-selected", sessionId === activeSessionId ? "true" : "false");
         if (session.running) tab.setAttribute("aria-busy", "true");
         tab.addEventListener("click", () => switchSession(sessionId));
+
+        if (session.running) {
+          const status = document.createElement("span");
+          status.className = "tab-status";
+          status.setAttribute("aria-hidden", "true");
+          tab.appendChild(status);
+        }
 
         const label = document.createElement("span");
         label.className = "tab-label";
@@ -889,7 +1073,7 @@
       suppressScrollSave = true;
       log.textContent = "";
       suppressScrollSave = false;
-      setSpinner("");
+      setSpinner("", {suppressDoneNotification: true});
       restoreScrollTop = state.scrollTop;
       await pollSession();
       renderTabs();
@@ -984,11 +1168,17 @@
     splitter.addEventListener("pointerup", endResize);
     splitter.addEventListener("pointercancel", endResize);
     splitter.addEventListener("dblclick", centerSplit);
+    spinner.addEventListener("click", toggleSpinnerNotification);
     newTabButton.addEventListener("click", createSession);
     window.addEventListener("resize", () => {
       const current = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
       if (current > 0) setChatWidth(current);
       resizePrompt();
+    });
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState !== "visible") return;
+      pollSession();
+      pollBoard();
     });
 
     loadChatWidth();

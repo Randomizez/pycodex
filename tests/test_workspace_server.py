@@ -218,6 +218,9 @@ def test_workspace_app_session_snapshot_uses_turns_not_raw_messages(tmp_path) ->
     assert snapshot["turns"][0]["response"] == "pong"
     assert snapshot["turns"][0]["thinking"] == ""
 
+    sessions = response.json()["sessions"]
+    assert sessions[0]["last_assistant"] == "pong"
+
 
 def test_workspace_app_session_endpoint_returns_spinner_and_turns(tmp_path) -> None:
     board = tmp_path / "board.html"
@@ -247,7 +250,17 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
         response = client.get("/")
 
     assert response.status_code == 200
-    assert 'id="spinner"' in response.text
+    assert 'class="spinner-wrap"' in response.text
+    assert 'id="spinner" class="spinner" type="button" role="checkbox"' in response.text
+    assert 'id="toast" class="toast" role="status"' in response.text
+    assert "spinner.addEventListener(\"click\", toggleSpinnerNotification)" in response.text
+    assert "new Notification(`${title} done`" in response.text
+    assert "body: lastAssistant" in response.text
+    assert "notifySessionDone(sessionId, session)" in response.text
+    assert "notify-on-done enabled" in response.text
+    assert "notify-on-done canceled" in response.text
+    assert 'document.addEventListener("visibilitychange"' in response.text
+    assert 'document.visibilityState !== "visible"' in response.text
     assert ">Send<" not in response.text
     assert "Enter sends. Shift+Enter adds a newline." not in response.text
     assert "compositionstart" in response.text
@@ -871,6 +884,7 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
                 "running": True,
                 "spinner": "thinking",
                 "turn_count": 123,
+                "last_assistant": "latest answer",
             }
 
         def snapshot(self):
@@ -886,6 +900,7 @@ def test_workspace_app_session_list_uses_lightweight_summary(tmp_path) -> None:
     assert response.json()["sessions"][0]["running"] is True
     assert response.json()["sessions"][0]["spinner"] == "thinking"
     assert response.json()["sessions"][0]["turn_count"] == 123
+    assert response.json()["sessions"][0]["last_assistant"] == "latest answer"
 
 
 def test_workspace_app_websocket_ping(tmp_path) -> None:
