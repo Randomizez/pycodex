@@ -390,8 +390,7 @@
     .composer {
       position: relative;
       min-width: 0;
-      border-top: 1px solid var(--line);
-      padding: var(--space-4) var(--space-6) var(--space-5);
+      padding: var(--space-4);
       display: grid;
       gap: var(--space-3);
       align-content: end;
@@ -400,7 +399,6 @@
     textarea {
       min-width: 0;
       resize: vertical;
-      min-height: 40px;
       max-height: 35vh;
       width: 100%;
       border: 1px solid var(--line);
@@ -426,10 +424,15 @@
       position: relative;
       display: inline-flex;
       align-items: center;
-      gap: var(--space-3);
       justify-self: start;
       align-self: end;
       max-width: 100%;
+    }
+    .prompt-row {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      min-width: 0;
     }
     .spinner {
       --spinner-pill-height: 22px;
@@ -452,6 +455,9 @@
       cursor: pointer;
     }
     .spinner:empty {
+      display: none;
+    }
+    .spinner-wrap:not(:has(.spinner:not(:empty))) {
       display: none;
     }
     .spinner:focus-visible {
@@ -572,12 +578,14 @@
       <form id="composer" class="composer">
         <div class="spinner-wrap">
           <div id="toast" class="toast" role="status" aria-live="polite"></div>
+          <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
+        </div>
+        <div class="prompt-row">
           <div id="contextMeter" class="context-meter hidden" aria-hidden="true">
             <span id="contextMeterValue" class="context-meter-value"></span>
           </div>
-          <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
+          <textarea id="prompt" rows="1" placeholder="Ask pycodex or type /help..."></textarea>
         </div>
-        <textarea id="prompt" placeholder="Ask pycodex or type /help..."></textarea>
       </form>
     </section>
   </div>
@@ -856,9 +864,9 @@
 
     function resizePrompt() {
       prompt.style.height = "auto";
-      const minHeight = 40;
-      const maxHeight = Math.max(minHeight, Math.round(window.innerHeight * 0.35));
-      const nextHeight = Math.max(minHeight, Math.min(prompt.scrollHeight, maxHeight));
+      const borderHeight = prompt.offsetHeight - prompt.clientHeight;
+      const maxHeight = Math.round(window.innerHeight * 0.35);
+      const nextHeight = Math.min(prompt.scrollHeight + borderHeight, maxHeight);
       prompt.style.height = `${nextHeight}px`;
     }
 
@@ -971,6 +979,12 @@
       const value = Math.max(0, Math.min(100, Math.round(Number(percent))));
       if (!Number.isFinite(value)) {
         contextMeter.classList.add("hidden");
+        contextMeterValue.textContent = "";
+        return;
+      }
+      if (value >= 100) {
+        contextMeter.classList.remove("hidden");
+        contextMeter.style.setProperty("--context-remaining", `${value}%`);
         contextMeterValue.textContent = "";
         return;
       }

@@ -18,6 +18,7 @@ import typing
 
 
 EXIT_COMMANDS = {"/exit", "/quit"}
+HELP_COMMAND = "/help"
 HISTORY_COMMAND = "/history"
 TITLE_COMMAND = "/title"
 MODEL_COMMAND = "/model"
@@ -27,7 +28,7 @@ COMPACT_COMMAND = "/compact"
 LINK_COMMAND = "/link"
 UNLINK_COMMAND = "/unlink"
 EXTRA_COMMANDS_LINE = (
-    "Extra commands: /history, /title, /model, /resume, /compact, /link, /unlink"
+    "Extra commands: /help, /history, /title, /model, /resume, /compact, /link, /unlink"
 )
 
 
@@ -232,6 +233,9 @@ async def run_interactive_session(
                 continue
             if prompt_text in EXIT_COMMANDS:
                 break
+            if prompt_text == HELP_COMMAND:
+                view.write_line(EXTRA_COMMANDS_LINE)
+                continue
             if prompt_text == HISTORY_COMMAND:
                 view.show_history()
                 continue

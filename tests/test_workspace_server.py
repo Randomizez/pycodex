@@ -272,10 +272,13 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
 
     assert response.status_code == 200
     assert 'class="spinner-wrap"' in response.text
+    assert 'class="prompt-row"' in response.text
     assert 'id="spinner" class="spinner" type="button" role="checkbox"' in response.text
     assert 'id="toast" class="toast" role="status"' in response.text
-    assert response.text.index('class="spinner-wrap"') < response.text.index('id="contextMeter"')
-    assert response.text.index('id="contextMeter"') < response.text.index('id="spinner"')
+    assert '<textarea id="prompt" rows="1"' in response.text
+    assert ".spinner-wrap:not(:has(.spinner:not(:empty)))" in response.text
+    assert response.text.index('class="prompt-row"') < response.text.index('id="contextMeter"')
+    assert response.text.index('id="contextMeter"') < response.text.index('id="prompt"')
     assert 'id="contextMeter" class="context-meter hidden" aria-hidden="true"' in response.text
     assert 'id="contextMeterValue" class="context-meter-value"' in response.text
     assert 'contextMeter.style.setProperty("--context-remaining", `${value}%`)' in response.text
@@ -325,7 +328,18 @@ def test_workspace_spinner_tool_call_preview_is_longer_than_title() -> None:
     assert spinner.startswith("calling exec_command(")
 
 
-def test_workspace_app_message_uses_shared_interactive_commands(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("command", "expected_response"),
+    [
+        ("/history", "No history yet."),
+        ("/help", "/history"),
+    ],
+)
+def test_workspace_app_message_uses_shared_interactive_commands(
+    tmp_path,
+    command: str,
+    expected_response: str,
+) -> None:
     board = tmp_path / "board.html"
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
     model = ScriptedModelClient(
@@ -339,10 +353,11 @@ def test_workspace_app_message_uses_shared_interactive_commands(tmp_path) -> Non
     app = create_app(build_session, board)
 
     with TestClient(app) as client:
-        response = client.post("/api/session/message", json={"prompt": "/history"})
+        response = client.post("/api/session/message", json={"prompt": command})
         snapshot = _wait_for_snapshot(
             client,
-            lambda item: item["turns"] and item["turns"][-1]["response"] == "No history yet.",
+            lambda item: item["turns"]
+            and expected_response in item["turns"][-1]["response"],
         )
 
     assert response.status_code == 200
