@@ -3,6 +3,7 @@ import asyncio
 import html
 import json
 import os
+import secrets
 import threading
 from dataclasses import asdict, is_dataclass
 try:
@@ -11,7 +12,7 @@ except ImportError:  # pragma: no cover - Python 3.6 compatibility
     asynccontextmanager = None
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from pycodex.cli import build_agent, build_cli_queue, build_model, configure_loguru
@@ -70,6 +71,11 @@ def build_parser() -> "argparse.ArgumentParser":
         ),
     )
     parser.add_argument(
+        "--password",
+        default=None,
+        help="Optional password required to open the workspace server.",
+    )
+    parser.add_argument(
         "--config",
         default=str(DEFAULT_CODEX_CONFIG_PATH),
         help="Path to Codex config.toml.",
@@ -123,6 +129,7 @@ SessionFactory = typing.Callable[[], object]
 ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
 SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
 SPINNER_STATUS_PREVIEW_LIMIT = 180
+AUTH_COOKIE_NAME = "pycodex_ws_auth"
 
 
 class WebSessionView:
@@ -824,6 +831,7 @@ class ThreadedWorkspaceInteractiveSession:
 def create_app(
     session_source: "typing.Union[WorkspaceSessionManager, SessionFactory]",
     board_path: "typing.Union[Path, None]",
+    password: "typing.Union[str, None]" = None,
 ) -> FastAPI:
     manager = (
         session_source
@@ -831,14 +839,18 @@ def create_app(
         else WorkspaceSessionManager(session_source, board_path)
     )
     app = _create_lifespan_app(manager.start, manager.close)
+    auth_token = _install_auth(app, password)
     _install_workspace_routes(app, manager, board_path)
+    app.state.workspace_auth_token = auth_token
     return app
 
 
 def create_multi_workspace_app(
     registry: 'WorkspaceRegistry',
+    password: "typing.Union[str, None]" = None,
 ) -> FastAPI:
     app = _create_lifespan_app(registry.start, registry.close)
+    auth_token = _install_auth(app, password)
 
     @app.get("/")
     async def index() -> Response:
@@ -945,6 +957,9 @@ def create_multi_workspace_app(
 
     @app.websocket("/w/{workspace_id}/ws/session")
     async def workspace_websocket_session(workspace_id: str, websocket: WebSocket) -> None:
+        if not _auth_cookie_matches(auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)):
+            await websocket.close(code=1008)
+            return
         try:
             entry = registry.get(workspace_id)
         except (KeyError, ValueError):
@@ -953,6 +968,132 @@ def create_multi_workspace_app(
         await _websocket_session_handler(entry.manager, websocket)
 
     return app
+
+
+def _install_auth(app: FastAPI, password: "typing.Union[str, None]") -> str:
+    password_text = str(password or "")
+    if not password_text:
+        return ""
+    token = secrets.token_urlsafe(32)
+
+    @app.middleware("http")
+    async def auth_middleware(request: Request, call_next):
+        path = request.url.path
+        if path in {"/favicon.ico", "/login"} or _auth_cookie_matches(
+            token,
+            request.cookies.get(AUTH_COOKIE_NAME),
+        ):
+            return await call_next(request)
+        if path.startswith("/api/") or "/api/" in path:
+            return JSONResponse(
+                {"ok": False, "error": "authentication required"},
+                status_code=401,
+            )
+        return RedirectResponse(url="/login", status_code=303)
+
+    @app.get("/login")
+    async def login_page() -> HTMLResponse:
+        return _html_response(_render_login_shell())
+
+    @app.post("/login")
+    async def login(payload: "typing.Dict[str, object]") -> JSONResponse:
+        if not secrets.compare_digest(str(payload.get("password") or ""), password_text):
+            return JSONResponse(
+                {"ok": False, "error": "invalid password"},
+                status_code=401,
+            )
+        response = JSONResponse({"ok": True})
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            token,
+            httponly=True,
+            samesite="lax",
+        )
+        return response
+
+    return token
+
+
+def _auth_cookie_matches(token: str, cookie: "typing.Union[str, None]") -> bool:
+    if not token:
+        return True
+    return bool(cookie) and secrets.compare_digest(str(cookie), token)
+
+
+def _render_login_shell() -> str:
+    return """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>pycodex login</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      background: Canvas;
+      color: CanvasText;
+    }
+    form {
+      width: min(360px, calc(100vw - 32px));
+      display: grid;
+      gap: 12px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+    }
+    input, button {
+      min-height: 38px;
+      border-radius: 7px;
+      border: 1px solid color-mix(in srgb, CanvasText 18%, Canvas 82%);
+      padding: 8px 10px;
+      font: inherit;
+    }
+    button {
+      cursor: pointer;
+    }
+    .status {
+      min-height: 20px;
+      color: #b42318;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <form id="loginForm">
+    <h1>pycodex workspace</h1>
+    <input id="passwordInput" type="password" autocomplete="current-password" autofocus>
+    <button type="submit">Open</button>
+    <div id="status" class="status" role="status"></div>
+  </form>
+  <script>
+    const form = document.getElementById("loginForm");
+    const passwordInput = document.getElementById("passwordInput");
+    const statusEl = document.getElementById("status");
+    form.addEventListener("submit", async function(event) {
+      event.preventDefault();
+      statusEl.textContent = "";
+      const response = await fetch("login", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({password: passwordInput.value}),
+      });
+      if (response.ok) {
+        window.location.href = "/";
+        return;
+      }
+      statusEl.textContent = "Invalid password";
+    });
+  </script>
+</body>
+</html>"""
 
 
 def _create_lifespan_app(
@@ -999,12 +1140,6 @@ def _install_workspace_routes(
     async def board() -> Response:
         return _board_response(board_path)
 
-    @app.api_route("/{path_name}", methods=["GET", "HEAD"])
-    async def legacy_board_path(path_name: str) -> Response:
-        if board_path is not None and path_name == board_path.name:
-            return _board_response(board_path)
-        raise HTTPException(status_code=404, detail="not found")
-
     @app.get("/api/board")
     async def board_status() -> JSONResponse:
         return _board_status_response(board_path)
@@ -1039,6 +1174,10 @@ def _install_workspace_routes(
 
     @app.websocket("/ws/session")
     async def websocket_session(websocket: WebSocket) -> None:
+        auth_token = typing.cast(str, app.state.workspace_auth_token)
+        if not _auth_cookie_matches(auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)):
+            await websocket.close(code=1008)
+            return
         await _websocket_session_handler(manager, websocket)
 
 
@@ -1278,7 +1417,7 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             persist_callback,
         ),
     )
-    app = create_multi_workspace_app(registry)
+    app = create_multi_workspace_app(registry, password=args.password)
 
     print(
         "pycodex workspace listening on http://{0}:{1}".format(host, port),

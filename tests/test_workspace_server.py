@@ -90,6 +90,17 @@ def test_workspace_parser_accepts_workspace_config_flag(tmp_path) -> None:
     assert parse_listen(args.listen) == ("0.0.0.0", 6007)
 
 
+def test_workspace_parser_accepts_password_flag(tmp_path) -> None:
+    config = tmp_path / "workspaces.json"
+    config.write_text("[]", encoding="utf-8")
+
+    args = build_parser().parse_args(
+        ["--workspace-config", str(config), "--password", "12345"]
+    )
+
+    assert args.password == "12345"
+
+
 def test_workspace_default_board_path_is_writable_tmp_html() -> None:
     board_path = default_board_path()
 
@@ -314,6 +325,42 @@ def test_multi_workspace_app_unknown_workspace_returns_404(tmp_path) -> None:
     assert response.status_code == 404
     assert not config.exists()
     assert workspaces.json()["workspaces"] == []
+
+
+def test_multi_workspace_app_password_protects_http_routes(tmp_path) -> None:
+    work_dir = tmp_path / "first"
+    work_dir.mkdir()
+    board = work_dir / "board.html"
+    board.write_text("<!doctype html><title>First</title>", encoding="utf-8")
+    registry = WorkspaceRegistry(
+        [
+            WorkspaceEntry(
+                WorkspaceDefinition("first", board, work_dir),
+                WorkspaceSessionManager(lambda: _DormantLink(label="first"), board),
+            )
+        ]
+    )
+    app = create_multi_workspace_app(registry, password="12345")
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/", follow_redirects=False)
+        login_page = client.get("/login")
+        api_unauthorized = client.get("/api/workspaces")
+        wrong = client.post("/login", json={"password": "wrong"})
+        login = client.post("/login", json={"password": "12345"})
+        authorized = client.get("/")
+        api = client.get("/api/workspaces")
+
+    assert unauthorized.status_code == 303
+    assert unauthorized.headers["location"] == "/login"
+    assert "passwordInput" in login_page.text
+    assert api_unauthorized.status_code == 401
+    assert wrong.status_code == 401
+    assert login.status_code == 200
+    assert login.json()["ok"] is True
+    assert authorized.status_code == 200
+    assert api.status_code == 200
+    assert api.json()["workspaces"][0]["id"] == "first"
 
 
 def test_workspaces_manager_api_adds_and_deletes_workspace(tmp_path) -> None:
@@ -1299,6 +1346,26 @@ def test_workspace_app_websocket_ping(tmp_path) -> None:
 
     assert hello["type"] == "hello"
     assert pong["type"] == "pong"
+
+
+def test_workspace_app_password_protects_websocket(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+    link = _DormantLink()
+
+    app = create_app(lambda: link, board, password="12345")
+
+    with TestClient(app) as client:
+        with pytest.raises(Exception):
+            with client.websocket_connect("/ws/session"):
+                pass
+        login = client.post("/login", json={"password": "12345"})
+        with client.websocket_connect("/ws/session") as websocket:
+            assert websocket.receive_json()["type"] == "hello"
+            websocket.send_json({"type": "ping"})
+            assert websocket.receive_json()["type"] == "pong"
+
+    assert login.status_code == 200
 
 
 def _wait_for_snapshot(client, predicate):

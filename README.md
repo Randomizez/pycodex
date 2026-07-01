@@ -145,6 +145,7 @@ pycodex --put /data/.codex/@127.0.0.1:5577
 pycodex --call SECRET-CALLID@127.0.0.1:5577 "Reply with exactly OK."
 pycodex doctor
 pycodex-ws --listen 0.0.0.0:6007 --workspace-config ./workspaces.json
+pycodex-ws --listen 0.0.0.0:6007 --workspace-config ./workspaces.json --password 12345
 ```
 
 Current behavior:
@@ -197,7 +198,8 @@ Current behavior:
   `delete(name)` controls; omitted names become `workspace-1`, `workspace-2`,
   etc. If `board` is omitted when adding a workspace, pycodex assigns a random
   writable `/tmp/pcws-*.html` board path. Add/delete actions and later
-  session-state saves refresh the JSON file.
+  session-state saves refresh the JSON file. `--password <value>` enables a
+  password-only login page for workspace pages, APIs, and websocket connections.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;
