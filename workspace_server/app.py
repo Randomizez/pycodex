@@ -906,6 +906,7 @@ def create_multi_workspace_app(
             _render_workspace_shell(
                 entry.definition.board_path,
                 title=entry.definition.workspace_id,
+                work_dir=entry.definition.work_dir,
             )
         )
 
@@ -1516,8 +1517,10 @@ def _format_board_path_for_prompt(
 def _render_workspace_shell(
     board_path: "typing.Union[Path, None]",
     title: "typing.Union[str, None]" = None,
+    work_dir: "typing.Union[Path, None]" = None,
 ) -> str:
     board_label = str(board_path) if board_path is not None else "No board"
+    cwd_label = str(work_dir or Path.cwd())
     page_title = str(title or "pycodex workspace")
     template = (Path(__file__).with_name("workspace.html")).read_text(
         encoding="utf-8"
@@ -1526,6 +1529,7 @@ def _render_workspace_shell(
         template
         .replace("__WORKSPACE_TITLE__", html.escape(page_title))
         .replace("__BOARD_LABEL__", html.escape(board_label))
+        .replace("__CWD_LABEL__", html.escape(cwd_label))
     )
 
 

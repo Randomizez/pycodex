@@ -292,6 +292,9 @@ def test_multi_workspace_app_serves_each_workspace_under_prefix(tmp_path) -> Non
     ]
     assert "<title>first</title>" in first_shell.text
     assert "Board: <code>{0}</code>".format(first_board) in first_shell.text
+    assert "@<code>{0}</code>".format(first_dir) in first_shell.text
+    assert 'class="workspace-back" href="/"' in first_shell.text
+    assert 'aria-label="Back to workspaces"' in first_shell.text
     assert "First" in first_board_response.text
     assert "Second" in second_board_response.text
     assert first_session.json()["snapshot"]["model"] == "first-link"
@@ -680,6 +683,7 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "compositionstart" in response.text
     assert "event.isComposing" in response.text
     assert "__BOARD_LABEL__" not in response.text
+    assert "__CWD_LABEL__" not in response.text
     assert "boardbar" in response.text
     assert "pycodex</div>" not in response.text
     assert 'id="splitter"' in response.text

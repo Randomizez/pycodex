@@ -63,12 +63,56 @@
     .boardbar {
       min-width: 0;
       border-bottom: 1px solid var(--line);
-      padding: var(--space-4) var(--space-6);
+      padding: 0;
       color: var(--muted);
       font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: var(--space-5);
       white-space: nowrap;
       overflow: hidden;
+    }
+    .boardbar-paths {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: var(--space-4);
+      overflow: hidden;
+      line-height: 20px;
+    }
+    .boardbar-paths span {
+      min-width: 0;
+      overflow: hidden;
       text-overflow: ellipsis;
+    }
+    .workspace-back {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 20px;
+      border: 0;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--ink);
+      padding: 0;
+      text-decoration: none;
+    }
+    .workspace-back:hover {
+      background: #eef7f1;
+    }
+    .workspace-back:focus {
+      outline: 2px solid #9bb7a6;
+      outline-offset: 1px;
+    }
+    .workspace-back::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-left: 2px solid currentColor;
+      border-bottom: 2px solid currentColor;
+      transform: rotate(45deg);
     }
     .board {
       border: 0;
@@ -563,7 +607,13 @@
 <body>
   <div class="workspace">
     <section class="board-pane" aria-label="workspace board">
-      <div class="boardbar">Board: <code>__BOARD_LABEL__</code></div>
+      <div class="boardbar">
+        <a class="workspace-back" href="/" title="Back to workspaces" aria-label="Back to workspaces"></a>
+        <div class="boardbar-paths">
+          <span>@<code>__CWD_LABEL__</code></span>
+          <span>Board: <code>__BOARD_LABEL__</code></span>
+        </div>
+      </div>
       <iframe id="boardFrame" class="board" src="board" title="board"></iframe>
     </section>
     <button id="splitter" class="splitter" type="button" aria-label="Resize chat panel"></button>
