@@ -45,6 +45,13 @@ from tests.fakes import ScriptedModelClient
 import time
 
 
+def _get_without_redirects(client: TestClient, url: str):
+    try:
+        return client.get(url, follow_redirects=False)
+    except TypeError:
+        return client.get(url, allow_redirects=False)
+
+
 class _FailingWorkspaceTool(BaseTool):
     name = "fail"
     description = "Always fails."
@@ -346,7 +353,7 @@ def test_multi_workspace_app_password_protects_http_routes(tmp_path) -> None:
     app = create_multi_workspace_app(registry, password="12345")
 
     with TestClient(app) as client:
-        unauthorized = client.get("/", follow_redirects=False)
+        unauthorized = _get_without_redirects(client, "/")
         login_page = client.get("/login")
         api_unauthorized = client.get("/api/workspaces")
         wrong = client.post("/login", json={"password": "wrong"})
