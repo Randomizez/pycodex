@@ -1,5 +1,8 @@
 
 import asyncio
+import os
+import shlex
+import sys
 from pathlib import Path
 
 import pytest
@@ -524,6 +527,61 @@ async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata
 
     assert "Process exited with code 0" in finish.output
     assert "hello:world" in finish.output
+
+
+@pytest.mark.asyncio
+async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> 'None':
+    manager = UnifiedExecManager(tmp_path)
+    pid_path = tmp_path / "stdout-holder.pid"
+    child_pid = None
+    command = "\n".join(
+        [
+            "{0} - <<'PY'".format(shlex.quote(sys.executable)),
+            "import subprocess",
+            "import sys",
+            "import time",
+            "print('ready', flush=True)",
+            "time.sleep(0.2)",
+            "child = subprocess.Popen(",
+            "    [sys.executable, '-c', 'import time; time.sleep(10)'],",
+            "    stdin=subprocess.DEVNULL,",
+            "    stdout=sys.stdout,",
+            "    stderr=sys.stderr,",
+            ")",
+            "open({0!r}, 'w').write(str(child.pid))".format(str(pid_path)),
+            "print('parent exiting', flush=True)",
+            "PY",
+        ]
+    )
+
+    try:
+        start = await manager.exec_command(command, yield_time_ms=10)
+        marker = "Process running with session ID "
+        assert marker in start
+        session_id = int(start.split(marker, 1)[1].splitlines()[0])
+
+        finish = await asyncio.wait_for(
+            manager.write_stdin(session_id, yield_time_ms=1_000),
+            timeout=3.0,
+        )
+
+        if pid_path.is_file():
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+        assert "Process exited with code 0" in finish
+        assert "parent exiting" in finish
+        assert manager.running_session_count() == 0
+        assert (
+            await manager.write_stdin(session_id, yield_time_ms=1)
+            == "Error: session_id {0} is not running.".format(session_id)
+        )
+    finally:
+        if child_pid is None and pid_path.is_file():
+            child_pid = int(pid_path.read_text(encoding="utf-8"))
+        if child_pid is not None:
+            try:
+                os.kill(child_pid, 15)
+            except ProcessLookupError:
+                pass
 
 
 @pytest.mark.asyncio

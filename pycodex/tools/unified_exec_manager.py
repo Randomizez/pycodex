@@ -34,6 +34,8 @@ DEFAULT_LOGIN = True
 DEFAULT_TTY = False
 DEFAULT_SESSION_ID_START = 1000
 UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024
+# Match upstream unified exec's short post-exit output close wait.
+UNIFIED_EXEC_POST_EXIT_CLOSE_WAIT_SECONDS = 0.050
 UNIFIED_EXEC_OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -253,7 +255,12 @@ class UnifiedExecManager:
                     pass
 
         if session.reader_task is not None and session.process.returncode is not None:
-            await session.reader_task
+            elapsed_seconds = loop.time() - start_wait
+            remaining_seconds = max(0.0, (yield_time_ms / 1000.0) - elapsed_seconds)
+            await self._drain_reader_after_exit(
+                session,
+                min(remaining_seconds, UNIFIED_EXEC_POST_EXIT_CLOSE_WAIT_SECONDS),
+            )
 
         wall_time = asyncio.get_running_loop().time() - start_wait
         output_bytes = session.unread_output.drain_bytes()
@@ -287,6 +294,30 @@ class UnifiedExecManager:
             return
         if session.process.stdin is not None and not stream_writer_is_closing(session.process.stdin):
             session.process.stdin.close()
+
+    async def _drain_reader_after_exit(
+        self,
+        session: 'UnifiedExecSession',
+        timeout_seconds: 'float',
+    ) -> 'None':
+        reader_task = session.reader_task
+        if reader_task is None:
+            return
+        done, _pending = await asyncio.wait(
+            [reader_task],
+            timeout=timeout_seconds,
+        )
+        if done:
+            await reader_task
+            return
+
+        logger.warning(
+            "exec session {} process exited but stdout reader did not finish",
+            session.session_id,
+        )
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+        session.output_event.set()
 
     async def _pump_output(self, session: 'UnifiedExecSession') -> 'None':
         stream = session.process.stdout
