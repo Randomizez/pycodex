@@ -323,11 +323,9 @@ async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit() -
     assert [type(item).__name__ for item in second_prompt_items] == [
         "UserMessage",
         "UserMessage",
-        "UserMessage",
     ]
-    assert second_prompt_items[0].text == "first prompt"
-    assert second_prompt_items[1].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
-    assert second_prompt_items[2].text == "second prompt"
+    assert second_prompt_items[0].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
+    assert second_prompt_items[1].text == "second prompt"
 
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
@@ -386,10 +384,8 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
     follow_up_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in follow_up_items] == [
         "UserMessage",
-        "UserMessage",
     ]
-    assert follow_up_items[0].text == "use the tool"
-    assert follow_up_items[1].text == f"{SUMMARY_PREFIX}\nsummary after tool"
+    assert follow_up_items[0].text == f"{SUMMARY_PREFIX}\nsummary after tool"
 
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
@@ -460,9 +456,8 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
     follow_up_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in follow_up_items] == [
         "UserMessage",
-        "UserMessage",
     ]
-    assert follow_up_items[1].text == f"{SUMMARY_PREFIX}\npartial compact summary"
+    assert follow_up_items[0].text == f"{SUMMARY_PREFIX}\npartial compact summary"
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
         "auto_compact_started",
@@ -1164,10 +1159,8 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> 'Non
     retry_prompt_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in retry_prompt_items] == [
         "UserMessage",
-        "UserMessage",
     ]
-    assert retry_prompt_items[0].text == "hello"
-    assert retry_prompt_items[1].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
+    assert retry_prompt_items[0].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
 
     assert "turn_failed" not in [event.kind for event in events]
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
@@ -1177,7 +1170,7 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> 'Non
     ]
     assert auto_events[0].payload["phase"] == "context_length_exceeded"
     assert auto_events[1].payload["summary"] == (
-        "compact(1 item) -> 1 item + [summary]"
+        "compact(1 item) -> 0 items + [summary]"
     )
 
 
@@ -1262,7 +1255,7 @@ async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() 
     ][0]
     assert auto_completed.payload["pruned_tool_results"] == 1
     assert auto_completed.payload["summary"] == (
-        "compact(5 items) -> 2 items + [summary] "
+        "compact(5 items) -> 0 items + [summary] "
         "(dropped 1 old tool response)"
     )
 

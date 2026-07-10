@@ -34,12 +34,6 @@ SUMMARY_PREFIX = (
     "to assist with your own analysis:"
 )
 
-COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000
-_APPROX_CHARS_PER_TOKEN = 4
-_SUBAGENT_NOTIFICATION_PREFIX = "<subagent_notification>\n"
-_EXEC_COMMAND_COMPLETED_PREFIX = "<exec_command_completed>\n"
-
-
 @dataclass(frozen=True)
 class CompactResult:
     history: 'typing.Tuple[ConversationItem, ...]'
@@ -67,8 +61,7 @@ def compact(
     history: 'typing.Sequence[ConversationItem]',
 ) -> 'typing.Tuple[ConversationItem, ...]':
     summary_text = _build_summary_message(_last_assistant_message(history))
-    user_messages = collect_user_messages(history)
-    return build_compacted_history(user_messages, summary_text)
+    return build_compacted_history(summary_text)
 
 
 async def compact_agent(
@@ -159,53 +152,10 @@ def prune_oldest_tool_response(
     )
 
 
-def collect_user_messages(
-    history: 'typing.Sequence[ConversationItem]',
-) -> 'typing.Tuple[str, ...]':
-    compact_prompt = _normalize_for_compare(DEFAULT_COMPACT_PROMPT)
-    collected: 'typing.List[str]' = []
-    for item in history:
-        if not isinstance(item, UserMessage):
-            continue
-        if is_summary_message(item.text):
-            continue
-        if _normalize_for_compare(item.text) == compact_prompt:
-            continue
-        if _is_synthetic_user_message(item.text):
-            continue
-        collected.append(item.text)
-    return tuple(collected)
-
-
-def is_summary_message(message: 'str') -> 'bool':
-    return message.startswith(f"{SUMMARY_PREFIX}\n")
-
-
 def build_compacted_history(
-    user_messages: 'typing.Sequence[str]',
     summary_text: 'str',
-    max_tokens: 'int' = COMPACT_USER_MESSAGE_MAX_TOKENS,
 ) -> 'typing.Tuple[ConversationItem, ...]':
-    selected_messages: 'typing.List[str]' = []
-    if max_tokens > 0:
-        remaining = max_tokens
-        for message in reversed(tuple(user_messages)):
-            if remaining <= 0:
-                break
-            tokens = _approx_token_count(message)
-            if tokens <= remaining:
-                selected_messages.append(message)
-                remaining -= tokens
-                continue
-            selected_messages.append(_truncate_text_to_tokens(message, remaining))
-            break
-        selected_messages.reverse()
-
-    compacted: 'typing.List[ConversationItem]' = [
-        UserMessage(text=message) for message in selected_messages
-    ]
-    compacted.append(UserMessage(text=summary_text or _build_summary_message(None)))
-    return tuple(compacted)
+    return (UserMessage(text=summary_text or _build_summary_message(None)),)
 
 
 def _last_assistant_message(
@@ -222,44 +172,10 @@ def _build_summary_message(summary_text: 'typing.Union[str, None]') -> 'str':
     return f"{SUMMARY_PREFIX}\n{normalized}"
 
 
-def _approx_token_count(text: 'str') -> 'int':
-    if not text:
-        return 0
-    return max(1, (len(text) + _APPROX_CHARS_PER_TOKEN - 1) // _APPROX_CHARS_PER_TOKEN)
-
-
-def _truncate_text_to_tokens(text: 'str', max_tokens: 'int') -> 'str':
-    if max_tokens <= 0:
-        return ""
-    max_chars = max(max_tokens, 1) * _APPROX_CHARS_PER_TOKEN
-    if len(text) <= max_chars:
-        return text
-
-    removed_tokens = _approx_token_count(text[max_chars:])
-    suffix = f"\n...[{removed_tokens} tokens truncated]..."
-    available = max_chars - len(suffix)
-    if available <= 0:
-        return suffix.lstrip()
-    return text[:available].rstrip() + suffix
-
-
-def _normalize_for_compare(text: 'str') -> 'str':
-    return "\n".join(line.rstrip() for line in text.strip().splitlines()).strip()
-
-
 def _pluralize(noun: 'str', count: 'int') -> 'str':
     if count == 1:
         return noun
     return f"{noun}s"
-
-
-def _is_synthetic_user_message(text: 'str') -> 'bool':
-    return text.startswith(
-        (
-            _SUBAGENT_NOTIFICATION_PREFIX,
-            _EXEC_COMMAND_COMPLETED_PREFIX,
-        )
-    )
 
 
 def _is_context_length_error(message: 'str') -> 'bool':

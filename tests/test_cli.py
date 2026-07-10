@@ -1375,7 +1375,7 @@ async def test_run_interactive_session_supports_compact_command(
 
     assert code == 0
     assert "Compacting conversation history..." in line_output
-    assert "compact(2 items) -> 1 item + [summary]" in line_output
+    assert "compact(2 items) -> 0 items + [summary]" in line_output
     assert "checkpoint summary" not in "".join(line_output)
     assert "assistant> after compact" in line_output
 
@@ -1421,11 +1421,9 @@ async def test_run_interactive_session_supports_compact_command(
     assert [type(item).__name__ for item in follow_up_prompt_items] == [
         "UserMessage",
         "UserMessage",
-        "UserMessage",
     ]
-    assert follow_up_prompt_items[0].text == "hello"
-    assert "checkpoint summary" in follow_up_prompt_items[1].text
-    assert follow_up_prompt_items[2].text == "continue"
+    assert "checkpoint summary" in follow_up_prompt_items[0].text
+    assert follow_up_prompt_items[1].text == "continue"
 
 
 @pytest.mark.asyncio
