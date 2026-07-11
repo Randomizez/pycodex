@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import html
 import json
+import mimetypes
 import os
 import secrets
 import threading
@@ -13,7 +14,13 @@ except ImportError:  # pragma: no cover - Python 3.6 compatibility
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 
 from pycodex.cli import build_agent, build_cli_queue, build_model, configure_loguru
 from pycodex.interactive_session import run_interactive_session
@@ -968,6 +975,14 @@ def create_multi_workspace_app(
             return
         await _websocket_session_handler(entry.manager, websocket)
 
+    @app.api_route(
+        "/w/{workspace_id}/{asset_path:path}",
+        methods=["GET", "HEAD"],
+    )
+    async def workspace_board_asset(workspace_id: str, asset_path: str) -> Response:
+        entry = _workspace_entry_or_404(registry, workspace_id)
+        return _board_asset_response(entry.definition.board_path, asset_path)
+
     return app
 
 
@@ -1181,6 +1196,10 @@ def _install_workspace_routes(
             return
         await _websocket_session_handler(manager, websocket)
 
+    @app.api_route("/{asset_path:path}", methods=["GET", "HEAD"])
+    async def board_asset(asset_path: str) -> Response:
+        return _board_asset_response(board_path, asset_path)
+
 
 def _board_status_response(board_path: "typing.Union[Path, None]") -> JSONResponse:
     if board_path is None or not board_path.is_file():
@@ -1386,6 +1405,43 @@ def _board_response(board_path: "typing.Union[Path, None]") -> Response:
     if not board_path.is_file():
         return _html_response(_render_missing_board(board_path))
     return _html_response(board_path.read_text(encoding="utf-8", errors="replace"))
+
+
+def _board_asset_response(
+    board_path: "typing.Union[Path, None]",
+    asset_path: str,
+) -> Response:
+    media_type, unused_encoding = mimetypes.guess_type(str(asset_path or ""))
+    del unused_encoding
+    if board_path is None or not media_type or not media_type.startswith("image/"):
+        raise HTTPException(status_code=404, detail="board image not found")
+
+    resolved_asset = None
+    try:
+        board_directory = board_path.parent.resolve()
+        resolved_asset = (board_directory / asset_path).resolve()
+        within_board_directory = (
+            os.path.commonpath([str(board_directory), str(resolved_asset)])
+            == str(board_directory)
+        )
+    except (OSError, RuntimeError, ValueError):
+        within_board_directory = False
+
+    if (
+        not within_board_directory
+        or resolved_asset is None
+        or not resolved_asset.is_file()
+    ):
+        raise HTTPException(status_code=404, detail="board image not found")
+
+    return FileResponse(
+        str(resolved_asset),
+        media_type=media_type,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 def _workspace_entry_or_404(

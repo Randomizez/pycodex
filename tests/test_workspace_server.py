@@ -254,6 +254,67 @@ def test_workspace_app_serves_board(tmp_path) -> None:
     assert "Board" in response.text
 
 
+def test_workspace_app_serves_images_relative_to_board(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    image = image_dir / "plot.png"
+    image_bytes = b"\x89PNG\r\n\x1a\nboard-image"
+    board.write_text(
+        '<!doctype html><img src="images/plot.png">',
+        encoding="utf-8",
+    )
+    image.write_bytes(image_bytes)
+    link = _DormantLink()
+
+    app = create_app(lambda: link, board)
+
+    with TestClient(app) as client:
+        response = client.get("/images/plot.png")
+        head_response = client.head("/images/plot.png")
+
+    assert response.status_code == 200
+    assert response.content == image_bytes
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert head_response.status_code == 200
+    assert head_response.content == b""
+
+
+def test_workspace_app_does_not_serve_non_image_board_siblings(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    sibling = tmp_path / "notes.txt"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+    sibling.write_text("private notes", encoding="utf-8")
+    link = _DormantLink()
+
+    app = create_app(lambda: link, board)
+
+    with TestClient(app) as client:
+        response = client.get("/notes.txt")
+
+    assert response.status_code == 404
+
+
+def test_workspace_app_does_not_serve_images_outside_board_directory(tmp_path) -> None:
+    board_dir = tmp_path / "board"
+    board_dir.mkdir()
+    board = board_dir / "board.html"
+    outside_image = tmp_path / "outside.png"
+    board.write_text('<!doctype html><img src="linked.png">', encoding="utf-8")
+    outside_image.write_bytes(b"outside-image")
+    (board_dir / "linked.png").symlink_to(outside_image)
+    link = _DormantLink()
+
+    app = create_app(lambda: link, board)
+
+    with TestClient(app) as client:
+        response = client.get("/linked.png")
+
+    assert response.status_code == 404
+
+
 def test_multi_workspace_app_serves_each_workspace_under_prefix(tmp_path) -> None:
     first_dir = tmp_path / "first"
     second_dir = tmp_path / "second"
@@ -306,6 +367,41 @@ def test_multi_workspace_app_serves_each_workspace_under_prefix(tmp_path) -> Non
     assert "Second" in second_board_response.text
     assert first_session.json()["snapshot"]["model"] == "first-link"
     assert second_session.json()["snapshot"]["model"] == "second-link"
+
+
+def test_multi_workspace_app_serves_images_from_each_board_directory(tmp_path) -> None:
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first_board = first_dir / "board.html"
+    second_board = second_dir / "board.html"
+    first_board.write_text('<img src="plot.png">', encoding="utf-8")
+    second_board.write_text('<img src="plot.png">', encoding="utf-8")
+    (first_dir / "plot.png").write_bytes(b"first-image")
+    (second_dir / "plot.png").write_bytes(b"second-image")
+    registry = WorkspaceRegistry(
+        [
+            WorkspaceEntry(
+                WorkspaceDefinition("first", first_board, first_dir),
+                WorkspaceSessionManager(lambda: _DormantLink(), first_board),
+            ),
+            WorkspaceEntry(
+                WorkspaceDefinition("second", second_board, second_dir),
+                WorkspaceSessionManager(lambda: _DormantLink(), second_board),
+            ),
+        ]
+    )
+    app = create_multi_workspace_app(registry)
+
+    with TestClient(app) as client:
+        first_image = client.get("/w/first/plot.png")
+        second_image = client.get("/w/second/plot.png")
+
+    assert first_image.status_code == 200
+    assert first_image.content == b"first-image"
+    assert second_image.status_code == 200
+    assert second_image.content == b"second-image"
 
 
 def test_multi_workspace_app_unknown_workspace_returns_404(tmp_path) -> None:

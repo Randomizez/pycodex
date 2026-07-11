@@ -202,8 +202,11 @@ Current behavior:
   `delete(name)` controls; omitted names become `workspace-1`, `workspace-2`,
   etc. If `board` is omitted when adding a workspace, pycodex assigns a random
   writable `/tmp/pcws-*.html` board path. Add/delete actions and later
-  session-state saves refresh the JSON file. `--password <value>` enables a
-  password-only login page for workspace pages, APIs, and websocket connections.
+  session-state saves refresh the JSON file. Board HTML can reference local
+  images beside the board (including nested paths) with relative URLs; only
+  `image/*` files contained by the board directory are served.
+  `--password <value>` enables a password-only login page for workspace pages,
+  APIs, and websocket connections.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;
