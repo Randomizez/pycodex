@@ -1,8 +1,6 @@
 
 from dataclasses import dataclass
 from datetime import datetime
-from functools import lru_cache
-import json
 from pathlib import Path
 import typing
 
@@ -12,6 +10,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
     import tomli as tomllib
 
 from .collaboration import DEFAULT_COLLABORATION_MODE, CollaborationMode
+from .model_metadata import load_models_by_slug
 from .protocol import ContextMessage, ConversationItem, JSONDict, Prompt, ToolSpec
 from .utils.get_env import (
     get_sandbox_tag,
@@ -23,7 +22,6 @@ from .utils.get_env import (
 DEFAULT_BASE_INSTRUCTIONS_PATH = (
     Path(__file__).resolve().parent / "prompts" / "default_base_instructions.md"
 )
-DEFAULT_MODELS_PATH = Path(__file__).resolve().parent / "prompts" / "models.json"
 DEFAULT_COLLABORATION_INSTRUCTIONS_PATH = (
     Path(__file__).resolve().parent / "prompts" / "collaboration_default.md"
 )
@@ -270,7 +268,7 @@ class ContextManager:
         model_metadata = None
         model_slug = self._config.model
         if model_slug is not None:
-            model_metadata = _load_models_by_slug().get(model_slug)
+            model_metadata = load_models_by_slug().get(model_slug)
 
         context_window = self._config.model_context_window
         if context_window is None and model_metadata is not None:
@@ -293,7 +291,7 @@ class ContextManager:
         model_slug = self._config.model
         if model_slug is None:
             return None
-        model_metadata = _load_models_by_slug().get(model_slug)
+        model_metadata = load_models_by_slug().get(model_slug)
         if model_metadata is None:
             return None
         return _normalize_int(model_metadata.get("auto_compact_token_limit"))
@@ -302,7 +300,7 @@ class ContextManager:
         model_slug = self._config.model
         if model_slug is None:
             return None
-        model_metadata = _load_models_by_slug().get(model_slug)
+        model_metadata = load_models_by_slug().get(model_slug)
         if model_metadata is None:
             return None
 
@@ -558,18 +556,6 @@ def _read_first_instruction_file(base: 'Path') -> 'typing.Union[str, None]':
         if trimmed:
             return trimmed
     return None
-
-
-@lru_cache(maxsize=1)
-def _load_models_by_slug() -> 'typing.Dict[str, JSONDict]':
-    payload = json.loads(DEFAULT_MODELS_PATH.read_text(encoding="utf-8"))
-    models = payload.get("models", [])
-    by_slug: 'typing.Dict[str, JSONDict]' = {}
-    for model in models:
-        slug = model.get("slug")
-        if isinstance(slug, str):
-            by_slug[slug] = model
-    return by_slug
 
 
 def _resolve_personality_message(variables, personality: 'typing.Union[str, None]') -> 'str':

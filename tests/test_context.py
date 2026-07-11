@@ -55,6 +55,16 @@ def test_context_manager_resolves_model_instructions_from_models_json() -> 'None
     assert "Always use apply_patch for manual code edits." in instructions
 
 
+def test_context_manager_resolves_gpt56_model_metadata() -> 'None':
+    manager = ContextManager(config=ContextConfig(model="gpt-5.6-sol"))
+
+    instructions = manager.resolve_base_instructions()
+
+    assert instructions.startswith("You are Codex, an agent based on GPT-5.")
+    assert "curious, rich personality" in instructions
+    assert manager.resolve_model_context_window() == 353400
+
+
 def test_context_manager_resolves_auto_compact_limit_from_config() -> 'None':
     manager = ContextManager(
         config=ContextConfig(model_auto_compact_token_limit=12345)

@@ -19,16 +19,19 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
 
 from .protocol import (
     AssistantMessage,
+    JSONDict,
     ModelResponse,
     ModelStreamEvent,
     Prompt,
     ReasoningItem,
     ToolCall,
 )
+from .model_metadata import model_metadata
 from .utils import build_user_agent, uuid7_string
 
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
+RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 ModelStreamEventHandler = Callable[[ModelStreamEvent], None]
 NOOP_MODEL_STREAM_EVENT_HANDLER: 'ModelStreamEventHandler' = lambda _event: None
 DEFAULT_STREAM_MAX_RETRIES = 5
@@ -65,6 +68,7 @@ class ResponsesProviderConfig:
     beta_features_header: 'typing.Union[str, None]' = None
     stream_max_retries: 'typing.Union[int, None]' = None
     stream_idle_timeout_ms: 'typing.Union[int, None]' = None
+    service_tier: 'typing.Union[str, None]' = None
 
     @classmethod
     def from_codex_config(
@@ -116,6 +120,7 @@ class ResponsesProviderConfig:
             reasoning_effort=selected.get("model_reasoning_effort"),
             reasoning_summary=selected.get("model_reasoning_summary"),
             verbosity=selected.get("model_verbosity"),
+            service_tier=selected.get("service_tier"),
             sandbox_mode=selected.get("sandbox_mode"),
             beta_features_header=",".join(beta_features) or None,
             stream_max_retries=_optional_int(provider.get("stream_max_retries")),
@@ -157,6 +162,65 @@ class ResponsesProviderConfig:
             return DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000.0
         return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
 
+    def metadata(self) -> 'typing.Union[JSONDict, None]':
+        return model_metadata(self.model)
+
+    def use_responses_lite(self) -> 'bool':
+        metadata = self.metadata()
+        if metadata is None:
+            return False
+        return metadata.get("use_responses_lite") is True
+
+    def effective_reasoning_effort(self) -> 'typing.Union[str, None]':
+        if self.reasoning_effort is not None:
+            return str(self.reasoning_effort)
+        metadata = self.metadata()
+        if not _metadata_supports_reasoning(metadata):
+            return None
+        return _optional_metadata_string(metadata, "default_reasoning_level")
+
+    def effective_reasoning_summary(self) -> 'typing.Union[str, None]':
+        summary = self.reasoning_summary
+        if summary is None:
+            metadata = self.metadata()
+            if not _metadata_supports_reasoning(metadata):
+                return None
+            summary = _optional_metadata_string(metadata, "default_reasoning_summary")
+        if summary is None:
+            return None
+        if str(summary).strip().lower() == "none":
+            return None
+        return str(summary)
+
+    def effective_verbosity(self) -> 'typing.Union[str, None]':
+        if self.verbosity is not None:
+            return str(self.verbosity)
+        metadata = self.metadata()
+        if metadata is None or metadata.get("support_verbosity") is not True:
+            return None
+        return _optional_metadata_string(metadata, "default_verbosity")
+
+    def effective_service_tier(self) -> 'typing.Union[str, None]':
+        service_tier = self.service_tier
+        if service_tier is None:
+            return None
+        service_tier = str(service_tier).strip()
+        if service_tier == "fast":
+            service_tier = "priority"
+        if not service_tier or service_tier == "default":
+            return None
+
+        metadata = self.metadata()
+        if metadata is None:
+            return None
+        supported = metadata.get("service_tiers")
+        if not isinstance(supported, list):
+            return None
+        for tier in supported:
+            if isinstance(tier, dict) and tier.get("id") == service_tier:
+                return service_tier
+        return None
+
 
 def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union[bool, None]':
     if value is None:
@@ -169,6 +233,43 @@ def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union
     if text in {"0", "false", "no", "off"}:
         return False
     raise ValueError(f"invalid boolean config value: {value!r}")
+
+
+def _metadata_supports_reasoning(
+    metadata: 'typing.Union[JSONDict, None]',
+) -> 'bool':
+    return metadata is not None and metadata.get("supports_reasoning_summaries") is True
+
+
+def _optional_metadata_string(
+    metadata: 'typing.Union[JSONDict, None]',
+    key: 'str',
+) -> 'typing.Union[str, None]':
+    if metadata is None:
+        return None
+    value = metadata.get(key)
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _strip_image_details(items: 'typing.Iterable[object]') -> 'None':
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if isinstance(content, list):
+            _strip_image_detail_from_content_items(content)
+        output = item.get("output")
+        if isinstance(output, list):
+            _strip_image_detail_from_content_items(output)
+
+
+def _strip_image_detail_from_content_items(items: 'typing.Iterable[object]') -> 'None':
+    for item in items:
+        if isinstance(item, dict) and item.get("type") == "input_image":
+            item.pop("detail", None)
 
 
 class ResponsesApiError(RuntimeError):
@@ -392,33 +493,72 @@ class ResponsesModelClient:
             ) from exc
 
     def _build_payload(self, prompt: 'Prompt') -> 'typing.Dict[str, object]':
+        use_responses_lite = self._config.use_responses_lite()
+        input_items = [item.serialize() for item in prompt.input]
+        if use_responses_lite:
+            _strip_image_details(input_items)
+
+        tools = [tool.serialize() for tool in prompt.tools]
         payload: 'typing.Dict[str, object]' = {
             "model": self.model,
-            "instructions": prompt.base_instructions or "",
-            "input": [item.serialize() for item in prompt.input],
-            "tools": [tool.serialize() for tool in prompt.tools],
-            "parallel_tool_calls": prompt.parallel_tool_calls,
+            "input": input_items,
+            "parallel_tool_calls": prompt.parallel_tool_calls and not use_responses_lite,
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": self._session_id,
         }
-        if prompt.tools:
+        if use_responses_lite:
+            prefix: 'typing.List[typing.Dict[str, object]]' = [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": tools,
+                }
+            ]
+            if prompt.base_instructions:
+                prefix.append(
+                    {
+                        "type": "message",
+                        "role": "developer",
+                        "content": [
+                            {
+                                "type": "input_text",
+                                "text": prompt.base_instructions,
+                            }
+                        ],
+                    }
+                )
+            payload["input"] = prefix + input_items
+        else:
+            payload["instructions"] = prompt.base_instructions or ""
+            payload["tools"] = tools
+
+        if prompt.tools or use_responses_lite:
             payload["tool_choice"] = "auto"
 
         reasoning: 'typing.Dict[str, str]' = {}
-        if self._config.reasoning_effort is not None:
-            reasoning["effort"] = self._config.reasoning_effort
-        if self._config.reasoning_summary is not None:
-            reasoning["summary"] = self._config.reasoning_summary
+        reasoning_effort = self._config.effective_reasoning_effort()
+        reasoning_summary = self._config.effective_reasoning_summary()
+        if reasoning_effort is not None:
+            reasoning["effort"] = reasoning_effort
+        if reasoning_summary is not None:
+            reasoning["summary"] = reasoning_summary
+        if use_responses_lite and reasoning:
+            reasoning["context"] = "all_turns"
         if reasoning:
             payload["reasoning"] = reasoning
 
         text = None
-        if self._config.verbosity is not None:
-            text = {"verbosity": self._config.verbosity}
+        verbosity = self._config.effective_verbosity()
+        if verbosity is not None:
+            text = {"verbosity": verbosity}
         if text is not None:
             payload["text"] = text
+
+        service_tier = self._config.effective_service_tier()
+        if service_tier is not None:
+            payload["service_tier"] = service_tier
 
         return payload
 
@@ -483,6 +623,8 @@ class ResponsesModelClient:
             headers["authorization"] = f"Bearer {api_key}"
         if self._config.beta_features_header is not None:
             headers["x-codex-beta-features"] = self._config.beta_features_header
+        if self._config.use_responses_lite():
+            headers[RESPONSES_LITE_HEADER] = "true"
         if self._openai_subagent is not None:
             headers["x-openai-subagent"] = self._openai_subagent
         if prompt.turn_metadata is not None:

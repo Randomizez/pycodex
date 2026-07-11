@@ -171,6 +171,10 @@ Current behavior:
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
   compaction path automatically when the latest reported usage reaches that
   threshold before a follow-up sampling request or the next user turn
+- `service_tier = "fast"` enables Fast mode for models whose vendored metadata
+  advertises the `priority` service tier; pycodex follows upstream Codex by
+  sending `service_tier = "priority"` on the Responses request, while
+  `service_tier = "default"` or unsupported tiers are omitted
 - if a model request fails with `context_length_exceeded`, pycodex now treats
   the provider-reported requested token count as a failed-request usage sample,
   triggers the same compact path immediately, and retries the request once; if

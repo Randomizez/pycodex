@@ -25,6 +25,7 @@ from pycodex import (
     ToolSpec,
     UserMessage,
 )
+from pycodex.model import RESPONSES_LITE_HEADER
 from tests.fake_responses_server import CaptureStore, build_handler
 import typing
 
@@ -146,6 +147,7 @@ def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path
                 'model_provider = "primary"',
                 'model_reasoning_effort = "high"',
                 'model_verbosity = "medium"',
+                'service_tier = "fast"',
                 '',
                 '[profiles.fast]',
                 'model = "fast-model"',
@@ -180,6 +182,7 @@ def test_provider_config_reads_codex_style_config_with_profile_override(tmp_path
     assert client.responses_url() == 'https://backup.example.com/openai/responses?api_version=2026-03-01'
     assert provider.reasoning_effort == 'high'
     assert provider.verbosity == 'medium'
+    assert provider.service_tier == 'fast'
     assert provider.beta_features_header == 'guardian_approval'
 
 
@@ -235,6 +238,68 @@ def test_provider_config_allows_provider_without_env_key(tmp_path) -> 'None':
     assert provider.base_url == 'http://100.96.255.200:8001/v1'
     assert provider.api_key_env is None
     assert provider.api_key() is None
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_effort"),
+    [
+        ("gpt-5.6-sol", "low"),
+        ("gpt-5.6-terra", "medium"),
+        ("gpt-5.6-luna", "medium"),
+    ],
+)
+def test_provider_config_uses_gpt56_model_metadata_defaults(
+    model,
+    expected_effort,
+) -> 'None':
+    provider = ResponsesProviderConfig(
+        model=model,
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+    )
+
+    assert provider.use_responses_lite() is True
+    assert provider.effective_reasoning_effort() == expected_effort
+    assert provider.effective_reasoning_summary() is None
+    assert provider.effective_verbosity() == 'low'
+
+
+@pytest.mark.parametrize(
+    ("service_tier", "expected"),
+    [
+        ("fast", "priority"),
+        ("priority", "priority"),
+        ("default", None),
+        ("flex", None),
+        ("unsupported", None),
+    ],
+)
+def test_provider_config_resolves_supported_service_tier(
+    service_tier,
+    expected,
+) -> 'None':
+    provider = ResponsesProviderConfig(
+        model='gpt-5.6-sol',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        service_tier=service_tier,
+    )
+
+    assert provider.effective_service_tier() == expected
+
+
+def test_provider_config_omits_service_tier_for_unknown_model() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='demo-model',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        service_tier='fast',
+    )
+
+    assert provider.effective_service_tier() is None
 
 
 def test_responses_model_client_builds_responses_payload() -> 'None':
@@ -347,6 +412,127 @@ def test_responses_model_client_builds_responses_payload() -> 'None':
         'type': 'web_search',
         'external_web_access': True,
     }
+
+
+def test_responses_model_client_builds_responses_lite_payload() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='gpt-5.6-sol',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        service_tier='fast',
+    )
+    client = ResponsesModelClient(
+        provider,
+        session_id='00000000-0000-7000-8000-000000000000',
+    )
+    prompt = Prompt(
+        input=[
+            ContextMessage(
+                role='user',
+                content_items=(
+                    {
+                        'type': 'input_image',
+                        'image_url': 'data:image/png;base64,abc',
+                        'detail': 'high',
+                    },
+                ),
+            ),
+            UserMessage(text='hi'),
+        ],
+        tools=[
+            ToolSpec(
+                name='echo',
+                description='Echo text.',
+                input_schema={'type': 'object'},
+            ),
+        ],
+        parallel_tool_calls=True,
+        base_instructions='Be concise.',
+    )
+
+    payload = client._build_payload(prompt)
+    headers = client._build_headers(prompt)
+
+    assert 'instructions' not in payload
+    assert 'tools' not in payload
+    assert payload['parallel_tool_calls'] is False
+    assert payload['tool_choice'] == 'auto'
+    assert payload['reasoning'] == {'effort': 'low', 'context': 'all_turns'}
+    assert payload['text'] == {'verbosity': 'low'}
+    assert payload['service_tier'] == 'priority'
+    assert payload['input'][0] == {
+        'type': 'additional_tools',
+        'role': 'developer',
+        'tools': [
+            {
+                'type': 'function',
+                'name': 'echo',
+                'description': 'Echo text.',
+                'parameters': {'type': 'object'},
+                'strict': False,
+            }
+        ],
+    }
+    assert payload['input'][1] == {
+        'type': 'message',
+        'role': 'developer',
+        'content': [{'type': 'input_text', 'text': 'Be concise.'}],
+    }
+    assert payload['input'][2]['content'][0] == {
+        'type': 'input_image',
+        'image_url': 'data:image/png;base64,abc',
+    }
+    assert payload['input'][3]['content'][0]['text'] == 'hi'
+    assert headers[RESPONSES_LITE_HEADER] == 'true'
+
+
+def test_responses_lite_payload_respects_explicit_reasoning_and_verbosity() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='gpt-5.6-sol',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        reasoning_effort='ultra',
+        reasoning_summary='auto',
+        verbosity='medium',
+    )
+    client = ResponsesModelClient(provider)
+
+    payload = client._build_payload(
+        Prompt(
+            input=[UserMessage(text='hi')],
+            tools=[],
+            base_instructions='Be concise.',
+        )
+    )
+
+    assert payload['reasoning'] == {
+        'effort': 'ultra',
+        'summary': 'auto',
+        'context': 'all_turns',
+    }
+    assert payload['text'] == {'verbosity': 'medium'}
+
+
+def test_responses_payload_omits_default_service_tier() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='gpt-5.6-sol',
+        provider_name='demo',
+        base_url='https://example.com/v1',
+        api_key_env=None,
+        service_tier='default',
+    )
+    client = ResponsesModelClient(provider)
+
+    payload = client._build_payload(
+        Prompt(
+            input=[UserMessage(text='hi')],
+            tools=[],
+        )
+    )
+
+    assert 'service_tier' not in payload
 
 
 @pytest.mark.asyncio
