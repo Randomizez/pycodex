@@ -25,10 +25,11 @@ MODEL_COMMAND = "/model"
 QUEUE_COMMAND = "/queue"
 RESUME_COMMAND = "/resume"
 COMPACT_COMMAND = "/compact"
+FORK_COMMAND = "/fork"
 LINK_COMMAND = "/link"
 UNLINK_COMMAND = "/unlink"
 EXTRA_COMMANDS_LINE = (
-    "Extra commands: /help, /history, /title, /model, /resume, /compact, /link, /unlink"
+    "Extra commands: /help, /history, /title, /model, /resume, /compact, /fork, /link, /unlink"
 )
 
 
@@ -300,6 +301,19 @@ async def run_interactive_session(
                     await run_manual_compact()
                 except Exception as exc:  # pragma: no cover - defensive surface
                     view.show_error(str(exc))
+                continue
+            if prompt_text == FORK_COMMAND:
+                if has_pending_turn_tasks():
+                    view.write_line(
+                        "Cannot fork while work is running or queued."
+                    )
+                    continue
+                if not hasattr(model_client, "_session_id"):
+                    view.write_line("Current model does not support session IDs.")
+                    continue
+                new_session_id = uuid7_string()
+                model_client._session_id = new_session_id
+                view.write_line(f"Forked session: {new_session_id}")
                 continue
             if prompt_text.startswith(f"{LINK_COMMAND} "):
                 link_target = prompt_text[len(LINK_COMMAND) :].strip()

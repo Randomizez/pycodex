@@ -1338,6 +1338,35 @@ async def test_run_interactive_session_supports_title_rename_command(
 
 
 @pytest.mark.asyncio
+async def test_run_interactive_session_fork_regenerates_model_session_id(
+    monkeypatch,
+) -> 'None':
+    model = ScriptedModelClient([])
+    model._session_id = "old-session-id"
+    runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
+    line_output: 'typing.List[str]' = []
+    stream_chunks: 'typing.List[str]' = []
+    monkeypatch.setattr(
+        "pycodex.interactive_session.uuid7_string",
+        lambda: "new-session-id",
+    )
+    _install_test_cli_view(
+        monkeypatch,
+        ["/fork", "/exit"],
+        line_output,
+        stream_chunks,
+    )
+
+    code = await run_interactive_session(runtime, False)
+
+    assert code == 0
+    assert model._session_id == "new-session-id"
+    assert model.call_count == 0
+    assert "Forked session: new-session-id" in line_output
+    assert stream_chunks == []
+
+
+@pytest.mark.asyncio
 async def test_run_interactive_session_supports_compact_command(
     monkeypatch,
 ) -> 'None':

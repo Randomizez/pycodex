@@ -22,6 +22,7 @@ Include:
 - Important context, constraints, or user preferences
 - What remains to be done (clear next steps)
 - Any critical data, examples, or references needed to continue
+- Preserve concise verbatim excerpts of the latest user request and active constraints in their original language, and write the summary in the user's primary language.
 
 Be concise, structured, and focused on helping the next LLM seamlessly continue the work."""
 
@@ -31,7 +32,8 @@ SUMMARY_PREFIX = (
     "that were used by that language model. Use this to build on the work that "
     "has already been done and avoid duplicating work. Here is the summary "
     "produced by the other language model, use the information in this summary "
-    "to assist with your own analysis:"
+    "to assist with your own analysis. Continue the current task directly; do "
+    "not merely repeat or acknowledge the handoff:"
 )
 
 @dataclass(frozen=True)

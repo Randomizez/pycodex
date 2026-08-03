@@ -7,6 +7,12 @@ from pycodex.utils.compactor import (
 )
 
 
+def test_compact_prompt_preserves_active_user_text_and_language() -> 'None':
+    assert "concise verbatim excerpts" in DEFAULT_COMPACT_PROMPT
+    assert "in their original language" in DEFAULT_COMPACT_PROMPT
+    assert "user's primary language" in DEFAULT_COMPACT_PROMPT
+
+
 def test_compact_replaces_history_with_summary_only() -> 'None':
     history = (
         UserMessage(text="first user"),
@@ -22,6 +28,7 @@ def test_compact_replaces_history_with_summary_only() -> 'None':
         "UserMessage",
     ]
     assert compacted[0].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
+    assert "Continue the current task directly" in compacted[0].text
 
 
 def test_compact_filters_previous_summary_messages() -> 'None':

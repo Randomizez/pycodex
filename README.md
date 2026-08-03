@@ -158,7 +158,8 @@ Current behavior:
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
 - assistant text is printed from streaming deltas directly
-- interactive mode supports `/history`, `/title`, `/model`, `/resume`, and `/compact`
+- interactive mode supports `/history`, `/title`, `/model`, `/resume`, `/compact`,
+  and `/fork`
 - `/model <name>` switches the model used by later turns in the current
   interactive session; `/model` shows the current model and available choices
 - `/resume` with no argument lists the currently resumable sessions by their
@@ -168,6 +169,8 @@ Current behavior:
 - `/compact` synthesizes a local handoff summary, replaces the in-memory
   conversation history with the compacted view, and appends a compacted-history
   entry to the rollout so later `/resume` sees the same state
+- `/fork` generates a new model session id while preserving the current history,
+  rollout, and workspace tab
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
   compaction path automatically when the latest reported usage reaches that
   threshold before a follow-up sampling request or the next user turn
@@ -205,6 +208,8 @@ Current behavior:
   session-state saves refresh the JSON file. Board HTML can reference local
   images beside the board (including nested paths) with relative URLs; only
   `image/*` files contained by the board directory are served.
+  Assistant Markdown supports KaTeX formulas with `$...$`, `$$...$$`,
+  `\(...\)`, and `\[...\]` delimiters.
   `--password <value>` enables a password-only login page for workspace pages,
   APIs, and websocket connections.
 - steer is enabled by default in interactive mode: normal input goes into the

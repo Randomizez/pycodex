@@ -794,6 +794,31 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "mobile-switch" not in response.text
 
 
+def test_workspace_app_shell_renders_latex_with_katex(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+    app = create_app(lambda: _DormantLink(), board)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "katex@0.16.22/dist/katex.min.css" in response.text
+    assert "katex@0.16.22/dist/katex.min.js" in response.text
+    assert "katex@0.16.22/dist/contrib/auto-render.min.js" in response.text
+    assert "window.renderMathInElement(root" in response.text
+    assert '{left: "$$", right: "$$", display: true}' in response.text
+    assert '{left: "\\\\[", right: "\\\\]", display: true}' in response.text
+    assert '{left: "\\\\(", right: "\\\\)", display: false}' in response.text
+    assert '{left: "$", right: "$", display: false}' in response.text
+    assert "mathDelimiterPlaceholders" in response.text
+    assert "document.createTreeWalker(root, NodeFilter.SHOW_TEXT)" in response.text
+    assert "throwOnError: false" in response.text
+    assert "trust: false" in response.text
+    assert ".markdown .katex-display" in response.text
+    assert "overflow-x: auto" in response.text
+
+
 def test_workspace_spinner_tool_call_preview_is_longer_than_title() -> None:
     view = WebSessionView()
     call = ToolCall(
@@ -854,6 +879,40 @@ def test_workspace_app_message_uses_shared_interactive_commands(
     assert snapshot["turns"][-1]["kind"] == "control"
     assert snapshot["turns"][-1]["prompt"] == ""
     assert model.call_count == 0
+
+
+def test_workspace_app_fork_regenerates_model_session_id(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+    model = ScriptedModelClient([])
+    model._session_id = "old-session-id"
+    monkeypatch.setattr(
+        "pycodex.interactive_session.uuid7_string",
+        lambda: "new-session-id",
+    )
+
+    def build_session():
+        runtime = CliSubmissionQueue(Agent(model, ToolRegistry()))
+        return WorkspaceInteractiveSession(runtime)
+
+    app = create_app(build_session, board)
+
+    with TestClient(app) as client:
+        response = client.post("/api/session/message", json={"prompt": "/fork"})
+        snapshot = _wait_for_snapshot(
+            client,
+            lambda item: item["turns"]
+            and "Forked session: new-session-id" in item["turns"][-1]["response"],
+        )
+
+    assert response.status_code == 200
+    assert model._session_id == "new-session-id"
+    assert model.call_count == 0
+    assert snapshot["turns"][-1]["kind"] == "control"
+    assert snapshot["turns"][-1]["prompt"] == ""
 
 
 def test_workspace_app_resume_list_control_output_is_not_duplicated(tmp_path) -> None:
