@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.17.1,<1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pycodex-ws"
+version = "0.2.6"
+description = "Browser workspace install alias for python-codex"
+readme = "README.md"
+requires-python = ">=3.6.2"
+dependencies = [
+    "python-codex==0.2.6",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["pycodex_ws_meta"]

@@ -2,8 +2,17 @@
 
 English README. Chinese version: `README_ZH.md`
 
-PyPI distribution name: `python-codex`  
-Import path and CLI command remain `pycodex`.
+PyPI distributions:
+
+- Primary package: `python-codex`
+- Workspace install alias: `pycodex-ws`
+
+The import path remains `pycodex`; the CLI commands are `pycodex` and
+`pycodex-ws`.
+
+`pycodex-ws` is a thin metapackage that depends on the exact matching
+`python-codex` version. The implementation and console script remain owned by
+`python-codex`, so the two distributions never install duplicate modules.
 
 This repository extracts the core Codex agent loop from upstream Codex
 (`https://github.com/openai/codex`) into a deliberately small Python version,
@@ -22,6 +31,13 @@ Relevant Rust reference points:
 - `codex-rs/core/src/stream_events_utils.rs` -> `handle_output_item_done`
 
 ## Quick Start
+
+Install the full package or the workspace-oriented alias:
+
+```bash
+pip install python-codex
+pip install pycodex-ws
+```
 
 Install dependencies first:
 

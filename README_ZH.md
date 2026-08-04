@@ -2,8 +2,16 @@
 
 中文 README。English version: `README.md`
 
-PyPI distribution name: `python-codex`  
-Import path and CLI command remain `pycodex`.
+PyPI distributions：
+
+- 主包：`python-codex`
+- Workspace 安装别名：`pycodex-ws`
+
+Import 路径仍保持 `pycodex`；CLI 命令为 `pycodex` 和 `pycodex-ws`。
+
+`pycodex-ws` 是一个薄 metapackage，精确依赖同版本的 `python-codex`。
+实际代码和 console script 继续由 `python-codex` 提供，两个 distribution
+不会重复安装同名模块。
 
 这个仓库把上游 Codex（`https://github.com/openai/codex`）里最核心的 agent
 闭环先抽成一个尽量小的 Python 版本，重点保留两层结构：
@@ -20,6 +28,13 @@ Import path and CLI command remain `pycodex`.
 - `codex-rs/core/src/stream_events_utils.rs` 里的 `handle_output_item_done`
 
 ## 快速开始
+
+安装完整包或 workspace 安装别名：
+
+```bash
+pip install python-codex
+pip install pycodex-ws
+```
 
 先安装开发依赖：
 
