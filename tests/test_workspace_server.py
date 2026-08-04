@@ -794,6 +794,24 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "mobile-switch" not in response.text
 
 
+def test_workspace_app_shell_uses_carbon_signal_dark_theme(tmp_path) -> None:
+    board = tmp_path / "board.html"
+    board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
+    app = create_app(lambda: _DormantLink(), board)
+
+    with TestClient(app) as client:
+        response = client.get("/")
+
+    assert response.status_code == 200
+    assert "color-scheme: light;" in response.text
+    assert "--bg: #eef3f6;" in response.text
+    assert "--panel: #f8fbfd;" in response.text
+    assert "--accent: #087f9a;" in response.text
+    assert "--warn-soft: #fff7df;" in response.text
+    assert "--danger-soft: #fff0f2;" in response.text
+    assert "--violet-soft: #f4f0ff;" in response.text
+
+
 def test_workspace_app_shell_renders_latex_with_katex(tmp_path) -> None:
     board = tmp_path / "board.html"
     board.write_text("<!doctype html><title>Board</title>", encoding="utf-8")
@@ -806,13 +824,22 @@ def test_workspace_app_shell_renders_latex_with_katex(tmp_path) -> None:
     assert "katex@0.16.22/dist/katex.min.css" in response.text
     assert "katex@0.16.22/dist/katex.min.js" in response.text
     assert "katex@0.16.22/dist/contrib/auto-render.min.js" in response.text
-    assert "window.renderMathInElement(root" in response.text
+    assert "window.renderMathInElement(mathNode" in response.text
     assert '{left: "$$", right: "$$", display: true}' in response.text
     assert '{left: "\\\\[", right: "\\\\]", display: true}' in response.text
     assert '{left: "\\\\(", right: "\\\\)", display: false}' in response.text
     assert '{left: "$", right: "$", display: false}' in response.text
-    assert "mathDelimiterPlaceholders" in response.text
+    assert "const mathDelimiters" in response.text
+    assert "const mathTokenPrefix" in response.text
+    assert "function protectMath(source)" in response.text
+    assert "function renderProtectedMath(root, expressions)" in response.text
+    assert "const textNodes = []" in response.text
+    assert "function restoreUnrenderedMathTokens(root, expressionByToken)" in response.text
+    assert "countBackticks(source, index)" in response.text
     assert "document.createTreeWalker(root, NodeFilter.SHOW_TEXT)" in response.text
+    assert ".markdown .katex .text" in response.text
+    assert "overflow-wrap: normal" in response.text
+    assert "word-break: normal" in response.text
     assert "throwOnError: false" in response.text
     assert "trust: false" in response.text
     assert ".markdown .katex-display" in response.text

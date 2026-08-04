@@ -8,22 +8,33 @@
   <style>
     :root {
       color-scheme: light;
-      --bg: #f2f6f3;
-      --panel: #ffffff;
-      --ink: #1e2529;
-      --muted: #5f6f75;
-      --line: #d2ddd5;
-      --accent: #0f8f55;
+      --bg: #eef3f6;
+      --panel: #f8fbfd;
+      --panel-deep: #f2f6f8;
+      --panel-raised: #ffffff;
+      --panel-hover: #e8f1f5;
+      --board-chrome: #ffffff;
+      --ink: #172630;
+      --muted: #60727d;
+      --line: #cbd8df;
+      --line-strong: #aebfc9;
+      --accent: #087f9a;
       --accent-ink: #ffffff;
-      --warn-soft: #fff5cf;
-      --info: #1f6fa4;
-      --info-soft: #edf8ff;
-      --danger: #b23a3a;
-      --danger-soft: #fff1ef;
-      --violet: #6b4fb0;
-      --violet-soft: #f5f0ff;
-      --code: #f3f7f8;
-      --entry-shadow: 0 1px 2px rgba(25, 35, 31, 0.04);
+      --accent-soft: #e6f6f8;
+      --warn: #b77908;
+      --warn-ink: #62480c;
+      --warn-soft: #fff7df;
+      --info: #2868b2;
+      --info-soft: #edf5ff;
+      --success: #247a52;
+      --success-line: #8bc9a8;
+      --success-soft: #edf9f2;
+      --danger: #b33d50;
+      --danger-soft: #fff0f2;
+      --violet: #6850a4;
+      --violet-soft: #f4f0ff;
+      --code: #f1f5f7;
+      --entry-shadow: 0 1px 2px rgba(27, 57, 72, 0.06);
       --space-1: 2px;
       --space-2: 4px;
       --space-3: 6px;
@@ -52,14 +63,14 @@
       min-width: 0;
     }
     .workspace.collapsed .splitter::after {
-      background: #4f6f60;
+      background: var(--accent);
     }
     .board-pane {
       min-width: 0;
       height: 100dvh;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr);
-      background: #fff;
+      background: var(--board-chrome);
     }
     .boardbar {
       min-width: 0;
@@ -101,10 +112,10 @@
       text-decoration: none;
     }
     .workspace-back:hover {
-      background: #eef7f1;
+      background: var(--accent-soft);
     }
     .workspace-back:focus {
-      outline: 2px solid #9bb7a6;
+      outline: 2px solid var(--accent);
       outline-offset: 1px;
     }
     .workspace-back::before {
@@ -120,16 +131,16 @@
       min-width: 0;
       width: 100%;
       height: 100%;
-      background: #fff;
+      background: var(--board-chrome);
     }
     .splitter {
       position: relative;
       width: 8px;
       height: 100dvh;
       border: 0;
-      border-left: 1px solid #c1cec6;
-      border-right: 1px solid #c1cec6;
-      background: #dfe8e2;
+      border-left: 1px solid var(--line);
+      border-right: 1px solid var(--line);
+      background: var(--panel-hover);
       cursor: col-resize;
       padding: 0;
       touch-action: none;
@@ -142,17 +153,17 @@
       width: 3px;
       height: 42px;
       border-radius: 999px;
-      background: #7d9588;
+      background: var(--muted);
       transform: translate(-50%, -50%);
     }
     .splitter:hover,
     .workspace.resizing .splitter {
-      background: #d3dfd7;
-      border-color: #aebeb4;
+      background: #dce9ee;
+      border-color: var(--line-strong);
     }
     .splitter:hover::after,
     .workspace.resizing .splitter::after {
-      background: #527465;
+      background: var(--accent);
     }
     .workspace.resizing,
     .workspace.resizing * {
@@ -190,8 +201,8 @@
       width: var(--context-meter-size);
       height: var(--context-meter-size);
       border-radius: 999px;
-      background: conic-gradient(#4ca56f 0 var(--context-remaining), #cfd8d2 0 100%);
-      color: #335243;
+      background: conic-gradient(var(--accent) 0 var(--context-remaining), var(--line-strong) 0 100%);
+      color: var(--muted);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 9px;
       line-height: 1;
@@ -205,7 +216,7 @@
       position: absolute;
       inset: 4px;
       border-radius: 999px;
-      background: #fff;
+      background: var(--panel);
     }
     .context-meter-value {
       position: relative;
@@ -227,9 +238,9 @@
       min-width: 88px;
       max-width: 180px;
       height: 31px;
-      border: 1px solid #d5ddd7;
+      border: 1px solid var(--line);
       border-radius: var(--radius-sm);
-      background: #f6f8f7;
+      background: var(--panel-raised);
       color: var(--ink);
       padding: 0 var(--space-3) 0 var(--space-4);
       font: inherit;
@@ -238,12 +249,12 @@
     }
     .tab:focus-within,
     .tab-new:focus {
-      outline: 2px solid #9bb7a6;
+      outline: 2px solid var(--accent);
       outline-offset: 1px;
     }
     .tab.active {
-      border-color: #afd6bd;
-      background: #eef7f1;
+      border-color: var(--accent);
+      background: var(--accent-soft);
       box-shadow: inset 0 -2px 0 var(--accent);
     }
     .tab-status {
@@ -281,7 +292,7 @@
       height: 31px;
       border: 1px solid var(--line);
       border-radius: var(--radius-md);
-      background: #eef7f1;
+      background: var(--panel-raised);
       color: var(--muted);
       padding: 0;
       line-height: 1;
@@ -315,7 +326,7 @@
     .tab-close:hover,
     .tab-new:hover {
       color: var(--ink);
-      background: #ffffff;
+      background: var(--panel-hover);
     }
     .log {
       min-height: 0;
@@ -325,45 +336,45 @@
       display: flex;
       flex-direction: column;
       gap: var(--space-4);
-      background: #fbfcfa;
+      background: var(--bg);
     }
     .entry {
       min-width: 0;
       border: 1px solid var(--line);
       border-radius: var(--radius-sm);
       padding: var(--space-4) var(--space-5);
-      background: #fff;
+      background: var(--panel-raised);
       box-shadow: var(--entry-shadow);
     }
     .entry.user {
-      border-color: #edd17a;
+      border-color: var(--warn);
       background: var(--warn-soft);
-      color: #5a4714;
+      color: var(--warn-ink);
     }
     .entry.response,
     .entry.assistant {
-      border-color: #d0ddd5;
-      background: #ffffff;
+      border-color: var(--line);
+      background: var(--panel-raised);
     }
     .entry.thinking {
-      border-color: #b9dcc5;
-      background: #f0fbf3;
-      color: #256b43;
+      border-color: var(--success-line);
+      background: var(--success-soft);
+      color: var(--success);
       animation: thinking-breathe 4.8s ease-in-out infinite;
     }
     .entry.control {
-      border-color: #b9d8ea;
+      border-color: #b7d3ee;
       background: var(--info-soft);
       color: var(--info);
     }
     .entry.tool {
-      border-color: #d7c8f0;
+      border-color: #d8cdf1;
       background: var(--violet-soft);
       color: var(--violet);
       font-size: 12px;
     }
     .entry.error {
-      border-color: #efb4ad;
+      border-color: #efb8c1;
       background: var(--danger-soft);
       color: var(--danger);
     }
@@ -422,11 +433,11 @@
       vertical-align: top;
     }
     .markdown th {
-      background: #eef7f1;
+      background: var(--accent-soft);
       font-weight: 650;
     }
     .markdown a {
-      color: #176fa8;
+      color: var(--info);
       text-decoration: none;
     }
     .markdown a:hover {
@@ -436,6 +447,17 @@
       margin: 0 0 var(--space-4);
       overflow-x: auto;
       overflow-y: hidden;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    .markdown .katex {
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    .markdown .katex .text {
+      white-space: normal;
+      overflow-wrap: normal;
+      word-break: normal;
     }
     .markdown .katex-display:last-child {
       margin-bottom: 0;
@@ -447,7 +469,7 @@
       display: grid;
       gap: var(--space-3);
       align-content: end;
-      background: #fff;
+      background: var(--panel);
     }
     textarea {
       min-width: 0;
@@ -457,15 +479,15 @@
       border: 1px solid var(--line);
       border-radius: var(--radius-sm);
       padding: var(--space-4) var(--space-5);
-      background: #ffffff;
+      background: var(--panel-deep);
       color: var(--ink);
       font: inherit;
       line-height: 1.4;
       overflow-y: auto;
     }
     textarea:focus {
-      border-color: #65b782;
-      box-shadow: 0 0 0 3px rgba(15, 143, 85, 0.13);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.18);
       outline: 0;
     }
     .actions {
@@ -501,8 +523,8 @@
       text-overflow: ellipsis;
       padding: var(--space-1) var(--space-4) var(--space-1) 18px;
       border-radius: 999px;
-      background: rgba(240, 250, 244, 0.96);
-      border: 1px solid rgba(172, 216, 188, 0.9);
+      background: rgba(230, 246, 248, 0.96);
+      border: 1px solid rgba(8, 127, 154, 0.35);
       font: inherit;
       font-size: 12px;
       cursor: pointer;
@@ -514,8 +536,8 @@
       display: none;
     }
     .spinner:focus-visible {
-      border-color: #65b782;
-      box-shadow: 0 0 0 3px rgba(15, 143, 85, 0.13);
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.18);
       outline: 0;
     }
     .spinner-wrap:has(.spinner:not(:empty)) {
@@ -534,12 +556,12 @@
       animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
     }
     .spinner.notify-enabled {
-      color: #0b6b43;
-      background: #e6f4eb;
-      border-color: #4ca56f;
+      color: var(--success);
+      background: var(--success-soft);
+      border-color: var(--success-line);
       box-shadow:
-        inset 0 1px 2px rgba(9, 93, 55, 0.16),
-        inset 0 0 0 1px rgba(15, 143, 85, 0.1);
+        inset 0 1px 2px rgba(27, 57, 72, 0.08),
+        inset 0 0 0 1px rgba(36, 122, 82, 0.1);
     }
     .toast {
       position: absolute;
@@ -548,11 +570,11 @@
       z-index: 5;
       width: max-content;
       max-width: min(320px, calc(100vw - var(--space-6) * 2));
-      border: 1px solid #bfd6c8;
+      border: 1px solid var(--line-strong);
       border-radius: var(--radius-sm);
-      background: #f6fbf8;
+      background: var(--panel-raised);
       color: var(--ink);
-      box-shadow: 0 8px 20px rgba(25, 35, 31, 0.12);
+      box-shadow: 0 8px 20px rgba(27, 57, 72, 0.14);
       padding: var(--space-4) var(--space-6);
       font-size: 12px;
       opacity: 0;
@@ -577,14 +599,14 @@
     }
     @keyframes thinking-breathe {
       0%, 100% {
-        border-color: #b9dcc5;
+        border-color: var(--success-line);
         box-shadow: var(--entry-shadow);
       }
       50% {
-        border-color: #72d494;
+        border-color: var(--success);
         box-shadow:
-          0 0 0 2px rgba(22, 168, 90, 0.16),
-          0 2px 7px rgba(25, 35, 31, 0.08);
+          0 0 0 2px rgba(36, 122, 82, 0.14),
+          0 2px 7px rgba(27, 57, 72, 0.08);
       }
     }
     @media (prefers-reduced-motion: reduce) {
@@ -683,12 +705,14 @@
     const markdownRenderer = window.markdownit
       ? window.markdownit({html: false, linkify: true, breaks: false})
       : null;
-    const mathDelimiterPlaceholders = [
-      ["\\[", "\uE000"],
-      ["\\]", "\uE001"],
-      ["\\(", "\uE002"],
-      ["\\)", "\uE003"],
+    const mathDelimiters = [
+      {left: "$$", right: "$$", display: true},
+      {left: "\\[", right: "\\]", display: true},
+      {left: "\\(", right: "\\)", display: false},
+      {left: "$", right: "$", display: false},
     ];
+    const mathTokenPrefix = "\uE000math";
+    const mathTokenSuffix = "\uE001";
 
     function relativeUrl(path) {
       return new URL(path, window.location.href).toString();
@@ -725,41 +749,211 @@
         root.textContent = source || "";
         return;
       }
-      let markdownSource = String(source || "");
-      mathDelimiterPlaceholders.forEach(([delimiter, placeholder]) => {
-        markdownSource = markdownSource.split(delimiter).join(placeholder);
-      });
-      const dirtyHtml = markdownRenderer.render(markdownSource);
+      const protectedMath = protectMath(String(source || ""));
+      const dirtyHtml = markdownRenderer.render(protectedMath.source);
       root.innerHTML = window.DOMPurify.sanitize(dirtyHtml, {
         USE_PROFILES: {html: true},
         ADD_ATTR: ["target", "rel"],
       });
-      const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      let textNode = textWalker.nextNode();
-      while (textNode) {
-        let value = textNode.nodeValue || "";
-        mathDelimiterPlaceholders.forEach(([delimiter, placeholder]) => {
-          value = value.split(placeholder).join(delimiter);
-        });
-        textNode.nodeValue = value;
-        textNode = textWalker.nextNode();
-      }
-      if (window.renderMathInElement) {
-        window.renderMathInElement(root, {
-          delimiters: [
-            {left: "$$", right: "$$", display: true},
-            {left: "\\[", right: "\\]", display: true},
-            {left: "\\(", right: "\\)", display: false},
-            {left: "$", right: "$", display: false},
-          ],
-          throwOnError: false,
-          trust: false,
-        });
-      }
+      renderProtectedMath(root, protectedMath.expressions);
       root.querySelectorAll("a").forEach((anchor) => {
         anchor.target = "_blank";
         anchor.rel = "noopener noreferrer";
       });
+    }
+
+    function isEscapedAt(source, index) {
+      let slashCount = 0;
+      for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
+        slashCount += 1;
+      }
+      return slashCount % 2 === 1;
+    }
+
+    function countBackticks(source, index) {
+      let count = 0;
+      while (source[index + count] === "`") {
+        count += 1;
+      }
+      return count;
+    }
+
+    function findMathEnd(source, start, delimiter) {
+      let searchFrom = start + delimiter.left.length;
+      while (searchFrom < source.length) {
+        const end = source.indexOf(delimiter.right, searchFrom);
+        if (end < 0) {
+          return -1;
+        }
+        if (!isEscapedAt(source, end)) {
+          if (
+            delimiter.left === "$" &&
+            (source[end - 1] === "$" || source[end + 1] === "$")
+          ) {
+            searchFrom = end + delimiter.right.length;
+            continue;
+          }
+          return end;
+        }
+        searchFrom = end + delimiter.right.length;
+      }
+      return -1;
+    }
+
+    function protectMath(source) {
+      const expressions = [];
+      let protectedSource = "";
+      let index = 0;
+      while (index < source.length) {
+        if (source[index] === "`") {
+          const tickCount = countBackticks(source, index);
+          const fence = "`".repeat(tickCount);
+          const close = source.indexOf(fence, index + tickCount);
+          if (close >= 0) {
+            const end = close + tickCount;
+            protectedSource += source.slice(index, end);
+            index = end;
+            continue;
+          }
+        }
+
+        let matched = null;
+        if (!isEscapedAt(source, index)) {
+          for (const delimiter of mathDelimiters) {
+            if (
+              source.indexOf(delimiter.left, index) !== index ||
+              (delimiter.left === "$" && source[index + 1] === "$")
+            ) {
+              continue;
+            }
+            const end = findMathEnd(source, index, delimiter);
+            if (end > index + delimiter.left.length) {
+              matched = {
+                delimiter: delimiter,
+                start: index,
+                end: end,
+              };
+              break;
+            }
+          }
+        }
+
+        if (matched) {
+          const expressionIndex = expressions.length;
+          expressions.push({
+            body: source.slice(
+              matched.start + matched.delimiter.left.length,
+              matched.end,
+            ),
+            delimiter: matched.delimiter,
+          });
+          protectedSource += mathTokenPrefix + expressionIndex + mathTokenSuffix;
+          index = matched.end + matched.delimiter.right.length;
+          continue;
+        }
+
+        protectedSource += source[index];
+        index += 1;
+      }
+      return {
+        source: protectedSource,
+        expressions: expressions,
+      };
+    }
+
+    function renderProtectedMath(root, expressions) {
+      if (!expressions.length) {
+        return;
+      }
+      const expressionByToken = new Map();
+      expressions.forEach((expression, index) => {
+        expressionByToken.set(
+          mathTokenPrefix + index + mathTokenSuffix,
+          expression,
+        );
+      });
+      const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      const textNodes = [];
+      let textNode = textWalker.nextNode();
+      while (textNode) {
+        textNodes.push(textNode);
+        textNode = textWalker.nextNode();
+      }
+      for (const textNode of textNodes) {
+        let value = textNode.nodeValue || "";
+        let cursor = 0;
+        let tokenIndex = value.indexOf(mathTokenPrefix, cursor);
+        if (tokenIndex < 0) {
+          continue;
+        }
+        const fragment = document.createDocumentFragment();
+        while (tokenIndex >= 0) {
+          const tokenEnd = value.indexOf(mathTokenSuffix, tokenIndex);
+          if (tokenEnd < 0) {
+            break;
+          }
+          const token = value.slice(tokenIndex, tokenEnd + mathTokenSuffix.length);
+          const expression = expressionByToken.get(token);
+          if (!expression) {
+            break;
+          }
+          if (tokenIndex > cursor) {
+            fragment.appendChild(
+              document.createTextNode(value.slice(cursor, tokenIndex)),
+            );
+          }
+          const mathNode = document.createElement("span");
+          const sourceText =
+            expression.delimiter.left +
+            expression.body +
+            expression.delimiter.right;
+          if (window.renderMathInElement) {
+            mathNode.textContent = sourceText;
+            window.renderMathInElement(mathNode, {
+              delimiters: [
+                {
+                  left: expression.delimiter.left,
+                  right: expression.delimiter.right,
+                  display: expression.delimiter.display,
+                },
+              ],
+              throwOnError: false,
+              trust: false,
+            });
+          } else {
+            mathNode.textContent = expression.body;
+          }
+          fragment.appendChild(mathNode);
+          cursor = tokenEnd + mathTokenSuffix.length;
+          tokenIndex = value.indexOf(mathTokenPrefix, cursor);
+        }
+        if (cursor > 0) {
+          if (cursor < value.length) {
+            fragment.appendChild(document.createTextNode(value.slice(cursor)));
+          }
+          if (textNode.parentNode) {
+            textNode.parentNode.replaceChild(fragment, textNode);
+          }
+        }
+      }
+      restoreUnrenderedMathTokens(root, expressionByToken);
+    }
+
+    function restoreUnrenderedMathTokens(root, expressionByToken) {
+      const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let textNode = textWalker.nextNode();
+      while (textNode) {
+        let value = textNode.nodeValue || "";
+        expressionByToken.forEach((expression, token) => {
+          const sourceText =
+            expression.delimiter.left +
+            expression.body +
+            expression.delimiter.right;
+          value = value.split(token).join(sourceText);
+        });
+        textNode.nodeValue = value;
+        textNode = textWalker.nextNode();
+      }
     }
 
     function loadChatWidth() {
