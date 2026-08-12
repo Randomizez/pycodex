@@ -126,9 +126,10 @@ At the time of writing:
 - class-level tool descriptions, input schemas, output schemas, and notable
   runtime result shapes have been refreshed across the default local tool set
 
-The current implementation already matches:
+The current upstream-aligned subset already matches:
 
-- exec-mode tool subset size and membership for the compared path
+- exec-mode upstream tool subset membership for the compared path; pycodex
+  additionally inserts its `clock` extension after `write_stdin`
 - `include = ["reasoning.encrypted_content"]`
 - model-visible prompt fields (`instructions` and `input`)
 - request-scoped `prompt_cache_key`
@@ -194,6 +195,8 @@ schema 一致的工具有：
   schema 对齐。
 - `request_user_input`：`pycodex` 按 upstream source main 建模，带
   `autoResolutionMs`；installed `codex-cli 0.138.0` 的 live capture 仍未带该字段。
+- `clock`：pycodex 特有的 per-Agent/session 周期唤醒扩展，不属于 upstream
+  schema 对齐集合。
 - `spawn_agent` / `send_input` / `resume_agent` / `wait_agent` /
   `close_agent`：upstream 当前首轮 request 不再平铺暴露这些工具，而是暴露
   `tool_search`，并由 deferred discovery 加载 Multi-agent tools。`pycodex` 仍在首轮
@@ -375,6 +378,7 @@ schema 一致的工具有：
 | `shell_command` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已刷新为 shell-string command 语义 |
 | `exec_command` | `intentional approval-field/description delta; round-trip same` | `class aligned except skipped auth + local idle resume` | 删除 fallback 后不再暴露 `sandbox_permissions` / `justification` / `prefix_rule`，这是 pycodex 刻意跳过鉴权逻辑的差异；description 额外提示长任务可以先回复用户，任务完成时 agent 会被 invoke 来继续处理；其余参数按 schema 执行，`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
 | `write_stdin` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致；默认 `10_000` token 截断和未读输出 `1 MiB` head/tail cap 已补齐，仅剩动态值差异 |
+| `clock` | `pycodex-only` | `local extension` | 每个 Agent/session 一个周期计时器；每次成功回复后重新计时，到期复用 Agent idle auto-resume 注入带 `current_time` 的 `<clock_tick>`，传 `null` 或关闭 session 时取消 |
 | `exec` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode custom/freeform desc 和 grammar 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `web_search` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 provider-native payload 相等，包含 `search_content_types=["text","image"]`；`web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
@@ -402,7 +406,7 @@ same:
 - instructions
 - input
 - include
-- exec-mode tool subset membership
+- upstream exec-mode tool subset membership
 - request context field presence
 - exec-mode tool schemas
 - current default-path schemas for `write_stdin`, `web_search`, `update_plan`,
@@ -411,6 +415,7 @@ same:
 
 different:
 - dynamic request metadata values
+- pycodex inserts the local `clock` extension after `write_stdin`
 - intentional `exec_command` approval/sandbox field omission and idle-resume
   description in pycodex
 - transport-layer header casing / normalization
@@ -543,9 +548,9 @@ including the IANA timezone name (`Asia/Hong_Kong` rather than `HKT`).
 
 ### 7. Exec-mode tool exposure
 
-For non-interactive `pycodex`, `get_tools(exec_mode=True)` now matches the
-upstream `codex exec` tool subset so prompt comparison is done against the same
-tool surface.
+For non-interactive `pycodex`, `get_tools(exec_mode=True)` keeps the upstream
+`codex exec` subset and inserts the documented local `clock` extension after
+`write_stdin`. Alignment comparisons exclude that extra tool.
 
 ## Files involved
 

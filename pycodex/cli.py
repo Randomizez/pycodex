@@ -169,6 +169,8 @@ def get_tools(
 ):
     from .tools import (
         ApplyPatchTool,
+        ClockManager,
+        ClockTool,
         CloseAgentTool,
         CodeModeManager,
         ExecTool,
@@ -197,6 +199,7 @@ def get_tools(
     registry = Registry()
     code_mode_manager = CodeModeManager(registry, cwd=cwd)
     unified_exec_manager = UnifiedExecManager(cwd=cwd)
+    clock_manager = ClockManager()
     exec_tool = ExecTool(code_mode_manager)
     wait_tool = WaitTool(code_mode_manager)
     web_search_tool = WebSearchTool()
@@ -217,6 +220,7 @@ def get_tools(
     shell_command_tool = ShellCommandTool(cwd=cwd)
     exec_command_tool = ExecCommandTool(unified_exec_manager)
     write_stdin_tool = WriteStdinTool(unified_exec_manager)
+    clock_tool = ClockTool(clock_manager)
     grep_files_tool = GrepFilesTool(cwd=cwd)
     read_file_tool = ReadFileTool()
     list_dir_tool = ListDirTool()
@@ -224,6 +228,7 @@ def get_tools(
     if exec_mode:
         registry.register(exec_command_tool)
         registry.register(write_stdin_tool)
+        registry.register(clock_tool)
         registry.register(update_plan_tool)
         registry.register(request_user_input_tool)
         registry.register(apply_patch_tool)
@@ -240,6 +245,7 @@ def get_tools(
     registry.register(shell_command_tool)
     registry.register(exec_command_tool)
     registry.register(write_stdin_tool)
+    registry.register(clock_tool)
     registry.register(exec_tool)
     registry.register(wait_tool)
     registry.register(web_search_tool)

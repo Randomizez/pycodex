@@ -157,7 +157,10 @@ pycodex doctor
   刚结束的 history fork 成一个不落盘的临时 follow-up 会话，并把文件内容作为下一条
   user 指令提交；适合做 Feishu 通知这类副作用收尾动作
 - 交互模式默认支持 steer：普通输入会走 runtime 的 steer 路径，当前请求会在下一个安全边界尽快停下，后续 steer 文本会按顺序并入下一次模型请求的 `input`；如需明确排队可用 `/queue <message>`，会打印 `[steer] queued: ...`，随后等该 turn 真正开始时再打印 `[steer] inserted: ...`
-- 当前默认注册一组与原版 Codex 一一对应的本地工具子集：`shell`、`shell_command`、`exec_command`、`write_stdin`、`exec`、`wait`、`web_search`、`update_plan`、`request_user_input`、`request_permissions`、`spawn_agent`、`send_input`、`resume_agent`、`wait_agent`、`close_agent`、`apply_patch`、`grep_files`、`read_file`、`list_dir`、`view_image`
+- 当前默认工具集由上游对齐子集和 pycodex 的 `clock` 扩展组成：`shell`、`shell_command`、`exec_command`、`write_stdin`、`clock`、`exec`、`wait`、`web_search`、`update_plan`、`request_user_input`、`request_permissions`、`spawn_agent`、`send_input`、`resume_agent`、`wait_agent`、`close_agent`、`apply_patch`、`grep_files`、`read_file`、`list_dir`、`view_image`
+- `clock(period_m)` 为当前 Agent session 设置一个周期计时器，传 `null` 取消；每次回复后重新计时，到期后用包含当前时区时间的 `<clock_tick>` 消息唤醒 Agent
+- 后台命令或 clock 正在等待时，空闲状态统一显示为 `idle: sleeping`
+- workspace 只在当前活动 tab 上显示关闭按钮
 - `--vllm-endpoint http://host:port` 会自动拉起一个本地 `responses_server` compat 层；当 path 为空时会内部补 `/v1`，继续把 `/responses` 请求转到下游 `/v1/chat/completions`。当前对 `model_provider = "vllm"` 已补上 reasoning 兼容：会把 chat chunk 里的 `reasoning` / `reasoning_content` 翻回 Responses `reasoning` item，并把历史里的 `reasoning` item 回放成下游 assistant message 的 `reasoning` 字段；同时会向 vLLM 请求 streaming usage，并在最终 `response.completed.response.usage` 中回传
 - `pycodex doctor` 会检查配置、`.env`、API key、DNS、TCP/TLS，以及可选的 live Responses API 请求
 
@@ -280,6 +283,7 @@ asyncio.run(main())
 
 本仓库额外兼容层 / 过渡工具：
 
+- [x] `clock` — pycodex 的周期性 Agent 唤醒扩展。
 - [x] `exec` — 当前对 code-mode 的本地近似实现。
 - [x] `wait` — 当前对 code-mode 等待行为的本地近似实现。
 
@@ -290,13 +294,13 @@ asyncio.run(main())
 - [x] 非交互 `exec` 路径的 `input` 对齐 — prompt input 已对齐上游。
 - [x] developer/contextual-user message 的 shape 对齐 — message/content 结构已对齐。
 - [x] `AGENTS.md` + `<environment_context>` 注入逻辑对齐 — 上下文拼接顺序已对齐。
-- [x] 非交互 `exec` 路径的工具子集对齐 — 暴露给模型的工具集合已收敛。
+- [x] 非交互 `exec` 路径的上游工具子集对齐 — 对齐子集已收敛；pycodex 额外暴露 `clock`。
 - [x] `include = ["reasoning.encrypted_content"]` — reasoning include 字段已对齐。
 - [x] `prompt_cache_key` — 请求级 prompt cache key 已补齐。
 - [x] `x-client-request-id` — 请求 id header 已补齐。
 - [x] `x-codex-turn-metadata` — turn id / sandbox header 已补齐。
 - [x] `originator` — mode-aware originator header 已补齐。
 - [x] `user-agent` 精确字符串对齐 — 非交互 `exec` 路径已对齐上游字符串。
-- [x] exec-mode tool schema 的逐字段对齐 — 当前通过工具层直接复用上游 snapshot。
+- [x] 上游 exec-mode tool schema 的逐字段对齐 — 对齐工具使用类内 spec；`clock` 作为扩展单独记录。
 - [ ] 交互模式与非 `exec` 路径的完整行为对齐 — non-exec 首轮 context 已切到 `codex-tui` 路径，但 REPL 连续多轮行为还未完全验证。
 - [ ] sandbox / approvals / compact / memory 等外围行为对齐 — 外围系统仍在后续范围。

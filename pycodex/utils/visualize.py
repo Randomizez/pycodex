@@ -17,7 +17,15 @@ import typing
 STATUS_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
 DEFAULT_MAIN_PROMPT = "pycodex> "
-IDLE_LISTENING_STATUS = "idle: listening"
+IDLE_SLEEPING_STATUS = "idle: sleeping"
+
+
+def background_work_count(payload: "typing.Mapping[str, object]") -> "int":
+    value = payload.get("background_work_count", 0)
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def shorten_title(text: "str", limit: "int" = 48) -> "str":
@@ -467,9 +475,8 @@ class CliSessionView:
         return f"pyco({self._context_remaining_percent}%)> "
 
     def _set_idle_status(self, event: "AgentEvent") -> "None":
-        background_work_count = event.payload.get("background_exec_count", 0)
-        if background_work_count > 0:
-            self.prompter.set_status(IDLE_LISTENING_STATUS)
+        if background_work_count(event.payload) > 0:
+            self.prompter.set_status(IDLE_SLEEPING_STATUS)
         else:
             self.prompter.set_status(active=False)
 

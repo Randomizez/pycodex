@@ -398,7 +398,8 @@ CodexNonExecConfirmedFacts = {
 当前代码已知差异：
 
 - `collaboration_mode` 内容来自 `./pycodex/prompts/collaboration_default.md` / `./pycodex/prompts/collaboration_plan.md`。
-- 默认 CLI 的 non-exec 路径当前使用 12 个 exec-mode tools。
+- 默认 CLI 的 non-exec 路径在 12 个上游对齐 exec-mode tools 之外，还会在
+  `write_stdin` 后暴露 pycodex 扩展 `clock`。
 - REPL 连续多轮路径还没有单独 fake-server capture，所以现在不能声称它已经完全和 Codex 对齐。
 
 ## 4. Tool Schema
@@ -421,6 +422,9 @@ ExecModeToolOrder = [
     "close_agent",
 ]
 ```
+
+`pycodex` 的实际默认顺序会在 `write_stdin` 后插入扩展工具 `clock`；上面的列表仍是
+Codex 基准。
 
 ### 4.2 schema 形状
 

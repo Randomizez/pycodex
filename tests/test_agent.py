@@ -21,7 +21,12 @@ from pycodex import (
 )
 from pycodex.agent import TurnInterrupted
 from pycodex.tools.base_tool import StructuredToolOutput
-from pycodex.tools import ExecCommandTool, UnifiedExecManager
+from pycodex.tools import (
+    ClockManager,
+    ClockTool,
+    ExecCommandTool,
+    UnifiedExecManager,
+)
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX
 from tests.fakes import ScriptedModelClient
 import typing
@@ -762,7 +767,111 @@ def test_agent_connects_exec_completion_hook_from_tool_registry() -> 'None':
 
 
 @pytest.mark.asyncio
-async def test_agent_turn_completed_emits_background_exec_count() -> 'None':
+async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> 'None':
+    monkeypatch.setattr(
+        "pycodex.tools.clock_tool._current_time",
+        lambda: "2026-08-07T12:34:56+08:00",
+    )
+    manager = ClockManager(seconds_per_minute=0.01)
+    tools = ToolRegistry()
+    tools.register(ClockTool(manager))
+    model = ScriptedModelClient(
+        [
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="clock_set",
+                        name="clock",
+                        arguments={"period_m": 1},
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="clock armed")]),
+            ModelResponse(items=[AssistantMessage(text="first tick handled")]),
+            ModelResponse(
+                items=[
+                    ToolCall(
+                        call_id="clock_cancel",
+                        name="clock",
+                        arguments={"period_m": None},
+                    )
+                ]
+            ),
+            ModelResponse(items=[AssistantMessage(text="clock stopped")]),
+        ]
+    )
+    agent = Agent(model, tools)
+
+    result = await agent.run_turn(["start periodic work"])
+
+    assert result.output_text == "clock armed"
+
+    async def wait_for_second_tick() -> 'None':
+        while model.call_count < 5 or agent._turn_running:
+            await asyncio.sleep(0.001)
+
+    await asyncio.wait_for(wait_for_second_tick(), timeout=1.0)
+    clock_ticks = [
+        item
+        for item in agent.history
+        if isinstance(item, UserMessage)
+        and item.text.startswith("<clock_tick>\n")
+    ]
+    assert [item.text for item in clock_ticks] == [
+        (
+            '<clock_tick>\n'
+            '{"period_m":1.0,"current_time":"2026-08-07T12:34:56+08:00"}\n'
+            '</clock_tick>'
+        ),
+        (
+            '<clock_tick>\n'
+            '{"period_m":1.0,"current_time":"2026-08-07T12:34:56+08:00"}\n'
+            '</clock_tick>'
+        ),
+    ]
+    assert manager.snapshot() == {"enabled": False, "period_m": None}
+    assert manager._timer_task is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_shutdown_cancels_pending_clock_tick() -> 'None':
+    manager = ClockManager()
+    manager.set_period(1)
+    tools = ToolRegistry()
+    tools.register(ClockTool(manager))
+    model = ScriptedModelClient(
+        [ModelResponse(items=[AssistantMessage(text="done")])]
+    )
+    agent = Agent(model, tools)
+    events = []
+    runtime = CliSubmissionQueue(agent)
+    runtime.set_event_handler(events.append)
+    worker = asyncio.create_task(runtime.run_forever())
+    try:
+        result = await runtime.submit_user_turn("hello")
+        assert result.output_text == "done"
+        assert manager._timer_task is not None
+        pending_timer = manager._timer_task
+        completed_event = next(
+            event for event in events if event.kind == "turn_completed"
+        )
+        assert completed_event.payload["background_work_count"] == 1
+
+        await runtime.shutdown()
+        await worker
+        await asyncio.gather(pending_timer, return_exceptions=True)
+
+        assert manager.snapshot() == {"enabled": False, "period_m": None}
+        assert manager._timer_task is None
+        assert model.call_count == 1
+    finally:
+        if not worker.done():
+            await runtime.shutdown()
+            await worker
+
+
+@pytest.mark.asyncio
+async def test_agent_turn_completed_counts_background_exec_work() -> 'None':
     tools = ToolRegistry()
     manager = UnifiedExecManager()
     tools.register(ExecCommandTool(manager))
@@ -778,7 +887,7 @@ async def test_agent_turn_completed_emits_background_exec_count() -> 'None':
 
     completed_events = [event for event in events if event.kind == "turn_completed"]
     assert completed_events
-    assert completed_events[-1].payload["background_exec_count"] == 2
+    assert completed_events[-1].payload["background_work_count"] == 2
 
 
 @pytest.mark.asyncio

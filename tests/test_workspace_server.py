@@ -774,6 +774,13 @@ def test_workspace_app_shell_uses_spinner_without_send_button(tmp_path) -> None:
     assert "spinner.addEventListener(\"click\", toggleSpinnerNotification)" in response.text
     assert "new Notification(`session: ${title}`" in response.text
     assert "body: lastAssistant" in response.text
+    assert ".tab:hover .tab-close" not in response.text
+    assert ".tab:focus-within .tab-close" not in response.text
+    assert ".tab.active .tab-close {" in response.text
+    assert "visibility: hidden;" in response.text
+    assert "pointer-events: none;" in response.text
+    assert "visibility: visible;" in response.text
+    assert "activeSessionId = sessionId;\n      renderTabs();" in response.text
     assert "notifySessionDone(sessionId, session)" in response.text
     assert "notify-on-done enabled" in response.text
     assert "notify-on-done canceled" in response.text

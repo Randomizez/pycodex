@@ -62,7 +62,8 @@
 
 - 参数解析、TTY 判定、交互模式 `/history` / `/title` 行为。
 - `get_tools()` 注册结果必须和当前接入的 builtin tools 集合一致。
-- `get_tools(exec_mode=True)` 必须收敛到官方 `codex exec` 的 tool 子集。
+- `get_tools(exec_mode=True)` 必须保留官方 `codex exec` 的 tool 子集，并额外注册
+  明确标记的 pycodex `clock` 扩展。
 - CLI 启动前会加载与 config 同目录的 `.env`，但会过滤掉 `CODEX_` 前缀变量。
 
 ### `tests/test_context.py`
@@ -98,6 +99,8 @@
 
 - `get_tools(exec_mode=True)` 除了校验工具集合本身，还会验证 `model_visible_specs()` 的序列化结果来自类内 `BaseTool` spec，而不是 prompt 级 JSON fallback。
 - 预期：exec-mode tool schema 对齐发生在工具定义层；function tool 的 `output_schema` 可作为类内元数据保留，但不发进 `/responses` request。
+- `clock` 覆盖设置、取消、参数校验、回复后周期唤醒和 runtime shutdown 清理；
+  tick 继续复用 Agent 的 background auto-resume 路径。
 - 非交互 `run_cli(...)` 的 capture 测试会直接验证默认 CLI 非 `exec` 路径现在发的是 `codex-tui`，并且 developer message 里包含 `<collaboration_mode>`。
 
 ### `tests/fake_responses_server.py`

@@ -32,7 +32,8 @@ from pycodex.utils.session_persist import (
 )
 from pycodex.utils import uuid7_string
 from pycodex.utils.visualize import (
-    IDLE_LISTENING_STATUS,
+    IDLE_SLEEPING_STATUS,
+    background_work_count,
     percent_of_context_window_remaining,
     shorten_title,
     tool_summary,
@@ -520,12 +521,8 @@ class WebSessionView:
         self._spinner_status = str(text or "").strip()
 
     def _set_idle_spinner_status(self, payload: "typing.Dict[str, object]") -> None:
-        try:
-            background_work_count = int(payload.get("background_exec_count", 0))
-        except (TypeError, ValueError):
-            background_work_count = 0
-        if background_work_count > 0:
-            self._set_spinner_status(IDLE_LISTENING_STATUS)
+        if background_work_count(payload) > 0:
+            self._set_spinner_status(IDLE_SLEEPING_STATUS)
         else:
             self._set_spinner_status("")
 

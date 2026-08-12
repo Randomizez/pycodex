@@ -17,6 +17,8 @@ from pycodex.runtime_services import (
 )
 from pycodex.tools import (
     ApplyPatchTool,
+    ClockManager,
+    ClockTool,
     CloseAgentTool,
     CodeModeManager,
     ExecTool,
@@ -428,6 +430,47 @@ async def test_exec_command_notifies_hook_when_background_session_exits(tmp_path
     assert notifications[0]["type"] == "exec_command_completed"
     assert notifications[0]["session_id"] == 1000
     assert notifications[0]["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_clock_tool_sets_cancels_and_validates_period() -> 'None':
+    manager = ClockManager()
+    registry = ToolRegistry()
+    registry.register(ClockTool(manager))
+    context = ToolContext(turn_id="turn_clock", history=())
+
+    enabled = await registry.execute(
+        ToolCall(
+            call_id="clock_set",
+            name="clock",
+            arguments={"period_m": 2},
+        ),
+        context,
+    )
+    assert enabled.output == {"enabled": True, "period_m": 2.0}
+    assert enabled.is_error is False
+
+    invalid = await registry.execute(
+        ToolCall(
+            call_id="clock_invalid",
+            name="clock",
+            arguments={"period_m": 0},
+        ),
+        context,
+    )
+    assert invalid.is_error is True
+    assert "positive finite number or null" in str(invalid.output)
+
+    disabled = await registry.execute(
+        ToolCall(
+            call_id="clock_cancel",
+            name="clock",
+            arguments={"period_m": None},
+        ),
+        context,
+    )
+    assert disabled.output == {"enabled": False, "period_m": None}
+    assert disabled.is_error is False
 
 
 @pytest.mark.asyncio

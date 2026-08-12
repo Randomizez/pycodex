@@ -233,11 +233,19 @@ Current behavior:
   later steer text is appended to the next model request's `input` in order;
   for explicit queueing, use `/queue <message>`, which prints
   `[steer] queued: ...` and later `[steer] inserted: ...`
-- the default built-in tool subset currently exposed as local tools is:
-  `shell`, `shell_command`, `exec_command`, `write_stdin`, `exec`, `wait`,
-  `web_search`, `update_plan`, `request_user_input`, `request_permissions`,
-  `spawn_agent`, `send_input`, `resume_agent`, `wait_agent`, `close_agent`,
-  `apply_patch`, `grep_files`, `read_file`, `list_dir`, `view_image`
+- the default local tool set includes the upstream-aligned subset plus the
+  pycodex `clock` extension: `shell`, `shell_command`, `exec_command`,
+  `write_stdin`, `clock`, `exec`, `wait`, `web_search`, `update_plan`,
+  `request_user_input`, `request_permissions`, `spawn_agent`, `send_input`,
+  `resume_agent`, `wait_agent`, `close_agent`, `apply_patch`, `grep_files`,
+  `read_file`, `list_dir`, `view_image`
+- `clock(period_m)` sets one periodic clock for the current Agent session;
+  `null` cancels it. The countdown restarts after each reply and wakes the
+  Agent with a `<clock_tick>` message containing the current timezone-aware
+  time when it expires.
+- while a background command or clock is pending, the idle status is
+  `idle: sleeping`
+- only the active workspace tab shows its close button
 - `--vllm-endpoint http://host:port` automatically launches a local
   `responses_server` compatibility layer; when the URL path is empty it is
   normalized to `/v1`, and `/responses` requests are still forwarded to the
@@ -387,6 +395,7 @@ Upstream low-frequency / special-mode tools not yet modeled separately:
 
 Repository-specific compatibility / transition tools:
 
+- [x] `clock` - pycodex periodic Agent wake-up extension.
 - [x] `exec` - current local approximation of code mode.
 - [x] `wait` - current local approximation of code-mode waiting behavior.
 
@@ -401,8 +410,8 @@ Repository-specific compatibility / transition tools:
   matches upstream.
 - [x] `AGENTS.md` + `<environment_context>` injection alignment - context
   assembly order matches upstream.
-- [x] non-interactive `exec` tool subset alignment - the model-visible tool set
-  has converged.
+- [x] non-interactive `exec` upstream tool subset alignment - the aligned
+  subset has converged; pycodex additionally exposes `clock`.
 - [x] `include = ["reasoning.encrypted_content"]` - reasoning include field is
   aligned.
 - [x] `prompt_cache_key` - request-level prompt cache key is implemented.
@@ -411,8 +420,8 @@ Repository-specific compatibility / transition tools:
 - [x] `originator` - mode-aware originator header is implemented.
 - [x] exact `user-agent` string alignment - aligned on the non-interactive
   `exec` path.
-- [x] field-by-field exec-mode tool schema alignment - currently reuses the
-  upstream snapshot directly through the tool layer.
+- [x] field-by-field upstream exec-mode tool schema alignment - aligned tools
+  use class-level specs; `clock` is documented separately as an extension.
 - [ ] full interactive-mode and non-`exec` behavior alignment - the non-exec
   first-turn context is now on the `codex-tui` path, but continuous REPL
   multi-turn behavior is not fully verified yet.

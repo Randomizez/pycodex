@@ -304,7 +304,9 @@
       height: 18px;
       border: 0;
       background: transparent;
-      opacity: 0.42;
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
       font-size: 17px;
       font-weight: 500;
       line-height: 18px;
@@ -314,12 +316,12 @@
       font-weight: 400;
       line-height: 31px;
     }
-    .tab:hover .tab-close,
-    .tab:focus-within .tab-close,
     .tab.active .tab-close {
       opacity: 0.85;
+      visibility: visible;
+      pointer-events: auto;
     }
-    .tab-close:disabled {
+    .tab.active .tab-close:disabled {
       opacity: 0.22;
       cursor: default;
     }
@@ -1457,6 +1459,7 @@
       if (!sessionId || sessionId === activeSessionId) return;
       saveActiveSessionUiState();
       activeSessionId = sessionId;
+      renderTabs();
       const state = stateForSession(sessionId);
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";

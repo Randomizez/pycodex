@@ -17,7 +17,14 @@ from .protocol import (
     TurnResult,
     UserMessage,
 )
-from .tools import ExecCommandTool, ToolContext, ToolRegistry, UnifiedExecManager
+from .tools import (
+    ClockManager,
+    ClockTool,
+    ExecCommandTool,
+    ToolContext,
+    ToolRegistry,
+    UnifiedExecManager,
+)
 from .utils.truncation import truncate_tool_results_for_history
 from .utils import uuid7_string
 import typing
@@ -96,6 +103,14 @@ class Agent:
         )
         if self._exec_manager is not None:
             self._exec_manager.set_notify_hook(self.maybe_invoke)
+        clock_tool = self._tool_registry.get_tool("clock")
+        self._clock_manager: 'typing.Union[ClockManager, None]' = (
+            clock_tool._manager
+            if isinstance(clock_tool, ClockTool)
+            else None
+        )
+        if self._clock_manager is not None:
+            self._clock_manager.set_notify_hook(self.maybe_invoke)
 
     @property
     def history(self) -> 'typing.Tuple[ConversationItem, ...]':
@@ -141,6 +156,8 @@ class Agent:
         self, texts: 'typing.List[str]', turn_id: 'typing.Union[str, None]' = None
     ) -> 'TurnResult':
         self._turn_running = True
+        if self._clock_manager is not None:
+            self._clock_manager.turn_started()
         turn_id = turn_id or uuid7_string()
         self.interrupt_asap = False
         new_user_messages = [UserMessage(text=text) for text in texts]
@@ -198,6 +215,8 @@ class Agent:
                         output_text=last_assistant_message,
                     )
                     self._turn_running = False
+                    if self._clock_manager is not None:
+                        self._clock_manager.arm_after_reply()
                     return TurnResult(
                         turn_id=turn_id,
                         output_text=last_assistant_message,
@@ -240,17 +259,28 @@ class Agent:
             raise
 
     async def maybe_invoke(self, event: 'typing.Dict[str, object]') -> 'bool':
-        if self._turn_running or event.get("type") != "exec_command_completed":
+        if self._turn_running:
             return False
-        payload = {
-            "session_id": event.get("session_id"),
-            "exit_code": event.get("exit_code"),
-            "command": event.get("command"),
-        }
+        event_type = event.get("type")
+        if event_type == "exec_command_completed":
+            payload = {
+                "session_id": event.get("session_id"),
+                "exit_code": event.get("exit_code"),
+                "command": event.get("command"),
+            }
+            tag = "exec_command_completed"
+        elif event_type == "clock_tick":
+            payload = {
+                "period_m": event.get("period_m"),
+                "current_time": event.get("current_time"),
+            }
+            tag = "clock_tick"
+        else:
+            return False
         text = (
-            "<exec_command_completed>\n"
+            f"<{tag}>\n"
             f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
-            "</exec_command_completed>"
+            f"</{tag}>"
         )
         self._turn_running = True
         task = asyncio.create_task(self.run_turn([text]))
@@ -258,6 +288,10 @@ class Agent:
             lambda task: None if task.cancelled() else task.exception()
         )
         return True
+
+    def shutdown(self) -> 'None':
+        if self._clock_manager is not None:
+            self._clock_manager.cancel()
 
     async def _execute_tool_batch(
         self,
@@ -328,16 +362,22 @@ class Agent:
 
     def _emit(self, kind: 'str', turn_id: 'str', **payload: 'object') -> 'None':
         if kind in TERMINAL_TURN_EVENTS:
-            payload["background_exec_count"] = self._background_exec_count()
+            payload["background_work_count"] = self._background_work_count(kind)
         self._event_handler(
             AgentEvent(kind=kind, turn_id=turn_id, payload=dict(payload))
         )
 
-    def _background_exec_count(self) -> 'int':
+    def _background_work_count(self, terminal_event: 'str') -> 'int':
         manager: 'typing.Union[UnifiedExecManager, None]' = self._exec_manager
-        if manager is None:
-            return 0
-        return manager.running_session_count()
+        count = 0 if manager is None else manager.running_session_count()
+        clock_manager = self._clock_manager
+        if (
+            terminal_event == "turn_completed"
+            and clock_manager is not None
+            and clock_manager.enabled
+        ):
+            count += 1
+        return count
 
     def _persist_history_items(
         self,

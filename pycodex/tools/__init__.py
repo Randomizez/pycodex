@@ -6,6 +6,7 @@ implementations that back `pycodex`.
 
 from .base_tool import BaseTool, Registry, ToolContext, ToolRegistry
 from .apply_patch_tool import ApplyPatchTool
+from .clock_tool import ClockManager, ClockTool
 from .close_agent_tool import CloseAgentTool
 from .code_mode_manager import CodeModeManager
 from .exec_command_tool import ExecCommandTool
@@ -31,6 +32,8 @@ from .write_stdin_tool import WriteStdinTool
 __all__ = [
     "ApplyPatchTool",
     "BaseTool",
+    "ClockManager",
+    "ClockTool",
     "CloseAgentTool",
     "CodeModeManager",
     "ExecTool",

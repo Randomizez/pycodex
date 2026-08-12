@@ -938,6 +938,7 @@ def test_get_tools_registers_expected_builtin_tools() -> 'None':
         "shell_command",
         "exec_command",
         "write_stdin",
+        "clock",
         "exec",
         "wait",
         "web_search",
@@ -957,11 +958,12 @@ def test_get_tools_registers_expected_builtin_tools() -> 'None':
     )
 
 
-def test_get_tools_exec_mode_matches_codex_exec_subset() -> 'None':
+def test_get_tools_exec_mode_adds_clock_to_codex_exec_subset() -> 'None':
     registry = get_tools(exec_mode=True)
     assert registry.names() == (
         "exec_command",
         "write_stdin",
+        "clock",
         "update_plan",
         "request_user_input",
         "apply_patch",
@@ -1023,6 +1025,18 @@ def test_get_tools_exec_mode_serialization_comes_from_class_specs() -> 'None':
     assert write_stdin_tool is not None
     assert write_stdin_tool.output_schema == exec_command_tool.output_schema
     assert write_stdin["parameters"]["properties"]["session_id"]["type"] == "number"
+
+    clock = payloads["clock"]
+    assert clock["parameters"]["required"] == ["period_m"]
+    assert clock["parameters"]["properties"]["period_m"]["anyOf"] == [
+        {"type": "number"},
+        {"type": "null"},
+    ]
+    clock_tool = registry.get_tool("clock")
+    assert clock_tool is not None
+    assert clock_tool.supports_parallel is False
+    assert clock_tool.output_schema["required"] == ["enabled", "period_m"]
+    assert "output_schema" not in clock
 
     request_user_input = payloads["request_user_input"]
     assert "autoResolutionMs" in request_user_input["parameters"]["properties"]
@@ -3230,7 +3244,7 @@ def test_cli_session_view_turn_completed_clears_status() -> 'None':
     assert view.prompter._status is None
 
 
-def test_cli_session_view_turn_completed_listens_with_background_work() -> 'None':
+def test_cli_session_view_turn_completed_sleeps_with_background_work() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
 
@@ -3245,11 +3259,11 @@ def test_cli_session_view_turn_completed_listens_with_background_work() -> 'None
         AgentEvent(
             kind="turn_completed",
             turn_id="turn_1",
-            payload={"output_text": "", "background_exec_count": 1},
+            payload={"output_text": "", "background_work_count": 1},
         )
     )
 
-    assert view.prompter._status == "idle: listening"
+    assert view.prompter._status == "idle: sleeping"
 
 
 def test_cli_session_view_turn_completed_clears_status_without_background_work() -> 'None':
@@ -3267,7 +3281,7 @@ def test_cli_session_view_turn_completed_clears_status_without_background_work()
         AgentEvent(
             kind="turn_completed",
             turn_id="turn_1",
-            payload={"output_text": "", "background_exec_count": 0},
+            payload={"output_text": "", "background_work_count": 0},
         )
     )
 
@@ -3503,6 +3517,7 @@ async def test_run_cli_non_interactive_uses_tui_context_for_default_cli(
     assert [tool.get("name", tool.get("type")) for tool in body["tools"]] == [
         "exec_command",
         "write_stdin",
+        "clock",
         "update_plan",
         "request_user_input",
         "apply_patch",

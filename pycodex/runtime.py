@@ -53,6 +53,7 @@ class CliSubmissionQueue:
         )
 
     async def shutdown(self) -> 'None':
+        self._agent.shutdown()
         submission = Submission(id=uuid7_string(), op=ShutdownOp())
         future: 'asyncio.Future[typing.Union[TurnResult, None]]' = asyncio.get_running_loop().create_future()
         self._enqueue_queue.append(
@@ -109,6 +110,7 @@ class CliSubmissionQueue:
                     continue
 
                 if isinstance(submission.op, ShutdownOp):
+                    self._agent.shutdown()
                     self._finish_submission_result(queued, None)
                     break
 

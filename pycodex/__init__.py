@@ -39,6 +39,8 @@ from .runtime_services import (
 from .tools import (
     ApplyPatchTool,
     BaseTool,
+    ClockManager,
+    ClockTool,
     CloseAgentTool,
     CodeModeManager,
     ExecTool,
@@ -96,6 +98,8 @@ __all__ = [
     "ApplyPatchTool",
     "AssistantMessage",
     "BaseTool",
+    "ClockManager",
+    "ClockTool",
     "CloseAgentTool",
     "create_agent_runtime_environment",
     "CodeModeManager",
