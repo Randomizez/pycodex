@@ -1,4 +1,5 @@
 import json
+import mmap
 import os
 import re
 from datetime import datetime
@@ -23,6 +24,8 @@ UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ROLLOUT_READ_CHUNK_SIZE = 1024 * 1024
+COMPACTED_RECORD_MARKER = b',"type":"compacted","payload":'
+ROLLOUT_RECORD_PREFIX = b'\n{"timestamp":"'
 
 
 def resolve_codex_home(
@@ -215,7 +218,14 @@ def load_resumed_session_path(
     saw_user_turn = False
     tool_names_by_call_id: 'typing.Dict[str, str]' = {}
 
-    for entry in _iter_rollout_entries(rollout_path):
+    # A rollout is append-only, and a compacted entry replaces everything
+    # before it for the next request.  Large tool outputs before the latest
+    # checkpoint are retained for audit, but do not need to be decoded while
+    # restoring the active conversation.
+    compacted_offset = _find_last_compacted_offset(rollout_path)
+    entry_start_offset = compacted_offset if compacted_offset is not None else 0
+
+    for entry in _iter_rollout_entries(rollout_path, entry_start_offset):
         item_type = str(entry.get("type", "")).strip()
         payload = entry.get("payload")
 
@@ -363,13 +373,51 @@ def _extract_first_user_message_preview(rollout_path: 'Path') -> 'typing.Union[s
     return None
 
 
-def _iter_rollout_entries(rollout_path: 'Path') -> 'typing.Iterable[typing.Dict[str, object]]':
+def _find_last_compacted_offset(
+    rollout_path: 'Path',
+) -> 'typing.Union[int, None]':
+    """Find the latest recorder-format compact checkpoint."""
+
+    file_size = rollout_path.stat().st_size
+    if not file_size:
+        return None
+
+    with rollout_path.open("rb") as handle:
+        mapped = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+        try:
+            marker_offset = mapped.rfind(COMPACTED_RECORD_MARKER)
+            if marker_offset < 0:
+                return None
+            record_start = mapped.rfind(
+                ROLLOUT_RECORD_PREFIX,
+                0,
+                marker_offset,
+            )
+            if record_start < 0:
+                return None
+            previous = record_start - 1
+            while previous >= 0 and mapped[previous] in b" \t\r\n":
+                previous -= 1
+            if previous >= 0 and mapped[previous] != ord("}"):
+                return None
+            return record_start + 1
+        finally:
+            mapped.close()
+    return None
+
+
+def _iter_rollout_entries(
+    rollout_path: 'Path',
+    start_offset: 'int' = 0,
+) -> 'typing.Iterable[typing.Dict[str, object]]':
     decoder = json.JSONDecoder()
     buffer = ""
     start = 0
     parsed_entries = 0
 
     with rollout_path.open("r", encoding="utf-8", errors="replace") as handle:
+        if start_offset:
+            handle.seek(start_offset)
         while True:
             chunk = handle.read(ROLLOUT_READ_CHUNK_SIZE)
             eof = not chunk
