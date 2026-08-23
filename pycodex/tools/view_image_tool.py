@@ -6,16 +6,17 @@ Original Codex mapping:
 Expected behavior:
 - Load a local image file and turn it into a data URL that can be attached back
   into the next model request.
+- Resize the image down to `MAX_DIMENSION` unless the caller asks for
+  `original` detail, matching upstream `PromptImageMode::ResizeToFit`.
 - Accept the documented `path` argument plus optional `detail: "high" |
   "original"` hint.
 - Return both the JSON object result and the structured `input_image` content
   item that Codex uses when feeding image tool output back to the model.
 """
 
-import base64
-import mimetypes
 from pathlib import Path
 
+from ..image_utils import ImageProcessingError, load_image_data_url
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, StructuredToolOutput, ToolContext
 import typing
@@ -92,13 +93,10 @@ class ViewImageTool(BaseTool):
         if not path.is_file():
             return f"Error: image path `{path}` is not a file."
 
-        mime_type, _ = mimetypes.guess_type(path.name)
-        if not mime_type or not mime_type.startswith("image/"):
-            return f"Error: `{path}` does not look like an image file."
-
-        image_bytes = path.read_bytes()
-        encoded = base64.b64encode(image_bytes).decode("ascii")
-        image_url = f"data:{mime_type};base64,{encoded}"
+        try:
+            image_url = load_image_data_url(path, detail != "original")
+        except ImageProcessingError as exc:
+            return f"Error: {exc}."
         output = {
             "image_url": image_url,
             "detail": detail,

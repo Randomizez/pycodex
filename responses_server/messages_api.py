@@ -193,10 +193,59 @@ def saw_message_stop(state: 'typing.Dict[str, object]') -> 'bool':
 
 
 def _build_text_blocks(raw_content: 'object') -> 'typing.List[typing.Dict[str, object]]':
+    if isinstance(raw_content, list):
+        blocks: 'typing.List[typing.Dict[str, object]]' = []
+        for raw_part in raw_content:
+            if not isinstance(raw_part, dict):
+                raise MessagesAPIAdapterError("message content parts must be objects")
+            part_type = str(raw_part.get("type", "")).strip()
+            if part_type == "text":
+                text = str(raw_part.get("text", "") or "")
+                if text:
+                    blocks.append({"type": "text", "text": text})
+                continue
+            if part_type == "image_url":
+                blocks.append(_build_image_block(raw_part))
+                continue
+            raise MessagesAPIAdapterError(
+                f"unsupported outcomming content part type for messages API: {part_type!r}"
+            )
+        return blocks
+
     text = str(raw_content or "")
     if not text:
         return []
     return [{"type": "text", "text": text}]
+
+
+def _build_image_block(
+    raw_part: 'typing.Dict[str, object]',
+) -> 'typing.Dict[str, object]':
+    image_url = raw_part.get("image_url") or {}
+    if not isinstance(image_url, dict):
+        raise MessagesAPIAdapterError("`image_url` content parts must be objects")
+    url = str(image_url.get("url", "") or "").strip()
+    if not url:
+        raise MessagesAPIAdapterError(
+            "`image_url` content parts must carry a non-empty `url`"
+        )
+    if not url.startswith("data:"):
+        return {"type": "image", "source": {"type": "url", "url": url}}
+
+    header, _, data = url.partition(",")
+    media_type = header[len("data:"):].split(";")[0].strip()
+    if not media_type or not header.endswith(";base64"):
+        raise MessagesAPIAdapterError(
+            "`image_url` data URLs must be base64 encoded with a media type"
+        )
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": media_type,
+            "data": data,
+        },
+    }
 
 
 def _build_assistant_blocks(

@@ -16,6 +16,8 @@ dependencies = [
     "fastapi>=0.83.0; python_version >= '3.7'",
     "importlib_metadata>=4.8.3; python_version < '3.8'",
     "loguru>=0.7.3",
+    "pillow>=8.4.0; python_version < '3.7'",
+    "pillow>=9.0.0; python_version >= '3.7'",
     "prompt-toolkit>=3.0.36",
     "requests>=2.27.1",
     "tomli>=1.2.3,<2; python_version < '3.11'",

@@ -1324,6 +1324,50 @@ async def test_view_image_tool_returns_structured_input_image_output(tmp_path) -
 
 
 @pytest.mark.asyncio
+async def test_view_image_tool_resizes_oversized_images_to_fit(tmp_path) -> 'None':
+    from base64 import b64decode
+    from io import BytesIO
+
+    from PIL import Image
+
+    from pycodex.image_utils import MAX_DIMENSION
+
+    image_path = tmp_path / "wide.png"
+    Image.new("RGB", (MAX_DIMENSION * 2, MAX_DIMENSION), "red").save(image_path)
+
+    registry = make_registry(tmp_path)
+    result = await registry.execute(
+        ToolCall(
+            call_id="call_resize",
+            name="view_image",
+            arguments={"path": str(image_path)},
+        ),
+        ToolContext(turn_id="turn_resize", history=()),
+    )
+
+    assert result.is_error is False
+    prefix = "data:image/png;base64,"
+    image_url = str(result.output["image_url"])
+    assert image_url.startswith(prefix)
+    with Image.open(BytesIO(b64decode(image_url[len(prefix):]))) as resized:
+        assert resized.size == (MAX_DIMENSION, MAX_DIMENSION // 2)
+
+    original = await registry.execute(
+        ToolCall(
+            call_id="call_resize_original",
+            name="view_image",
+            arguments={"path": str(image_path), "detail": "original"},
+        ),
+        ToolContext(turn_id="turn_resize_original", history=()),
+    )
+
+    original_url = str(original.output["image_url"])
+    assert original_url.startswith(prefix)
+    with Image.open(BytesIO(b64decode(original_url[len(prefix):]))) as kept:
+        assert kept.size == (MAX_DIMENSION * 2, MAX_DIMENSION)
+
+
+@pytest.mark.asyncio
 async def test_spawn_agent_send_input_wait_and_close_round_trip() -> 'None':
     first_client = ScriptedModelClient(
         [

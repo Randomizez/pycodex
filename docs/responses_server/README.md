@@ -40,13 +40,13 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）
 - function / custom tool follow-up history 重建
+- 结构化 `input_image` content items：user message 里的图片直接转成 chat `image_url` part；tool output 里的图片会在该 `tool` message 之后补一条只带图片的 `user` message（chat backend 普遍会丢弃 `tool` role 里的图片）；`/v1/messages` 侧再转成 Anthropic `image` block
 
 ## 当前明确不支持
 
 这些能力当前会被显式拒绝，而不是静默降级：
 
 - 真正的 Responses `web_search` 执行；当前只做空结果 mock
-- 结构化 `input_image` tool output
 - 非流式 incomming 请求
 
 ## Incomming / Outcomming 分层

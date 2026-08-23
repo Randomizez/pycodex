@@ -1367,6 +1367,186 @@ def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path
     ]
 
 
+def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> 'None':
+    capture_store = CaptureStore(tmp_path / "chat_capture")
+    fake_chat_server = build_fake_chat_server(
+        capture_store,
+        build_text_chunks("done"),
+    )
+    fake_chat_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+        )
+    )
+    image_url = "data:image/png;base64,AAA"
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "look"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": image_url,
+                                    "detail": "high",
+                                },
+                            ],
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "view_image",
+                            "arguments": '{"path":"a.png"}',
+                        },
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call_1",
+                            "output": [
+                                {"type": "input_text", "text": "attached"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": image_url,
+                                    "detail": "original",
+                                },
+                            ],
+                        },
+                    ],
+                    "tools": [
+                        {
+                            "type": "function",
+                            "name": "view_image",
+                            "description": "View an image.",
+                            "parameters": {"type": "object"},
+                            "strict": False,
+                        }
+                    ],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_chat_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "chat_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {"role": "developer", "content": "Be concise."},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ],
+        },
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "view_image",
+                        "arguments": '{"path":"a.png"}',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_1", "content": "attached"},
+        {
+            "role": "user",
+            "content": [{"type": "image_url", "image_url": {"url": image_url}}],
+        },
+    ]
+
+
+def test_responses_server_forwards_input_images_to_outcomming_messages(
+    tmp_path,
+) -> 'None':
+    capture_store = CaptureStore(tmp_path / "messages_capture")
+    fake_messages_server = build_fake_messages_server(
+        capture_store,
+        build_messages_text_events("Hello"),
+    )
+    fake_messages_server.start()
+
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=(
+                f"http://127.0.0.1:{fake_messages_server.server_port}/v1"
+            ),
+            outcomming_api="messages",
+        )
+    )
+
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-5.4",
+                    "instructions": "Be concise.",
+                    "max_output_tokens": 7,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [
+                                {"type": "input_text", "text": "look"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": "data:image/png;base64,AAA",
+                                },
+                            ],
+                        }
+                    ],
+                    "tools": [],
+                    "tool_choice": "auto",
+                    "parallel_tool_calls": True,
+                    "stream": True,
+                },
+                headers={"Accept": "text/event-stream"},
+            )
+            status = response.status_code
+    finally:
+        fake_messages_server.stop()
+
+    assert status == 200
+    request_files = sorted((tmp_path / "messages_capture").glob("*_POST_*.json"))
+    assert len(request_files) == 1
+    request = json.loads(request_files[0].read_text())
+    assert request["body"]["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "look"},
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "AAA",
+                    },
+                },
+            ],
+        }
+    ]
+
+
 def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> 'None':
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(

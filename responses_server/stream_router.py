@@ -466,6 +466,7 @@ class StreamRouter:
             messages.append({"role": "developer", "content": instructions})
 
         pending_assistant: 'typing.Union[typing.Dict[str, object], None]' = None
+        pending_tool_images: 'typing.List[typing.Dict[str, object]]' = []
 
         def flush_pending_assistant() -> 'None':
             nonlocal pending_assistant
@@ -481,12 +482,20 @@ class StreamRouter:
             messages.append(pending_assistant)
             pending_assistant = None
 
+        def flush_pending_tool_images() -> 'None':
+            if not pending_tool_images:
+                return
+            messages.append({"role": "user", "content": list(pending_tool_images)})
+            del pending_tool_images[:]
+
         for raw_item in input_items:
             if not isinstance(raw_item, dict):
                 raise UnsupportedIncommingFeature(
                     "all incomming `input` items must be objects"
                 )
             item_type = raw_item.get("type")
+            if item_type not in {"function_call_output", "custom_tool_call_output"}:
+                flush_pending_tool_images()
 
             if item_type == "message":
                 role = str(raw_item.get("role", "")).strip()
@@ -494,8 +503,12 @@ class StreamRouter:
                     raise UnsupportedIncommingFeature(
                         f"unsupported incomming message role: {role or '<empty>'}"
                     )
-                text = self._coalesce_content_text(raw_item.get("content"))
+                text, image_parts = self._split_content_parts(raw_item.get("content"))
                 if role == "assistant":
+                    if image_parts:
+                        raise UnsupportedIncommingFeature(
+                            "assistant messages cannot carry `input_image` content parts"
+                        )
                     if pending_assistant is None:
                         pending_assistant = {"role": "assistant"}
                     if text:
@@ -504,7 +517,13 @@ class StreamRouter:
                         )
                     continue
                 flush_pending_assistant()
-                messages.append({"role": role, "content": text})
+                if image_parts:
+                    content: 'object' = (
+                        ([{"type": "text", "text": text}] if text else []) + image_parts
+                    )
+                else:
+                    content = text
+                messages.append({"role": role, "content": content})
                 continue
 
             if item_type == "reasoning":
@@ -543,15 +562,17 @@ class StreamRouter:
 
             if item_type == "function_call_output":
                 flush_pending_assistant()
+                text, image_parts = self._split_tool_output_parts(
+                    raw_item.get("output")
+                )
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": str(raw_item.get("call_id", "")).strip(),
-                        "content": self._coalesce_tool_output_text(
-                            raw_item.get("output")
-                        ),
+                        "content": text,
                     }
                 )
+                pending_tool_images.extend(image_parts)
                 continue
 
             if item_type == "custom_tool_call":
@@ -570,15 +591,17 @@ class StreamRouter:
 
             if item_type == "custom_tool_call_output":
                 flush_pending_assistant()
+                text, image_parts = self._split_tool_output_parts(
+                    raw_item.get("output")
+                )
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": str(raw_item.get("call_id", "")).strip(),
-                        "content": self._coalesce_tool_output_text(
-                            raw_item.get("output")
-                        ),
+                        "content": text,
                     }
                 )
+                pending_tool_images.extend(image_parts)
                 continue
 
             raise UnsupportedIncommingFeature(
@@ -586,6 +609,7 @@ class StreamRouter:
             )
 
         flush_pending_assistant()
+        flush_pending_tool_images()
         return messages
 
     def _coerce_positive_int(self, raw_value: 'object') -> 'typing.Union[int, None]':
@@ -595,17 +619,21 @@ class StreamRouter:
             return raw_value
         return None
 
-    def _coalesce_content_text(self, raw_content: 'object') -> 'str':
+    def _split_content_parts(
+        self,
+        raw_content: 'object',
+    ) -> 'typing.Tuple[str, typing.List[typing.Dict[str, object]]]':
         if raw_content is None:
-            return ""
+            return "", []
         if isinstance(raw_content, str):
-            return raw_content
+            return raw_content, []
         if not isinstance(raw_content, list):
             raise UnsupportedIncommingFeature(
                 "message `content` must be a list or string"
             )
 
         text_parts: 'typing.List[str]' = []
+        image_parts: 'typing.List[typing.Dict[str, object]]' = []
         for part in raw_content:
             if not isinstance(part, dict):
                 raise UnsupportedIncommingFeature(
@@ -615,17 +643,38 @@ class StreamRouter:
             if part_type in {"input_text", "output_text"}:
                 text_parts.append(str(part.get("text", "")))
                 continue
+            if part_type == "input_image":
+                image_parts.append(self._build_chat_image_part(part))
+                continue
             raise UnsupportedIncommingFeature(
                 f"content part type `{part_type}` is not yet supported by the chat backend"
             )
-        return "".join(text_parts)
+        return "".join(text_parts), image_parts
 
-    def _coalesce_tool_output_text(self, raw_output: 'object') -> 'str':
+    def _build_chat_image_part(
+        self,
+        part: 'typing.Dict[str, object]',
+    ) -> 'typing.Dict[str, object]':
+        image_url = str(part.get("image_url", "") or "").strip()
+        if not image_url:
+            raise UnsupportedIncommingFeature(
+                "`input_image` content parts must carry a non-empty `image_url`"
+            )
+        image_payload: 'typing.Dict[str, object]' = {"url": image_url}
+        detail = part.get("detail")
+        if isinstance(detail, str) and detail in {"auto", "low", "high"}:
+            image_payload["detail"] = detail
+        return {"type": "image_url", "image_url": image_payload}
+
+    def _split_tool_output_parts(
+        self,
+        raw_output: 'object',
+    ) -> 'typing.Tuple[str, typing.List[typing.Dict[str, object]]]':
         if isinstance(raw_output, str):
-            return raw_output
+            return raw_output, []
         if isinstance(raw_output, list):
-            return self._coalesce_content_text(raw_output)
-        return json.dumps(raw_output, ensure_ascii=False)
+            return self._split_content_parts(raw_output)
+        return json.dumps(raw_output, ensure_ascii=False), []
 
     def _coalesce_reasoning_text(self, raw_item: 'typing.Dict[str, object]') -> 'str':
         content = raw_item.get("content")
