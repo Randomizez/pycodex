@@ -5,7 +5,7 @@ import threading
 
 from fastapi.testclient import TestClient
 import requests
-from responses_server import CompatServerConfig, ManagedResponseServer
+from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
@@ -243,6 +243,7 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
                         "delta": {
                             "role": "assistant",
                             "reasoning": "inspect ",
+                            "reasoning_content": "inspect ",
                         },
                         "finish_reason": None,
                     }
@@ -326,9 +327,30 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
         fake_chat_server.stop()
 
     assert status == 200
-    assert '"type": "reasoning"' in body
-    assert '"type": "reasoning_text"' in body
-    assert '"text": "inspect repo"' in body
+    events = [
+        json.loads(line[len("data: ") :])
+        for line in body.splitlines()
+        if line.startswith("data: ")
+    ]
+    reasoning_items = [
+        event["item"]
+        for event in events
+        if event.get("type") == "response.output_item.done"
+        and isinstance(event.get("item"), dict)
+        and event["item"].get("type") == "reasoning"
+    ]
+    assert reasoning_items == [
+        {
+            "type": "reasoning",
+            "summary": [],
+            "content": [
+                {
+                    "type": "reasoning_text",
+                    "text": "inspect repo",
+                }
+            ],
+        }
+    ]
     assert '"type": "message"' in body
     assert '"text": "done"' in body
 
@@ -336,6 +358,32 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["path"] == "/v1/chat/completions"
+
+
+def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> 'None':
+    router = StreamRouter(CompatServerConfig(model_provider="vllm"))
+    base_request = {
+        "model": "gpt-5.4",
+        "input": [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hi"}],
+            }
+        ],
+        "stream": True,
+    }
+
+    for effort in ("none", "low", "medium", "high"):
+        request = dict(base_request)
+        request["reasoning"] = {"effort": effort}
+        outgoing = router.build_outcomming_request(request)
+        assert outgoing["chat_template_kwargs"] == {
+            "reasoning_effort": effort,
+        }
+
+    without_reasoning = router.build_outcomming_request(base_request)
+    assert "chat_template_kwargs" not in without_reasoning
 
 
 def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> 'None':
@@ -575,6 +623,7 @@ def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_cha
                             "output": "hello",
                         },
                     ],
+                    "reasoning": {"effort": "low"},
                     "tools": [
                         {
                             "type": "function",
@@ -620,6 +669,9 @@ def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_cha
             "content": "hello",
         },
     ]
+    assert request["body"]["chat_template_kwargs"] == {
+        "reasoning_effort": "low",
+    }
 
 
 def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_chat(

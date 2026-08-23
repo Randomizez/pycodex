@@ -314,6 +314,7 @@ def test_launch_chat_completion_compat_server_normalizes_vllm_base_url(
     )
     assert seen["server_config"].outcomming_base_url == "http://127.0.0.1:18000/v1"
     assert seen["server_config"].model_provider == "vllm"
+    assert seen["server_config"].timeout_seconds == 300.0
     assert seen["started"] is True
 
 

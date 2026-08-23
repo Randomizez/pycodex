@@ -143,6 +143,17 @@ class StreamRouter:
             ),
             "stream": True,
         }
+        reasoning = incomming_request.get("reasoning")
+        if isinstance(reasoning, dict):
+            reasoning_effort = reasoning.get("effort")
+            if isinstance(reasoning_effort, str) and reasoning_effort:
+                # vLLM's Responses renderer consumes effort as a template
+                # kwarg; keeping it out of the chat schema also preserves
+                # provider-specific values such as `max`.
+                payload["chat_template_kwargs"] = {
+                    "reasoning_effort": reasoning_effort,
+                }
+
         max_tokens = self._coerce_positive_int(
             incomming_request.get("max_output_tokens")
         )
@@ -732,12 +743,20 @@ class StreamRouter:
                 continue
 
             reasoning = delta.get("reasoning")
-            if isinstance(reasoning, str) and reasoning:
-                reasoning_parts.append(reasoning)
-
             reasoning_content = delta.get("reasoning_content")
-            if isinstance(reasoning_content, str) and reasoning_content:
-                reasoning_parts.append(reasoning_content)
+            if (
+                isinstance(reasoning, str)
+                and reasoning
+                and isinstance(reasoning_content, str)
+                and reasoning == reasoning_content
+            ):
+                # Some chat providers expose the same delta under both aliases.
+                reasoning_parts.append(reasoning)
+            else:
+                if isinstance(reasoning, str) and reasoning:
+                    reasoning_parts.append(reasoning)
+                if isinstance(reasoning_content, str) and reasoning_content:
+                    reasoning_parts.append(reasoning_content)
 
             content = delta.get("content")
             if isinstance(content, str) and content:

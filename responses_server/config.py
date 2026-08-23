@@ -5,6 +5,9 @@ import urllib.parse
 import typing
 
 
+DEFAULT_OUTCOMMING_TIMEOUT_SECONDS = 300.0
+
+
 @dataclass(frozen=True, )
 class CompatServerConfig:
     host: 'str' = "127.0.0.1"
@@ -13,7 +16,7 @@ class CompatServerConfig:
     outcomming_api: 'str' = "chat_completions"
     outcomming_api_key_env: 'typing.Union[str, None]' = None
     model_provider: 'typing.Union[str, None]' = None
-    timeout_seconds: 'float' = 120.0
+    timeout_seconds: 'float' = DEFAULT_OUTCOMMING_TIMEOUT_SECONDS
 
     def outcomming_api_key(self) -> 'typing.Union[str, None]':
         if self.outcomming_api_key_env is None:

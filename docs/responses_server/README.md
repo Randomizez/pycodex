@@ -8,6 +8,14 @@
 当前 HTTP backend 使用 FastAPI。
 当前独立测试里的 fake outcomming chat backend 也使用 FastAPI。
 
+compat runtime 的下游 chat-completions / messages 流读取 timeout 默认是
+`300` 秒，与 pycodex Responses client 的 `300_000 ms` SSE idle timeout
+对齐。
+
+Responses 请求里的 `reasoning.effort` 会转换为下游 chat 请求的
+`chat_template_kwargs.reasoning_effort`。这与 vLLM Responses renderer 的
+prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `max`）。
+
 ## 目录边界
 
 - incomming server 实现在 `responses_server/`
