@@ -22,9 +22,17 @@ class TrajectoryDumpWriter:
             return None
         return cls(root_dir)
 
-    def wrap_stream(self, outcomming_stream):
+    def wrap_stream(
+        self,
+        outcomming_stream,
+        outcomming_request: 'typing.Dict[str, object]',
+    ):
         def iter_stream():
-            capture = _TrajectoryCapture(self, time.time())
+            capture = _TrajectoryCapture(
+                self,
+                time.time(),
+                outcomming_request,
+            )
             try:
                 for chunk in outcomming_stream:
                     capture.observe_chunk(chunk)
@@ -48,16 +56,22 @@ class _TrajectoryCapture:
         self,
         writer: 'TrajectoryDumpWriter',
         send_timestamp: 'float',
+        outcomming_request: 'typing.Dict[str, object]',
     ) -> 'None':
         self._writer = writer
         self._send_timestamp = float(send_timestamp)
+        self._outcomming_request = json.loads(json.dumps(outcomming_request))
         self._prefill_token_ids = None
         self._decode_token_ids = []
+        self._usage: 'typing.Dict[str, object]' = {}
         self._closed = False
 
     def observe_chunk(self, payload: 'object') -> 'None':
         if not isinstance(payload, dict):
             return
+        usage = payload.get("usage")
+        if isinstance(usage, dict) and usage:
+            self._usage = json.loads(json.dumps(usage))
         if self._prefill_token_ids is None and "prompt_token_ids" in payload:
             normalized_prefill = _normalize_token_ids(payload.get("prompt_token_ids"))
             if normalized_prefill is not None:
@@ -78,6 +92,8 @@ class _TrajectoryCapture:
             return
         self._closed = True
         record = {
+            "request": self._outcomming_request,
+            "usage": self._usage,
             "tokens": {
                 "prefill": list(self._prefill_token_ids or []),
                 "decode": list(self._decode_token_ids),

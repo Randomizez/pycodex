@@ -34,7 +34,7 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - vLLM chat-completions `reasoning` / `reasoning_content` -> Responses `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
 - vLLM streaming `usage` -> final `response.completed.response.usage`
-- 当环境变量 `PYCODEX_DUMP` 存在时，为每条 outcomming 请求附加 `return_token_ids = true`，并把抓到的 `prompt_token_ids` / `token_ids` 以 JSONL 追加到 `{PYCODEX_DUMP}/dump.jsonl`
+- 当环境变量 `PYCODEX_DUMP` 存在时，为每条 outcomming 请求附加 `return_token_ids = true`，并把实际下发的 request body、下游 usage/cache、`prompt_token_ids` / `token_ids` 以 JSONL 追加到 `{PYCODEX_DUMP}/dump.jsonl`
 - 下游 chat stream 如果半路断开，会转成上游可解析的 `response.failed` 事件，而不是直接截断 HTTP body
 - 普通 function tools
 - custom tools 的 function-wrapper 兼容适配
@@ -95,15 +95,23 @@ server 会为每条实际转发到下游的请求附上 `return_token_ids = true
 trajectory 追加到 `${PYCODEX_DUMP}/dump.jsonl`，当前记录格式是：
 
 ```json
-{"tokens":{"prefill":[1,2,3],"decode":[4,5,6]},"send_timestamp":2222.0}
+{"request":{"model":"water18","messages":[],"stream":true,"return_token_ids":true},"usage":{"prompt_tokens":100,"completion_tokens":6,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":64}},"tokens":{"prefill":[1,2,3],"decode":[4,5,6]},"send_timestamp":2222.0}
 ```
+
+`request` 是 provider post-process 之后真正发出的 JSON body；HTTP headers 和
+API key 不会写入 dump。对多轮 tool-call，可以逐条比较
+`request.messages` 是否是上一轮的严格前缀扩展，并读取
+`usage.prompt_tokens_details.cached_tokens` 核对下游 prefix-cache 命中。
+重试和 mock tool follow-up 都会各写一条独立记录。
 
 如果下游 provider 需要对 chat payload 做定制化改写，可以在
 `responses_server/payload_processors.py` 里注册对应 `model_provider -> proc_fn`
 映射；server 会在真正发出每一条 outcomming `/v1/chat/completions` 请求前，
 对 canonical `outcomming_request` 调一次这个 hook，默认按 `vllm` 处理。
 当前内置规则里，`vllm` 仍走 chat-completions compat 路径，但会额外保留
-reasoning；`stepfun` 会删除所有 `developer` role。
+reasoning；`stepfun` 会把 `developer` role 转成 `system`。Step4 chat
+template 不消费 `developer` role；使用该模板的 provider 应显式配置为
+`stepfun`，否则 base instructions / AGENTS context 会被静默忽略。
 
 如果下游 chat stream 一轮结束时只给了 `reasoning` / `reasoning_content`，
 没有 assistant `content` 且没有 tool call，server 会丢弃这次 partial reasoning 并用

@@ -61,8 +61,17 @@ class CompactResult:
 
 def compact(
     history: 'typing.Sequence[ConversationItem]',
+    session_file: 'typing.Union[str, None]' = None,
 ) -> 'typing.Tuple[ConversationItem, ...]':
     summary_text = _build_summary_message(_last_assistant_message(history))
+    if session_file:
+        summary_text += (
+            f"\n\nCurrent session file: {session_file}\n"
+            "If you need details from earlier conversation, inspect this file "
+            "selectively with targeted searches and bounded reads (for example, "
+            "`rg -n` followed by `sed -n` or `tail`). Do not read the entire "
+            "file at once."
+        )
     return build_compacted_history(summary_text)
 
 
@@ -115,11 +124,17 @@ async def compact_agent(
             pruned_tool_results += 1
             agent.replace_history(history)
 
+    rollout_recorder = agent._rollout_recorder
+    session_file = (
+        str(rollout_recorder.rollout_path)
+        if rollout_recorder is not None
+        else None
+    )
     compacted_history = compact(
-        list(history) + [compact_prompt] + list(response.items)
+        list(history) + [compact_prompt] + list(response.items),
+        session_file,
     )
     agent.replace_history(compacted_history)
-    rollout_recorder = agent._rollout_recorder
     if rollout_recorder is not None:
         rollout_recorder.append_compacted_history(compacted_history)
     return CompactResult(

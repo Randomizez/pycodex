@@ -454,7 +454,10 @@ class StreamRouter:
         outcomming_stream = self.open_outcomming_stream(outcomming_request)
         if trajectory_dump is None:
             return outcomming_stream
-        return trajectory_dump.wrap_stream(outcomming_stream)
+        return trajectory_dump.wrap_stream(
+            outcomming_stream,
+            outcomming_request,
+        )
 
     def _responses_input_to_chat_messages(
         self,
