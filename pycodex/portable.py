@@ -11,8 +11,7 @@ from typing import Callable
 from urllib.parse import quote, urlparse
 
 import requests
-from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from Cryptodome.Cipher import AES
 import typing
 
 try:
@@ -234,18 +233,26 @@ def _normalize_optional_relative_file(root: 'Path', value: 'str') -> 'typing.Uni
 
 def _encrypt_bundle(bundle_bytes: 'bytes', secret: 'str') -> 'bytes':
     nonce = os.urandom(NONCE_LENGTH)
-    ciphertext = AESGCM(_encryption_key(secret)).encrypt(nonce, bundle_bytes, None)
-    return ENCRYPTED_BUNDLE_MAGIC + nonce + ciphertext
+    cipher = AES.new(_encryption_key(secret), AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(bundle_bytes)
+    return ENCRYPTED_BUNDLE_MAGIC + nonce + ciphertext + tag
 
 
 def _decrypt_bundle(payload: 'bytes', secret: 'str') -> 'bytes':
     if not payload.startswith(ENCRYPTED_BUNDLE_MAGIC):
         raise RemoteStorageError("stored bundle is not a recognized encrypted payload")
     nonce = payload[len(ENCRYPTED_BUNDLE_MAGIC) : len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH]
-    ciphertext = payload[len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH :]
+    encrypted = payload[len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH :]
+    if len(encrypted) < 16:
+        raise RemoteStorageError("call secret is invalid or bundle is corrupted")
+    ciphertext = encrypted[:-16]
+    tag = encrypted[-16:]
     try:
-        return AESGCM(_encryption_key(secret)).decrypt(nonce, ciphertext, None)
-    except InvalidTag as exc:
+        cipher = AES.new(_encryption_key(secret), AES.MODE_GCM, nonce=nonce)
+        plaintext = cipher.decrypt(ciphertext)
+        cipher.verify(tag)
+        return plaintext
+    except ValueError as exc:
         raise RemoteStorageError("call secret is invalid or bundle is corrupted") from exc
 
 

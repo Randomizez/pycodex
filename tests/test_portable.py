@@ -7,12 +7,22 @@ import pytest
 from pycodex.portable import (
     DEFAULT_ENTRY_CONFIG,
     RemoteStorageError,
+    _decrypt_bundle,
     bootstrap_called_home,
     resolve_put_source_dir,
     upload_codex_home,
 )
 from pycodex.portable_server import CodexStorageServer
 import typing
+
+
+def test_decrypt_bundle_reads_legacy_cryptography_payload() -> 'None':
+    payload = bytes.fromhex(
+        "504358310102030405060708090a0b0c"
+        "2004edae54e18f2c48447f711fdd00463e2d5c71a941e6aef0b7925d4b237e7359140c71a1ec816b"
+    )
+
+    assert _decrypt_bundle(payload, "legacy-test-secret") == b"legacy encrypted payload"
 
 
 def _write_codex_home(
