@@ -39,6 +39,7 @@ from workspace_server import (
 from workspace_server.app import (
     SPINNER_STATUS_PREVIEW_LIMIT,
     _board_context_text,
+    _build_workspace_entry,
     _format_board_path_for_prompt,
 )
 from tests.fakes import ScriptedModelClient
@@ -561,6 +562,66 @@ def test_workspaces_manager_api_adds_random_board_when_omitted(tmp_path) -> None
     assert board_response.status_code == 200
     assert "Board pending" in board_response.text
     assert payload["workspaces"][0]["board"] == board
+
+
+@pytest.mark.parametrize("toolset", [["exec_command", "apply_patch"], []])
+def test_workspace_without_board_preserves_task_context_and_config(
+    monkeypatch, tmp_path, toolset
+):
+    config = tmp_path / "workspaces.json"
+    model_config = tmp_path / "model.toml"
+    model_config.write_text('model = "test-model"\n', encoding="utf-8")
+    model = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
+    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: model)
+    args = build_parser().parse_args(
+        [
+            "--config", str(model_config),
+            "--system-prompt", "Fix the task and run its tests.",
+            "--toolset", *toolset,
+        ]
+    )
+    registry = WorkspaceRegistry(
+        [],
+        config_path=config,
+        entry_factory=lambda definition, persist_callback: _build_workspace_entry(
+            definition, args, persist_callback
+        ),
+    )
+    with TestClient(create_multi_workspace_app(registry)) as client:
+        for name in ("alpha", "beta"):
+            response = client.post(
+                "/api/workspaces",
+                json={"name": name, "dir": "repos/" + name, "board": False},
+            )
+            assert response.status_code == 200
+            assert response.json()["workspace"]["board_path"] == ""
+        session_id = client.get("/w/alpha/api/sessions").json()["sessions"][0]["id"]
+        client.post(
+            "/w/alpha/api/session/message",
+            json={"session_id": session_id, "prompt": "fix the task"},
+        )
+        deadline = time.monotonic() + 5
+        while True:
+            snapshot = client.get(
+                "/w/alpha/api/session", params={"session_id": session_id}
+            ).json()["snapshot"]
+            if snapshot["turns"] and snapshot["turns"][-1]["status"] == "completed":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert client.delete("/api/workspaces/beta").status_code == 200
+
+    prompt = repr(model.prompts[0].input)
+    assert "Current workspace board file:" not in prompt
+    assert "<cwd>{0}</cwd>".format(tmp_path / "repos/alpha") in prompt
+    assert model.prompts[0].input[-1].text == "fix the task"
+    assert model.prompts[0].base_instructions == "Fix the task and run its tests."
+    assert [tool.name for tool in model.prompts[0].tools] == toolset
+    assert json.loads(config.read_text())["workspaces"][0]["board"] is False
+    definitions = load_workspace_definitions(config)
+    assert len(definitions) == 1
+    assert definitions[0].board_path is None
+    assert definitions[0].work_dir == tmp_path / "repos/alpha"
 
 
 def test_workspaces_manager_api_generates_name_when_omitted(tmp_path) -> None:

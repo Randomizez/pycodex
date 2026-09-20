@@ -123,19 +123,23 @@ def load_workspace_definitions(
             )
 
         board_value = item.get("board")
-        if not str(board_value or "").strip():
-            raise ValueError("workspace `{0}` is missing `board`".format(workspace_id))
-        board_path = _resolve_workspace_path(str(board_value), path.parent)
-        if board_path in seen_boards:
-            raise ValueError("duplicate workspace board: {0}".format(board_path))
-        seen_boards.add(board_path)
-        if not board_path.parent.is_dir():
-            raise ValueError(
-                "workspace `{0}` board parent directory does not exist: {1}".format(
-                    workspace_id,
-                    board_path.parent,
+        board_path = None
+        if board_value is not False:
+            if not isinstance(board_value, str) or not board_value.strip():
+                raise ValueError(
+                    "workspace `{0}` requires a board path or false".format(workspace_id)
                 )
-            )
+            board_path = _resolve_workspace_path(board_value, path.parent)
+            if board_path in seen_boards:
+                raise ValueError("duplicate workspace board: {0}".format(board_path))
+            seen_boards.add(board_path)
+            if not board_path.parent.is_dir():
+                raise ValueError(
+                    "workspace `{0}` board parent directory does not exist: {1}".format(
+                        workspace_id,
+                        board_path.parent,
+                    )
+                )
 
         result.append(
             WorkspaceDefinition(
@@ -169,7 +173,7 @@ def save_workspace_definitions(
 def _workspace_definition_to_json(
     definition: 'WorkspaceDefinition',
     base_dir: 'Path',
-) -> 'typing.Dict[str, str]':
+) -> 'typing.Dict[str, object]':
     result = {
         "id": definition.workspace_id,
         "work_dir": _format_path_for_workspace_config(definition.work_dir, base_dir),
@@ -179,6 +183,8 @@ def _workspace_definition_to_json(
             definition.board_path,
             base_dir,
         )
+    else:
+        result["board"] = False
     return result
 
 
@@ -440,7 +446,7 @@ class WorkspaceRegistry:
 
     def _key_for_definition(self, definition: 'WorkspaceDefinition') -> str:
         if definition.board_path is None:
-            raise ValueError("workspace `{0}` is missing board".format(definition.workspace_id))
+            return "workspace:{0}".format(definition.workspace_id)
         return str(definition.board_path.resolve())
 
     async def start(self) -> None:
@@ -466,7 +472,7 @@ class WorkspaceRegistry:
         self,
         name: str,
         work_dir: str = "./",
-        board: "typing.Union[str, None]" = None,
+        board: "typing.Union[str, bool, None]" = None,
     ) -> 'WorkspaceEntry':
         if self._entry_factory is None:
             raise ValueError("workspace creation is unavailable")
@@ -475,15 +481,19 @@ class WorkspaceRegistry:
         resolved_work_dir = _resolve_workspace_path(str(work_dir or "./"), base_dir)
         resolved_work_dir.mkdir(parents=True, exist_ok=True)
 
-        board_path = (
-            _resolve_workspace_path(str(board), base_dir)
-            if str(board or "").strip()
-            else default_board_path()
-        )
-        board_path.parent.mkdir(parents=True, exist_ok=True)
-        board_key = str(board_path.resolve())
-        if board_key in self._entries:
-            raise ValueError("workspace board already exists: {0}".format(board_path))
+        board_path = None
+        if board is not False:
+            if board is not None and not isinstance(board, str):
+                raise ValueError("board must be a path string or false")
+            board_path = (
+                _resolve_workspace_path(board, base_dir)
+                if board and board.strip()
+                else default_board_path()
+            )
+            board_path.parent.mkdir(parents=True, exist_ok=True)
+            board_key = str(board_path.resolve())
+            if board_key in self._entries:
+                raise ValueError("workspace board already exists: {0}".format(board_path))
 
         workspace_id = normalize_workspace_id(name)
         if not workspace_id:

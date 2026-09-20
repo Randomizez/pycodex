@@ -410,6 +410,15 @@ async def test_build_agent_passes_extra_contextual_user_messages(tmp_path) -> 'N
     ]
 
 
+def test_get_tools_accepts_a_custom_toolset() -> 'None':
+    selected = get_tools(toolset=["apply_patch", "view_image"])
+    assert selected.names() == ("apply_patch", "view_image")
+    assert get_tools(toolset=[]).names() == ()
+
+    with pytest.raises(ValueError, match="unknown toolset entries"):
+        get_tools(toolset=["missing_tool"])
+
+
 def test_build_model_can_be_called_without_arguments(monkeypatch) -> 'None':
     captured = {}
     fake_client = object()

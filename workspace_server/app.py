@@ -95,6 +95,12 @@ def build_parser() -> "argparse.ArgumentParser":
         help="Optional base instructions override passed to the model.",
     )
     parser.add_argument(
+        "--toolset",
+        nargs="*",
+        default=None,
+        help="Builtin tool names for all sessions; an empty list disables tools.",
+    )
+    parser.add_argument(
         "--timeout-seconds",
         type=float,
         default=120.0,
@@ -874,11 +880,7 @@ def create_multi_workspace_app(
             entry = await registry.add_workspace(
                 str(payload.get("name") or ""),
                 work_dir=str(payload.get("dir") or "./"),
-                board=(
-                    None
-                    if payload.get("board") in (None, "")
-                    else str(payload.get("board"))
-                ),
+                board=payload.get("board"),
             )
         except ValueError as exc:
             return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
@@ -1518,6 +1520,7 @@ def _build_workspace_entry(
                 else []
             ),
             cwd=definition.work_dir,
+            toolset=args.toolset,
         )
         return WorkspaceInteractiveSession(
             build_cli_queue(agent),

@@ -12,8 +12,16 @@ import requests
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 DEFAULT_REDIRECT_URI = "https://httpbin.org/get"
-DEFAULT_SCOPES = ("offline_access", "im:message", "im:message.send_as_user")
+DEFAULT_SCOPES = (
+    "offline_access",
+    "wiki:wiki:readonly",
+    "docx:document:readonly",
+    "docs:document.media:download",
+    "im:message",
+    "im:message.send_as_user",
+)
 DEFAULT_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+REFRESH_TOKEN_PATH = Path.home() / ".codex" / ".feishu_refresh_token"
 
 
 def authorization_url(app_id: str, redirect_uri: str, scope: str) -> str:
@@ -84,6 +92,12 @@ def print_token_result(payload: "typing.Dict[str, object]") -> None:
         )
     dotenv_path = DEFAULT_CONFIG_PATH.parent / ".env"
     write_dotenv_value(dotenv_path, "FEISHU_REFRESH_TOKEN", str(refresh_token))
+    REFRESH_TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
+    REFRESH_TOKEN_PATH.write_text(str(refresh_token) + "\n", encoding="utf-8")
+    try:
+        REFRESH_TOKEN_PATH.chmod(0o600)
+    except OSError:
+        pass
     print("")
     print("Wrote FEISHU_REFRESH_TOKEN to: {0}".format(dotenv_path))
 

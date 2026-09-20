@@ -166,6 +166,7 @@ def get_tools(
     runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
     exec_mode: 'bool' = False,
     cwd: 'typing.Union[str, Path, None]' = None,
+    toolset: 'typing.Union[typing.Iterable[str], None]' = None,
 ):
     from .tools import (
         ApplyPatchTool,
@@ -225,43 +226,56 @@ def get_tools(
     read_file_tool = ReadFileTool()
     list_dir_tool = ListDirTool()
     view_image_tool = ViewImageTool(cwd=cwd)
-    if exec_mode:
-        registry.register(exec_command_tool)
-        registry.register(write_stdin_tool)
-        registry.register(clock_tool)
-        registry.register(update_plan_tool)
-        registry.register(request_user_input_tool)
-        registry.register(apply_patch_tool)
-        registry.register(web_search_tool)
-        registry.register(view_image_tool)
-        registry.register(spawn_agent_tool)
-        registry.register(send_input_tool)
-        registry.register(resume_agent_tool)
-        registry.register(wait_agent_tool)
-        registry.register(close_agent_tool)
-        return registry
-
-    registry.register(shell_tool)
-    registry.register(shell_command_tool)
-    registry.register(exec_command_tool)
-    registry.register(write_stdin_tool)
-    registry.register(clock_tool)
-    registry.register(exec_tool)
-    registry.register(wait_tool)
-    registry.register(web_search_tool)
-    registry.register(update_plan_tool)
-    registry.register(request_user_input_tool)
-    registry.register(request_permissions_tool)
-    registry.register(spawn_agent_tool)
-    registry.register(send_input_tool)
-    registry.register(resume_agent_tool)
-    registry.register(wait_agent_tool)
-    registry.register(close_agent_tool)
-    registry.register(apply_patch_tool)
-    registry.register(grep_files_tool)
-    registry.register(read_file_tool)
-    registry.register(list_dir_tool)
-    registry.register(view_image_tool)
+    tools = (
+        shell_tool,
+        shell_command_tool,
+        exec_command_tool,
+        write_stdin_tool,
+        clock_tool,
+        exec_tool,
+        wait_tool,
+        web_search_tool,
+        update_plan_tool,
+        request_user_input_tool,
+        request_permissions_tool,
+        spawn_agent_tool,
+        send_input_tool,
+        resume_agent_tool,
+        wait_agent_tool,
+        close_agent_tool,
+        apply_patch_tool,
+        grep_files_tool,
+        read_file_tool,
+        list_dir_tool,
+        view_image_tool,
+    )
+    if toolset is not None:
+        available_tools = {tool.name: tool for tool in tools}
+        toolset = tuple(toolset)
+        unknown_tools = set(toolset) - set(available_tools)
+        if unknown_tools:
+            raise ValueError(
+                "unknown toolset entries: {0}".format(", ".join(sorted(unknown_tools)))
+            )
+        tools = tuple(available_tools[name] for name in toolset)
+    elif exec_mode:
+        tools = (
+            exec_command_tool,
+            write_stdin_tool,
+            clock_tool,
+            update_plan_tool,
+            request_user_input_tool,
+            apply_patch_tool,
+            web_search_tool,
+            view_image_tool,
+            spawn_agent_tool,
+            send_input_tool,
+            resume_agent_tool,
+            wait_agent_tool,
+            close_agent_tool,
+        )
+    for tool in tools:
+        registry.register(tool)
     return registry
 
 
@@ -301,6 +315,7 @@ def build_agent(
     collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
     extra_contextual_user_messages: 'typing.Iterable[str]' = (),
     cwd: 'typing.Union[str, Path, None]' = None,
+    toolset: 'typing.Union[typing.Iterable[str], None]' = None,
 ) -> 'Agent':
     config_path = str(config_path)
     resolved_cwd = Path(cwd or Path.cwd()).resolve()
@@ -371,7 +386,12 @@ def build_agent(
     )
     return Agent(
         client,
-        get_tools(runtime_environment, exec_mode=True, cwd=resolved_cwd),
+        get_tools(
+            runtime_environment,
+            exec_mode=True,
+            cwd=resolved_cwd,
+            toolset=toolset,
+        ),
         context_manager,
         rollout_recorder=rollout_recorder,
         runtime_environment=runtime_environment,
