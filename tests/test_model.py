@@ -487,6 +487,31 @@ def test_responses_model_client_builds_responses_lite_payload() -> 'None':
     assert headers[RESPONSES_LITE_HEADER] == 'true'
 
 
+def test_responses_model_client_can_disable_lite_for_compat_transport() -> 'None':
+    provider = ResponsesProviderConfig(
+        model='gpt-6-astra',
+        provider_name='vllm',
+        base_url='http://127.0.0.1:18000/v1',
+        api_key_env=None,
+        responses_lite_override=False,
+    )
+    client = ResponsesModelClient(provider)
+
+    prompt = Prompt(
+        input=[UserMessage(text='hi')],
+        tools=[],
+        base_instructions='Be concise.',
+    )
+    payload = client._build_payload(prompt)
+    headers = client._build_headers(prompt)
+
+    assert provider.use_responses_lite() is False
+    assert payload['instructions'] == 'Be concise.'
+    assert payload['tools'] == []
+    assert payload['input'][0]['type'] == 'message'
+    assert RESPONSES_LITE_HEADER not in headers
+
+
 def test_responses_lite_payload_respects_explicit_reasoning_and_verbosity() -> 'None':
     provider = ResponsesProviderConfig(
         model='gpt-5.6-sol',

@@ -249,9 +249,13 @@ Current behavior:
 - `--vllm-endpoint http://host:port` automatically launches a local
   `responses_server` compatibility layer; when the URL path is empty it is
   normalized to `/v1`, and `/responses` requests are still forwarded to the
-  downstream `/v1/chat/completions` endpoint. For `model_provider = "vllm"`,
-  reasoning is now preserved across this path: chat chunks with `reasoning` or
-  `reasoning_content` are translated back into Responses `reasoning` items, and
+  downstream `/v1/chat/completions` endpoint. This local compat path always
+  uses the canonical Responses request shape, even when the selected model's
+  metadata enables `responses_lite`. With `--vllm-endpoint`, startup also reads
+  `/v1/models` and uses the last returned model id for the downstream request.
+  For `model_provider = "vllm"`, reasoning is preserved across this path:
+  chat chunks with `reasoning` or `reasoning_content` are translated back into
+  Responses `reasoning` items, and
   historical `reasoning` items are replayed into downstream assistant messages
   via the `reasoning` field. Streaming token usage is also requested from vLLM
   and forwarded to the final `response.completed.response.usage`. If a

@@ -46,6 +46,36 @@ def launch_chat_completion_compat_server(*args, **kwargs):
     return launch_compat_server(*args, **kwargs)
 
 
+def _resolve_vllm_model(
+    endpoint: 'str',
+    provider_config: 'ResponsesProviderConfig',
+    timeout_seconds: 'float',
+) -> 'str':
+    from responses_server import CompatServerConfig
+
+    normalized = CompatServerConfig.from_base_url(endpoint)
+    probe_config = replace(
+        provider_config,
+        provider_name="vllm",
+        base_url=normalized.outcomming_base_url,
+        api_key_env=None,
+        query_params={},
+        responses_lite_override=False,
+    )
+    probe_client = ResponsesModelClient(
+        probe_config,
+        timeout_seconds,
+        originator=CLI_ORIGINATOR,
+    )
+    models = probe_client.list_models_sync()
+    if not models:
+        raise RuntimeError(
+            "vLLM endpoint returned no models from "
+            f"{normalized.outcomming_models_url()}"
+        )
+    return models[-1]
+
+
 def configure_loguru() -> 'None':
     try:
         from loguru import logger
@@ -418,6 +448,21 @@ def build_model(
         raise ValueError("--use-chat-completion and --use-messages cannot be combined")
     if vllm_endpoint and use_messages:
         raise ValueError("--vllm-endpoint and --use-messages cannot be combined")
+    uses_local_responses_compat = (
+        managed_responses_base_url is not None
+        or vllm_endpoint is not None
+        or bool(use_chat_completion)
+        or use_messages
+    )
+    if vllm_endpoint is not None:
+        provider_config = replace(
+            provider_config,
+            model=_resolve_vllm_model(
+                vllm_endpoint,
+                provider_config,
+                timeout_seconds,
+            ),
+        )
     url, key_env = provider_config.base_url, provider_config.api_key_env
     if managed_responses_base_url is not None:
         url, key_env = (
@@ -451,6 +496,9 @@ def build_model(
         provider_config,
         base_url=url,
         api_key_env=key_env,
+        responses_lite_override=(
+            False if uses_local_responses_compat else provider_config.responses_lite_override
+        ),
     )
     return ResponsesModelClient(
         provider_config,

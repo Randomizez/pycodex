@@ -2403,6 +2403,46 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
     assert "event: response.completed" not in body
 
 
+def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
+    monkeypatch,
+) -> 'None':
+    def raise_timeout(*args, **kwargs):
+        del args, kwargs
+        raise TimeoutError("read operation timed out")
+
+    monkeypatch.setattr(
+        "responses_server.stream_router.urllib.request.urlopen",
+        raise_timeout,
+    )
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url="https://example.invalid/v1",
+            timeout_seconds=12.5,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "step-5-preview",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "continue"}],
+                    }
+                ],
+                "stream": True,
+            },
+            headers={"Accept": "text/event-stream"},
+        )
+
+    assert response.status_code == 200
+    assert "event: response.failed" in response.text
+    assert "outcomming chat request timed out after 12.5s" in response.text
+
+
 def test_managed_response_server_forces_asyncio_loop() -> 'None':
     server = ManagedResponseServer(
         CompatServerConfig(

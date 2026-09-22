@@ -372,6 +372,7 @@ def test_build_agent_overrides_provider_for_managed_responses_url(
     assert seen["originator"] == "codex-tui"
     assert seen["config"].base_url == "http://127.0.0.1:18001/v1"
     assert seen["config"].api_key_env == LOCAL_RESPONSES_SERVER_API_KEY_ENV
+    assert seen["config"].responses_lite_override is False
     assert os.environ[LOCAL_RESPONSES_SERVER_API_KEY_ENV] == "dummy"
 
 
@@ -517,6 +518,72 @@ def test_build_model_client_respects_use_chat_completion_from_config(
     assert seen["outcomming_api"] == "chat_completions"
     assert client._config.base_url == "http://127.0.0.1:18083/v1"
     assert client._config.api_key_env == "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
+    assert client._config.responses_lite_override is False
+
+
+def test_build_model_selects_last_vllm_model(
+    tmp_path,
+    monkeypatch,
+) -> 'None':
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                'model = "gpt-6-astra"',
+                'model_provider = "demo"',
+                '[model_providers.demo]',
+                'base_url = "https://example.com/v1"',
+            ]
+        )
+    )
+    seen = {}
+
+    class _FakeClient:
+        def __init__(
+            self,
+            config,
+            timeout_seconds,
+            session_id=None,
+            originator=None,
+            user_agent=None,
+            openai_subagent=None,
+        ):
+            del session_id, user_agent, openai_subagent
+            self._config = config
+            self.model = config.model
+            seen.setdefault("clients", []).append(self)
+            seen["timeout_seconds"] = timeout_seconds
+            seen["originator"] = originator
+
+        def list_models_sync(self):
+            return ["served-first", "served-last"]
+
+    class _FakeManagedServer:
+        base_url = "http://127.0.0.1:18084/v1"
+
+        def stop(self):
+            return None
+
+    def fake_launch(*args, **kwargs):
+        seen["launch_args"] = args
+        seen["launch_kwargs"] = kwargs
+        return _FakeManagedServer()
+
+    monkeypatch.setattr("pycodex.cli.ResponsesModelClient", _FakeClient)
+    monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
+
+    client = build_model(
+        config_path=str(config_path),
+        vllm_endpoint="http://127.0.0.1:18000",
+        timeout_seconds=17.0,
+    )
+
+    assert client.model == "served-last"
+    assert len(seen["clients"]) == 2
+    assert seen["clients"][0]._config.base_url == "http://127.0.0.1:18000/v1"
+    assert seen["clients"][0]._config.api_key_env is None
+    assert seen["launch_args"] == ("http://127.0.0.1:18000",)
+    assert seen["launch_kwargs"] == {"model_provider": "vllm"}
 
 
 @pytest.mark.asyncio
@@ -530,7 +597,7 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     config_path.write_text(
         "\n".join(
             [
-                'model = "demo-model"',
+                'model = "gpt-6-astra"',
                 'model_provider = "demo"',
                 '[model_providers.demo]',
                 'base_url = "https://example.com/v1"',
@@ -588,10 +655,17 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     def fake_build_cli_queue(agent):
         started["session_mode"] = "tui"
         started["base_url_override"] = agent._model_client._config.base_url
+        started["responses_lite_override"] = (
+            agent._model_client._config.responses_lite_override
+        )
         return _FakeRuntime()
 
     monkeypatch.setattr("pycodex.cli.launch_chat_completion_compat_server", fake_launch)
     monkeypatch.setattr("pycodex.cli.build_cli_queue", fake_build_cli_queue)
+    monkeypatch.setattr(
+        "pycodex.cli._resolve_vllm_model",
+        lambda endpoint, provider_config, timeout_seconds: "served-last",
+    )
     monkeypatch.setattr(
         "pycodex.cli.atexit.register",
         lambda callback: registered.setdefault("callback", callback),
@@ -616,6 +690,7 @@ async def test_run_cli_launches_managed_responses_server_for_vllm_endpoint(
     assert started["session_mode"] == "tui"
     assert started["prompt_text"] == "Reply with exactly OK."
     assert started["base_url_override"] == "http://127.0.0.1:18001/v1"
+    assert started["responses_lite_override"] is False
     assert callable(registered["callback"])
     registered["callback"]()
     assert started["stopped"] is True

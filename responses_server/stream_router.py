@@ -235,6 +235,11 @@ class StreamRouter:
             raise OutcommingChatError(
                 f"outcomming chat request failed with status {exc.code}: {body[:500]}"
             ) from exc
+        except TimeoutError as exc:
+            raise OutcommingChatError(
+                "outcomming chat request timed out after "
+                f"{self._config.timeout_seconds:g}s"
+            ) from exc
         except urllib.error.URLError as exc:
             raise OutcommingChatError(
                 f"outcomming chat request failed: {exc.reason}"
@@ -295,6 +300,11 @@ class StreamRouter:
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
                 f"outcomming messages request failed with status {exc.code}: {body[:500]}"
+            ) from exc
+        except TimeoutError as exc:
+            raise OutcommingChatError(
+                "outcomming messages request timed out after "
+                f"{self._config.timeout_seconds:g}s"
             ) from exc
         except urllib.error.URLError as exc:
             raise OutcommingChatError(
@@ -982,6 +992,11 @@ class StreamRouter:
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
                 f"outcomming request failed with status {exc.code}: {body[:500]}"
+            ) from exc
+        except TimeoutError as exc:
+            raise OutcommingChatError(
+                "outcomming request timed out after "
+                f"{self._config.timeout_seconds:g}s"
             ) from exc
         except urllib.error.URLError as exc:
             raise OutcommingChatError(

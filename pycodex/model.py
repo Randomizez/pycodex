@@ -69,6 +69,7 @@ class ResponsesProviderConfig:
     stream_max_retries: 'typing.Union[int, None]' = None
     stream_idle_timeout_ms: 'typing.Union[int, None]' = None
     service_tier: 'typing.Union[str, None]' = None
+    responses_lite_override: 'typing.Union[bool, None]' = None
 
     @classmethod
     def from_codex_config(
@@ -166,6 +167,8 @@ class ResponsesProviderConfig:
         return model_metadata(self.model)
 
     def use_responses_lite(self) -> 'bool':
+        if self.responses_lite_override is not None:
+            return self.responses_lite_override
         metadata = self.metadata()
         if metadata is None:
             return False
@@ -383,7 +386,10 @@ class ResponsesModelClient:
         return url
 
     async def list_models(self) -> 'typing.List[str]':
-        return await asyncio.to_thread(self._list_models_sync)
+        return await asyncio.to_thread(self.list_models_sync)
+
+    def list_models_sync(self) -> 'typing.List[str]':
+        return self._list_models_sync()
 
     async def complete(
         self,
