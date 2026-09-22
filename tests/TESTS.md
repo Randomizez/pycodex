@@ -2,6 +2,18 @@
 
 这个文件记录当前 `pycodex` 的测试面，以及每类测试的预期行为。
 
+## CI 环境
+
+- `test.yml` 和 `publish.yml` 的 Python 3.6 job 使用
+  `python:3.6.15-slim-bullseye`，系统依赖显式从 Debian 官方归档源安装，
+  不再依赖镜像内旧的 security / updates 源。
+- 归档源使用 `check-valid-until=no` 允许读取已过有效期的固定索引，
+  但继续校验仓库签名；`APT::Update::Error-Mode=any` 保证索引更新失败时
+  立即停止，不会继续拿旧索引安装已经不存在的包。
+- 如果已推送的 tag 在 CI 初始化阶段失败，修复 workflow 后应从包含修复的
+  branch 手动运行 `publish`，并选择正确的 `repository`。直接重跑旧的
+  tag workflow 仍使用旧提交；不要为了 CI 修复强制移动已公开的 tag。
+
 ## 自动化测试
 
 ### `tests/test_agent.py`
