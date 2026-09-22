@@ -37,6 +37,11 @@ class TrajectoryDumpWriter:
                 for chunk in outcomming_stream:
                     capture.observe_chunk(chunk)
                     yield chunk
+            except Exception as error:
+                capture.stream_error_type = type(error).__name__
+                raise
+            else:
+                capture.stream_completed = True
             finally:
                 capture.flush()
 
@@ -66,6 +71,8 @@ class _TrajectoryCapture:
         self._usage: 'typing.Dict[str, object]' = {}
         self._finish_reason = None
         self._closed = False
+        self.stream_completed = False
+        self.stream_error_type = None
 
     def observe_chunk(self, payload: 'object') -> 'None':
         if not isinstance(payload, dict):
@@ -103,6 +110,8 @@ class _TrajectoryCapture:
                 "decode": list(self._decode_token_ids),
             },
             "send_timestamp": self._send_timestamp,
+            "stream_completed": self.stream_completed,
+            "stream_error_type": self.stream_error_type,
         }
         try:
             self._writer._append_record(record)

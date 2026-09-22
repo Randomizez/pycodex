@@ -121,6 +121,11 @@ Current progress is easiest to read in layers:
 
 See `docs/ALIGNMENT.md` for more detailed notes.
 
+`PYCODEX_DUMP` records downstream `stream_completed` and `stream_error_type`
+alongside usage, finish reason, and exact token IDs. Failed attempts remain
+in the dump, including failures before the first chunk. Chat SSE `error`
+payloads propagate as `response.failed`, never as an empty completed response.
+
 ## Live Model Integration
 
 If this machine already has a Codex CLI configuration, `pycodex` can reuse the

@@ -156,6 +156,8 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
                 "decode": [201, 202],
             },
             "send_timestamp": dump_records[0]["send_timestamp"],
+            "stream_completed": True,
+            "stream_error_type": None,
         }
     ]
     assert isinstance(dump_records[0]["send_timestamp"], float)
@@ -2269,6 +2271,61 @@ def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
         "results": [],
         "mock": True,
     }
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_responses_server_preserves_downstream_sse_error(tmp_path, monkeypatch, partial):
+    monkeypatch.setenv("PYCODEX_DUMP", str(tmp_path / "trajectory"))
+    chunks = []
+    if partial:
+        chunks.append(
+            {
+                "prompt_token_ids": [11, 12],
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "partial"},
+                        "token_ids": [21],
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+    chunks.append({"error": {"message": "backend failed", "type": "server_error"}})
+    fake_chat_server = build_fake_chat_server(
+        CaptureStore(tmp_path / "chat_capture"), chunks
+    )
+    fake_chat_server.start()
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url=f"http://127.0.0.1:{fake_chat_server.server_port}/v1",
+        )
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/v1/responses",
+                json={"model": "test", "input": [], "stream": True},
+            )
+    finally:
+        fake_chat_server.stop()
+    assert response.status_code == 200
+    assert "event: response.failed" in response.text
+    assert "backend failed" in response.text
+    assert "event: response.completed" not in response.text
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "trajectory" / "dump.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert len(records) == 1
+    assert records[0]["tokens"] == (
+        {"prefill": [11, 12], "decode": [21]}
+        if partial else {"prefill": [], "decode": []}
+    )
+    assert records[0]["stream_completed"] is False
+    assert records[0]["stream_error_type"] == "OutcommingChatError"
 
 
 def test_responses_server_turns_truncated_downstream_stream_into_response_failed() -> 'None':

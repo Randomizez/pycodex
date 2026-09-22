@@ -214,7 +214,13 @@ class StreamRouter:
                         if data == "[DONE]":
                             saw_done = True
                             break
-                        yield json.loads(data)
+                        payload = json.loads(data)
+                        if isinstance(payload, dict) and payload.get("error") is not None:
+                            raise OutcommingChatError(
+                                "outcomming chat stream returned an error: "
+                                + json.dumps(payload["error"], ensure_ascii=False)[:500]
+                            )
+                        yield payload
                     if not saw_done:
                         raise OutcommingChatError(
                             "outcomming chat stream ended before [DONE]"
