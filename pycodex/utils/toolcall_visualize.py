@@ -270,7 +270,7 @@ def _write_stdin_summary(payload: "typing.Dict[str, object]") -> "str":
     if isinstance(call.arguments, dict):
         session_id_value = call.arguments.get("session_id")
         if session_id_value not in (None, ""):
-            session_id = int(session_id_value)
+            session_id = str(session_id_value)
             chars = call.arguments.get("chars") or ""
             if not chars:
                 command = f"poll session {session_id}"

@@ -2816,6 +2816,33 @@ def test_tool_summary_extracts_python_heredoc_and_session_id() -> 'None':
     ).endswith("PY -> session_id=7")
 
 
+@pytest.mark.parametrize("session_id", [7, "not-a-session"])
+def test_write_stdin_summary_preserves_failed_tool_arguments(session_id) -> 'None':
+    call = ToolCall(
+        call_id="call_stdin",
+        name="write_stdin",
+        arguments={"session_id": session_id},
+    )
+    result = ToolResult(
+        call_id="call_stdin",
+        name="write_stdin",
+        output={"error": "invalid session"},
+        is_error=True,
+    )
+
+    summary = tool_summary(
+        {
+            "tool_name": "write_stdin",
+            "call": call,
+            "result": result,
+            "is_error": True,
+        }
+    )
+
+    assert summary.startswith(f"[error] write_stdin failed: poll session {session_id}")
+    assert "invalid session" in summary
+
+
 def test_cli_session_view_shows_web_search_tool_called_message() -> 'None':
     output: 'typing.List[str]' = []
     view = _build_cli_view(output)
