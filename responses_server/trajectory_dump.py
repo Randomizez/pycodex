@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 import typing
+import urllib.error
 
 
 class TrajectoryDumpWriter:
@@ -39,6 +40,11 @@ class TrajectoryDumpWriter:
                     yield chunk
             except Exception as error:
                 capture.stream_error_type = type(error).__name__
+                cause = error.__cause__
+                if cause is not None:
+                    capture.stream_error_cause_type = type(cause).__name__
+                if isinstance(cause, urllib.error.HTTPError):
+                    capture.stream_error_http_status = cause.code
                 raise
             else:
                 capture.stream_completed = True
@@ -73,6 +79,8 @@ class _TrajectoryCapture:
         self._closed = False
         self.stream_completed = False
         self.stream_error_type = None
+        self.stream_error_cause_type = None
+        self.stream_error_http_status = None
 
     def observe_chunk(self, payload: 'object') -> 'None':
         if not isinstance(payload, dict):
@@ -112,6 +120,8 @@ class _TrajectoryCapture:
             "send_timestamp": self._send_timestamp,
             "stream_completed": self.stream_completed,
             "stream_error_type": self.stream_error_type,
+            "stream_error_cause_type": self.stream_error_cause_type,
+            "stream_error_http_status": self.stream_error_http_status,
         }
         try:
             self._writer._append_record(record)

@@ -125,6 +125,9 @@ See `docs/ALIGNMENT.md` for more detailed notes.
 alongside usage, finish reason, and exact token IDs. Failed attempts remain
 in the dump, including failures before the first chunk. Chat SSE `error`
 payloads propagate as `response.failed`, never as an empty completed response.
+Chained failures also retain `stream_error_cause_type` and, for HTTP errors,
+`stream_error_http_status`; exception messages, headers and URLs are not
+copied into these diagnostic fields.
 
 ## Live Model Integration
 

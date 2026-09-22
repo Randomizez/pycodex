@@ -165,6 +165,8 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
             "send_timestamp": dump_records[0]["send_timestamp"],
             "stream_completed": True,
             "stream_error_type": None,
+            "stream_error_cause_type": None,
+            "stream_error_http_status": None,
         }
     ]
     assert isinstance(dump_records[0]["send_timestamp"], float)
