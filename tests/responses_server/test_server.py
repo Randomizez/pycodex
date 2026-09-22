@@ -89,13 +89,21 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     dump_root = tmp_path / "dump"
     monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
     capture_store = CaptureStore(tmp_path / "chat_capture")
+    usage = {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "prompt_tokens_details": {"cached_tokens": 2},
+    }
+    chunks = build_text_chunks(
+        "Hello",
+        prompt_token_ids=[101, 102, 103],
+        decode_token_ids=[201, 202],
+    )
+    chunks[-1]["usage"] = usage
     fake_chat_server = build_fake_chat_server(
         capture_store,
-        build_text_chunks(
-            "Hello",
-            prompt_token_ids=[101, 102, 103],
-            decode_token_ids=[201, 202],
-        ),
+        chunks,
     )
     fake_chat_server.start()
 
@@ -146,6 +154,8 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     ]
     assert dump_records == [
         {
+            "request": request["body"],
+            "usage": usage,
             "tokens": {
                 "prefill": [101, 102, 103],
                 "decode": [201, 202],
