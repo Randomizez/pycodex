@@ -64,6 +64,7 @@ class _TrajectoryCapture:
         self._prefill_token_ids = None
         self._decode_token_ids = []
         self._usage: 'typing.Dict[str, object]' = {}
+        self._finish_reason = None
         self._closed = False
 
     def observe_chunk(self, payload: 'object') -> 'None':
@@ -83,6 +84,8 @@ class _TrajectoryCapture:
         for raw_choice in choices:
             if not isinstance(raw_choice, dict):
                 continue
+            if raw_choice.get("finish_reason") is not None:
+                self._finish_reason = raw_choice["finish_reason"]
             normalized_decode = _normalize_token_ids(raw_choice.get("token_ids"))
             if normalized_decode:
                 self._decode_token_ids.extend(normalized_decode)
@@ -94,6 +97,7 @@ class _TrajectoryCapture:
         record = {
             "request": self._outcomming_request,
             "usage": self._usage,
+            "finish_reason": self._finish_reason,
             "tokens": {
                 "prefill": list(self._prefill_token_ids or []),
                 "decode": list(self._decode_token_ids),

@@ -4,6 +4,7 @@ import socket
 import threading
 
 from fastapi.testclient import TestClient
+import pytest
 import requests
 from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
@@ -82,21 +83,22 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> 'None':
     ]
 
 
+@pytest.mark.parametrize("finish_reason", ["stop", "length"])
 def test_responses_server_dumps_forwarded_chat_token_trajectory(
     tmp_path,
     monkeypatch,
+    finish_reason,
 ) -> 'None':
     dump_root = tmp_path / "dump"
     monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
     capture_store = CaptureStore(tmp_path / "chat_capture")
-    fake_chat_server = build_fake_chat_server(
-        capture_store,
-        build_text_chunks(
-            "Hello",
-            prompt_token_ids=[101, 102, 103],
-            decode_token_ids=[201, 202],
-        ),
+    chunks = build_text_chunks(
+        "Hello",
+        prompt_token_ids=[101, 102, 103],
+        decode_token_ids=[201, 202],
     )
+    chunks[-1]["choices"][0]["finish_reason"] = finish_reason
+    fake_chat_server = build_fake_chat_server(capture_store, chunks)
     fake_chat_server.start()
 
     app = ManagedResponseServer.build_app(
@@ -146,6 +148,9 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     ]
     assert dump_records == [
         {
+            "request": request["body"],
+            "usage": {},
+            "finish_reason": finish_reason,
             "tokens": {
                 "prefill": [101, 102, 103],
                 "decode": [201, 202],

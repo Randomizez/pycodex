@@ -95,7 +95,7 @@ server 会为每条实际转发到下游的请求附上 `return_token_ids = true
 trajectory 追加到 `${PYCODEX_DUMP}/dump.jsonl`，当前记录格式是：
 
 ```json
-{"request":{"model":"water18","messages":[],"stream":true,"return_token_ids":true},"usage":{"prompt_tokens":100,"completion_tokens":6,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":64}},"tokens":{"prefill":[1,2,3],"decode":[4,5,6]},"send_timestamp":2222.0}
+{"request":{"model":"water18","messages":[],"stream":true,"return_token_ids":true},"usage":{"prompt_tokens":100,"completion_tokens":6,"total_tokens":106,"prompt_tokens_details":{"cached_tokens":64}},"finish_reason":"length","tokens":{"prefill":[1,2,3],"decode":[4,5,6]},"send_timestamp":2222.0}
 ```
 
 `request` 是 provider post-process 之后真正发出的 JSON body；HTTP headers 和
@@ -103,6 +103,9 @@ API key 不会写入 dump。对多轮 tool-call，可以逐条比较
 `request.messages` 是否是上一轮的严格前缀扩展，并读取
 `usage.prompt_tokens_details.cached_tokens` 核对下游 prefix-cache 命中。
 重试和 mock tool follow-up 都会各写一条独立记录。
+`finish_reason` 保留实际下游终止原因（如 `stop`、`tool_calls`、`length`）；
+usage-only chunk 不会覆盖它，未收到终止 chunk 时为 `null`。
+长度截断不会补写 EOS，消费者必须同时校验 usage 和原始 token IDs 的完整性。
 
 如果下游 provider 需要对 chat payload 做定制化改写，可以在
 `responses_server/payload_processors.py` 里注册对应 `model_provider -> proc_fn`
