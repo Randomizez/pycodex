@@ -54,7 +54,10 @@ jobs:
     steps:
       - name: Install system dependencies
         run: |
-          apt-get update
+          printf '%s\n' \
+            'deb [check-valid-until=no] https://archive.debian.org/debian bullseye main' \
+            > /etc/apt/sources.list
+          apt-get -o APT::Update::Error-Mode=any update
           apt-get install -y --no-install-recommends git nodejs npm
 
       - name: Check out repository
@@ -80,7 +83,8 @@ jobs:
             "requests>=2.27.1" \
             "prompt-toolkit>=3.0.36,<3.1" \
             "loguru>=0.7.3,<1" \
-            "cryptography>=40.0.2,<41" \
+            "pycryptodomex>=3.20" \
+            "pillow>=8.4.0,<9" \
             "fastapi>=0.83,<0.84" \
             "uvicorn>=0.16,<0.17" \
             "pytest>=6.2.5,<7" \

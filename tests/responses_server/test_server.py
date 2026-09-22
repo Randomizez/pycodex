@@ -92,11 +92,18 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     dump_root = tmp_path / "dump"
     monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
     capture_store = CaptureStore(tmp_path / "chat_capture")
+    usage = {
+        "prompt_tokens": 3,
+        "completion_tokens": 2,
+        "total_tokens": 5,
+        "prompt_tokens_details": {"cached_tokens": 2},
+    }
     chunks = build_text_chunks(
         "Hello",
         prompt_token_ids=[101, 102, 103],
         decode_token_ids=[201, 202],
     )
+    chunks[-1]["usage"] = usage
     chunks[-1]["choices"][0]["finish_reason"] = finish_reason
     fake_chat_server = build_fake_chat_server(capture_store, chunks)
     fake_chat_server.start()
@@ -149,7 +156,7 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     assert dump_records == [
         {
             "request": request["body"],
-            "usage": {},
+            "usage": usage,
             "finish_reason": finish_reason,
             "tokens": {
                 "prefill": [101, 102, 103],
@@ -2453,6 +2460,46 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
         or "outcomming chat stream ended before [DONE]" in body
     )
     assert "event: response.completed" not in body
+
+
+def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
+    monkeypatch,
+) -> 'None':
+    def raise_timeout(*args, **kwargs):
+        del args, kwargs
+        raise TimeoutError("read operation timed out")
+
+    monkeypatch.setattr(
+        "responses_server.stream_router.urllib.request.urlopen",
+        raise_timeout,
+    )
+    app = ManagedResponseServer.build_app(
+        CompatServerConfig(
+            outcomming_base_url="https://example.invalid/v1",
+            timeout_seconds=12.5,
+        )
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/responses",
+            json={
+                "model": "step-5-preview",
+                "input": [
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": "continue"}],
+                    }
+                ],
+                "stream": True,
+            },
+            headers={"Accept": "text/event-stream"},
+        )
+
+    assert response.status_code == 200
+    assert "event: response.failed" in response.text
+    assert "outcomming chat request timed out after 12.5s" in response.text
 
 
 def test_managed_response_server_forces_asyncio_loop() -> 'None':
