@@ -56,7 +56,6 @@ jobs:
         run: |
           printf '%s\n' \
             'deb [check-valid-until=no] https://archive.debian.org/debian bullseye main' \
-            'deb [check-valid-until=no] https://archive.debian.org/debian-security bullseye-security main' \
             > /etc/apt/sources.list
           apt-get -o APT::Update::Error-Mode=any update
           apt-get install -y --no-install-recommends git nodejs npm
