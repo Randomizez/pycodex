@@ -87,7 +87,9 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 ### `tests/test_feishu_card.py`
 
 - 飞书复用独立的无色 `EventDisplay`；未知事件只需实现 `render` 即能展示，
-  无需增加飞书分支。测试验证回调到卡片字段的适配、近期记录长度上限和流式区域。
+  无需增加飞书分支。测试验证回调到卡片字段的适配、展示长度上限和流式区域。
+- 灰框只保留最近完成的回复，下一轮开始时标记 `(*last turn)`，完成后替换；
+  工具活动、错误和待答问题单独展示，不能混入回复正文。
 - 覆盖快照恢复不重复 active turn、重试移除 partial、fatal 保留 partial、
   问答输入提示和关闭/detach；保留 Markdown 降级及请求传输回归。
 - 运行时隔离 HOME，避免测试读取真实飞书 refresh token。

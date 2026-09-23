@@ -285,14 +285,18 @@ the utils package cannot create an events/utils initialization cycle.
 There is no display-handler mapping, action bus or per-tool event subclass.
 Presentation never mutates an event or its nested data and is not invoked by
 Agent/runtime dispatch itself. Feishu binds the same log/status/prompt callbacks
-to card fields with colors disabled. Its event adapter only handles session
-snapshot metadata and history hydration before calling `render`; stream, tool,
-retry, error, queue and question events have no separate Feishu branches.
-The card retains the latest 6,500 characters of rendered logs and shows the shared
-stream buffer separately while it is active. Flushed segments, tool summaries,
-commands and errors stay in the recent transcript, replacing the previous
-last-turn marker and separate sender/prompt row. Attach/resume restores the most
-recent completed turn and any active stream or pending question.
+to card fields with colors disabled. Its layout adapter restores snapshot history
+and tracks queued/started/completed turn boundaries for the main grey answer box.
+The box shows only the latest completed reply. A new turn preserves that reply
+with the `(*last turn)` prefix; completion replaces it with the new final text.
+The reply is truncated to the card's 6,500-character display limit.
+Stream, tool, retry, error and question presentation still uses the shared
+`render` implementation. Active stream text stays in the green box; the latest
+rendered activity, command result, error or question appears separately above
+the input and does not accumulate in the answer. Starting or completing a turn
+clears that activity, and resolving a question clears its prompt.
+Attach/resume restores the latest completed reply and any active stream or
+pending question.
 Web retains its own projection; IPython keeps its tool-only printer. ANSI is
 applied only at a terminal presentation boundary, never stored in event fields,
 Web JSON or generated Feishu presentation. The module does not import terminal,

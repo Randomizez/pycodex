@@ -574,7 +574,7 @@ async def test_late_frontends_restore_active_stream_and_follow_completion():
         ] == [(event.delta, result.turn_id, receipt.submission_id) for event in deltas]
         assert len(web.snapshot()["turns"]) == 1
         assert web.snapshot()["turns"][0]["response"] == "partial"
-        assert card.output_text == "user> live\nassistant> partial"
+        assert card.output_text == "partial"
         assert cli.lines.count("assistant> partial") == 1
         assert queue.snapshot()["active_turn"] is None
     finally:

@@ -6,7 +6,15 @@ from pathlib import Path
 
 import requests
 
-from .events import DEFAULT_MAIN_PROMPT, Event, EventDisplay, SessionStateEvent
+from .events import (
+    DEFAULT_MAIN_PROMPT,
+    Event,
+    EventDisplay,
+    InputQueuedEvent,
+    SessionStateEvent,
+    TurnCompletedEvent,
+    TurnStartedEvent,
+)
 from .utils.event_helpers import completed_history
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
@@ -43,6 +51,8 @@ class PycodexCard:
         self.prompt_text = DEFAULT_MAIN_PROMPT
         self.model_name = "pycodex"
         self.output_text = ""
+        self.activity_text = ""
+        self._event_output = ""
         self.display = EventDisplay(self._log, self._set_status, self._set_prompt)
         self.detached = False
         self.accepts_input = True
@@ -145,6 +155,7 @@ class PycodexCard:
         self.detached = True
 
     def apply_event(self, event: "Event") -> None:
+        self._event_output = ""
         if isinstance(event, SessionStateEvent):
             state = event.state
             self.model_name = state["model"]
@@ -152,27 +163,45 @@ class PycodexCard:
             self.display.closed = state["closed"]
             if event.reason in {"attach", "history"}:
                 self.output_text = ""
+                self.activity_text = ""
                 self.display.stream_buffer = ""
                 self.prompt_text = DEFAULT_MAIN_PROMPT
                 if state["busy"]:
                     self._set_status("working")
                 else:
                     self.display.set_idle_status(state["background_work_count"])
-                for prompt, response in completed_history(state)[-1:]:
-                    self._log("user> " + prompt)
-                    if response:
-                        self._log("assistant> " + response)
+                for _prompt, response in completed_history(state)[-1:]:
+                    self.output_text = response
+                if state["busy"]:
+                    self._mark_last_turn_output()
+        elif isinstance(event, (InputQueuedEvent, TurnStartedEvent)):
+            self._mark_last_turn_output()
         event.render(self.display)
+        if isinstance(event, TurnCompletedEvent):
+            if event.output_text:
+                self.output_text = event.output_text
+            self.activity_text = ""
+        elif isinstance(event, TurnStartedEvent):
+            self.activity_text = ""
+        elif self._event_output:
+            self.activity_text = self._event_output
+
+    def _mark_last_turn_output(self) -> None:
+        prefix = "(*last turn)\n"
+        if self.output_text and not self.output_text.startswith(prefix):
+            self.output_text = prefix + self.output_text
 
     def _log(self, text: str) -> None:
-        self.output_text = (
-            self.output_text + ("\n" if self.output_text else "") + text
+        self._event_output = (
+            self._event_output + ("\n" if self._event_output else "") + text
         )[-CARD_OUTPUT_LIMIT:]
 
     def _set_status(self, text: "typing.Union[str, None]") -> None:
         self.status = text
 
     def _set_prompt(self, text: str) -> None:
+        if text != self.prompt_text:
+            self.activity_text = ""
         self.prompt_text = text
 
     def render(
@@ -199,6 +228,14 @@ class PycodexCard:
                     _render_output_content(working_output, output_mode),
                     "green-50",
                 )
+            )
+        if self.activity_text:
+            body_elements.append(
+                {
+                    "tag": "markdown",
+                    "element_id": "activity_md",
+                    "content": _render_output_content(self.activity_text, output_mode),
+                }
             )
         card = {
             "schema": "2.0",

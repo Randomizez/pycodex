@@ -6,6 +6,7 @@ import pytest
 from pycodex.events import (
     AssistantDeltaEvent,
     Event,
+    InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
     SessionClosedEvent,
@@ -134,7 +135,8 @@ def test_feishu_card_delegates_unknown_events_to_its_own_plain_display() -> None
     assert not card.display.color_enabled
     assert other.output_text == other.display.stream_buffer == ""
     rendered = card.render()
-    assert _answer_markdown_content(rendered) == "new event"
+    assert _answer_markdown_content(rendered) == "Ready."
+    assert _element(rendered, "activity_md")["content"] == "new event"
     assert _working_markdown_content(rendered) == "live text"
     assert (
         _prompt_input(rendered)["placeholder"]["content"] == "custom> custom activity"
@@ -195,23 +197,30 @@ def test_feishu_card_update_falls_back_to_escaped_code_mode() -> None:
     )
 
 
-def test_feishu_card_keeps_recent_rendered_turns_with_bounded_output() -> None:
+def test_feishu_card_preserves_last_reply_until_next_turn_completes() -> None:
     card = PycodexCard()
     card.apply_event(TurnCompletedEvent("previous", 1, "previous answer", 0))
 
-    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
-    assert card.output_text == "assistant> previous answer\nuser> next prompt"
+    card.apply_event(
+        InputQueuedEvent("next", "next prompt", "steer", "cli", False, False)
+    )
+    assert card.output_text == "(*last turn)\nprevious answer"
+    card.apply_event(TurnStartedEvent("turn", ("next prompt",), "next"))
+    assert card.output_text == "(*last turn)\nprevious answer"
 
     card.apply_event(TurnCompletedEvent("turn", 1, "new answer", 0))
-    assert card.output_text.endswith("\nassistant> new answer")
+    assert card.output_text == "new answer"
     assert card.status is None
+    assert not _has_element(card.render(), "activity_md")
 
     card.apply_event(
         TurnCompletedEvent("long", 1, "x" * CARD_OUTPUT_LIMIT + "latest", 0)
     )
-    assert len(card.output_text) == CARD_OUTPUT_LIMIT
-    assert card.output_text.endswith("latest")
-    assert "previous answer" not in card.output_text
+    rendered = _answer_markdown_content(card.render())
+    assert len(rendered) <= CARD_OUTPUT_LIMIT
+    assert rendered.startswith("x")
+    assert rendered.endswith("...[truncated]")
+    assert "previous answer" not in rendered
 
 
 def test_feishu_card_shows_current_delta_segment_above_input() -> None:
@@ -223,7 +232,7 @@ def test_feishu_card_shows_current_delta_segment_above_input() -> None:
     card.apply_event(AssistantDeltaEvent("segment", "turn"))
     rendered = card.render()
 
-    assert _answer_markdown_content(rendered) == "previous answer\nuser> next prompt"
+    assert _answer_markdown_content(rendered) == "(*last turn)\nprevious answer"
     assert _element(rendered, "working_output_box")["background_style"] == "green-50"
     assert _working_markdown_content(rendered) == "first segment"
 
@@ -234,9 +243,8 @@ def test_feishu_card_shows_current_delta_segment_above_input() -> None:
     )
     rendered = card.render()
     assert not _has_element(rendered, "working_output_box")
-    assert _answer_markdown_content(rendered).endswith(
-        "assistant> first segment\n[shell] pwd -> done"
-    )
+    assert _answer_markdown_content(rendered) == "(*last turn)\nprevious answer"
+    assert _element(rendered, "activity_md")["content"] == "[shell] pwd -> done"
 
     card.apply_event(AssistantDeltaEvent("final ", "turn"))
     card.apply_event(AssistantDeltaEvent("answer", "turn"))
@@ -244,13 +252,15 @@ def test_feishu_card_shows_current_delta_segment_above_input() -> None:
 
     card.apply_event(TurnCompletedEvent("turn", 1, "final answer", 0))
     rendered = card.render()
-    assert _answer_markdown_content(rendered).endswith("assistant> final answer")
-    assert card.output_text.count("assistant> final answer") == 1
+    assert _answer_markdown_content(rendered) == "final answer"
+    assert not _has_element(rendered, "activity_md")
     assert not _has_element(rendered, "working_output_box")
 
 
 def test_feishu_card_shared_buffer_discards_retries_and_flushes_fatal_output() -> None:
     card = PycodexCard()
+    card.apply_event(TurnCompletedEvent("previous", 1, "previous answer", 0))
+    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
     card.apply_event(AssistantDeltaEvent("discarded"))
     assert _working_markdown_content(card.render()) == "discarded"
 
@@ -260,7 +270,10 @@ def test_feishu_card_shared_buffer_discards_retries_and_flushes_fatal_output() -
 
     card.apply_event(AssistantDeltaEvent("retained"))
     card.apply_event(TurnFailedEvent("turn", 1, "failed", "RuntimeError", 0))
-    assert card.output_text == "[status] Retrying\nassistant> retained\nError: failed"
+    assert card.output_text == "(*last turn)\nprevious answer"
+    assert _element(card.render(), "activity_md")["content"] == (
+        "assistant> retained\nError: failed"
+    )
     assert not _has_element(card.render(), "working_output_box")
 
 
@@ -287,12 +300,14 @@ def test_feishu_card_uses_shared_input_prompts(request_kind, other, prompt) -> N
     )
     card.apply_event(request)
     rendered = card.render()
-    assert _answer_markdown_content(rendered) == request.visualize()
+    assert _answer_markdown_content(rendered) == "Ready."
+    assert _element(rendered, "activity_md")["content"] == request.visualize()
     assert _prompt_input(rendered)["placeholder"]["content"].startswith(prompt)
     assert not _prompt_input(rendered)["disabled"]
 
     card.apply_event(InputResolvedEvent("request"))
     assert _prompt_input(card.render())["placeholder"]["content"] == "pycodex> pycodex"
+    assert not _has_element(card.render(), "activity_md")
 
 
 def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> None:
@@ -318,9 +333,9 @@ def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> 
         },
     }
     card.apply_event(SessionStateEvent("attach", state))
-    assert card.output_text == (
-        "user> previous\nassistant> answer\nuser> live\nassistant> partial\n"
-        + request.visualize()
+    assert card.output_text == "(*last turn)\nanswer"
+    assert _element(card.render(), "activity_md")["content"] == (
+        "user> live\nassistant> partial\n" + request.visualize()
     )
     assert card.prompt_text == "other> "
     assert card.display.stream_buffer == ""
@@ -353,7 +368,8 @@ def test_feishu_card_disables_closed_input_and_removes_detached_input() -> None:
     card.apply_event(SessionClosedEvent())
     rendered = card.render()
     assert rendered["header"]["title"]["content"] == "Session Closed"
-    assert _answer_markdown_content(rendered) == "assistant> last output"
+    assert _answer_markdown_content(rendered) == "Ready."
+    assert _element(rendered, "activity_md")["content"] == "assistant> last output"
     assert _prompt_input(rendered)["disabled"]
     assert not _has_element(rendered, "working_output_box")
 
