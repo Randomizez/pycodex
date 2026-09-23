@@ -139,7 +139,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `update_plan`
   - 预期：更新 `PlanStore`，并返回固定确认文本 `Plan updated`。
 - `request_user_input`
-  - 预期：不做模式门控，要求每个问题都有非空 `options`，自动补 `isOther=true`，并回传 JSON 字符串答案 + `success=true`；没有交互 handler 时返回取消结果。后端负责问题收集，CLI/Web/飞书接入测试验证选项和 Other 通过统一输入通道返回。
+  - 预期：不做模式门控，要求每个问题都有非空 `options`，自动补 `isOther=true`，并回传 JSON 字符串答案；`success=true` 只保留在本地 ToolResult，不发送给 Responses API。没有交互 handler 时返回取消结果。后端负责问题收集，CLI/Web/飞书接入测试验证选项和 Other 通过统一输入通道返回；`test_model.py` 抓取新结果和旧 rollout 恢复后的实际请求，验证均不携带 `success`。
 - `request_permissions`
   - 预期：把权限请求转发给交互层，并返回带 `scope` 的权限响应。
 - `apply_patch`
@@ -250,7 +250,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 | `wait` | 先 `exec` 运行一次会先 `yield_control()` 再输出 `WAIT_OK` 的脚本，再 `wait` 拿到后续输出 | 应依次调用 `exec`、`wait`，最终回复 `WAIT_OK` |
 | `web_search` | 只调用 `web_search` 搜索一个明确问题，再基于搜索结果简短作答 | 应调用 `web_search`，并基于搜索结果回复 |
 | `update_plan` | 先调用 `update_plan` 设两步计划，再只回复 `TOOL_OK` | 应调用 `update_plan`，最终回复 `TOOL_OK` |
-| `request_user_input` | 在交互 CLI 中调用一次 `request_user_input` 并选择一个答案 | 应把 JSON 字符串答案和 `success=true` 回传给下一轮；没有 handler 的非交互调用返回取消结果 |
+| `request_user_input` | 在交互 CLI 中调用一次 `request_user_input` 并选择一个答案 | 应把 JSON 字符串答案回传给下一轮，Responses input 中没有 `success`；没有 handler 的非交互调用返回取消结果 |
 | `request_permissions` | 只调用 `request_permissions`，请求 `network.enabled=true`；CLI 侧输入 `t` | 应调用 `request_permissions`，最终回复 `REQUEST_PERMISSIONS_OK` |
 | `apply_patch` | 只调用 `apply_patch`，把目标文件里的 `before` 改成 `APPLY_PATCH_OK` | 应调用 `apply_patch`，最终回复 `APPLY_PATCH_OK` |
 | `grep_files` | 只调用 `grep_files` 搜索 `NEEDLE_123` | 应调用 `grep_files`，最终回复 `grep_target.txt` |

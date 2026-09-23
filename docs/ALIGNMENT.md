@@ -321,7 +321,8 @@ schema 一致的工具有：
     没有 handler 或用户取消时返回取消结果，不再回传模式不可用错误
   - handler 仍要求每个问题都带
     非空 `options`、自动给每个问题补 `isOther=true`，并把结构化答案序列化成
-    JSON 字符串回传到下一轮 `function_call_output.output`，同时补 `success=true`
+    JSON 字符串回传到下一轮 `function_call_output.output`；`success=true` 仅保留
+    为本地执行状态，不序列化到 Responses input，以免触发 `Unknown parameter`
   - 类内 schema 保留 `autoResolutionMs` 字段；runtime 会把非空值
     clamp 到 `[60000, 240000]` 后交给交互层
   - 工具描述不再宣称模式限制，这是有意保留的 upstream 差异。旧模式专用
@@ -423,7 +424,7 @@ schema 一致的工具有：
 | `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `web_search` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 provider-native payload 相等，包含 `search_content_types=["text","image"]`；`web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
 | `update_plan` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致 |
-| `request_user_input` | `intentional availability/description delta` | `mode-free input handler` | 不再按协作模式门控；保留非空 options、`isOther=true`、JSON 字符串答案、`success=true` 和 `autoResolutionMs` clamp；无 handler 或取消时回传取消结果 |
+| `request_user_input` | `intentional availability/description delta` | `mode-free input handler` | 不再按协作模式门控；保留非空 options、`isOther=true`、JSON 字符串答案、本地 `success=true` 和 `autoResolutionMs` clamp；Responses input 不携带 `success`；无 handler 或取消时回传取消结果 |
 | `request_permissions` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已补 `environment_id` passthrough，交互 handler 仍是最小实现 |
 | `apply_patch` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 custom grammar 相等；`custom_tool_call` / `custom_tool_call_output` 外层 shape 一致；输出包装已对齐，仅剩具体文件路径差异 |
 | `grep_files` | `not exposed` | `local shim` | 默认首轮路径不带；本地文件搜索 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |

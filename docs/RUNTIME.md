@@ -101,6 +101,12 @@ The Web message endpoint also accepts `{"request_id": "...", "answer": {...}}`
 `type: "answer"`. The browser's ordinary text form uses the same input path and
 allows a blank submission to cancel a pending question.
 
+Question answers enter the next model request as a JSON string in
+`function_call_output.output`. `ToolResult.success` is local execution metadata;
+serialization omits it from Responses input and new rollout response items.
+Older rollout entries can still load that field, but replay never sends it to
+the API.
+
 `start()` is idempotent and owns the one queue worker. `close()` stops admission,
 resolves waiting input, drains turns and child sessions, and runs injected
 connection cleanup; it never cancels an Agent turn. Detach alone does not close

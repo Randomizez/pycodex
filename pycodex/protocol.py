@@ -262,6 +262,7 @@ class ToolResult:
     name: "str"
     output: "JSONValue"
     content_items: "typing.Union[typing.Tuple[JSONDict, ...], None]" = None
+    # Local execution metadata; not part of a Responses API input item.
     success: "typing.Union[bool, None]" = None
     is_error: "bool" = False
     tool_type: 'Literal["function", "custom"]' = "function"
@@ -307,8 +308,6 @@ class ToolResult:
             "call_id": self.call_id,
             "output": payload_output,
         }
-        if self.success is not None:
-            payload["success"] = self.success
         if self.id is not None:
             payload["id"] = self.id
         if self.tool_type == "custom":

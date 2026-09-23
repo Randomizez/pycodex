@@ -136,7 +136,8 @@ Python 回调统一接收 `pycodex.events` 中的具体 `Event` dataclass，
     排除项，旧版 interactive 抓包不代表当前版本已经重新验证。
 - 结构化问答：
   - `request_user_input` 直接使用注册的交互 handler，不再受模式限制；
-  - 仍会强制 `isOther=true`、要求非空 `options`，并以 JSON 字符串 + `success=true` 回传结构化答案；
+  - 仍会强制 `isOther=true`、要求非空 `options`，并把 JSON 字符串答案放进
+    `function_call_output.output`；`success=true` 只保留为本地执行状态，不发送给 API；
   - 没有 handler 或用户取消时返回取消结果；工具测试和 CLI 集成测试覆盖这些路径。
 
 协作模式的配置字段、提示模板和门控均已删除；普通 CLI/Web 交互、`update_plan`

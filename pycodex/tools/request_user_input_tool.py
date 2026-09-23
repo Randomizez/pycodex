@@ -6,7 +6,7 @@ Original Codex mapping:
 Expected behavior:
 - Validate the question payload and force `isOther=true` on every question.
 - Collect answers through the registered input handler and return a JSON-string
-  `function_call_output` with `success=true`.
+  `function_call_output`; `success=true` stays in local execution metadata.
 - Without an input handler, return a cancelled response.
 """
 

@@ -1022,7 +1022,6 @@ async def test_request_user_input_tool_returns_structured_answers() -> "None":
         "type": "function_call_output",
         "call_id": "call_request_user_input_answers",
         "output": '{"answers":{"choice":{"answers":["Use tool A (Recommended)"]}}}',
-        "success": True,
     }
 
 

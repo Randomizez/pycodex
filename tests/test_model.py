@@ -397,7 +397,9 @@ def test_responses_model_client_builds_responses_payload() -> "None":
             UserMessage(text="hi"),
             AssistantMessage(text="hello"),
             ToolCall(call_id="call_1", name="echo", arguments={"text": "hello"}),
-            ToolResult(call_id="call_1", name="echo", output={"text": "hello"}),
+            ToolResult(
+                call_id="call_1", name="echo", output={"text": "hello"}, success=True
+            ),
             ToolCall(
                 call_id="call_2",
                 name="apply_patch",
@@ -408,6 +410,7 @@ def test_responses_model_client_builds_responses_payload() -> "None":
                 call_id="call_2",
                 name="apply_patch",
                 output="patched",
+                success=False,
                 tool_type="custom",
             ),
         ],
@@ -458,7 +461,11 @@ def test_responses_model_client_builds_responses_payload() -> "None":
     assert payload["input"][2]["content"][0]["type"] == "output_text"
     assert payload["input"][3]["type"] == "function_call"
     assert json.loads(payload["input"][3]["arguments"]) == {"text": "hello"}
-    assert payload["input"][4]["type"] == "function_call_output"
+    assert payload["input"][4] == {
+        "type": "function_call_output",
+        "call_id": "call_1",
+        "output": '{"text":"hello"}',
+    }
     assert payload["input"][5] == {
         "type": "custom_tool_call",
         "name": "apply_patch",
@@ -990,9 +997,11 @@ def test_responses_model_client_omits_authorization_when_provider_has_no_env_key
     assert "authorization" not in model_headers
 
 
+@pytest.mark.parametrize("resumed", [False, True])
 def test_responses_model_client_wire_headers_and_body_match_builders(
     tmp_path,
     monkeypatch,
+    resumed,
 ) -> "None":
     capture_root = tmp_path / "capture"
     capture_store = CaptureStore(capture_root)
@@ -1017,8 +1026,45 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
         session_id="00000000-0000-7000-8000-000000000000",
         originator="codex_exec",
     )
+    answers = '{"answers":{"choice":{"answers":["Alpha"]}}}'
+    history = [
+        UserMessage(text="Ask me to choose"),
+        ToolCall(
+            "call_question",
+            "request_user_input",
+            {
+                "questions": [
+                    {
+                        "id": "choice",
+                        "header": "Choice",
+                        "question": "Choose a path",
+                        "options": [{"label": "Alpha", "description": "Path A"}],
+                    }
+                ]
+            },
+        ),
+        ToolResult("call_question", "request_user_input", answers, success=True),
+    ]
+    if resumed:
+        entries = [
+            {"type": "session_meta", "payload": {"id": client._session_id}},
+            {
+                "type": "event_msg",
+                "payload": {"type": "user_message", "message": history[0].text},
+            },
+        ] + [
+            {"type": "response_item", "payload": item.serialize()}
+            for item in history[1:]
+        ]
+        # Old rollouts included this local field in the serialized response item.
+        entries[-1]["payload"]["success"] = True
+        rollout = tmp_path / "legacy.jsonl"
+        original = "\n".join(json.dumps(entry) for entry in entries) + "\n"
+        rollout.write_text(original, encoding="utf-8")
+        history = load_resumed_session_path(rollout)["history"]
+        assert rollout.read_text(encoding="utf-8") == original
     prompt = Prompt(
-        input=[UserMessage(text="hi")],
+        input=history,
         tools=[],
         turn_id="turn_123",
         turn_metadata={"turn_id": "turn_123", "sandbox": "none"},
@@ -1040,6 +1086,12 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
     headers = _normalized_headers(request["headers"])
 
     assert request["body"] == client._build_payload(prompt)
+    assert request["body"]["input"][-1] == {
+        "type": "function_call_output",
+        "call_id": "call_question",
+        "output": answers,
+    }
+    assert prompt.input[-1].success is True
     for key, value in client._build_headers(prompt).items():
         assert headers[key.lower()] == value
     assert headers.get("accept-encoding") == "identity"

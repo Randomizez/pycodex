@@ -118,7 +118,8 @@ Current progress is easiest to read in layers:
 - structured user input:
   - `request_user_input` uses the registered input handler without mode gating;
   - it forces `isOther=true`, requires non-empty `options`, and returns
-    structured answers as a JSON string plus `success=true`;
+    structured answers as a JSON string in `function_call_output.output`;
+    `success=true` is local execution metadata and is omitted from API requests;
   - without an input handler, or when the user cancels, it returns a cancelled
     response. CLI integration and tool-level tests cover both paths.
 
