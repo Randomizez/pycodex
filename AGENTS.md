@@ -46,8 +46,8 @@
 - 当前协议层已经支持两类原版工具载荷：普通 function tools，以及 `apply_patch` 这类 freeform/custom tools；工具结果也支持结构化 `input_image` content items，用于 `view_image` 这类会把图片喂回模型的工具。
 - 当前本地 runtime 已支持一个最小的 in-process sub-agent 管理层：`spawn_agent` / `send_input` / `resume_agent` / `wait_agent` / `close_agent` 通过共享的 `SubAgentManager` 驱动新的 `AgentRuntime` 实例，不依赖 CLI harness 自带的多 agent 基础设施。
 - `request_user_input` / `request_permissions` handler 由 `AgentRuntime` 绑定，通过 `input_requested/input_resolved` 事件收集各前端输入；不要让工具直接抢终端 stdin，也不要由前端覆盖 manager handler。有请求时普通输入回答当前问题，slash 输入仍执行命令；支持多题、Other、取消、超时和结构化 `answer_input`。没有前端或正在关闭时返回取消，最后一个前端 detach 会解除等待。
-- Collaboration mode 已按用户要求彻底移除：不保留模式枚举、ContextConfig/ToolContext 模式字段、协作提示模板、`build_agent` 的 `session_mode` 参数或模式门控；不要为了 upstream 对齐重新引入。普通 CLI/Web 交互、`update_plan` 和 subagent 与该模式无关，继续保留。
-- `request_user_input` 不再受模式限制：有注册的交互 handler 就收集答案，没有 handler 或用户取消时返回取消结果；仍要求每个问题都有非空 `options`，补 `isOther=true`，并把结构化答案序列化成 JSON 字符串放进 `function_call_output.output`。`ToolResult.success=true` 仅是本地执行状态，不能序列化到 Responses input；恢复旧 rollout 读到 `success` 时也不得重新发送该字段。
+- Collaboration mode 已按用户要求彻底移除：不保留模式枚举、ContextConfig/ToolContext 模式字段、协作提示模板、`build_agent` 的 `session_mode` 参数或模式门控；不要为了 upstream 对齐重新引入。移除模式不代表启用 `request_user_input`，它的默认不可用返回单独保留。普通 CLI/Web 交互、`update_plan` 和 subagent 与该模式无关，继续保留。
+- `request_user_input` 保留默认工具注册及参数声明，但调用固定返回 `request_user_input is unavailable in Default mode`，不收集答案、不触发 `input_requested`，有交互 handler 也不启用。工具本身无状态，不注入 request manager，不为此恢复模式系统或增加启用开关。通用 runtime 问答/权限服务继续保留。`ToolResult.success` 仅是本地执行状态，不能序列化到 Responses input；恢复旧 rollout 读到 `success` 时也不得重新发送该字段。
 - 当前 `exec` / `wait` 已有一个最小 code-mode 实现：底层通过 Node 子进程运行 JavaScript，自带 `text` / `image` / `store` / `load` / `exit` / `notify` / `yield_control` helper，并允许通过 `tools.<name>(...)` 调回本地已注册工具；`web_search` 当前作为 Responses API provider-native tool declaration 暴露给模型，不经过本地 ToolRegistry 执行。
 - 除明确记录的 pycodex 扩展（当前为 `clock`）外，我们支持的 tools 必须和原版 Codex 内置 tools 一一对应：名称、定位、参数形状、交互模型、输出语义都应尽量对齐；不要混合多个原版工具的语义做一个“折中工具”。
 - 代码风格上不要使用 `*` 定义 keyword-only 参数；接口默认允许位置参数。

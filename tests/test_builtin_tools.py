@@ -12,7 +12,6 @@ from pycodex.protocol import ToolCall, ToolResult, UserMessage
 from pycodex.runtime_services import (
     PlanStore,
     RequestPermissionsManager,
-    RequestUserInputManager,
     SubAgentManager,
 )
 from pycodex.tools import (
@@ -904,10 +903,18 @@ async def test_update_plan_tool_returns_confirmation_and_stores_plan(
 
 
 @pytest.mark.asyncio
-async def test_request_user_input_tool_is_cancelled_without_handler() -> "None":
-    manager = RequestUserInputManager()
+@pytest.mark.parametrize("has_handler", [False, True])
+async def test_request_user_input_tool_is_unavailable(has_handler) -> "None":
     registry = ToolRegistry()
-    registry.register(RequestUserInputTool(manager))
+    requested = []
+
+    async def handler(payload):
+        requested.append(payload)
+        return {"answers": {}}
+
+    if has_handler:
+        registry.runtime_environment.request_user_input_manager.set_handler(handler)
+    registry.register(RequestUserInputTool())
 
     result = await registry.execute(
         ToolCall(
@@ -937,170 +944,14 @@ async def test_request_user_input_tool_is_cancelled_without_handler() -> "None":
     )
 
     assert result.is_error is False
-    assert (
-        result.output == "request_user_input was cancelled before receiving a response"
-    )
-
-
-@pytest.mark.asyncio
-async def test_request_user_input_tool_returns_structured_answers() -> "None":
-    manager = RequestUserInputManager()
-    captured_payloads: "typing.List[typing.Dict[str, object]]" = []
-
-    async def handler(payload):
-        captured_payloads.append(payload)
-        return {
-            "answers": {
-                "choice": {
-                    "answers": ["Use tool A (Recommended)"],
-                }
-            }
-        }
-
-    manager.set_handler(handler)
-    registry = ToolRegistry()
-    registry.register(RequestUserInputTool(manager))
-
-    result = await registry.execute(
-        ToolCall(
-            call_id="call_request_user_input_answers",
-            name="request_user_input",
-            arguments={
-                "questions": [
-                    {
-                        "id": "choice",
-                        "header": "Select",
-                        "question": "Pick one",
-                        "options": [
-                            {
-                                "label": "Use tool A (Recommended)",
-                                "description": "Fast path",
-                            },
-                            {
-                                "label": "Use tool B",
-                                "description": "Slow path",
-                            },
-                        ],
-                    }
-                ]
-            },
-        ),
-        ToolContext(
-            turn_id="turn_request_user_input_answers",
-            history=(),
-        ),
-    )
-
-    assert result.is_error is False
-    assert result.success is True
-    assert result.output == (
-        '{"answers":{"choice":{"answers":["Use tool A (Recommended)"]}}}'
-    )
-    assert captured_payloads == [
-        {
-            "questions": [
-                {
-                    "id": "choice",
-                    "header": "Select",
-                    "question": "Pick one",
-                    "options": [
-                        {
-                            "label": "Use tool A (Recommended)",
-                            "description": "Fast path",
-                        },
-                        {
-                            "label": "Use tool B",
-                            "description": "Slow path",
-                        },
-                    ],
-                    "isOther": True,
-                }
-            ]
-        }
-    ]
+    assert result.success is None
+    assert requested == []
+    assert result.output == "request_user_input is unavailable in Default mode"
     assert result.serialize() == {
         "type": "function_call_output",
-        "call_id": "call_request_user_input_answers",
-        "output": '{"answers":{"choice":{"answers":["Use tool A (Recommended)"]}}}',
+        "call_id": "call_request_user_input",
+        "output": "request_user_input is unavailable in Default mode",
     }
-
-
-@pytest.mark.asyncio
-async def test_request_user_input_tool_clamps_auto_resolution_ms() -> "None":
-    manager = RequestUserInputManager()
-    captured_payloads: "typing.List[typing.Dict[str, object]]" = []
-
-    async def handler(payload):
-        captured_payloads.append(payload)
-        return {"answers": {"choice": {"answers": ["Use tool A (Recommended)"]}}}
-
-    manager.set_handler(handler)
-    registry = ToolRegistry()
-    registry.register(RequestUserInputTool(manager))
-
-    result = await registry.execute(
-        ToolCall(
-            call_id="call_request_user_input_auto",
-            name="request_user_input",
-            arguments={
-                "autoResolutionMs": 999999,
-                "questions": [
-                    {
-                        "id": "choice",
-                        "header": "Select",
-                        "question": "Pick one",
-                        "options": [
-                            {
-                                "label": "Use tool A (Recommended)",
-                                "description": "Fast path",
-                            }
-                        ],
-                    }
-                ],
-            },
-        ),
-        ToolContext(
-            turn_id="turn_request_user_input_auto",
-            history=(),
-        ),
-    )
-
-    assert result.is_error is False
-    assert captured_payloads[0]["autoResolutionMs"] == 240000
-
-
-@pytest.mark.asyncio
-async def test_request_user_input_tool_requires_non_empty_options() -> "None":
-    manager = RequestUserInputManager()
-    registry = ToolRegistry()
-    registry.register(RequestUserInputTool(manager))
-
-    result = await registry.execute(
-        ToolCall(
-            call_id="call_request_user_input_invalid",
-            name="request_user_input",
-            arguments={
-                "questions": [
-                    {
-                        "id": "choice",
-                        "header": "Select",
-                        "question": "Pick one",
-                        "options": [],
-                    }
-                ]
-            },
-        ),
-        ToolContext(
-            turn_id="turn_request_user_input_invalid",
-            history=(),
-        ),
-    )
-
-    assert result.is_error is False
-    assert (
-        result.output
-        == "request_user_input requires non-empty options for every question"
-    )
 
 
 @pytest.mark.asyncio

@@ -177,8 +177,7 @@ At the time of writing:
   sub-agent `x-openai-subagent` header and the observed `workspaces` omission
   on later sub-agent turns
 - request-visible tool schema comparisons cover the exec-mode and default TUI
-  paths; intentional local differences include removing the mode restriction
-  from the `request_user_input` description
+  paths; `request_user_input` explicitly retains Default-mode unavailability
 - class-level tool descriptions, input schemas, output schemas, and notable
   runtime result shapes have been refreshed across the default local tool set
 
@@ -322,16 +321,15 @@ schema 一致的工具有：
   - 下一轮里的 `function_call_output` schema 一致
   - 参数值会因模型自由生成 explanation / step 文案而不同，但外层 shape 一致
 - `request_user_input`
-  - 协作模式及对应门控已按用户要求移除；工具直接使用注册的交互 handler，
-    没有 handler 或用户取消时返回取消结果，不再回传模式不可用错误
-  - handler 仍要求每个问题都带
-    非空 `options`、自动给每个问题补 `isOther=true`，并把结构化答案序列化成
-    JSON 字符串回传到下一轮 `function_call_output.output`；`success=true` 仅保留
-    为本地执行状态，不序列化到 Responses input，以免触发 `Unknown parameter`
-  - 类内 schema 保留 `autoResolutionMs` 字段；runtime 会把非空值
-    clamp 到 `[60000, 240000]` 后交给交互层
-  - 工具描述不再宣称模式限制，这是有意保留的 upstream 差异。旧模式专用
-    round-trip 对齐脚本已删除；现由工具测试和 CLI 交互集成测试验证问答链路
+  - 协作模式状态及提示已按用户要求移除，但保留默认路径的不可用行为：
+    工具调用固定返回 `request_user_input is unavailable in Default mode`
+  - 保留名称及参数声明（包括 `autoResolutionMs`）；调用不校验问题、不收集
+    答案，也不触发 `input_requested`。有交互 handler 不会启用该工具
+  - 工具描述明确 Default mode 不可用，不为此重新引入 Plan mode 或启用开关
+  - `success` 仅保留为本地执行状态，不序列化到 Responses input；旧问答
+    rollout 仍可恢复，重新发送时也不会携带该字段
+  - 工具测试及 CLI/Web/飞书集成测试验证不可用返回和无问答事件；通用输入
+    服务的测试独立于该默认工具，继续覆盖前端回答传输
 - `view_image`
   - `function_call` item schema 一致
   - 下一轮里的 `function_call_output` schema 一致
@@ -429,7 +427,7 @@ schema 一致的工具有：
 | `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `web_search` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 provider-native payload 相等，包含 `search_content_types=["text","image"]`；`web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
 | `update_plan` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致 |
-| `request_user_input` | `intentional availability/description delta` | `mode-free input handler` | 不再按协作模式门控；保留非空 options、`isOther=true`、JSON 字符串答案、本地 `success=true` 和 `autoResolutionMs` clamp；Responses input 不携带 `success`；无 handler 或取消时回传取消结果 |
+| `request_user_input` | `default-mode unavailable` | `stateless unavailable response` | 保留工具声明及 `autoResolutionMs` 参数；调用固定返回 Default mode 不可用，不触发问答；Responses input 不携带本地 `success` |
 | `request_permissions` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已补 `environment_id` passthrough，交互 handler 仍是最小实现 |
 | `apply_patch` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 custom grammar 相等；`custom_tool_call` / `custom_tool_call_output` 外层 shape 一致；输出包装已对齐，仅剩具体文件路径差异 |
 | `grep_files` | `not exposed` | `local shim` | 默认首轮路径不带；本地文件搜索 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |

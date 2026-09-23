@@ -150,7 +150,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `update_plan`
   - 预期：更新 `PlanStore`，并返回固定确认文本 `Plan updated`。
 - `request_user_input`
-  - 预期：不做模式门控，要求每个问题都有非空 `options`，自动补 `isOther=true`，并回传 JSON 字符串答案；`success=true` 只保留在本地 ToolResult，不发送给 Responses API。没有交互 handler 时返回取消结果。后端负责问题收集，CLI/Web/飞书接入测试验证选项和 Other 通过统一输入通道返回；`test_model.py` 抓取新结果和旧 rollout 恢复后的实际请求，验证均不携带 `success`。
+  - 预期：保留工具声明，调用固定返回 `request_user_input is unavailable in Default mode`；无论是否注册 handler 都不收集答案。CLI/Web/飞书集成测试验证不会产生 `input_requested`，模型下一轮能收到不可用结果。通用输入服务独立验证回答传输；`test_model.py` 继续覆盖本地 `success` 不进入请求及旧问答 rollout 的恢复。
 - `request_permissions`
   - 预期：把权限请求转发给交互层，并返回带 `scope` 的权限响应。
 - `apply_patch`
@@ -261,7 +261,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 | `wait` | 先 `exec` 运行一次会先 `yield_control()` 再输出 `WAIT_OK` 的脚本，再 `wait` 拿到后续输出 | 应依次调用 `exec`、`wait`，最终回复 `WAIT_OK` |
 | `web_search` | 只调用 `web_search` 搜索一个明确问题，再基于搜索结果简短作答 | 应调用 `web_search`，并基于搜索结果回复 |
 | `update_plan` | 先调用 `update_plan` 设两步计划，再只回复 `TOOL_OK` | 应调用 `update_plan`，最终回复 `TOOL_OK` |
-| `request_user_input` | 在交互 CLI 中调用一次 `request_user_input` 并选择一个答案 | 应把 JSON 字符串答案回传给下一轮，Responses input 中没有 `success`；没有 handler 的非交互调用返回取消结果 |
+| `request_user_input` | 调用一次 `request_user_input` | 返回 `request_user_input is unavailable in Default mode`，不弹出问题、不等待答案，Responses input 中没有 `success` |
 | `request_permissions` | 只调用 `request_permissions`，请求 `network.enabled=true`；CLI 侧输入 `t` | 应调用 `request_permissions`，最终回复 `REQUEST_PERMISSIONS_OK` |
 | `apply_patch` | 只调用 `apply_patch`，把目标文件里的 `before` 改成 `APPLY_PATCH_OK` | 应调用 `apply_patch`，最终回复 `APPLY_PATCH_OK` |
 | `grep_files` | 只调用 `grep_files` 搜索 `NEEDLE_123` | 应调用 `grep_files`，最终回复 `grep_target.txt` |
@@ -280,7 +280,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不把历史通过数量当成当前覆盖范围。
 - 已对 `exec` 做过真实模型 smoke，当前通过。
 - 已对 `pycodex "请只回复当前目录的 basename，不要解释。"` 做过真实配置 smoke；预期回复应等于当前 checkout 目录名。
-- `request_user_input` 的模式限制和模式专用对齐脚本已删除；当前通过本地工具、共享后端及前端接入测试验证正常答复、无 handler 取消、options 校验和超时参数 clamp。
+- collaboration mode 状态和模式专用对齐脚本已删除；`request_user_input` 的默认不可用行为保留，通过工具及 CLI/Web/飞书接入测试验证。通用输入服务的回答与取消测试继续独立运行。
 - 已手工补抓 `write_stdin` 的 round-trip；在固定参数的 prompt 下，upstream Codex 和 `pycodex` 的 `function_call` / `function_call_output` 外层 schema 一致，tool result 文本包装也一致。
 - `exec_command` / `write_stdin` 的本地 unified-exec 默认截断也已补齐：省略 `max_output_tokens` 时默认走 `10_000` token 预算；长时间未轮询的未读输出缓冲会保留 upstream 同款 `1 MiB` head/tail。
 - 已补抓 `apply_patch` 的 `custom_tool_call_output`；当前 `pycodex` 已对齐 upstream 的 `Exit code` / `Wall time` / `Output` 文本包装。

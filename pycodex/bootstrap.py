@@ -123,9 +123,7 @@ def get_tools(
     wait_tool = WaitTool(code_mode_manager)
     web_search_tool = WebSearchTool()
     update_plan_tool = UpdatePlanTool(runtime_environment.plan_store)
-    request_user_input_tool = RequestUserInputTool(
-        runtime_environment.request_user_input_manager
-    )
+    request_user_input_tool = RequestUserInputTool()
     request_permissions_tool = RequestPermissionsTool(
         runtime_environment.request_permissions_manager
     )

@@ -135,10 +135,11 @@ Python 回调统一接收 `pycodex.events` 中的具体 `Event` dataclass，
   - `tests/compare_context_requests.py` 分开报告原始差异和共享 context
     排除项，旧版 interactive 抓包不代表当前版本已经重新验证。
 - 结构化问答：
-  - `request_user_input` 直接使用注册的交互 handler，不再受模式限制；
-  - 仍会强制 `isOther=true`、要求非空 `options`，并把 JSON 字符串答案放进
-    `function_call_output.output`；`success=true` 只保留为本地执行状态，不发送给 API；
-  - 没有 handler 或用户取消时返回取消结果；工具测试和 CLI 集成测试覆盖这些路径。
+  - `request_user_input` 保留工具声明，但调用固定返回
+    `request_user_input is unavailable in Default mode`，不弹出问题；
+  - 接入前端或注册交互 handler 不会启用它；通用 runtime 问答及权限服务保留；
+  - `success` 只保留为本地执行状态，不发送给 API；旧 rollout 中的答案恢复后
+    也遵守这条序列化规则。
 
 协作模式的配置字段、提示模板和门控均已删除；普通 CLI/Web 交互、`update_plan`
 和子 Agent 保留，不依赖协作模式。
@@ -300,7 +301,7 @@ asyncio.run(main())
 - [x] `write_stdin` — 向已有执行 session 写入 stdin 或轮询输出。
 - [x] `web_search` — 暴露 provider-native 的网页搜索能力。
 - [x] `update_plan` — 更新任务计划并维护步骤状态。
-- [x] `request_user_input` — 向用户发起结构化问题并等待回答。
+- [x] `request_user_input` — 保留工具声明，返回上游 Default mode 的不可用提示。
 - [x] `request_permissions` — 请求额外权限再继续执行。
 - [x] `spawn_agent` — 创建并启动子 agent。
 - [x] `send_input` — 给已有子 agent 继续发送输入。

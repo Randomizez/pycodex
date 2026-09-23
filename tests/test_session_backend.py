@@ -246,6 +246,32 @@ async def test_question_answers_use_same_backend_interpretation(frontend):
     queue.detach(observer)
 
 
+@pytest.mark.parametrize("frontend", ["cli", "web", "feishu"])
+async def test_request_user_input_stays_unavailable_with_frontend(frontend):
+    from pycodex.tools import RequestUserInputTool
+
+    client = ControlClient(
+        [
+            ModelResponse(
+                [ToolCall("question", "request_user_input", question_payload())]
+            ),
+            ModelResponse([AssistantMessage("continued")]),
+        ]
+    )
+    queue = make_queue(client)
+    queue.agent.tool_registry.register(RequestUserInputTool())
+    events = []
+    queue.event_handler = events.append
+
+    await run_frontend(frontend, queue, ["ask"])
+
+    assert client.call_count == 2
+    assert not any(event.kind == "input_requested" for event in events)
+    result = client.prompts[1].input[-1]
+    assert result.output == "request_user_input is unavailable in Default mode"
+    assert "success" not in result.serialize()
+
+
 @pytest.mark.parametrize(
     "answer,scope,granted",
     [
@@ -590,12 +616,20 @@ async def test_late_frontends_restore_active_stream_and_follow_completion():
 def test_web_transports_deliver_structured_answers(threaded, transport):
     from fastapi.testclient import TestClient
 
-    from pycodex.tools import RequestUserInputTool
+    class QuestionTool(BaseTool):
+        name = "question_fixture"
+        description = "Exercise the runtime input transport."
+
+        def __init__(self, manager):
+            self.manager = manager
+
+        async def run(self, context, args):
+            return await self.manager.request(args)
 
     client = ControlClient(
         [
             ModelResponse(
-                [ToolCall("question", "request_user_input", question_payload())]
+                [ToolCall("question", "question_fixture", question_payload())]
             ),
             ModelResponse([AssistantMessage("answered")]),
         ]
@@ -604,7 +638,7 @@ def test_web_transports_deliver_structured_answers(threaded, transport):
     def build_session():
         tools = ToolRegistry()
         tools.register(
-            RequestUserInputTool(tools.runtime_environment.request_user_input_manager)
+            QuestionTool(tools.runtime_environment.request_user_input_manager)
         )
         return WorkspaceInteractiveSession(
             AgentRuntime(Agent(client, tools, ContextConfig()))

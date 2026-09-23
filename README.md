@@ -118,12 +118,12 @@ Current progress is easiest to read in layers:
     shared-context exclusions; older interactive captures are not a fresh
     certification of 0.153.4 interactive behavior.
 - structured user input:
-  - `request_user_input` uses the registered input handler without mode gating;
-  - it forces `isOther=true`, requires non-empty `options`, and returns
-    structured answers as a JSON string in `function_call_output.output`;
-    `success=true` is local execution metadata and is omitted from API requests;
-  - without an input handler, or when the user cancels, it returns a cancelled
-    response. CLI integration and tool-level tests cover both paths.
+  - `request_user_input` remains declared, but calls return
+    `request_user_input is unavailable in Default mode` without opening a question;
+  - attaching a frontend or input handler does not enable it. The generic runtime
+    input and permission services remain available;
+  - local tool-result `success` metadata is omitted from API requests, including
+    when replaying answers from older rollouts.
 
 See `docs/ALIGNMENT.md` for more detailed notes.
 
@@ -609,8 +609,8 @@ Official upstream tools:
   output.
 - [x] `web_search` - expose provider-native web search capability.
 - [x] `update_plan` - update the task plan and maintain step status.
-- [x] `request_user_input` - ask the user structured questions and wait for an
-  answer.
+- [x] `request_user_input` - retain the declaration and return the upstream
+  Default-mode unavailable response.
 - [x] `request_permissions` - request extra permissions before continuing.
 - [x] `spawn_agent` - create and start a sub-agent.
 - [x] `send_input` - continue feeding input to an existing sub-agent.

@@ -4,17 +4,12 @@ Original Codex mapping:
 - Corresponds to the original Codex `request_user_input` collaboration tool.
 
 Expected behavior:
-- Validate the question payload and force `isOther=true` on every question.
-- Collect answers through the registered input handler and return a JSON-string
-  `function_call_output`; `success=true` stays in local execution metadata.
-- Without an input handler, return a cancelled response.
+- Keep the tool declaration available for upstream request compatibility.
+- Return the upstream Default-mode unavailable message without requesting input.
 """
 
-import json
-
 from ..protocol import JSONDict, JSONValue
-from ..runtime_services import RequestUserInputManager
-from .base_tool import BaseTool, StructuredToolOutput, ToolContext
+from .base_tool import BaseTool, ToolContext
 
 MIN_AUTO_RESOLUTION_MS = 60_000
 MAX_AUTO_RESOLUTION_MS = 240_000
@@ -72,7 +67,7 @@ class RequestUserInputTool(BaseTool):
         f"{MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is "
         "useful but non-blocking and continuing with best judgment is "
         "acceptable if the user does not answer; omit it when explicit user "
-        "input is required."
+        "input is required. This tool is unavailable in Default mode."
     )
     input_schema = {
         "type": "object",
@@ -102,42 +97,6 @@ class RequestUserInputTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, request_manager: "RequestUserInputManager") -> "None":
-        self._request_manager = request_manager
-
     async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
-        del context
-        questions = args.get("questions")
-        if not isinstance(questions, list):
-            raise ValueError("questions must be a list")
-
-        if any(
-            not isinstance(question, dict)
-            or not isinstance(question.get("options"), list)
-            or not question["options"]
-            for question in questions
-        ):
-            return "request_user_input requires non-empty options for every question"
-
-        request_payload = {
-            "questions": [
-                {
-                    **question,
-                    "isOther": True,
-                }
-                for question in questions
-            ]
-        }
-        auto_resolution_ms = args.get("autoResolutionMs")
-        if auto_resolution_ms not in (None, ""):
-            request_payload["autoResolutionMs"] = min(
-                max(int(auto_resolution_ms), MIN_AUTO_RESOLUTION_MS),
-                MAX_AUTO_RESOLUTION_MS,
-            )
-        response = await self._request_manager.request(request_payload)
-        if response is None:
-            return "request_user_input was cancelled before receiving a response"
-        return StructuredToolOutput(
-            json.dumps(response, ensure_ascii=False, separators=(",", ":")),
-            success=True,
-        )
+        del context, args
+        return "request_user_input is unavailable in Default mode"

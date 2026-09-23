@@ -25,11 +25,12 @@ caller's config. Context managers are never implicitly supplied or shared betwee
 Agents. Standalone callers use `ContextManager(config)` and load configuration
 through `ContextConfig.from_codex_config`.
 
-There is no collaboration-mode state, prompt injection or tool-availability
-gate. CLI and workspace use the same context-building path. Structured questions
-still use `request_user_input`: a registered handler collects answers, while a
-missing handler or a cancelled answer produces the existing cancelled response.
-Sub-agents, `update_plan` and ordinary interactive sessions are unaffected.
+There is no collaboration-mode state or prompt injection. CLI and workspace use
+the same context-building path. `request_user_input` retains its declaration but
+always returns `request_user_input is unavailable in Default mode`; registered
+input handlers do not enable it. The tool has no request-manager dependency.
+The generic runtime input service, sub-agents, `update_plan` and ordinary
+interactive sessions remain available.
 
 `model_client`, `tool_registry`, `context_manager` and `event_handler` are ordinary
 attributes. `AgentRuntime` holds its Agent and subscribes to events, but the Agent
@@ -92,7 +93,7 @@ The CLI renders backend history without keeping a second transcript or a
 blocking question-input path. JSON receipts use future callbacks, not per-turn
 tasks. Web renders each command's lines as one control message.
 
-Tool question/permission handlers belong to the backend, not the terminal.
+Generic question/permission handlers belong to the backend, not the terminal.
 While an input request is pending, non-command text answers the current
 question or permission request. Numbered choices, `0` followed by free text,
 multiple questions, blank-answer cancellation and permission scope work
@@ -106,7 +107,7 @@ The Web message endpoint also accepts `{"request_id": "...", "answer": {...}}`
 `type: "answer"`. The browser's ordinary text form uses the same input path and
 allows a blank submission to cancel a pending question.
 
-Question answers enter the next model request as a JSON string in
+Previously recorded question answers replay as a JSON string in
 `function_call_output.output`. `ToolResult.success` is local execution metadata;
 serialization omits it from Responses input and new rollout response items.
 Older rollout entries can still load that field, but replay never sends it to
