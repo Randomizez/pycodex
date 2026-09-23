@@ -247,6 +247,11 @@ Current behavior:
   Questions and permission requests appear below the conversation only while
   waiting for input; they disappear when answered, cancelled, or timed out,
   leaving the continuing assistant output at the bottom.
+  Queued enqueue/steer messages become user conversation blocks when their
+  turns start, in execution order. Small capsules to the left of the status
+  pill preview pending Steer (`↑`) and Queue (`◷`) text. Long text is truncated;
+  hover shows the full pending content. Each disappears when that type has
+  no waiting input.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;

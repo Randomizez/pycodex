@@ -473,6 +473,47 @@
       align-content: end;
       background: var(--panel);
     }
+    .queue-hint {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      min-width: 0;
+      max-width: 65%;
+    }
+    .queue-hint[hidden],
+    .queue-indicator[hidden] {
+      display: none;
+    }
+    .queue-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      min-width: 0;
+      max-width: 160px;
+      height: 22px;
+      padding: 0 7px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      font-size: 11px;
+      color: var(--warn-ink);
+      background: rgb(255, 247, 223);
+    }
+    .queue-indicator.enqueue {
+      color: #000000;
+      background: #fffaf0;
+      border-color: #e5d5b0;
+    }
+    .queue-symbol {
+      flex-shrink: 0;
+      font-size: 12px;
+      line-height: 1;
+    }
+    .queue-preview {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     textarea {
       min-width: 0;
       resize: vertical;
@@ -501,9 +542,11 @@
       position: relative;
       display: inline-flex;
       align-items: center;
+      gap: var(--space-3);
       justify-self: start;
       align-self: end;
       max-width: 100%;
+      min-width: 0;
     }
     .prompt-row {
       display: flex;
@@ -517,6 +560,7 @@
       display: inline-flex;
       align-items: center;
       max-width: 100%;
+      min-width: 0;
       height: var(--spinner-pill-height);
       color: var(--muted);
       font-size: 12px;
@@ -534,7 +578,7 @@
     .spinner:empty {
       display: none;
     }
-    .spinner-wrap:not(:has(.spinner:not(:empty))) {
+    .spinner-wrap:not(:has(.spinner:not(:empty), .queue-hint:not([hidden]))) {
       display: none;
     }
     .spinner:focus-visible {
@@ -542,7 +586,7 @@
       box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.18);
       outline: 0;
     }
-    .spinner-wrap:has(.spinner:not(:empty)) {
+    .spinner-wrap:has(.spinner:not(:empty), .queue-hint:not([hidden])) {
       margin-bottom: var(--space-1);
     }
     .spinner:not(:empty)::before {
@@ -661,6 +705,16 @@
       <form id="composer" class="composer">
         <div class="spinner-wrap">
           <div id="toast" class="toast" role="status" aria-live="polite"></div>
+          <div id="queueHint" class="queue-hint" role="status" aria-live="polite" hidden>
+            <span id="steerHint" class="queue-indicator" hidden>
+              <span class="queue-symbol" role="img" aria-label="Steer">↑</span>
+              <span class="queue-preview"></span>
+            </span>
+            <span id="enqueueHint" class="queue-indicator enqueue" hidden>
+              <span class="queue-symbol" role="img" aria-label="Queue">◷</span>
+              <span class="queue-preview"></span>
+            </span>
+          </div>
           <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
         </div>
         <div class="prompt-row">
@@ -679,6 +733,9 @@
   <script>
     const log = document.getElementById("log");
     const spinner = document.getElementById("spinner");
+    const queueHint = document.getElementById("queueHint");
+    const steerHint = document.getElementById("steerHint");
+    const enqueueHint = document.getElementById("enqueueHint");
     const toast = document.getElementById("toast");
     const prompt = document.getElementById("prompt");
     const form = document.getElementById("composer");
@@ -1372,10 +1429,24 @@
       boardPollTimer = setInterval(pollBoard, 2000);
     }
 
+    function renderQueueHint(inputs) {
+      queueHint.hidden = inputs.length === 0;
+      for (const [kind, label, badge] of [
+        ["steer", "[soon]", steerHint],
+        ["enqueue", "[on done]", enqueueHint],
+      ]) {
+        const text = inputs.filter(item => item.queue === kind).map(item => item.prompt).join("\n");
+        badge.hidden = !text;
+        badge.querySelector(".queue-preview").textContent = text;
+        badge.title = label + "\n" + text;
+      }
+    }
+
     function renderSnapshot(snapshot) {
       if (!snapshot) return;
       const state = stateForSession(activeSessionId);
       state.inputRequest = snapshot.input_request || null;
+      renderQueueHint(snapshot.queued_inputs);
       const signature = messageSignature(snapshot);
       if (signature === state.lastRenderedSignature) {
         setSpinner(snapshot.spinner || "");
@@ -1429,12 +1500,11 @@
         );
       }
       if (turn.response) {
-        addMarkdownEntry(
-          isControl ? "result" : "response",
-          turn.response || "",
-          isControl ? "control" : "response",
-          shouldStick,
-        );
+        if (isControl) {
+          addEntry("result", turn.response, "control", shouldStick);
+        } else {
+          addMarkdownEntry("response", turn.response, "response", shouldStick);
+        }
       }
       if (turn.thinking) addEntry("thinking", turn.thinking || "", "thinking", shouldStick);
       if (turn.error) addEntry("error", turn.error || "", "error", shouldStick);
@@ -1473,6 +1543,7 @@
       resizePrompt();
       suppressScrollSave = true;
       log.textContent = "";
+      renderQueueHint([]);
       suppressScrollSave = false;
       setSpinner("", {suppressDoneNotification: true});
       restoreScrollTop = state.scrollTop;
@@ -1520,6 +1591,7 @@
         resizePrompt();
         suppressScrollSave = true;
         log.textContent = "";
+        renderQueueHint([]);
         suppressScrollSave = false;
         await pollSession();
       } else {

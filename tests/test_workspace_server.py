@@ -23,7 +23,6 @@ from pycodex.events import (
     AutoCompactCompletedEvent,
     CommandCompletedEvent,
     InputRequestedEvent,
-    InputResolvedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     TokenCountEvent,
@@ -35,6 +34,7 @@ from pycodex.events import (
     TurnStartedEvent,
 )
 from pycodex.protocol import ToolResult
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient
@@ -564,52 +564,61 @@ def test_web_view_projects_context_tool_and_stream_events():
     view.close()
 
 
-@pytest.mark.parametrize("request_kind", ["questions", "permissions"])
-def test_input_request_does_not_leave_a_control_turn_after_stream_resumes(request_kind):
-    view = WebSessionView()
-    view.handle_event(TurnStartedEvent("turn", ("hello",)))
-    view.handle_event(AssistantDeltaEvent("Before asking", "turn"))
-    tool_name = (
-        "request_user_input" if request_kind == "questions" else "request_permissions"
-    )
-    call = ToolCall("call", tool_name, {})
-    view.handle_event(ToolStartedEvent("turn", call))
-    request = InputRequestedEvent(
-        "request",
-        request_kind,
-        False,
-        question={
-            "id": "choice",
-            "header": "Choice",
-            "question": "Choose a path",
-            "options": [{"label": "Alpha", "description": "Path A"}],
-        },
-        permissions={"reason": "Run the task", "permissions": {}},
-    )
-    view.handle_event(request)
+async def test_workspace_displays_steer_and_enqueue_in_execution_order():
+    started = [asyncio.Event() for _ in range(3)]
+    release = [asyncio.Event() for _ in range(3)]
 
-    pending = view.snapshot()
-    assert pending["input_request"]["text"] == request.visualize()
-    assert len(pending["turns"]) == 1
-    assert pending["turns"][0]["thinking"] == "Before asking"
-    assert (
-        view.subscribe().get_nowait()["snapshot"]["input_request"]
-        == pending["input_request"]
-    )
+    async def respond(prompt, call_count):
+        started[call_count - 1].set()
+        await release[call_count - 1].wait()
+        return ModelResponse([AssistantMessage("answer " + str(call_count))])
 
-    view.handle_event(InputResolvedEvent("request"))
-    view.handle_event(
-        ToolCompletedEvent("turn", call, ToolResult("call", tool_name, ""))
-    )
-    view.handle_event(AssistantDeltaEvent("Continuing", "turn"))
-    view.handle_event(AssistantDeltaEvent(" now", "turn"))
+    model = ScriptedModelClient(response_factory=respond)
+    session = await make_session(model).start()
+    try:
+        first = await session.runtime.submit_input("first")
+        await asyncio.wait_for(started[0].wait(), 1)
+        queued = await session.runtime.submit_input("/queue last", "cli")
+        steered = await session.runtime.submit_input("steer one")
+        merged = await session.runtime.submit_input("steer two")
 
-    resumed = view.snapshot()
-    assert resumed["input_request"] is None
-    assert len(resumed["turns"]) == 1
-    assert resumed["turns"][-1]["kind"] == "assistant"
-    assert resumed["turns"][-1]["thinking"] == "Continuing now"
-    view.close()
+        assert steered.submission_id == merged.submission_id
+        assert [turn["prompt"] for turn in session.snapshot()["turns"]] == ["first"]
+        assert session.summary()["turn_count"] == 1
+        assert session.snapshot()["queued_inputs"] == [
+            {"queue": "enqueue", "prompt": "last"},
+            {"queue": "steer", "prompt": "steer one\nsteer two"},
+        ]
+
+        release[0].set()
+        await asyncio.wait_for(started[1].wait(), 1)
+        with pytest.raises(SubmissionInterrupted):
+            await first.future
+        turns = session.snapshot()["turns"]
+        assert [turn["prompt"] for turn in turns] == ["first", "steer one\nsteer two"]
+        assert turns[-1]["turn_id"] == turns[0]["turn_id"]
+        assert turns[-1]["submission_id"] == steered.submission_id
+        assert session.snapshot()["queued_inputs"] == [
+            {"queue": "enqueue", "prompt": "last"}
+        ]
+
+        release[1].set()
+        await asyncio.wait_for(started[2].wait(), 1)
+        turns = session.snapshot()["turns"]
+        assert [turn["prompt"] for turn in turns] == [
+            "first",
+            "steer one\nsteer two",
+            "last",
+        ]
+        assert turns[-1]["queue"] == "enqueue"
+        assert turns[-1]["sender"] == "cli"
+        assert session.snapshot()["queued_inputs"] == []
+        release[2].set()
+        await asyncio.gather(queued.future, steered.future, merged.future)
+    finally:
+        for event in release:
+            event.set()
+        await session.close()
 
 
 async def test_tool_failure_remains_a_tool_result():

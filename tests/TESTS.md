@@ -45,6 +45,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 
 ### 测试分层与去重
 
+- 小幅文案、布局、样式改动做页面检查，不搭建专用 Node/DOM 模拟测试；
+  状态或队列语义只保留必要的行为回归，按变更范围运行相关用例。
 - 会话命令、问答、权限和订阅契约集中在 `test_session_backend.py`；
   CLI/Web 不再分别重测每一个后端命令。
 - Agent/Runtime 保持单向控制：Agent 无队列引用，裸 `stop_asap` 不取消已发出的

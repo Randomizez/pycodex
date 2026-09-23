@@ -58,10 +58,18 @@ steer; `/queue <text>` uses the ordinary queue. The backend parses `/help`,
 Each queued request is one private record of submission id, turn id, texts and
 futures. The unused public `Submission` / `UserTurnOp` wrappers are removed;
 callers submit text through `submit_input` or `enqueue_user_turn`.
+The workspace keeps queued submissions out of its displayed conversation.
+`TurnStartedEvent` adds the actual user texts in execution order, including
+coalesced steer inputs; enqueue admission alone does not create a user block.
+The composer previews pending Steer and Queue text in small capsules beside
+the status pill. The preview comes from existing queued submission metadata.
 Commands return structured results and never become user messages. Unknown
 commands and invalid arguments produce explicit command errors. Destructive
 commands reject active or queued work; a command lock serializes asynchronous
 commands and lets close wait for accepted command work.
+
+Web command output preserves the event's plain text, including resume-list
+numbering and line breaks.
 
 Frontends subscribe with `attach(handler)` and unsubscribe with `detach(id)`.
 Attach delivers an immediate `session_state`: identity, model, title, canonical

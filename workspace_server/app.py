@@ -306,6 +306,11 @@ class WebSessionView:
                 "model": self._model,
                 "rollout_path": self._rollout_path,
                 "input_request": _json_safe(self._input_request),
+                "queued_inputs": [
+                    {"queue": turn["queue"], "prompt": turn["prompt"]}
+                    for turn in self._turns_by_submission_id.values()
+                    if not turn["turn_id"]
+                ],
                 "accepts_input": self._accepts_input,
                 "title": self._title,
                 "context_remaining_percent": self._context_remaining_percent,
@@ -379,7 +384,8 @@ class WebSessionView:
             self._spinner_status = ""
             return
         if isinstance(event, InputQueuedEvent):
-            turn = self._ensure_turn(event.submission_id, "", event.prompt)
+            turn = self._ensure_turn(event.submission_id, "", "")
+            turn["prompt"] += ("\n" if turn["prompt"] else "") + event.prompt
             turn["queue"] = event.queue
             turn["sender"] = event.sender
             return
@@ -514,14 +520,14 @@ class WebSessionView:
         prompt: str,
     ) -> "typing.Dict[str, object]":
         submission_id = str(submission_id or "").strip()
-        turn_id = str(turn_id or submission_id).strip()
+        turn_id = str(turn_id or "").strip()
         turn = self._turns_by_submission_id.get(submission_id)
         if turn is None and turn_id and not submission_id:
             turn = self._turns_by_turn_id.get(turn_id)
         if turn is None:
             turn = {
                 "submission_id": submission_id,
-                "turn_id": turn_id,
+                "turn_id": "",
                 "prompt": prompt,
                 "response": "",
                 "thinking": "",
@@ -532,11 +538,13 @@ class WebSessionView:
                 "queue": "steer",
                 "sender": "web",
             }
-            self._turns.append(turn)
         if submission_id:
             turn["submission_id"] = submission_id
             self._turns_by_submission_id[submission_id] = turn
         if turn_id:
+            if not turn["turn_id"]:
+                # Queue admission stays hidden until the turn actually starts.
+                self._turns.append(turn)
             turn["turn_id"] = turn_id
             self._turns_by_turn_id[turn_id] = turn
         if prompt:
