@@ -35,6 +35,8 @@ from pycodex.events import (
     TurnStartedEvent,
 )
 from pycodex.protocol import ToolResult
+from pycodex.utils import uuid7_string
+from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient
 from workspace_server import (
     ThreadedWorkspaceInteractiveSession,
@@ -61,12 +63,17 @@ def make_session(model=None, tools=None):
                 [AssistantMessage("done")]
             )
         )
+    session_id = uuid7_string()
     return WorkspaceInteractiveSession(
         AgentRuntime(
             Agent(
                 model,
                 tools or ToolRegistry(),
                 ContextConfig(),
+                session_file_path=rollout_path_for_session(
+                    resolve_codex_home(), session_id
+                ),
+                session_id=session_id,
             )
         )
     )
@@ -482,7 +489,14 @@ def test_workspace_resume_hides_compact_handoff_and_keeps_real_reply(tmp_path):
             ModelResponse([AssistantMessage("continued answer")]),
         ]
     )
-    source = Agent(model, ToolRegistry(), ContextConfig())
+    session_id = uuid7_string()
+    source = Agent(
+        model,
+        ToolRegistry(),
+        ContextConfig(),
+        session_file_path=rollout_path_for_session(resolve_codex_home(), session_id),
+        session_id=session_id,
+    )
     source.ask("original prompt")
     asyncio.run(source.compact())
     asyncio.run(source.run_turn([]))

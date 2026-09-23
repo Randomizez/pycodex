@@ -61,7 +61,7 @@ class SessionRolloutRecorder:
         path = (
             Path(session_file_path)
             if session_file_path is not None
-            else _rollout_path_for_session(codex_home, session_id)
+            else rollout_path_for_session(codex_home, session_id)
         )
         recorder = cls(path.expanduser().resolve())
         if recorder.rollout_path.exists():
@@ -642,7 +642,7 @@ def _append_deserialized_response_item(
     )
 
 
-def _rollout_path_for_session(codex_home: "Path", session_id: "str") -> "Path":
+def rollout_path_for_session(codex_home: "Path", session_id: "str") -> "Path":
     now = datetime.now().astimezone()
     return (
         codex_home

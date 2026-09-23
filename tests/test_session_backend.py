@@ -23,6 +23,8 @@ from pycodex.events import AssistantDeltaEvent
 from pycodex.feishu_card import PycodexCard
 from pycodex.feishu_link import PycodexRuntimeLink
 from pycodex.runtime import SubmissionInterrupted
+from pycodex.utils import uuid7_string
+from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient
 from workspace_server.app import (
     ThreadedWorkspaceInteractiveSession,
@@ -37,11 +39,16 @@ class ControlClient(ScriptedModelClient):
 
 
 def make_queue(client=None):
+    session_id = uuid7_string()
     return AgentRuntime(
         Agent(
             client or ControlClient([]),
             ToolRegistry(),
             ContextConfig(),
+            session_file_path=rollout_path_for_session(
+                resolve_codex_home(), session_id
+            ),
+            session_id=session_id,
         )
     )
 
@@ -119,10 +126,13 @@ async def run_frontend(frontend, queue, inputs):
 
 @pytest.mark.parametrize("frontend", ["cli", "web", "feishu"])
 async def test_frontends_share_all_session_commands(frontend):
+    session_id = uuid7_string()
     source = Agent(
         ControlClient([ModelResponse([AssistantMessage("old answer")])]),
         ToolRegistry(),
         ContextConfig(),
+        session_file_path=rollout_path_for_session(resolve_codex_home(), session_id),
+        session_id=session_id,
     )
     await source.run_turn(["old prompt"])
     old_id = source.session_id

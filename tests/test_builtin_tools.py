@@ -1697,7 +1697,7 @@ async def test_resume_agent_restarts_closed_agent_runtime() -> "None":
 
 
 @pytest.mark.asyncio
-async def test_resume_agent_before_first_turn_does_not_require_rollout() -> "None":
+async def test_resume_agent_before_first_turn_keeps_history_in_memory() -> "None":
     client = ScriptedModelClient([ModelResponse([AssistantMessage("after resume")])])
     registry = make_subagent_registry(lambda: client)
     manager = registry.get_tool("resume_agent")._subagent_manager
@@ -1707,9 +1707,8 @@ async def test_resume_agent_before_first_turn_does_not_require_rollout() -> "Non
     )
     agent_id = spawned["agent_id"]
     agent = manager._agents[agent_id].runtime.agent
-    path = agent.session_file_path
     try:
-        assert not path.exists()
+        assert agent.session_file_path is None
         assert agent.history == initial_history
         await manager.close_agent(agent_id)
 
@@ -1720,7 +1719,7 @@ async def test_resume_agent_before_first_turn_does_not_require_rollout() -> "Non
 
         assert resumed.output == {"status": "pending_init"}
         assert agent.accepts_input
-        assert not path.exists()
+        assert agent.session_file_path is None
         assert agent.history == initial_history
         await manager.send_input(agent_id, "first prompt", False)
         waited = await manager.wait_agents([agent_id], 1000)
@@ -1728,11 +1727,8 @@ async def test_resume_agent_before_first_turn_does_not_require_rollout() -> "Non
             "status": {agent_id: {"completed": "after resume"}},
             "timed_out": False,
         }
-        assert agent.session_file_path == path
-        assert path.is_file()
-        restored = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
-        restored.resume(path)
-        assert restored.history == initial_history + (
+        assert agent.session_file_path is None
+        assert agent.history == initial_history + (
             UserMessage("first prompt"),
             AssistantMessage("after resume"),
         )
@@ -1747,7 +1743,12 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     registry = ToolRegistry()
     registry.register(ClockTool(clock_manager))
     registry.register(ExecCommandTool(exec_manager))
-    agent = Agent(ScriptedModelClient([]), registry, ContextConfig())
+    agent = Agent(
+        ScriptedModelClient([]),
+        registry,
+        ContextConfig(),
+        session_file_path=tmp_path / "rollout.jsonl",
+    )
     if restore_file:
         agent._append_history([UserMessage("saved prompt")])
     agent.shutdown()

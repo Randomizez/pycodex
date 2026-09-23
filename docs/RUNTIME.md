@@ -125,27 +125,34 @@ This does not make arbitrary dependency replacement a supported mid-turn
 operation. `history` remains an immutable snapshot; model-name and admission
 properties still derive their values from the owning component.
 
-The recorder is internal and always exists. `session_file_path=None` now creates
-a new recorded session; it no longer means recording is disabled. The Agent
-allocates a UUIDv7 session id unless a managed child receives its explicit id,
-and prepares the path and session metadata in memory. Construction creates
-neither the file nor its parent directories, even with initial history. The
-first nonempty history append or successful compaction writes metadata, the
-Agent's current history and the new records in order. An empty append or empty
-compaction does not create a file. The default path uses
-`ContextConfig.codex_home`, falling back to the normal Codex-home resolution.
-An explicit constructor path is a new-file destination: an existing path is
-rejected at construction, and the first write still uses exclusive creation to
-reject a destination created in the meantime, never an implicit load or overwrite.
+`session_file_path=None` is the default and means no recorder: history stays in
+memory. Passing a path creates an internal recorder. Session identity is
+independent of recording; the Agent allocates a UUIDv7 id unless one is supplied.
+`build_agent` supplies the id and default recording path for ordinary frontend
+sessions, using the configured Codex home. Sub-agent construction leaves the path
+as `None`, including for nested children and forked context.
+
+For recorded sessions, construction prepares metadata without creating the file
+or its parent directories, even with initial history. The first nonempty history
+append or successful compaction writes metadata, the Agent's current history and
+the new records in order. An empty append or empty compaction does not create a
+file. An explicit constructor path is a new-file destination: an existing path
+is rejected at construction, and the first write still uses exclusive creation
+to reject a destination created in the meantime, never an implicit load or overwrite.
 The recorder does not keep a second initial-history copy, so replacing history
-before the first write changes what gets recorded. Forked child history is
-written through the same path.
+before the first write changes what gets recorded.
 The recorder opens and closes the file for each append, so there is no persistent
 file handle requiring another shutdown task.
 
+Unrecorded sessions update only in-memory history during turns and compaction.
+Compaction omits the rollout-file reference from the handoff, and runtime
+snapshots expose `rollout_path=None`. Fork preserves whether the session records;
+no-argument resume preserves the current recorder. Explicit `resume(path)` loads
+the selected file and enables recording to that file.
+
 The outer queue remains optional: direct `ask` / `run_turn` calls need no worker.
 Empty initial history and the no-op observer remain valid defaults. Tests isolate
-`CODEX_HOME` per test because bare Agents now persist too.
+`CODEX_HOME` per test so recording tests do not write to the real session store.
 
 Turn execution has two public interfaces: synchronous `ask` and ordinary async
 `run_turn`, both returning `TurnResult` once execution completes. `ask` runs the
@@ -401,9 +408,9 @@ arbitrary `RuntimeError` text being reinterpreted by the Agent or compactor.
 For max-output incomplete responses, the Agent persists done assistant/reasoning
 items for continuation, but not bare text deltas or tool calls without results.
 
-The Agent's history append path invokes the rollout recorder before extending
-active in-memory history. Recorder errors remain visible. This is not a
-filesystem transaction: an append-only rollout may contain a partial write when
+When recording is enabled, the Agent's history append path invokes the rollout
+recorder before extending active in-memory history. Recorder errors remain visible.
+This is not a filesystem transaction: an append-only rollout may contain a partial write when
 the underlying storage fails, and the existing loader tolerates incomplete tails.
 If the initial write fails, the recorder remains uninitialized; it does not
 silently append past a partially created file on retry. That existing file must
@@ -419,8 +426,9 @@ Agent. The returned metadata is available to the host view; callers no longer
 load and assemble the recorder themselves. An unsuccessful load leaves the
 previous session unchanged.
 
-`session_file_path` is a read-only projection of the recorder's path, not a
-second mutable path field. A successful resume does not rewrite metadata or copy
+`session_file_path` is a read-only projection of the recorder's path (or `None`
+when recording is disabled), not a second mutable path field. A successful
+`resume(path)` does not rewrite metadata or copy
 old history into a new file; later results and checkpoints append to the selected
 file. Resuming a custom-named compacted file reads its initial session metadata
 as well as its latest checkpoint, so identity does not depend on a filename UUID.
@@ -432,14 +440,16 @@ resume does not truncate or repair source files.
 Without a path, `resume()` re-enables the same in-memory Agent and rebinds tool
 callbacks without reading or writing a file or changing history, session
 identity, recorder or usage. It returns `None`. Sub-agent services use this form
-after close, including for children that have never written a rollout. These
-forms are selected by the argument, not by whether a file happens to exist;
+after close to reopen their in-memory history. These forms are selected by the
+argument, not by whether a file happens to exist;
 an invalid explicit path never falls back to reopening the in-memory session.
 There is no separate `reopen()` method.
 Construction, `fork()` and `resume(path)` share one private recorder setup path
 with explicit create/resume selection. It constructs the recorder before
 updating session identity and does not change history, usage or admission.
-`fork()` preserves history and usage; its new file is created only on first write.
+`fork()` preserves history, usage and recording behavior. Recorded sessions
+allocate a new path, with the file created only on first write; in-memory
+sessions keep `session_file_path=None`.
 The old recorder constructor argument and
 `restore_session`/`set_rollout_recorder`/`replace_history` interfaces are removed.
 `history` is read-only; `set_model` remains an operation with consistency checks

@@ -51,6 +51,7 @@ from .utils.session_persist import (
     SessionRolloutRecorder,
     load_resumed_session_path,
     resolve_codex_home,
+    rollout_path_for_session,
 )
 from .utils.truncation import truncate_tool_result_for_history
 
@@ -117,8 +118,9 @@ class Agent:
         return tuple(self._history)
 
     @property
-    def session_file_path(self) -> "Path":
-        return self._rollout_recorder.rollout_path
+    def session_file_path(self) -> "typing.Union[Path, None]":
+        recorder = self._rollout_recorder
+        return recorder.rollout_path if recorder is not None else None
 
     @property
     def is_running(self) -> "bool":
@@ -173,7 +175,14 @@ class Agent:
     def fork(self) -> "None":
         if self.is_running:
             raise RuntimeError("cannot fork session while agent is running")
-        self._configure_recording(uuid7_string())
+        session_id = uuid7_string()
+        path = None
+        if self._rollout_recorder is not None:
+            path = rollout_path_for_session(
+                self.context_manager._config.codex_home or resolve_codex_home(),
+                session_id,
+            )
+        self._configure_recording(session_id, path)
 
     def _configure_recording(
         self,
@@ -181,7 +190,9 @@ class Agent:
         session_file_path: "typing.Union[str, Path, None]" = None,
         resume: "bool" = False,
     ) -> "None":
-        if resume:
+        if session_file_path is None:
+            recorder = None
+        elif resume:
             recorder = SessionRolloutRecorder.resume(session_file_path)
         else:
             recorder = SessionRolloutRecorder.create(
@@ -443,7 +454,8 @@ class Agent:
         items: "typing.Iterable[ConversationItem]",
     ) -> "None":
         items = tuple(items)
-        self._rollout_recorder.append_history_items(items, self._history)
+        if self._rollout_recorder is not None:
+            self._rollout_recorder.append_history_items(items, self._history)
         self._history.extend(items)
 
     def _handle_model_stream_event(self, turn_id: "str", event: "ModelEvent") -> "None":
@@ -539,10 +551,11 @@ class Agent:
                 self.context_manager,
                 handle_compact_stream_event,
                 prune_tool_results_on_context_error,
-                str(recorder.rollout_path),
+                str(recorder.rollout_path) if recorder is not None else None,
                 turn_id,
             )
-            recorder.append_compacted_history(compact_result.history, self._history)
+            if recorder is not None:
+                recorder.append_compacted_history(compact_result.history, self._history)
             self._history = list(compact_result.history)
             self._last_total_usage_tokens = None
         except Exception as exc:

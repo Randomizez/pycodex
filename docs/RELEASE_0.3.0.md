@@ -51,7 +51,8 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
 - Use `AgentRuntime.start()` / `close()` and `submit_input()` for frontends.
   The old submission-queue aliases and separate interactive-session module
   are removed. IPython deliberately continues to expose a bare Agent.
-- `session_file_path=None` means a new recorded session, not disabled recording.
+- `session_file_path=None` means an in-memory session without recording.
+  Frontend `build_agent` supplies the default recording path explicitly.
   Use `runtime.resume(path)` or `agent.resume(path)` for an existing rollout;
   a constructor path is only for a new file.
 - Collaboration-mode configuration, prompts and tool gating are removed.

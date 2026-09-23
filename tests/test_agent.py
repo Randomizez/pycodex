@@ -398,10 +398,7 @@ async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit() -
         "UserMessage",
     ]
     assert (
-        second_prompt_items[0]
-        == compact(
-            [AssistantMessage("checkpoint summary")], str(agent.session_file_path)
-        )[0]
+        second_prompt_items[0] == compact([AssistantMessage("checkpoint summary")])[0]
     )
     assert second_prompt_items[1].text == "second prompt"
 
@@ -465,12 +462,7 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
     assert [type(item).__name__ for item in follow_up_items] == [
         "ContextMessage",
     ]
-    assert (
-        follow_up_items[0]
-        == compact(
-            [AssistantMessage("summary after tool")], str(agent.session_file_path)
-        )[0]
-    )
+    assert follow_up_items[0] == compact([AssistantMessage("summary after tool")])[0]
 
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
@@ -537,10 +529,7 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
         "ContextMessage",
     ]
     assert (
-        follow_up_items[0]
-        == compact(
-            [AssistantMessage("partial compact summary")], str(agent.session_file_path)
-        )[0]
+        follow_up_items[0] == compact([AssistantMessage("partial compact summary")])[0]
     )
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
@@ -1649,12 +1638,7 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> "Non
     assert [type(item).__name__ for item in retry_prompt_items] == [
         "ContextMessage",
     ]
-    assert (
-        retry_prompt_items[0]
-        == compact(
-            [AssistantMessage("checkpoint summary")], str(agent.session_file_path)
-        )[0]
-    )
+    assert retry_prompt_items[0] == compact([AssistantMessage("checkpoint summary")])[0]
 
     assert "turn_failed" not in [event.kind for event in events]
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]

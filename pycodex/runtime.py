@@ -132,9 +132,10 @@ class AgentRuntime:
         )
 
     def snapshot(self):
+        rollout_path = self.agent.session_file_path
         return {
             "session_id": self.agent.session_id,
-            "rollout_path": str(self.agent.session_file_path),
+            "rollout_path": str(rollout_path) if rollout_path is not None else None,
             "model": self.agent.model_name,
             "title": self.title,
             "history": conversation_history_to_turns(self.agent.history),

@@ -14,7 +14,8 @@ from .model import (
 )
 from .runtime import AgentRuntime
 from .runtime_services import AgentRuntimeEnvironment, create_agent_runtime_environment
-from .utils import get_debug_dir, load_codex_dotenv
+from .utils import get_debug_dir, load_codex_dotenv, uuid7_string
+from .utils.session_persist import rollout_path_for_session
 
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
@@ -275,6 +276,7 @@ def build_agent(
     runtime_environment.subagent_manager.set_runtime_builder(
         make_subagent_runtime_builder(client)
     )
+    session_id = uuid7_string()
     return Agent(
         client,
         get_tools(
@@ -284,6 +286,10 @@ def build_agent(
             toolset=toolset,
         ),
         context_config,
+        session_file_path=rollout_path_for_session(
+            context_config.codex_home, session_id
+        ),
+        session_id=session_id,
     )
 
 

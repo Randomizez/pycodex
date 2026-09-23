@@ -392,20 +392,23 @@ Dependencies are ordinary attributes: `model_client`, `tool_registry`,
 Pure getter/setter wrappers are removed. `history` remains a tuple snapshot,
 and `model_name` and lifecycle properties remain derived values.
 
-The Agent owns its rollout recorder. `session_file_path=None` means **create a
-new recorded session**, not disable recording. By default it allocates a UUIDv7
-session id and a path under the configured Codex home's `sessions/` directory.
-Construction does not create the file or its parent directories. The first
-history append or successful compaction creates it, writing metadata and the
-current initial history before the new records. An explicit constructor path
-selects a new file; an existing destination raises `FileExistsError` instead of
-being overwritten or implicitly resumed. Exclusive creation also prevents
-overwriting a file that appears between construction and the first write.
-`agent.session_id` and the read-only `agent.session_file_path` expose the session
-identity and location without exposing the recorder.
+`session_file_path=None`, the default, means **keep history in memory without
+recording**. Passing a file path creates an internal rollout recorder. Every
+Agent still receives a stable UUIDv7 session id unless an explicit id is supplied.
+CLI, Web and Feishu use `build_agent`, which assigns an id and a matching path
+under the configured Codex home's `sessions/` directory. Sub-agents leave the path
+as `None`, so their turns, compaction, forks and reopening stay in memory.
+
+When a path is supplied, construction does not create the file or its parent
+directories. The first history append or successful compaction creates it,
+writing metadata and the current initial history before the new records.
+An existing destination raises `FileExistsError`; exclusive creation also
+prevents overwriting a file that appears before the first write.
+`agent.session_id` and the read-only `agent.session_file_path` expose the identity
+and optional recording path without exposing the recorder.
 
 ```python
-agent = Agent(model, tools, context_config, session_file_path=None)
+agent = Agent(model, tools, context_config)  # In-memory session.
 agent.resume("~/.codex/sessions/2026/09/22/rollout-example.jsonl")
 ```
 
@@ -413,9 +416,8 @@ agent.resume("~/.codex/sessions/2026/09/22/rollout-example.jsonl")
 continues appending to that same file. Paths accept `~`; the existing
 concatenated-JSON and compact-checkpoint loader is reused. Constructing an Agent
 and immediately resuming another file leaves no unused rollout behind. Initial
-history, including forked child history, is recorded only when the new session
-first writes. `history` is read-only; there is no public `replace_history()`
-interface.
+history is recorded only when the new recorded session first writes. `history`
+is read-only; there is no public `replace_history()` interface.
 
 An `Agent` executes one turn or manual compaction at a time.
 There are two public turn interfaces:
@@ -488,7 +490,7 @@ The backend broadcasts restored history/title/identity to all attached views.
 `agent.resume()` without a path reopens the same in-memory Agent and rebinds its
 tool callbacks, without reading or writing a file or changing history, identity,
 recorder or usage. It returns `None` and also rejects active or queued work.
-Sub-agent services use this form even when the child has never written a rollout.
+Sub-agent services use this form to reopen the child's in-memory history.
 There is no separate `reopen()` method.
 Model switching and history replacement remain explicit operations because they
 enforce state consistency, not merely assign a field.

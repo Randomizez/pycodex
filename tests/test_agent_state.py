@@ -20,7 +20,11 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.events import TokenCountEvent, TurnStartedEvent
-from pycodex.utils.session_persist import list_resumable_sessions
+from pycodex.utils import uuid7_string
+from pycodex.utils.session_persist import (
+    list_resumable_sessions,
+    rollout_path_for_session,
+)
 from tests.fakes import ScriptedModelClient
 
 
@@ -434,7 +438,7 @@ def test_runtime_subscribes_to_agent_without_injecting_a_back_reference():
     assert vars(agent)["model_client"] is client
     assert vars(agent)["tool_registry"] is tools
     assert vars(agent)["context_manager"] is agent.context_manager
-    assert not agent.session_file_path.exists()
+    assert agent.session_file_path is None
     assert not hasattr(agent, "submission_queue")
     for name in (
         "set_event_handler",
@@ -612,11 +616,13 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
         ToolResult("old_call", "echo", "old result"),
         AssistantMessage("old answer"),
     )
+    session_id = uuid7_string()
     agent = Agent(
         client,
         ToolRegistry(),
         config,
-        session_file_path=None,
+        session_file_path=rollout_path_for_session(home, session_id),
+        session_id=session_id,
         initial_history=initial_history,
     )
 
@@ -654,13 +660,17 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
     assert len(list_resumable_sessions(home)) == 1
     other = Agent(ScriptedModelClient([]), ToolRegistry(), config)
     assert other.session_id != agent.session_id
-    assert other.session_file_path != agent.session_file_path
-    assert not other.session_file_path.exists()
+    assert other.session_file_path is None
 
 
 @pytest.mark.asyncio
-async def test_empty_compaction_does_not_create_rollout():
-    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+async def test_empty_compaction_does_not_create_rollout(tmp_path):
+    agent = Agent(
+        ScriptedModelClient([]),
+        ToolRegistry(),
+        ContextConfig(),
+        session_file_path=tmp_path / "rollout.jsonl",
+    )
     assert await agent.compact() is None
     agent.shutdown()
     assert not agent.session_file_path.exists()
@@ -815,7 +825,7 @@ async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tm
 
 
 @pytest.mark.asyncio
-async def test_fork_after_compact_keeps_summary_context_on_resume():
+async def test_fork_after_compact_keeps_summary_context_on_resume(tmp_path):
     model = ScriptedModelClient(
         [
             ModelResponse([AssistantMessage("summary")]),
@@ -828,6 +838,7 @@ async def test_fork_after_compact_keeps_summary_context_on_resume():
         ToolRegistry(),
         ContextConfig(),
         initial_history=(UserMessage("old prompt"), AssistantMessage("old answer")),
+        session_file_path=tmp_path / "rollout.jsonl",
     )
     await source.compact()
     await source.run_turn([])
@@ -873,7 +884,7 @@ def test_resume_accepts_multiline_records_and_incomplete_tail(tmp_path):
 
 
 @pytest.mark.parametrize("persisted", [False, True])
-def test_resume_without_path_keeps_existing_session_and_history(persisted):
+def test_resume_without_path_keeps_existing_session_and_history(tmp_path, persisted):
     client = ScriptedModelClient([])
     client._session_id = "provider-created-id"
     agent = Agent(
@@ -881,6 +892,7 @@ def test_resume_without_path_keeps_existing_session_and_history(persisted):
         ToolRegistry(),
         ContextConfig(),
         initial_history=(UserMessage("keep this"),),
+        session_file_path=tmp_path / "rollout.jsonl",
     )
     path = agent.session_file_path
     if persisted:
@@ -1037,8 +1049,15 @@ def test_resume_failure_preserves_existing_session(
 
 
 @pytest.mark.parametrize("operation", ["fork", "resume"])
-def test_recorder_factory_failure_preserves_existing_session(monkeypatch, operation):
-    source = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+def test_recorder_factory_failure_preserves_existing_session(
+    tmp_path, monkeypatch, operation
+):
+    source = Agent(
+        ScriptedModelClient([]),
+        ToolRegistry(),
+        ContextConfig(),
+        session_file_path=tmp_path / "source.jsonl",
+    )
     source._append_history([UserMessage("saved prompt")])
     source_bytes = source.session_file_path.read_bytes()
     client = ScriptedModelClient([])
@@ -1050,6 +1069,7 @@ def test_recorder_factory_failure_preserves_existing_session(monkeypatch, operat
         ContextConfig(),
         initial_history=history,
         session_id="original-session",
+        session_file_path=tmp_path / "original.jsonl",
     )
     recorder = agent._rollout_recorder
     agent._last_total_usage_tokens = 123
@@ -1238,6 +1258,71 @@ def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
         first.tool_registry.runtime_environment
         is not second.tool_registry.runtime_environment
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fork_context", [False, True])
+async def test_subagents_do_not_record_turns_compaction_or_resume(
+    tmp_path, monkeypatch, fork_context
+):
+    from pycodex.bootstrap import build_agent
+    from pycodex.model import ResponsesModelClient
+
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(
+        'model = "gpt-5.6"\n'
+        'model_provider = "demo"\n'
+        "[model_providers.demo]\n"
+        'base_url = "https://example.invalid/v1"\n',
+        encoding="utf-8",
+    )
+
+    async def complete(client, prompt, event_handler):
+        return ModelResponse([AssistantMessage("answer")])
+
+    monkeypatch.setattr(ResponsesModelClient, "complete", complete)
+    parent = build_agent(
+        ResponsesModelClient.from_codex_config(config_path), config_path
+    )
+    await parent.run_turn(["parent prompt"])
+    parent_bytes = parent.session_file_path.read_bytes()
+    manager = parent.tool_registry.runtime_environment.subagent_manager
+    try:
+        spawned = await manager.spawn_agent(
+            "child prompt", None, None, fork_context, None, None, parent.history
+        )
+        agent_id = spawned["agent_id"]
+        result = await manager.wait_agents([agent_id], 1000)
+        assert result["status"][agent_id] == {"completed": "answer"}
+        runtime = manager._agents[agent_id].runtime
+        child = runtime.agent
+        expected_history = parent.history if fork_context else ()
+        assert child.history == expected_history + (
+            UserMessage("child prompt"),
+            AssistantMessage("answer"),
+        )
+        assert child.session_file_path is None
+        assert runtime.snapshot()["rollout_path"] is None
+
+        await child.compact()
+        assert "Current session file:" not in child.history[0].text
+        compacted_history = child.history
+        await manager.close_agent(agent_id)
+        await manager.resume_agent(agent_id)
+        assert child.history == compacted_history
+        await manager.send_input(agent_id, "continue", False)
+        result = await manager.wait_agents([agent_id], 1000)
+        assert result["status"][agent_id] == {"completed": "answer"}
+        child.fork()
+        await child.run_turn(["after fork"])
+        assert child.session_file_path is None
+    finally:
+        await manager.shutdown()
+        parent.shutdown()
+    assert list((tmp_path / "sessions").rglob("rollout-*.jsonl")) == [
+        parent.session_file_path
+    ]
+    assert parent.session_file_path.read_bytes() == parent_bytes
 
 
 @pytest.mark.asyncio
