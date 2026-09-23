@@ -12,10 +12,12 @@ from pycodex.events import (
     SessionClosedEvent,
     SessionStateEvent,
     StreamErrorEvent,
+    TokenCountEvent,
     ToolCompletedEvent,
     ToolStartedEvent,
     TurnCompletedEvent,
     TurnFailedEvent,
+    TurnInterruptedEvent,
     TurnStartedEvent,
 )
 from pycodex.feishu_card import CARD_OUTPUT_LIMIT, PycodexCard
@@ -101,22 +103,30 @@ def _prompt_input(card):
     return _element(card, "prompt_input")
 
 
-def test_feishu_card_uses_session_connected_header_and_input_status() -> None:
+def test_feishu_card_uses_session_title_and_preserves_input_status() -> None:
     card = PycodexCard()
 
     rendered = card.render()
-    assert rendered["header"]["title"]["content"] == "Session Connected"
+    assert rendered["header"]["title"]["content"] == "pycodex"
+    assert _answer_markdown_content(rendered) == "Ready."
     assert _prompt_input(rendered)["placeholder"]["content"] == "pycodex> pycodex"
 
+    card.display.title = "Project notes"
+    card.model_name = "gpt-6"
     card.apply_event(TurnStartedEvent("turn", ("hello",)))
     rendered = card.render()
 
-    assert rendered["header"]["title"]["content"] == "Session Connected"
+    assert rendered["header"]["title"]["content"] == "Project notes"
     assert rendered["header"]["template"] == "blue"
-    assert _prompt_input(rendered)["placeholder"]["content"] == (
-        "pycodex> turn_started"
-    )
+    assert _element(rendered, "user_prompt_md")["content"] == "user> hello"
+    assert _prompt_input(rendered)["placeholder"]["content"] == "pycodex> turn_started"
     assert not _prompt_input(rendered)["disabled"]
+    card.display.set_context_window_tokens(100000)
+    card.apply_event(TokenCountEvent({"total_tokens": 56000}))
+    assert (
+        _prompt_input(card.render())["placeholder"]["content"]
+        == "pyco(50%)> turn_started"
+    )
 
 
 def test_feishu_card_delegates_unknown_events_to_its_own_plain_display() -> None:
@@ -333,13 +343,16 @@ def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> 
         },
     }
     card.apply_event(SessionStateEvent("attach", state))
+    assert card.turn_history == [("previous", "answer")]
+    assert card.user_prompt == "live"
+    card.show_history(0)
     assert card.output_text == "(*last turn)\nanswer"
     assert _element(card.render(), "activity_md")["content"] == (
         "user> live\nassistant> partial\n" + request.visualize()
     )
     assert card.prompt_text == "other> "
     assert card.display.stream_buffer == ""
-    assert card.render()["header"]["title"]["content"] == "Session Connected · Restored"
+    assert card.render()["header"]["title"]["content"] == "Restored"
 
     card.apply_event(AssistantDeltaEvent("stale"))
     card.apply_event(
@@ -355,6 +368,9 @@ def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> 
         )
     )
     assert card.output_text == card.display.stream_buffer == ""
+    assert card.turn_history == []
+    assert card.history_index is None
+    assert not _has_element(card.render(), "history_panel")
     assert _answer_markdown_content(card.render()) == "Ready."
     assert (
         _prompt_input(card.render())["placeholder"]["content"]
@@ -367,7 +383,7 @@ def test_feishu_card_disables_closed_input_and_removes_detached_input() -> None:
     card.apply_event(AssistantDeltaEvent("last output"))
     card.apply_event(SessionClosedEvent())
     rendered = card.render()
-    assert rendered["header"]["title"]["content"] == "Session Closed"
+    assert rendered["header"]["title"]["content"] == "pycodex"
     assert _answer_markdown_content(rendered) == "Ready."
     assert _element(rendered, "activity_md")["content"] == "assistant> last output"
     assert _prompt_input(rendered)["disabled"]
@@ -375,8 +391,86 @@ def test_feishu_card_disables_closed_input_and_removes_detached_input() -> None:
 
     card.detach()
     rendered = card.render()
-    assert rendered["header"]["title"]["content"] == "Session Detached"
+    assert rendered["header"]["template"] == "grey"
     assert not _has_element(rendered, "prompt_input")
+
+
+def test_feishu_card_history_keeps_prompts_and_current_turn_independent():
+    card = PycodexCard()
+    for index in range(3):
+        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnCompletedEvent(str(index), 1, "answer " + str(index), 0))
+    panel = _element(card.render(), "history_panel")
+    assert panel["tag"] == "collapsible_panel"
+    assert not panel["expanded"]
+    assert panel["header"]["title"]["content"] == "History · 2 / 2"
+    assert panel["elements"][0]["content"] == "user> prompt 1\n\nassistant> answer 1"
+    assert _element(card.render(), "user_prompt_md")["content"] == "user> prompt 2"
+    assert _answer_markdown_content(card.render()) == "answer 2"
+
+    card.show_history(0)
+    card.apply_event(TurnStartedEvent("active", ("current prompt",)))
+    card.apply_event(AssistantDeltaEvent("live reply", "active"))
+    panel = _element(card.render(), "history_panel")
+    assert panel["expanded"]
+    assert panel["header"]["title"]["content"] == "History · 1 / 3"
+    assert panel["elements"][0]["content"] == "user> prompt 0\n\nassistant> answer 0"
+    assert (
+        _element(card.render(), "user_prompt_md")["content"] == "user> current prompt"
+    )
+    assert _working_markdown_content(card.render()) == "live reply"
+    buttons = [column["elements"][0] for column in panel["elements"][1]["columns"]]
+    assert [button["text"]["content"] for button in buttons] == ["Previous", "Next"]
+    assert buttons[0]["disabled"]
+    assert not buttons[1]["disabled"]
+    assert buttons[1]["behaviors"][0]["value"] == {
+        "action": "history",
+        "history_index": 1,
+    }
+    card.apply_event(TurnCompletedEvent("active", 1, "completed reply", 0))
+    assert card.history_index == 0
+    assert card.turn_history[-1] == ("current prompt", "completed reply")
+    assert _answer_markdown_content(card.render()) == "completed reply"
+
+
+def test_feishu_card_history_retains_steer_prompt_batch():
+    card = PycodexCard()
+    card.apply_event(TurnStartedEvent("turn", ("original",)))
+    card.apply_event(TurnInterruptedEvent("turn", 1, "partial", 0))
+    card.apply_event(TurnStartedEvent("turn", ("steer one", "steer two")))
+    card.apply_event(TurnCompletedEvent("turn", 1, "answer", 0))
+    assert card.turn_history == [("original\nsteer one\nsteer two", "answer")]
+
+
+def test_feishu_card_history_payload_is_bounded_without_discarding_turns():
+    card = PycodexCard()
+    for index in range(20):
+        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnCompletedEvent(str(index), 1, "x" * 20000, 0))
+    assert len(card.turn_history) == 20
+    card.show_history(0)
+    content = _element(card.render(), "history_panel")["elements"][0]["content"]
+    assert len(content) <= CARD_OUTPUT_LIMIT
+    assert "prompt 0" in content
+    assert content.endswith("...[truncated]")
+    assert _element(card.render("code"), "history_panel")["elements"][0][
+        "content"
+    ].startswith("```text\n")
+    card.detach()
+    panel = _element(card.render(), "history_panel")
+    assert all(
+        column["elements"][0]["disabled"] for column in panel["elements"][1]["columns"]
+    )
+
+
+@pytest.mark.parametrize("index", [-1, 1, "0", True, None])
+def test_feishu_card_rejects_invalid_history_selection(index):
+    card = PycodexCard()
+    card.apply_event(TurnStartedEvent("first", ("prompt",)))
+    card.apply_event(TurnCompletedEvent("first", 1, "answer", 0))
+    card.apply_event(TurnStartedEvent("next", ("next prompt",)))
+    with pytest.raises(ValueError, match="no longer available"):
+        card.show_history(index)
 
 
 def test_resolve_name_uses_default_email_domain_from_env(monkeypatch) -> None:

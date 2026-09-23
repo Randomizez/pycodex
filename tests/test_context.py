@@ -63,6 +63,7 @@ def test_context_manager_resolves_gpt56_model_metadata() -> "None":
 
     assert instructions.startswith("You are Codex, an agent based on GPT-5.")
     assert "curious, rich personality" in instructions
+    assert manager.resolve_model_max_context_window() == 372000
     assert manager.resolve_model_context_window() == 353400
 
 
@@ -88,6 +89,10 @@ def test_metadata_uses_upstream_longest_prefix(slug, expected):
     manager = ContextManager(ContextConfig(model=slug))
     reference = ContextManager(ContextConfig(model=expected))
     assert manager.resolve_base_instructions() == reference.resolve_base_instructions()
+    assert (
+        manager.resolve_model_max_context_window()
+        == reference.resolve_model_max_context_window()
+    )
     assert (
         manager.resolve_model_context_window()
         == reference.resolve_model_context_window()
@@ -168,6 +173,14 @@ def test_context_manager_resolves_auto_compact_limit_from_config() -> "None":
     manager = ContextManager(config=ContextConfig(model_auto_compact_token_limit=12345))
 
     assert manager.resolve_auto_compact_token_limit() == 12345
+
+
+def test_context_manager_resolves_max_length_override():
+    manager = ContextManager(
+        ContextConfig(model="gpt-5.6-sol", model_context_window=100000)
+    )
+    assert manager.resolve_model_max_context_window() == 100000
+    assert manager.resolve_model_context_window() == 95000
 
 
 def test_context_manager_reads_auto_compact_limit_from_codex_config(tmp_path) -> "None":

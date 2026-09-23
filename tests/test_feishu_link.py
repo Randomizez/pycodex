@@ -3,6 +3,7 @@ import sys
 import threading
 import types
 
+from pycodex.events import TurnCompletedEvent, TurnStartedEvent
 import pycodex.feishu_link as feishu_link
 from pycodex.feishu_card import PycodexCard
 from pycodex.feishu_link import _FeishuCardActionListener, _release_feishu_listener
@@ -86,6 +87,30 @@ async def _noop():
 async def _forever():
     while True:
         await asyncio.sleep(3600)
+
+
+async def test_history_navigation_updates_card_without_submitting_model_input():
+    card = PycodexCard()
+    for index in range(3):
+        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnCompletedEvent(str(index), 1, "answer " + str(index), 0))
+    link = feishu_link.PycodexRuntimeLink(object(), "unused", card=card)
+    card.resolve_operator_name = lambda operator: "reader"
+    action = card.parse_action(
+        _Object(
+            event=_Object(
+                action=_Object(value={"action": "history", "history_index": 0})
+            )
+        )
+    )
+    assert action["history_index"] == 0
+    assert await link._submit(action) == {}
+    assert card.history_index == 0
+    assert link._update_pending
+    assert card.output_text == "answer 2"
+    result = await link._submit({"action": "history", "history_index": 10})
+    assert result["toast"]["type"] == "warning"
+    assert card.history_index == 0
 
 
 def test_feishu_listener_tracks_active_links_by_message_id() -> None:

@@ -757,7 +757,11 @@ def test_non_event_presentation_and_status_frames():
     display, operations = make_display(True)
     display.start(["help", "exit"])
     assert operations == [
-        ("log", "pycodex interactive mode. Type /exit or press Ctrl+C to quit."),
+        (
+            "log",
+            "pycodex interactive mode. Type /exit or press Ctrl+C to quit; "
+            "press Ctrl+C again while closing to force exit.",
+        ),
         ("log", "Extra commands: /help, /exit"),
     ]
     result = TurnResult("turn", "answer", 1, (), ())

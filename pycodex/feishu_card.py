@@ -52,6 +52,10 @@ class PycodexCard:
         self.model_name = "pycodex"
         self.output_text = ""
         self.activity_text = ""
+        self.user_prompt = ""
+        self.turn_history = []
+        self.history_index = None
+        self._active_turn_id = None
         self._event_output = ""
         self.display = EventDisplay(self._log, self._set_status, self._set_prompt)
         self.detached = False
@@ -164,23 +168,41 @@ class PycodexCard:
             if event.reason in {"attach", "history"}:
                 self.output_text = ""
                 self.activity_text = ""
+                self.turn_history = list(completed_history(state))
+                self.history_index = None
+                active = state["active_turn"]
+                self._active_turn_id = active["turn_id"] if active is not None else None
+                self.user_prompt = (
+                    "\n".join(active["user_texts"])
+                    if active is not None
+                    else self.turn_history[-1][0] if self.turn_history else ""
+                )
                 self.display.stream_buffer = ""
                 self.prompt_text = DEFAULT_MAIN_PROMPT
                 if state["busy"]:
                     self._set_status("working")
                 else:
                     self.display.set_idle_status(state["background_work_count"])
-                for _prompt, response in completed_history(state)[-1:]:
+                for _prompt, response in self.turn_history[-1:]:
                     self.output_text = response
                 if state["busy"]:
                     self._mark_last_turn_output()
         elif isinstance(event, (InputQueuedEvent, TurnStartedEvent)):
             self._mark_last_turn_output()
+            if isinstance(event, TurnStartedEvent):
+                prompt = event.visualize()
+                if event.turn_id == self._active_turn_id and self.user_prompt:
+                    self.user_prompt += "\n" + prompt
+                else:
+                    self.user_prompt = prompt
+                self._active_turn_id = event.turn_id
         event.render(self.display)
         if isinstance(event, TurnCompletedEvent):
             if event.output_text:
                 self.output_text = event.output_text
+                self.turn_history.append((self.user_prompt, event.output_text))
             self.activity_text = ""
+            self._active_turn_id = None
         elif isinstance(event, TurnStartedEvent):
             self.activity_text = ""
         elif self._event_output:
@@ -210,15 +232,15 @@ class PycodexCard:
         status = "Closed" if self.display.closed else self.status
         input_disabled = not self.accepts_input or self.detached or self.display.closed
         output = _truncate(self.output_text, CARD_OUTPUT_LIMIT) or "Ready."
-        output_content = _render_output_content(output, output_mode)
         working_output = _truncate(self.display.stream_buffer, CARD_OUTPUT_LIMIT)
-        color, title = _status_template(
-            "Detached" if self.detached else status or "Idle"
-        )
-        if self.display.title:
-            title += " · " + self.display.title
+        color = _status_color("Detached" if self.detached else status or "Idle")
         body_elements = [
-            _output_box("answer_box", "answer_md", output_content, "grey-50"),
+            _output_box(
+                "answer_box",
+                "answer_md",
+                _render_output_content(output, output_mode),
+                "grey-50",
+            ),
         ]
         if working_output:
             body_elements.append(
@@ -237,11 +259,41 @@ class PycodexCard:
                     "content": _render_output_content(self.activity_text, output_mode),
                 }
             )
+        if self.user_prompt:
+            body_elements.insert(
+                0,
+                {
+                    "tag": "markdown",
+                    "element_id": "user_prompt_md",
+                    "content": _render_output_content(
+                        "user> " + _truncate(self.user_prompt, CARD_OUTPUT_LIMIT),
+                        output_mode,
+                    ),
+                },
+            )
+        history = self.earlier_turns()
+        if history:
+            index = (
+                len(history) - 1 if self.history_index is None else self.history_index
+            )
+            body_elements.insert(
+                0,
+                _history_panel(
+                    history,
+                    index,
+                    self.history_index is not None,
+                    output_mode,
+                    not self.detached,
+                ),
+            )
         card = {
             "schema": "2.0",
             "config": {"update_multi": True},
             "header": {
-                "title": {"tag": "plain_text", "content": title},
+                "title": {
+                    "tag": "plain_text",
+                    "content": self.display.title or "pycodex",
+                },
                 "template": color,
             },
             "body": {
@@ -266,6 +318,16 @@ class PycodexCard:
                 },
             )
         return card
+
+    def earlier_turns(self):
+        if self._active_turn_id is not None:
+            return self.turn_history
+        return self.turn_history[:-1]
+
+    def show_history(self, index):
+        if type(index) is not int or not 0 <= index < len(self.earlier_turns()):
+            raise ValueError("This history turn is no longer available.")
+        self.history_index = index
 
     def parse_action(self, sdk_event) -> "typing.Dict[str, object]":
         event_data = getattr(sdk_event, "event", None)
@@ -302,6 +364,7 @@ class PycodexCard:
             self.session_key = _default_session_key(tenant_key, open_id, message_id)
         return {
             "action": action,
+            "history_index": value.get("history_index"),
             "prompt": prompt,
             "sender": self.resolve_operator_name(operator),
         }
@@ -540,15 +603,13 @@ def _display_user_name(user: "typing.Any") -> "typing.Union[str, None]":
     return None
 
 
-def _status_template(status: str) -> "typing.Tuple[str, str]":
+def _status_color(status: str) -> str:
     normalized = status.lower()
-    if normalized == "detached":
-        return "grey", "Session Detached"
-    if normalized == "closed":
-        return "grey", "Session Closed"
+    if normalized in {"detached", "closed"}:
+        return "grey"
     if normalized in {"idle", "idle: sleeping"}:
-        return "green", "Session Connected"
-    return "blue", "Session Connected"
+        return "green"
+    return "blue"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -566,6 +627,65 @@ def _render_output_content(output: str, output_mode: str) -> str:
     if output_mode == CARD_OUTPUT_MODE_CODE:
         return "```text\n{0}\n```".format(_escape_code_block(output))
     return output
+
+
+def _history_panel(history, index, expanded, output_mode, interactive):
+    prompt, response = history[index]
+    content = _truncate(
+        "user> {0}\n\nassistant> {1}".format(prompt, response), CARD_OUTPUT_LIMIT
+    )
+    columns = []
+    for label, target, disabled in (
+        ("Previous", index - 1, index == 0),
+        ("Next", index + 1, index == len(history) - 1),
+    ):
+        columns.append(
+            {
+                "tag": "column",
+                "width": "auto",
+                "elements": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": label},
+                        "type": "default",
+                        "disabled": disabled or not interactive,
+                        "behaviors": [
+                            {
+                                "type": "callback",
+                                "value": {
+                                    "action": "history",
+                                    "history_index": target,
+                                },
+                            }
+                        ],
+                    }
+                ],
+            }
+        )
+    return {
+        "tag": "collapsible_panel",
+        "element_id": "history_panel",
+        "expanded": expanded,
+        "header": {
+            "icon": {
+                "tag": "standard_icon",
+                "token": "down-small-ccm_outlined",
+                "size": "16px 16px",
+            },
+            "title": {
+                "tag": "plain_text",
+                "content": "History · {0} / {1}".format(index + 1, len(history)),
+            },
+        },
+        "elements": [
+            {
+                "tag": "markdown",
+                "element_id": "history_md",
+                "content": _render_output_content(content, output_mode),
+            },
+            {"tag": "column_set", "columns": columns},
+        ],
+    }
 
 
 def _output_box(

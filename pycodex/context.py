@@ -220,14 +220,18 @@ class ContextManager:
             return resolved
         return self._default_base_instructions
 
-    def resolve_model_context_window(self) -> "typing.Union[int, None]":
+    def resolve_model_max_context_window(self) -> "typing.Union[int, None]":
         metadata = model_metadata(self._config.model)
-
         context_window = self._config.model_context_window
         if context_window is None and metadata is not None:
             context_window = _normalize_int(metadata.get("context_window"))
+        return context_window
+
+    def resolve_model_context_window(self) -> "typing.Union[int, None]":
+        context_window = self.resolve_model_max_context_window()
         if context_window is None:
             return None
+        metadata = model_metadata(self._config.model)
         effective_percent = None
         if metadata is not None:
             effective_percent = _normalize_int(

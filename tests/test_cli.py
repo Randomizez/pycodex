@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import signal
 import subprocess
 import sys
 import textwrap
@@ -332,7 +333,9 @@ async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, jso
         return create_task(coroutine)
 
     monkeypatch.setattr(asyncio, "create_task", record_task)
+    previous_sigint = signal.getsignal(signal.SIGINT)
     assert await run_interactive_session(queue, json_mode, view=view) == 0
+    assert signal.getsignal(signal.SIGINT) == previous_sigint
     results = [json.loads(line) for line in view.lines if line.startswith("{")]
     assert [result["output_text"] for result in results] == (
         ["done"] if json_mode else []
@@ -356,8 +359,10 @@ async def test_cli_detaches_view_when_close_fails():
         Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     )
     queue.add_close_handler(fail_cleanup)
+    previous_sigint = signal.getsignal(signal.SIGINT)
     with pytest.raises(RuntimeError, match="cleanup failed"):
         await run_interactive_session(queue, False, view=ClosingView([]))
+    assert signal.getsignal(signal.SIGINT) == previous_sigint
     assert closed == [True]
     assert not queue._frontends
     assert queue._worker.done()
@@ -478,6 +483,103 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
     )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX SIGINT")
+@pytest.mark.parametrize("ignore_sigint", [False, True])
+@pytest.mark.parametrize("exit_input", ["ctrl_c", "eof", "command"])
+def test_cli_sigint_while_closing_exits_with_running_tool(
+    tmp_path, ignore_sigint, exit_input
+):
+    source = textwrap.dedent("""
+        import asyncio
+        import os
+        import signal
+        import sys
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output import DummyOutput
+        from pycodex import (
+            Agent, AgentRuntime, AssistantMessage, BaseTool, ContextConfig,
+            ModelResponse, ToolCall, ToolRegistry,
+        )
+        from pycodex.cli import CliSessionView, run_interactive_session
+        from tests.fakes import ScriptedModelClient
+
+        async def run(pipe):
+            started = asyncio.Event()
+            release = asyncio.Event()
+
+            class BlockingTool(BaseTool):
+                name = "blocking"
+                description = "Waits until the test releases it."
+
+                async def run(self, context, args):
+                    started.set()
+                    try:
+                        await release.wait()
+                    finally:
+                        print("TOOL_UNWOUND", flush=True)
+                    return "finished"
+
+            tools = ToolRegistry()
+            tools.register(BlockingTool())
+            client = ScriptedModelClient([
+                ModelResponse([ToolCall("call1", "blocking", {})]),
+                ModelResponse([AssistantMessage("finished")]),
+            ])
+            runtime = AgentRuntime(Agent(client, tools, ContextConfig()))
+            view = CliSessionView()
+            view._line_output = lambda text: print(text, flush=True)
+
+            async def send_exit():
+                await runtime.submit_input("use the tool")
+                await started.wait()
+                while not view.prompter._prompt_session.app.is_running:
+                    await asyncio.sleep(0.01)
+                pipe.send_text({
+                    "ctrl_c": "\\x03", "eof": "\\x04", "command": "/exit\\n",
+                }[sys.argv[2]])
+                while runtime.accepts_input:
+                    await asyncio.sleep(0.01)
+                assert not runtime.agent.is_shutdown
+                assert not runtime._worker.done()
+                print("GRACEFUL_CLOSE_WAITING", flush=True)
+                os.kill(os.getpid(), signal.SIGINT)
+                await asyncio.sleep(0.1)
+                release.set()
+
+            sender = asyncio.create_task(send_exit())
+            try:
+                await run_interactive_session(runtime, False, view=view)
+                await sender
+            finally:
+                # Match run_cli's final close as well as the interactive one.
+                await runtime.close()
+            print("NORMAL_EXIT", flush=True)
+
+        if sys.argv[1] == "True":
+            signal.signal(signal.SIGINT, signal.SIG_IGN)
+        with create_pipe_input() as pipe:
+            with create_app_session(input=pipe, output=DummyOutput()):
+                asyncio.run(run(pipe))
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", source, str(ignore_sigint), exit_input],
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=dict(
+            os.environ, HOME=str(tmp_path), CODEX_HOME=str(tmp_path / "codex-home")
+        ),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+        timeout=10,
+    )
+    assert result.returncode == 130, result.stdout + result.stderr
+    assert "GRACEFUL_CLOSE_WAITING" in result.stdout
+    assert "TOOL_UNWOUND" not in result.stdout
+    assert "NORMAL_EXIT" not in result.stdout
+    assert not result.stderr
+
+
 def test_cli_executes_event_presentation_without_type_dispatch():
     view = InputView([])
 
@@ -495,6 +597,76 @@ def test_cli_executes_event_presentation_without_type_dispatch():
         assert view.prompter.prompt == "rendered> "
     finally:
         view.close()
+
+
+async def test_cli_background_rate_limits_do_not_pause_for_enter(monkeypatch):
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from pycodex.cli import Prompter
+    from pycodex.model import ResponsesApiError
+
+    pauses = []
+    reported = []
+
+    async def wait_for_enter(message):
+        pauses.append(message)
+
+    monkeypatch.setattr(
+        "prompt_toolkit.application.application._do_wait_for_enter", wait_for_enter
+    )
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        with create_pipe_input() as pipe:
+            with create_app_session(input=pipe, output=DummyOutput()):
+                prompter = Prompter()
+                prompt_task = None
+                try:
+                    assert await prompter.poll_input() is None
+                    prompt_task = prompter._prompt_task
+                    for source in ("Clock", "Exec completion"):
+                        loop.call_exception_handler(
+                            {
+                                "message": source + " notification failed",
+                                "exception": ResponsesApiError(
+                                    "responses request failed with status 429: "
+                                    "rate_limit_exceeded"
+                                ),
+                            }
+                        )
+
+                    async def wait_for_reports():
+                        while len(reported) + len(pauses) < 2:
+                            await asyncio.sleep(0.01)
+
+                    await asyncio.wait_for(wait_for_reports(), 2)
+                    pipe.send_text("continue\n")
+
+                    async def read_input():
+                        while True:
+                            text = await prompter.poll_input()
+                            if text is not None:
+                                return text
+
+                    assert await asyncio.wait_for(read_input(), 2) == "continue"
+                    assert pauses == []
+                    assert [context["message"] for context in reported] == [
+                        "Clock notification failed",
+                        "Exec completion notification failed",
+                    ]
+                    assert all(
+                        isinstance(context["exception"], ResponsesApiError)
+                        for context in reported
+                    )
+                finally:
+                    prompter.close()
+                    if prompt_task is not None:
+                        await asyncio.gather(prompt_task, return_exceptions=True)
+    finally:
+        loop.set_exception_handler(previous_handler)
 
 
 def test_cli_context_and_tool_progress():

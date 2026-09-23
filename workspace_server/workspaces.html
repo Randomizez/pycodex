@@ -1,5 +1,5 @@
 <!doctype html>
-<html>
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -17,7 +17,6 @@
       --accent-strong: #0859a8;
       --danger: #b42318;
       --danger-soft: #fff0ed;
-      --shadow: 0 14px 36px rgba(24, 39, 75, .08);
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     @media (prefers-color-scheme: dark) {
@@ -32,7 +31,6 @@
         --accent-strong: #83bdff;
         --danger: #ff8c7f;
         --danger-soft: #321d1b;
-        --shadow: 0 14px 36px rgba(0, 0, 0, .28);
       }
     }
     * {
@@ -50,13 +48,13 @@
     }
     button, a.button {
       display: inline-flex;
-      min-height: 34px;
+      min-height: 38px;
       align-items: center;
       justify-content: center;
       gap: 7px;
       border: 1px solid var(--line);
-      border-radius: 7px;
-      padding: 7px 11px;
+      border-radius: 9px;
+      padding: 8px 14px;
       background: var(--panel);
       color: var(--text);
       text-decoration: none;
@@ -72,7 +70,11 @@
       background: var(--accent-strong);
     }
     button.danger {
-      border-color: color-mix(in srgb, var(--danger) 30%, var(--line) 70%);
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+    }
+    button.danger:hover {
       background: var(--danger-soft);
       color: var(--danger);
     }
@@ -84,7 +86,7 @@
       width: 100%;
       min-height: 38px;
       border: 1px solid var(--line);
-      border-radius: 7px;
+      border-radius: 9px;
       padding: 8px 10px;
       background: var(--panel);
       color: var(--text);
@@ -95,32 +97,33 @@
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent);
     }
     input::placeholder {
-      color: color-mix(in srgb, var(--muted) 45%, transparent);
+      color: var(--muted);
     }
     .page {
-      width: min(1180px, calc(100vw - 36px));
+      width: min(1180px, calc(100vw - 48px));
       margin: 0 auto;
-      padding: 24px 0 42px;
+      padding: 28px 0 40px;
     }
     .topbar {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 16px;
-      margin-bottom: 22px;
+      margin-bottom: 24px;
     }
     .brand {
       min-width: 0;
     }
     .brand h1 {
       margin: 0;
-      font-size: 24px;
-      line-height: 1.15;
-      font-weight: 720;
-      letter-spacing: 0;
+      font-size: 28px;
+      line-height: 1.25;
+      font-weight: 600;
+      letter-spacing: -0.8px;
     }
+    .eyebrow { margin-bottom: 6px; color: var(--accent); font-size: 13px; font-weight: 600; }
     .brand p {
-      margin: 5px 0 0;
+      margin: 10px 0 0;
       color: var(--muted);
       line-height: 1.45;
     }
@@ -136,46 +139,46 @@
     }
     .layout {
       display: grid;
-      grid-template-columns: minmax(280px, 360px) minmax(0, 1fr);
-      gap: 18px;
+      grid-template-columns: minmax(0, 1fr) 300px;
+      gap: 28px;
       align-items: start;
     }
     .panel {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      background: var(--panel);
-      box-shadow: var(--shadow);
+      min-width: 0;
     }
+    .create-panel { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+    .create-panel .panel-head { border-bottom: 0; padding-bottom: 0; }
     .panel-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 12px;
       border-bottom: 1px solid var(--line);
-      padding: 15px 16px;
+      padding: 12px 0;
     }
+    .create-panel .panel-head { padding: 20px 20px 0; }
     .panel-title {
       margin: 0;
-      font-size: 15px;
-      font-weight: 680;
+      font-size: 17px;
+      font-weight: 600;
     }
     .panel-subtitle {
-      margin: 3px 0 0;
+      margin: 8px 0 0;
       color: var(--muted);
-      font-size: 12px;
-      line-height: 1.35;
+      font-size: 13px;
+      line-height: 1.6;
     }
     form {
       display: grid;
-      gap: 13px;
-      padding: 16px;
+      gap: 14px;
+      padding: 20px;
     }
     label {
       display: grid;
-      gap: 6px;
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 620;
+      gap: 8px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 500;
     }
     label span {
       color: var(--muted);
@@ -187,64 +190,56 @@
       justify-content: flex-end;
       margin-top: 2px;
     }
+    .form-actions button { width: 100%; }
     .summary {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      padding: 16px;
+      display: flex;
+      gap: 24px;
+      padding: 12px 0;
       border-bottom: 1px solid var(--line);
-      background: var(--panel-soft);
     }
     .metric {
       min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px;
-      background: var(--panel);
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
     }
     .metric-value {
       display: block;
-      font-size: 20px;
-      font-weight: 720;
+      font-size: 14px;
+      font-weight: 600;
       line-height: 1.1;
     }
     .metric-label {
       display: block;
-      margin-top: 4px;
       color: var(--muted);
       font-size: 12px;
     }
     .workspace-list {
       display: grid;
-      gap: 10px;
-      padding: 14px;
     }
     .workspace-row {
       display: grid;
-      grid-template-columns: minmax(150px, 220px) minmax(0, 1fr) auto;
-      gap: 12px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 20px;
       align-items: center;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 0;
     }
     .workspace-name {
       min-width: 0;
     }
+    .workspace-name, .paths { grid-column: 1; }
     .workspace-name strong {
       display: block;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      font-size: 15px;
+      font-size: 16px;
+      font-weight: 600;
     }
     .session-count {
       display: inline-flex;
-      margin-top: 5px;
-      border-radius: 999px;
-      padding: 2px 8px;
-      background: var(--panel-soft);
+      margin-top: 6px;
       color: var(--muted);
       font-size: 12px;
     }
@@ -277,7 +272,11 @@
       gap: 8px;
       justify-content: flex-end;
       flex-wrap: wrap;
+      grid-column: 2;
+      grid-row: 1 / span 2;
     }
+    .actions a.button { color: var(--accent); border-color: var(--line); }
+    .actions a.button:hover { background: var(--panel-soft); }
     .empty {
       display: grid;
       justify-items: center;
@@ -292,8 +291,8 @@
     }
     @media (max-width: 860px) {
       .page {
-        width: min(100vw - 24px, 720px);
-        padding-top: 18px;
+        width: min(100vw - 40px, 720px);
+        padding-top: 28px;
       }
       .topbar {
         align-items: flex-start;
@@ -307,7 +306,6 @@
         grid-template-columns: 1fr;
       }
       .workspace-row {
-        grid-template-columns: 1fr;
         align-items: stretch;
       }
       .actions {
@@ -315,9 +313,12 @@
       }
     }
     @media (max-width: 520px) {
-      .summary {
-        grid-template-columns: 1fr;
-      }
+      .brand h1 { font-size: 28px; }
+      .topbar { margin-bottom: 24px; }
+      .layout { gap: 32px; }
+      .summary { gap: 16px; }
+      .workspace-row { grid-template-columns: 1fr; }
+      .actions { grid-column: 1; grid-row: auto; }
       .path-line {
         grid-template-columns: 1fr;
       }
@@ -332,42 +333,17 @@
   <main class="page">
     <header class="topbar">
       <div class="brand">
-        <h1>pycodex workspaces</h1>
-        <p>Manage local boards and working directories served by this process.</p>
+        <div class="eyebrow">pycodex</div>
+        <h1>Your workspaces</h1>
+        <p>A place for each project. Pick up where you left off.</p>
       </div>
       <div id="status" class="status" role="status"></div>
     </header>
 
     <div class="layout">
-      <section class="panel" aria-labelledby="addTitle">
-        <div class="panel-head">
-          <div>
-            <h2 id="addTitle" class="panel-title">Add Workspace</h2>
-            <p class="panel-subtitle">Board identifies the workspace. Name is optional.</p>
-          </div>
-        </div>
-        <form id="workspaceForm">
-          <label>Board
-            <input id="boardInput" name="board" placeholder="/tmp/pcws-xxxx.html" spellcheck="false">
-          </label>
-          <label>Directory
-            <input id="dirInput" name="dir" placeholder="./" spellcheck="false">
-          </label>
-          <label>Name <span>optional</span>
-            <input id="nameInput" name="name" autocomplete="off" placeholder="workspace-1" spellcheck="false">
-          </label>
-          <div class="form-actions">
-            <button id="addButton" class="primary" type="submit">Add</button>
-          </div>
-        </form>
-      </section>
-
       <section class="panel" aria-labelledby="listTitle">
         <div class="panel-head">
-          <div>
-            <h2 id="listTitle" class="panel-title">Workspace Overview</h2>
-            <p class="panel-subtitle">Open a board, inspect paths, or remove a workspace from this process.</p>
-          </div>
+          <h2 id="listTitle" class="panel-title">Workspaces</h2>
           <button id="refreshButton" type="button">Refresh</button>
         </div>
         <div class="summary" aria-label="Workspace summary">
@@ -386,6 +362,29 @@
         </div>
         <div id="workspaceRows" class="workspace-list"></div>
       </section>
+      <section class="panel create-panel" aria-labelledby="addTitle">
+        <div class="panel-head">
+          <div>
+            <h2 id="addTitle" class="panel-title">New workspace</h2>
+            <p class="panel-subtitle">Connect a working directory and a board to get started.</p>
+          </div>
+        </div>
+        <form id="workspaceForm">
+          <label>Board
+            <input id="boardInput" name="board" placeholder="/tmp/pcws-xxxx.html" spellcheck="false">
+          </label>
+          <label>Directory
+            <input id="dirInput" name="dir" placeholder="./" spellcheck="false">
+          </label>
+          <label>Name <span>optional</span>
+            <input id="nameInput" name="name" autocomplete="off" placeholder="workspace-1" spellcheck="false">
+          </label>
+          <div class="form-actions">
+            <button id="addButton" class="primary" type="submit">Create workspace</button>
+          </div>
+        </form>
+      </section>
+
     </div>
   </main>
 

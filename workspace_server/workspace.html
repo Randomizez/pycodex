@@ -42,8 +42,8 @@
       --space-5: 10px;
       --space-6: 12px;
       --space-7: 14px;
-      --radius-sm: 4px;
-      --radius-md: 6px;
+      --radius-sm: 6px;
+      --radius-md: 10px;
       --chat-width: min(42vw, 760px);
       --splitter-width: 8px;
     }
@@ -54,8 +54,10 @@
       overflow: hidden;
       background: var(--bg);
       color: var(--ink);
-      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
+    button, textarea { font: inherit; }
+    .pane-toggle { display: none; }
     .workspace {
       display: grid;
       grid-template-columns: minmax(0, 1fr) var(--splitter-width) var(--chat-width);
@@ -75,23 +77,31 @@
     .boardbar {
       min-width: 0;
       border-bottom: 1px solid var(--line);
-      padding: 0;
+      height: 44px;
+      padding: 0 12px;
       color: var(--muted);
       font-size: 12px;
       display: flex;
       align-items: center;
-      gap: var(--space-5);
+      gap: 10px;
       white-space: nowrap;
       overflow: hidden;
     }
     .boardbar-paths {
       min-width: 0;
       display: flex;
-      align-items: center;
-      gap: var(--space-4);
+      align-items: baseline;
+      gap: 12px;
       overflow: hidden;
-      line-height: 20px;
+      line-height: 1.4;
     }
+    .boardbar-title {
+      color: var(--ink);
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .boardbar-paths code { border: 0; padding: 0; background: none; font-size: 11px; }
+    .board-location { margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
     .boardbar-paths span {
       min-width: 0;
       overflow: hidden;
@@ -102,8 +112,8 @@
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 20px;
+      width: 32px;
+      height: 32px;
       border: 0;
       border-radius: var(--radius-sm);
       background: transparent;
@@ -118,13 +128,10 @@
       outline: 2px solid var(--accent);
       outline-offset: 1px;
     }
-    .workspace-back::before {
-      content: "";
-      width: 7px;
-      height: 7px;
-      border-left: 2px solid currentColor;
-      border-bottom: 2px solid currentColor;
-      transform: rotate(45deg);
+    .workspace-back svg {
+      display: block;
+      width: 18px;
+      height: 18px;
     }
     .board {
       border: 0;
@@ -138,9 +145,8 @@
       width: 8px;
       height: 100dvh;
       border: 0;
-      border-left: 1px solid var(--line);
       border-right: 1px solid var(--line);
-      background: var(--panel-hover);
+      background: var(--board-chrome);
       cursor: col-resize;
       padding: 0;
       touch-action: none;
@@ -150,10 +156,10 @@
       position: absolute;
       left: 50%;
       top: 50%;
-      width: 3px;
-      height: 42px;
+      width: 2px;
+      height: 28px;
       border-radius: 999px;
-      background: var(--muted);
+      background: var(--line-strong);
       transform: translate(-50%, -50%);
     }
     .splitter:hover,
@@ -177,55 +183,107 @@
       overflow: hidden;
       display: grid;
       grid-template-rows: auto minmax(0, 1fr) auto;
-      background: var(--panel);
+      background: var(--panel-raised);
     }
     .topbar {
       min-width: 0;
-      padding: var(--space-4) var(--space-7);
+      height: 44px;
+      padding: 6px 20px;
       border-bottom: 1px solid var(--line);
       display: grid;
-      gap: var(--space-4);
+      align-content: center;
     }
     .tabbar {
       display: flex;
       align-items: center;
-      gap: var(--space-2);
+      gap: 8px;
       min-width: 0;
+    }
+    .context-control {
+      position: relative;
+      display: flex;
+      flex: 0 0 auto;
     }
     .context-meter {
       --context-remaining: 0%;
-      --context-meter-size: 22px;
+      --context-meter-size: 24px;
       position: relative;
       display: inline-grid;
       place-items: center;
       width: var(--context-meter-size);
       height: var(--context-meter-size);
+      border: 0;
+      padding: 0;
       border-radius: 999px;
-      background: conic-gradient(var(--accent) 0 var(--context-remaining), var(--line-strong) 0 100%);
-      color: var(--muted);
+      background: conic-gradient(var(--accent) 0 var(--context-remaining), var(--line) 0 100%);
+      color: var(--ink);
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-      font-size: 9px;
+      font-size: 10px;
+      font-weight: 600;
       line-height: 1;
       flex: 0 0 auto;
+      cursor: pointer;
     }
-    .context-meter.hidden {
-      display: none;
+    .context-meter:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
     }
     .context-meter::before {
       content: "";
       position: absolute;
-      inset: 4px;
+      inset: 3px;
       border-radius: 999px;
-      background: var(--panel);
+      background: var(--panel-raised);
     }
     .context-meter-value {
       position: relative;
       z-index: 1;
     }
+    .context-details {
+      position: absolute;
+      bottom: 100%;
+      left: -6px;
+      z-index: 5;
+      width: 264px;
+      max-width: calc(100vw - 48px);
+      padding-bottom: 10px;
+      color: var(--ink);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .context-details-card {
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-raised);
+      box-shadow: 0 6px 24px rgba(27, 57, 72, 0.12);
+    }
+    .context-details-heading {
+      display: flex;
+      justify-content: space-between;
+      font-weight: 600;
+    }
+    .context-details-heading span {
+      color: var(--muted);
+      font-weight: 400;
+    }
+    .context-details dl {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 4px 12px;
+      margin: 8px 0;
+    }
+    .context-details dt { color: var(--muted); }
+    .context-details dd {
+      margin: 0;
+      font-variant-numeric: tabular-nums;
+      text-align: right;
+    }
+    .context-details p { margin: 0; color: var(--muted); }
     .tabs {
       display: flex;
       align-items: center;
-      gap: var(--space-1);
+      gap: 4px;
       min-width: 0;
       overflow-x: auto;
       scrollbar-width: thin;
@@ -237,25 +295,28 @@
       gap: var(--space-2);
       min-width: 88px;
       max-width: 180px;
-      height: 31px;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      background: var(--panel-raised);
-      color: var(--ink);
-      padding: 0 var(--space-3) 0 var(--space-4);
-      font: inherit;
+      height: 30px;
+      border: 0;
+      border-radius: var(--radius-md);
+      background: var(--panel-deep);
+      color: var(--muted);
+      padding: 0 8px 0 12px;
+      font-size: 13px;
       cursor: pointer;
       user-select: none;
     }
-    .tab:focus-within,
-    .tab-new:focus {
+    .tab:hover {
+      background: var(--panel-hover);
+      color: var(--ink);
+    }
+    .tab-new:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 1px;
     }
     .tab.active {
-      border-color: var(--accent);
       background: var(--accent-soft);
-      box-shadow: inset 0 -2px 0 var(--accent);
+      color: var(--accent);
+      font-weight: 600;
     }
     .tab-status {
       position: relative;
@@ -278,6 +339,10 @@
       background: var(--accent);
       animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
     }
+    .tab-status[hidden],
+    .tab-label[hidden] {
+      display: none;
+    }
     .tab-label {
       min-width: 0;
       overflow: hidden;
@@ -285,12 +350,35 @@
       white-space: nowrap;
       flex: 1;
       text-align: left;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: inherit;
+    }
+    .tab-label:focus-visible {
+      outline: 0;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    .tab-title-input {
+      min-width: 0;
+      width: 0;
+      flex: 1;
+      border: 0;
+      padding: 0;
+      outline: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      user-select: text;
     }
     .tab-close,
     .tab-new {
       width: 31px;
       height: 31px;
-      border: 1px solid var(--line);
+      border: 0;
       border-radius: var(--radius-md);
       background: var(--panel-raised);
       color: var(--muted);
@@ -300,6 +388,8 @@
       flex: 0 0 auto;
     }
     .tab-close {
+      display: grid;
+      place-items: center;
       width: 18px;
       height: 18px;
       border: 0;
@@ -307,14 +397,23 @@
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
-      font-size: 17px;
-      font-weight: 500;
-      line-height: 18px;
+    }
+    .tab-close svg {
+      display: block;
+      width: 12px;
+      height: 12px;
     }
     .tab-new {
-      font-size: 22px;
-      font-weight: 400;
-      line-height: 31px;
+      display: grid;
+      place-items: center;
+      width: 30px;
+      height: 30px;
+      background: var(--panel-deep);
+    }
+    .tab-new svg {
+      display: block;
+      width: 18px;
+      height: 18px;
     }
     .tab.active .tab-close {
       opacity: 0.85;
@@ -334,52 +433,70 @@
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: var(--space-6) var(--space-7);
+      padding: 16px 20px 20px;
       display: flex;
       flex-direction: column;
-      gap: var(--space-4);
-      background: var(--bg);
+      gap: 14px;
+      background: var(--panel-raised);
+      scrollbar-width: thin;
+      scrollbar-color: var(--line) transparent;
     }
     .entry {
       min-width: 0;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: var(--space-4) var(--space-5);
-      background: var(--panel-raised);
-      box-shadow: var(--entry-shadow);
+      flex: 0 0 auto;
+      line-height: 1.6;
+    }
+    .entry-label {
+      margin-bottom: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
     }
     .entry.user {
-      border-color: var(--warn);
-      background: var(--warn-soft);
-      color: var(--warn-ink);
+      align-self: flex-end;
+      max-width: 92%;
+      padding: 7px 12px;
+      border-radius: 10px 10px 3px 10px;
+      background: var(--success-soft);
     }
     .entry.response,
     .entry.assistant {
-      border-color: var(--line);
-      background: var(--panel-raised);
+      padding: 0;
+    }
+    .entry.thinking,
+    .entry.control,
+    .entry.tool {
+      border-left: 2px solid var(--line);
+      padding: 2px 0 2px 10px;
+      color: var(--muted);
+      font-size: 13px;
     }
     .entry.thinking {
-      border-color: var(--success-line);
-      background: var(--success-soft);
-      color: var(--success);
-      animation: thinking-breathe 4.8s ease-in-out infinite;
+      border-left-color: var(--accent);
+      animation: activity-breathe 1.6s ease-in-out infinite;
     }
     .entry.control {
-      border-color: #b7d3ee;
-      background: var(--info-soft);
-      color: var(--info);
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     }
     .entry.tool {
-      border-color: #d8cdf1;
-      background: var(--violet-soft);
-      color: var(--violet);
       font-size: 12px;
     }
     .entry.error {
-      border-color: #efb8c1;
+      border-left: 2px solid var(--danger);
+      border-radius: var(--radius-sm);
+      padding: 12px 16px;
       background: var(--danger-soft);
       color: var(--danger);
     }
+    .empty-chat {
+      margin: auto 0;
+      padding: 36px 0 56px;
+      max-width: 360px;
+    }
+    .empty-chat .entry-label { color: var(--accent); }
+    .empty-chat h1 { margin: 12px 0; font-size: 28px; line-height: 1.25; font-weight: 600; letter-spacing: -0.6px; }
+    .empty-chat p { margin: 0; color: var(--muted); line-height: 1.75; }
     .text {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
@@ -389,7 +506,7 @@
       overflow-wrap: anywhere;
     }
     .markdown p {
-      margin: 0 0 var(--space-4);
+      margin: 0 0 8px;
     }
     .markdown p:last-child,
     .markdown ul:last-child,
@@ -400,17 +517,17 @@
     }
     .markdown ul,
     .markdown ol {
-      margin: 0 0 var(--space-4) 18px;
+      margin: 0 0 8px 18px;
       padding: 0;
     }
     .markdown li {
       margin: 2px 0;
     }
     .markdown pre {
-      margin: 0 0 var(--space-4);
-      padding: var(--space-4) var(--space-5);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
+      margin: 0 0 10px;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: var(--radius-md);
       background: var(--code);
       overflow-x: auto;
       white-space: pre;
@@ -445,6 +562,13 @@
     .markdown a:hover {
       text-decoration: underline;
     }
+    .markdown h1, .markdown h2, .markdown h3 { line-height: 1.4; margin: 16px 0 8px; font-weight: 600; }
+    .markdown h1 { font-size: 20px; }
+    .markdown h2 { font-size: 18px; }
+    .markdown h3 { font-size: 16px; }
+    .markdown > :first-child { margin-top: 0; }
+    .markdown blockquote { margin: 16px 0; padding-left: 16px; border-left: 2px solid var(--line); color: var(--muted); }
+    .markdown img { max-width: 100%; height: auto; border-radius: var(--radius-sm); }
     .markdown .katex-display {
       margin: 0 0 var(--space-4);
       overflow-x: auto;
@@ -467,11 +591,29 @@
     .composer {
       position: relative;
       min-width: 0;
-      padding: var(--space-4);
+      padding: 8px 20px 10px;
       display: grid;
-      gap: var(--space-3);
+      gap: 6px;
       align-content: end;
-      background: var(--panel);
+      background: var(--panel-raised);
+    }
+    .composer-surface {
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--panel-raised);
+      box-shadow: 0 4px 16px rgba(27, 57, 72, 0.04);
+      transition: border-color 120ms, box-shadow 120ms;
+    }
+    .composer-surface:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.08);
+    }
+    .composer-box {
+      min-width: 0;
+      padding: 4px 10px 4px 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
     }
     .queue-hint {
       display: flex;
@@ -492,21 +634,21 @@
       max-width: 160px;
       height: 22px;
       padding: 0 7px;
-      border: 1px solid var(--line);
-      border-radius: 999px;
-      font-size: 11px;
-      color: var(--warn-ink);
-      background: rgb(255, 247, 223);
-    }
-    .queue-indicator.enqueue {
-      color: #000000;
-      background: #fffaf0;
-      border-color: #e5d5b0;
+      border: 0;
+      border-radius: var(--radius-sm);
+      font-size: 12px;
+      color: var(--muted);
+      background: var(--panel-deep);
     }
     .queue-symbol {
       flex-shrink: 0;
       font-size: 12px;
       line-height: 1;
+    }
+    .queue-symbol svg {
+      display: block;
+      width: 14px;
+      height: 14px;
     }
     .queue-preview {
       min-width: 0;
@@ -516,21 +658,24 @@
     }
     textarea {
       min-width: 0;
-      resize: vertical;
+      resize: none;
       max-height: 35vh;
       width: 100%;
-      border: 1px solid var(--line);
-      border-radius: var(--radius-sm);
-      padding: var(--space-4) var(--space-5);
-      background: var(--panel-deep);
+      min-height: 28px;
+      border: 0;
+      padding: 3px 0;
+      display: block;
+      background: transparent;
       color: var(--ink);
       font: inherit;
-      line-height: 1.4;
+      line-height: 22px;
       overflow-y: auto;
+      scrollbar-width: none;
+    }
+    textarea::-webkit-scrollbar {
+      display: none;
     }
     textarea:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.18);
       outline: 0;
     }
     .actions {
@@ -540,13 +685,15 @@
     }
     .spinner-wrap {
       position: relative;
-      display: inline-flex;
+      display: flex;
       align-items: center;
       gap: var(--space-3);
-      justify-self: start;
-      align-self: end;
       max-width: 100%;
       min-width: 0;
+      padding: 4px 6px;
+      border-bottom: 1px solid var(--line);
+      border-radius: 9px 9px 0 0;
+      background: var(--panel);
     }
     .prompt-row {
       display: flex;
@@ -555,22 +702,21 @@
       min-width: 0;
     }
     .spinner {
-      --spinner-pill-height: 22px;
       position: relative;
       display: inline-flex;
       align-items: center;
       max-width: 100%;
       min-width: 0;
-      height: var(--spinner-pill-height);
+      height: 22px;
       color: var(--muted);
       font-size: 12px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       padding: var(--space-1) var(--space-4) var(--space-1) 18px;
-      border-radius: 999px;
-      background: rgba(230, 246, 248, 0.96);
-      border: 1px solid rgba(8, 127, 154, 0.35);
+      border-radius: var(--radius-sm);
+      background: transparent;
+      border: 1px solid transparent;
       font: inherit;
       font-size: 12px;
       cursor: pointer;
@@ -578,16 +724,15 @@
     .spinner:empty {
       display: none;
     }
+    .spinner:hover {
+      background: var(--panel-deep);
+    }
     .spinner-wrap:not(:has(.spinner:not(:empty), .queue-hint:not([hidden]))) {
       display: none;
     }
     .spinner:focus-visible {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(8, 127, 154, 0.18);
-      outline: 0;
-    }
-    .spinner-wrap:has(.spinner:not(:empty), .queue-hint:not([hidden])) {
-      margin-bottom: var(--space-1);
+      outline: 2px solid var(--accent);
+      outline-offset: 1px;
     }
     .spinner:not(:empty)::before {
       content: "";
@@ -602,12 +747,8 @@
       animation: spinner-pulse 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
     }
     .spinner.notify-enabled {
-      color: var(--success);
-      background: var(--success-soft);
-      border-color: var(--success-line);
-      box-shadow:
-        inset 0 1px 2px rgba(27, 57, 72, 0.08),
-        inset 0 0 0 1px rgba(36, 122, 82, 0.1);
+      color: var(--accent);
+      background: var(--accent-soft);
     }
     .toast {
       position: absolute;
@@ -643,17 +784,9 @@
         transform: scale(1.08);
       }
     }
-    @keyframes thinking-breathe {
-      0%, 100% {
-        border-color: var(--success-line);
-        box-shadow: var(--entry-shadow);
-      }
-      50% {
-        border-color: var(--success);
-        box-shadow:
-          0 0 0 2px rgba(36, 122, 82, 0.14),
-          0 2px 7px rgba(27, 57, 72, 0.08);
-      }
+    @keyframes activity-breathe {
+      0%, 100% { border-left-color: var(--line); }
+      50% { border-left-color: var(--accent); }
     }
     @media (prefers-reduced-motion: reduce) {
       .entry.thinking,
@@ -675,21 +808,61 @@
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 12px;
     }
-    @media (max-width: 900px) {
-      body { overflow: auto; height: auto; }
-      .workspace { min-width: 0; }
+    @media (max-width: 760px) {
+      .pane-toggle {
+        display: inline-grid;
+        place-items: center;
+        width: 30px;
+        height: 30px;
+        margin-left: auto;
+        padding: 0;
+        flex: 0 0 auto;
+        border: 0;
+        border-radius: var(--radius-sm);
+        background: transparent;
+        color: var(--muted);
+        cursor: pointer;
+      }
+      .pane-toggle:hover { background: var(--panel-deep); color: var(--ink); }
+      .pane-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+      .pane-toggle svg { width: 18px; height: 18px; }
+      .workspace { height: 100dvh; display: block; }
+      .board-pane, .chat { height: 100%; }
+      .splitter { display: none; }
+      .workspace[data-mobile-pane="chat"] .board-pane,
+      .workspace[data-mobile-pane="board"] .chat { display: none; }
+      .topbar { height: 44px; padding: 6px 16px; }
+      .boardbar { padding: 0 16px; }
+      .board-location { display: none; }
+      .log { padding: 14px 16px; gap: 14px; }
+      .composer { padding: 8px 16px max(10px, env(safe-area-inset-bottom)); }
+      textarea { font-size: 16px; line-height: 24px; padding: 2px 0; }
+      .tab-title-input { font-size: 16px; }
+      .empty-chat h1 { font-size: 26px; }
     }
   </style>
 </head>
 <body>
-  <div class="workspace">
+  <div class="workspace" data-mobile-pane="chat">
     <section class="board-pane" aria-label="workspace board">
       <div class="boardbar">
-        <a class="workspace-back" href="/" title="Back to workspaces" aria-label="Back to workspaces"></a>
+        <a class="workspace-back" href="/" title="Back to workspaces" aria-label="Back to workspaces">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M15 6l-6 6 6 6"/>
+          </svg>
+        </a>
         <div class="boardbar-paths">
-          <span>@<code>__CWD_LABEL__</code></span>
-          <span>Board: <code>__BOARD_LABEL__</code></span>
+          <span class="boardbar-title">__WORKSPACE_TITLE__</span>
+          <span title="__CWD_LABEL__"><code>__CWD_LABEL__</code></span>
         </div>
+        <span class="board-location" title="__BOARD_LABEL__">Board</span>
+        <button class="pane-toggle" type="button" data-pane="chat" title="Show chat" aria-label="Show chat">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3v-3a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/>
+          </svg>
+        </button>
       </div>
       <iframe id="boardFrame" class="board" src="board" title="board"></iframe>
     </section>
@@ -698,34 +871,75 @@
       <div class="topbar">
         <div class="tabbar">
           <div id="tabs" class="tabs" role="tablist"></div>
-          <button id="newTab" class="tab-new" type="button" title="New session" aria-label="New session">+</button>
+          <button id="newTab" class="tab-new" type="button" title="New session" aria-label="New session">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" aria-hidden="true">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+          <button class="pane-toggle" type="button" data-pane="board" title="Show board" aria-label="Show board">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+              <path d="M3 9h18M9 9v12"/>
+            </svg>
+          </button>
         </div>
       </div>
-      <div id="log" class="log"></div>
+      <div id="log" class="log" aria-label="Conversation"></div>
       <form id="composer" class="composer">
-        <div class="spinner-wrap">
-          <div id="toast" class="toast" role="status" aria-live="polite"></div>
-          <div id="queueHint" class="queue-hint" role="status" aria-live="polite" hidden>
-            <span id="steerHint" class="queue-indicator" hidden>
-              <span class="queue-symbol" role="img" aria-label="Steer">↑</span>
-              <span class="queue-preview"></span>
-            </span>
-            <span id="enqueueHint" class="queue-indicator enqueue" hidden>
-              <span class="queue-symbol" role="img" aria-label="Queue">◷</span>
-              <span class="queue-preview"></span>
-            </span>
+        <div class="composer-surface">
+          <div class="spinner-wrap">
+            <div id="toast" class="toast" role="status" aria-live="polite"></div>
+            <div id="queueHint" class="queue-hint" role="status" aria-live="polite" hidden>
+              <span id="steerHint" class="queue-indicator" hidden>
+                <span class="queue-symbol" role="img" aria-label="Steer">↑</span>
+                <span class="queue-preview"></span>
+              </span>
+              <span id="enqueueHint" class="queue-indicator enqueue" hidden>
+                <span class="queue-symbol" role="img" aria-label="Queue">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+                       stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"/>
+                    <path d="M12 7v5l3 2"/>
+                  </svg>
+                </span>
+                <span class="queue-preview"></span>
+              </span>
+            </div>
+            <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
           </div>
-          <button id="spinner" class="spinner" type="button" role="checkbox" aria-checked="false" aria-live="polite"></button>
-        </div>
-        <div class="prompt-row">
-          <div id="contextMeter" class="context-meter hidden" aria-hidden="true">
-            <span id="contextMeterValue" class="context-meter-value"></span>
+          <div class="composer-box">
+            <div id="contextControl" class="context-control">
+              <button id="contextMeter" class="context-meter" type="button" aria-label="Context usage"
+                      aria-expanded="false" aria-controls="contextDetails">
+                <span id="contextMeterValue" class="context-meter-value">—</span>
+              </button>
+              <div id="contextDetails" class="context-details" role="region" aria-label="Context usage" hidden>
+                <div class="context-details-card">
+                  <div class="context-details-heading">Context usage <span>tokens</span></div>
+                  <dl>
+                    <dt>Current</dt><dd id="contextCurrent">—</dd>
+                    <dt>Compact limit</dt><dd id="contextCompact">—</dd>
+                    <dt>Max length</dt><dd id="contextMax">—</dd>
+                  </dl>
+                  <p id="contextNote"></p>
+                </div>
+              </div>
+            </div>
+            <textarea id="prompt" rows="1" aria-label="Message" title="Enter to send · Shift + Enter for a new line" placeholder="Message…"></textarea>
           </div>
-          <textarea id="prompt" rows="1" placeholder="Ask pycodex or type /help..."></textarea>
         </div>
       </form>
     </section>
   </div>
+  <template id="emptyChat">
+    <div class="empty-chat">
+      <div class="entry-label">pycodex</div>
+      <h1>What are we working on?</h1>
+      <p>Explore an idea, work through a problem, or build something together. Your conversation starts here.</p>
+    </div>
+  </template>
   <script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.6/dist/purify.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js"></script>
@@ -1261,83 +1475,196 @@
         activeSessionId = sessions[0].id || "";
       }
       renderTabs();
+      updatePromptPlaceholder();
       updateContextMeter();
       updateSpinnerNotifyUi();
     }
 
     function renderTabs() {
-      tabsEl.textContent = "";
+      const existingTabs = new Map(
+        Array.from(tabsEl.children, tab => [tab.dataset.sessionId, tab])
+      );
       sessions.forEach((session, index) => {
         const sessionId = session.id || "";
-        const tab = document.createElement("div");
+        let tab = existingTabs.get(sessionId);
+        if (!tab) {
+          tab = document.createElement("div");
+          tab.dataset.sessionId = sessionId;
+          tab.setAttribute("role", "tab");
+          tab.addEventListener("click", () => switchSession(sessionId));
+
+          const status = document.createElement("span");
+          status.className = "tab-status";
+          status.setAttribute("aria-hidden", "true");
+          tab.appendChild(status);
+
+          const label = document.createElement("button");
+          label.type = "button";
+          label.className = "tab-label";
+          label.addEventListener("click", event => {
+            if (sessionId !== activeSessionId) return;
+            event.stopPropagation();
+            editSessionTitle(tab, sessionId);
+          });
+          tab.appendChild(label);
+
+          const close = document.createElement("button");
+          close.type = "button";
+          close.className = "tab-close";
+          close.title = "Close session";
+          close.setAttribute("aria-label", "Close session");
+          close.innerHTML = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" ' +
+            'stroke-width="1.5" stroke-linecap="round" aria-hidden="true">' +
+            '<path d="M4 4l8 8M12 4l-8 8"/></svg>';
+          close.addEventListener("click", event => {
+            event.stopPropagation();
+            closeSession(sessionId);
+          });
+          tab.appendChild(close);
+        }
+        existingTabs.delete(sessionId);
         tab.className =
           "tab" +
           (sessionId === activeSessionId ? " active" : "") +
           (session.running ? " running" : "");
         tab.title = session.title || `Session ${index + 1}`;
-        tab.setAttribute("role", "tab");
         tab.setAttribute("aria-selected", sessionId === activeSessionId ? "true" : "false");
-        if (session.running) tab.setAttribute("aria-busy", "true");
-        tab.addEventListener("click", () => switchSession(sessionId));
-
-        if (session.running) {
-          const status = document.createElement("span");
-          status.className = "tab-status";
-          status.setAttribute("aria-hidden", "true");
-          tab.appendChild(status);
-        }
-
-        const label = document.createElement("span");
-        label.className = "tab-label";
+        tab.setAttribute("aria-busy", String(Boolean(session.running)));
+        tab.querySelector(".tab-status").hidden = !session.running;
+        const label = tab.querySelector(".tab-label");
         label.textContent = session.title || `Session ${index + 1}`;
-        tab.appendChild(label);
-
-        const close = document.createElement("button");
-        close.type = "button";
-        close.className = "tab-close";
-        close.title = "Close session";
-        close.setAttribute("aria-label", "Close session");
-        close.textContent = "×";
-        close.disabled = sessions.length <= 1;
-        close.addEventListener("click", (event) => {
-          event.stopPropagation();
-          closeSession(sessionId);
-        });
-        tab.appendChild(close);
-        tabsEl.appendChild(tab);
+        label.title = sessionId === activeSessionId ? "Click to rename session" : tab.title;
+        tab.querySelector(".tab-close").disabled = sessions.length <= 1;
+        if (tabsEl.children[index] !== tab) {
+          tabsEl.insertBefore(tab, tabsEl.children[index] || null);
+        }
       });
+      existingTabs.forEach(tab => tab.remove());
+    }
+
+    function editSessionTitle(tab, sessionId) {
+      const session = sessionById(sessionId);
+      const label = tab.querySelector(".tab-label");
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "tab-title-input";
+      input.setAttribute("aria-label", "Session title");
+      input.value = session.title || "";
+      input.placeholder = label.textContent;
+      tab.style.width = `${tab.getBoundingClientRect().width}px`;
+      label.hidden = true;
+      tab.insertBefore(input, label);
+      let finished = false;
+      const finish = save => {
+        if (finished) return;
+        finished = true;
+        const title = input.value.trim();
+        input.remove();
+        label.hidden = false;
+        tab.style.width = "";
+        if (save && title && title !== session.title) {
+          renameSession(sessionId, title);
+        }
+      };
+      input.addEventListener("click", event => event.stopPropagation());
+      input.addEventListener("keydown", event => {
+        if (event.isComposing) return;
+        if (event.key === "Enter" || event.key === "Escape") {
+          event.preventDefault();
+          finish(event.key === "Enter");
+          label.focus();
+        }
+      });
+      input.addEventListener("blur", () => finish(true));
+      input.focus();
+      input.select();
+    }
+
+    async function renameSession(sessionId, title) {
+      try {
+        const response = await fetch(relativeUrl("api/session/message"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({prompt: `/title ${title}`, sender: "web", session_id: sessionId}),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        }
+        const session = sessionById(sessionId);
+        if (session) {
+          session.title = payload.snapshot.title;
+          renderTabs();
+        }
+      } catch (error) {
+        addEntry("error", `Could not rename session: ${error.message}`, "error");
+      }
+    }
+
+    function updatePromptPlaceholder(snapshot = null) {
+      const session = snapshot || sessionById(activeSessionId);
+      const label = session && session.model ? `Message to ${session.model}` : "Message";
+      prompt.placeholder = `${label}…`;
+      prompt.setAttribute("aria-label", label);
     }
 
     function updateContextMeter(snapshot = null) {
-      let percent = null;
-      if (snapshot && snapshot.context_remaining_percent !== undefined) {
-        percent = snapshot.context_remaining_percent;
-      } else {
-        const session = sessionById(activeSessionId);
-        if (session && session.context_remaining_percent !== undefined) {
-          percent = session.context_remaining_percent;
-        }
-      }
-      if (percent === null || percent === undefined || percent === "") {
-        contextMeter.classList.add("hidden");
-        contextMeterValue.textContent = "";
-        return;
-      }
-      const value = Math.max(0, Math.min(100, Math.round(Number(percent))));
-      if (!Number.isFinite(value)) {
-        contextMeter.classList.add("hidden");
-        contextMeterValue.textContent = "";
-        return;
-      }
-      if (value >= 100) {
-        contextMeter.classList.remove("hidden");
-        contextMeter.style.setProperty("--context-remaining", `${value}%`);
-        contextMeterValue.textContent = "";
-        return;
-      }
-      contextMeter.classList.remove("hidden");
-      contextMeter.style.setProperty("--context-remaining", `${value}%`);
-      contextMeterValue.textContent = String(value);
+      const session = snapshot || sessionById(activeSessionId);
+      if (!session) return;
+      const percent = session.context_remaining_percent;
+      const compact = session.auto_compact_token_limit;
+      const formatTokens = value => value == null ? "—" : value.toLocaleString("en-US");
+      const remainingLabel = compact == null ? "context remaining" : "remaining until compact";
+      contextMeter.style.setProperty("--context-remaining", `${percent == null ? 0 : percent}%`);
+      contextMeterValue.textContent = percent == null ? "—" : percent >= 100 ? "" : String(percent);
+      contextMeter.setAttribute("aria-label", percent == null
+        ? "Context usage details"
+        : `${percent}% ${remainingLabel}. Context usage details`);
+      document.getElementById("contextCurrent").textContent = formatTokens(session.usage_tokens);
+      document.getElementById("contextCompact").textContent = compact == null ? "Off" : formatTokens(compact);
+      document.getElementById("contextMax").textContent = formatTokens(session.max_context_window);
+      const note = compact == null
+        ? "Auto-compact is off. The ring shows remaining context."
+        : "The ring reaches 0% at the compact limit. Compaction runs before the next model request.";
+      document.getElementById("contextNote").textContent = session.usage_tokens == null
+        ? `Waiting for current usage. ${note}`
+        : note;
+    }
+
+    function setupContextDetails() {
+      const control = document.getElementById("contextControl");
+      const details = document.getElementById("contextDetails");
+      let pinned = false;
+      const show = visible => {
+        details.hidden = !visible;
+        contextMeter.setAttribute("aria-expanded", String(visible));
+      };
+      const close = () => {
+        pinned = false;
+        show(false);
+      };
+      control.addEventListener("pointerenter", event => {
+        if (event.pointerType !== "touch") show(true);
+      });
+      control.addEventListener("pointerleave", () => {
+        if (!pinned) show(false);
+      });
+      contextMeter.addEventListener("focus", () => show(true));
+      control.addEventListener("focusout", event => {
+        if (!pinned && !control.contains(event.relatedTarget)) show(false);
+      });
+      contextMeter.addEventListener("click", () => {
+        pinned = !pinned;
+        show(pinned);
+      });
+      document.addEventListener("pointerdown", event => {
+        if (!control.contains(event.target)) close();
+      });
+      document.addEventListener("keydown", event => {
+        if (event.key === "Escape") close();
+      });
+      tabsEl.addEventListener("click", close);
+      newTabButton.addEventListener("click", close);
     }
 
     function messageSignature(snapshot) {
@@ -1450,6 +1777,7 @@
 
     function renderSnapshot(snapshot) {
       if (!snapshot) return;
+      updatePromptPlaceholder(snapshot);
       const state = stateForSession(activeSessionId);
       state.inputRequest = snapshot.input_request || null;
       renderQueueHint(snapshot.queued_inputs);
@@ -1469,6 +1797,8 @@
         const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
         if (turns.length) {
           turns.forEach((turn) => renderTurn(turn, shouldStick));
+        } else if (!state.inputRequest) {
+          log.appendChild(document.getElementById("emptyChat").content.cloneNode(true));
         }
         if (state.inputRequest) {
           addEntry("input requested", state.inputRequest.text, "control", shouldStick);
@@ -1542,6 +1872,8 @@
       saveActiveSessionUiState();
       activeSessionId = sessionId;
       renderTabs();
+      updatePromptPlaceholder();
+      updateContextMeter();
       const state = stateForSession(sessionId);
       state.lastRenderedSignature = "";
       lastRenderedSignature = "";
@@ -1639,6 +1971,12 @@
     splitter.addEventListener("dblclick", centerSplit);
     spinner.addEventListener("click", toggleSpinnerNotification);
     newTabButton.addEventListener("click", createSession);
+    document.querySelectorAll("[data-pane]").forEach((button) => {
+      button.addEventListener("click", () => {
+        workspace.dataset.mobilePane = button.dataset.pane;
+        if (button.dataset.pane === "chat") resizePrompt();
+      });
+    });
     window.addEventListener("resize", () => {
       const current = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
       if (current > 0) setChatWidth(current);
@@ -1651,6 +1989,7 @@
     });
 
     loadChatWidth();
+    setupContextDetails();
     resizePrompt();
     startPolling();
     startBoardPolling();

@@ -49,7 +49,10 @@ class EventDisplay:
         self.set_context_window_tokens(context_window_tokens)
 
     def start(self, commands):
-        self.log("pycodex interactive mode. Type /exit or press Ctrl+C to quit.")
+        self.log(
+            "pycodex interactive mode. Type /exit or press Ctrl+C to quit; "
+            "press Ctrl+C again while closing to force exit."
+        )
         self.log(format_command_result({"kind": "help", "commands": commands}))
 
     def write(self, text, kind=""):

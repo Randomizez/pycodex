@@ -76,6 +76,40 @@ Closing the active workspace tab uses the same browser transition as selecting
 another tab: reset that tab's render signature, restore its draft and scroll
 position, and request its snapshot immediately. A pending poll for the previous
 tab is aborted; late responses or errors cannot overwrite the selected tab.
+Clicking the active tab's title edits it in place; clicking an inactive tab
+first selects that session. Enter or leaving the title field saves through
+the existing `/title` command; Escape cancels, and an empty field leaves the
+title unchanged. Polling preserves the title editor and its selection while
+updating other tab state. A save targets the edited session even if another
+tab is selected before its response arrives.
+Selected tabs use a tinted background without a click-focus border; keyboard
+focus on the title uses an underline.
+
+The workspace presents assistant replies as open text and user messages as
+right-aligned bubbles. Commands and thinking use quieter secondary styling;
+active thinking has a breathing left rule that respects reduced-motion settings.
+The compact composer keeps Enter to send and Shift+Enter for new lines, with
+a larger context ring centered alongside multiline input. Its placeholder reads
+`Message to <model>…` and follows the active session and model changes.
+The Web context ring shows `1 - current / compact_limit`, using the latest
+reported `total_tokens` and the same resolved limit as Agent auto-compaction.
+Its integer percentage rounds up: 0% means the limit has actually been reached,
+and compaction runs at the next pre-turn or tool-follow-up request boundary.
+Hovering, focusing or clicking the ring reveals exact current tokens, compact
+limit and maximum context length (the config override or model metadata value,
+before effective-window scaling). A click pins the details; another click,
+an outside click or Escape dismisses them. With auto-compaction disabled, the
+ring instead uses the maximum context length and the details say `Off`.
+After compaction or history restore, current usage is unknown until the next
+token report; the ring resets and the details show that usage is pending.
+Queue hints use neutral backgrounds and running status uses a small activity dot.
+They share
+the composer's outer frame in a compact top row separated from the text input;
+the row collapses when there is no running status or queued input.
+On screens up to 760px wide, icon buttons in the existing board/session headers
+switch panes without a separate navigation row or changes to the active session
+and draft. Desktop resizing and per-session scroll restoration retain their
+existing behavior.
 
 Frontends subscribe with `attach(handler)` and unsubscribe with `detach(id)`.
 Attach delivers an immediate `session_state`: identity, model, title, canonical
@@ -152,6 +186,19 @@ uses `interrupt_exception=EOFError` so a background input task cannot leak
 `KeyboardInterrupt` into the event-loop runner. One Ctrl+C initiates normal exit;
 the admission event renders a `[closing]` notice while accepted work and cleanup
 finish. It does not interrupt model/tool calls or bypass their completion.
+While closing, another Ctrl+C immediately terminates the CLI process with status
+130. This also works after `/exit`, `/quit` or Ctrl+D starts closing. The CLI
+installs a SIGINT handler for its interactive session, which prompt_toolkit
+restores when the input prompt ends; it therefore does not depend on an inherited
+handler that may ignore SIGINT. Normal completion and cleanup errors restore the
+original handler. Forced exit happens at the process boundary, without cancelling
+the turn or re-entering asyncio shutdown waits. It skips remaining cleanup and
+does not guarantee termination of external tool processes. Runtime close itself
+still waits for accepted work.
+The prompt uses `set_exception_handler=False` so prompt_toolkit does not replace
+the event loop's exception handler with its blocking "Press ENTER to continue"
+screen. Background notification failures (including provider rate limits) remain
+visible through the existing loop handler without pausing input.
 The CLI still detaches its view on cleanup
 failure, and the Web adapter stops and joins its thread after session cleanup,
 including on failure; startup failure closes the partially started session.
@@ -314,6 +361,10 @@ and tracks queued/started/completed turn boundaries for the main grey answer box
 The box shows only the latest completed reply. A new turn preserves that reply
 with the `(*last turn)` prefix; completion replaces it with the new final text.
 The reply is truncated to the card's 6,500-character display limit.
+The card header uses the session title (or `pycodex`) instead of the fixed
+`Session Connected` label. The current user's prompt is visible above the reply.
+The input retains the shared `pycodex>` / `pyco(…)` context prompt plus status
+or model, including the existing answer/permission prompts.
 Stream, tool, retry, error and question presentation still uses the shared
 `render` implementation. Active stream text stays in the green box; the latest
 rendered activity, command result, error or question appears separately above
@@ -321,6 +372,15 @@ the input and does not accumulate in the answer. Starting or completing a turn
 clears that activity, and resolving a question clears its prompt.
 Attach/resume restores the latest completed reply and any active stream or
 pending question.
+Completed prompt/reply pairs are available in a native Feishu JSON 2.0
+`collapsible_panel`, collapsed by default. Clicking its header expands or
+collapses it; Previous/Next buttons browse one earlier turn at a time. These callbacks
+only select card history; they never submit text to AgentRuntime or change the
+live turn/input. History navigation remains selected while replies arrive.
+Rendering one historical turn, capped at the existing 6,500-character display
+limit, keeps the card payload independent of the number of stored turns.
+Attach/resume reloads history from the runtime snapshot and clears the selection.
+The panel schema follows the [Feishu folding-panel documentation](https://open.feishu.cn/document/feishu-cards/card-json-v2-components/containers/collapsible-panel).
 Web retains its own projection; IPython keeps its tool-only printer. ANSI is
 applied only at a terminal presentation boundary, never stored in event fields,
 Web JSON or generated Feishu presentation. The module does not import terminal,

@@ -186,7 +186,9 @@ Current behavior:
   workspace with a board pane and a pycodex session pane
 - interactive mode exits through `/exit`, `/quit`, Ctrl+D on an empty prompt,
   or a single Ctrl+C; accepted work finishes before cleanup and normal exit.
-  A `[closing]` message explains the wait; Ctrl+C does not cancel model/tool calls.
+  A `[closing]` message explains the wait. Press Ctrl+C again while closing
+  to immediately exit the CLI with status 130. This skips remaining cleanup;
+  external tool processes may keep running.
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
 - assistant text is printed from streaming deltas directly

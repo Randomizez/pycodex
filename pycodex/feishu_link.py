@@ -90,6 +90,13 @@ class PycodexRuntimeLink:
     ) -> "typing.Dict[str, object]":
         if self._detached:
             return {"toast": {"type": "warning", "content": "pycodex is detached."}}
+        if action.get("action") == "history":
+            try:
+                self.card.show_history(action.get("history_index"))
+            except ValueError as exc:
+                return {"toast": {"type": "warning", "content": str(exc)}}
+            self._update_card()
+            return {}
         if action.get("action") != "send":
             return {
                 "toast": {

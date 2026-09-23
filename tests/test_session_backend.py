@@ -208,7 +208,7 @@ async def test_state_changes_reach_every_frontend_and_detach_is_not_close():
             == card.display.title
             == "Shared"
         )
-        assert card.render()["header"]["title"]["content"].endswith(" · Shared")
+        assert card.render()["header"]["title"]["content"] == "Shared"
         web.detach()
         assert queue.agent.accepts_input
         await queue.submit_input("/model scripted")

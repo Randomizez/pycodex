@@ -59,7 +59,6 @@ from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.utils import uuid7_string
 from pycodex.utils.event_helpers import (
     completed_history,
-    percent_of_context_window_remaining,
     shorten_title,
 )
 
@@ -183,8 +182,9 @@ class WebSessionView:
         self._accepts_input = True
         self._spinner_status = ""
         self._stream_buffer = ""
-        self._context_window_tokens: "typing.Union[int, None]" = None
-        self._context_remaining_percent: "typing.Union[int, None]" = None
+        self._max_context_window: "typing.Union[int, None]" = None
+        self._auto_compact_token_limit: "typing.Union[int, None]" = None
+        self._usage_tokens: "typing.Union[int, None]" = None
         self._server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
         self._lock = threading.RLock()
 
@@ -265,16 +265,6 @@ class WebSessionView:
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self._publish_nowait(event)
 
-    def set_context_window_tokens(
-        self,
-        context_window_tokens: "typing.Union[int, None]",
-    ) -> None:
-        with self._lock:
-            self._context_window_tokens = context_window_tokens
-            self._context_remaining_percent = (
-                100 if context_window_tokens is not None else None
-            )
-
     def subscribe(self) -> "asyncio.Queue":
         queue: "asyncio.Queue" = asyncio.Queue()
         with self._lock:
@@ -315,7 +305,7 @@ class WebSessionView:
                 ],
                 "accepts_input": self._accepts_input,
                 "title": self._title,
-                "context_remaining_percent": self._context_remaining_percent,
+                **self._context_usage(),
                 "turns": [_public_turn(turn) for turn in self._turns[-80:]],
             }
 
@@ -328,7 +318,7 @@ class WebSessionView:
                 "title": self._title,
                 "turn_count": len(self._turns),
                 "last_assistant": _last_assistant_text(self._turns),
-                "context_remaining_percent": self._context_remaining_percent,
+                **self._context_usage(),
             }
 
     def _apply_runtime_event(self, event: "Event") -> None:
@@ -339,10 +329,9 @@ class WebSessionView:
             self._recorded_rollout_path = state["recorded_rollout_path"]
             self._input_request = state["input_request"]
             self._accepts_input = state["accepts_input"]
-            if event.reason in {"attach", "history", "model"}:
-                self.set_context_window_tokens(state["context_window"])
-                if state["usage_tokens"] is not None:
-                    self._update_context_window({"total_tokens": state["usage_tokens"]})
+            self._max_context_window = state["max_context_window"]
+            self._auto_compact_token_limit = state["auto_compact_token_limit"]
+            self._usage_tokens = state["usage_tokens"]
             if event.reason in {"attach", "history"}:
                 self.load_session_history(state["title"], completed_history(state))
                 active = state["active_turn"]
@@ -393,8 +382,10 @@ class WebSessionView:
             turn["sender"] = event.sender
             return
         if isinstance(event, TokenCountEvent):
-            self._update_context_window(event.usage)
+            self._usage_tokens = int(event.usage["total_tokens"])
             return
+        if isinstance(event, (AutoCompactCompletedEvent, CompactCompletedEvent)):
+            self._usage_tokens = None
         if not isinstance(event, TurnEvent):
             return
         turn_id = event.turn_id
@@ -464,21 +455,27 @@ class WebSessionView:
             turn["status"] = "interrupted"
             self._stream_buffer = ""
 
-    def _update_context_window(self, usage: "object") -> None:
-        if self._context_window_tokens is None:
-            return
-        if not isinstance(usage, dict):
-            self._context_remaining_percent = None
-            return
-        try:
-            total_tokens = int(usage["total_tokens"])
-        except (KeyError, TypeError, ValueError):
-            self._context_remaining_percent = None
-            return
-        self._context_remaining_percent = percent_of_context_window_remaining(
-            total_tokens,
-            self._context_window_tokens,
-        )
+    def _context_usage(self) -> "typing.Dict[str, object]":
+        limit = self._auto_compact_token_limit
+        if limit is None:
+            limit = self._max_context_window
+        if limit is None:
+            remaining_percent = None
+        elif self._usage_tokens is None:
+            remaining_percent = 100
+        elif self._usage_tokens >= limit:
+            remaining_percent = 0
+        else:
+            # Round up so zero means the actual threshold has been reached.
+            remaining_percent = min(
+                100, ((limit - self._usage_tokens) * 100 + limit - 1) // limit
+            )
+        return {
+            "usage_tokens": self._usage_tokens,
+            "auto_compact_token_limit": self._auto_compact_token_limit,
+            "max_context_window": self._max_context_window,
+            "context_remaining_percent": remaining_percent,
+        }
 
     def _apply_spinner_event(self, event: "TurnEvent") -> None:
         if isinstance(event, AssistantDeltaEvent):
@@ -1654,23 +1651,52 @@ def _render_workspaces_manager_shell() -> str:
 
 
 def _render_empty_board() -> str:
-    return """<!doctype html>
-<html><head><meta charset="utf-8"><title>No board</title></head>
-<body style="font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px">
-<h1>No board</h1>
-<p>Add a workspace from the workspaces manager page.</p>
-</body></html>"""
+    return _render_board_placeholder(
+        "No board",
+        "No board connected",
+        "Add a board from the workspaces page to see your work here.",
+    )
 
 
 def _render_missing_board(board_path: Path) -> str:
-    escaped_path = html.escape(str(board_path))
+    return _render_board_placeholder(
+        "Board pending",
+        "Your work will appear here",
+        "Ask pycodex to create a page, a report, or a visual. "
+        "This canvas updates as you work.",
+        str(board_path),
+    )
+
+
+def _render_board_placeholder(
+    title: str, heading: str, description: str, path_label: str = ""
+) -> str:
     return """<!doctype html>
-<html><head><meta charset="utf-8"><title>Board pending</title></head>
-<body style="font:14px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;padding:24px">
-<h1>Board pending</h1>
-<p>The board file does not exist yet.</p>
-<p><code>{0}</code></p>
-</body></html>""".format(escaped_path)
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{0}</title><style>
+* {{ box-sizing: border-box; }}
+body {{ margin: 0; min-height: 100dvh; display: grid; place-items: center;
+  padding: 32px; background: #f8fbfd; color: #172630;
+  font: 14px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+main {{ max-width: 360px; text-align: center; }}
+svg {{ width: 40px; height: 40px; color: #aebfc9; margin-bottom: 20px; }}
+h1 {{ margin: 0 0 12px; font-size: 23px; font-weight: 500; line-height: 1.35;
+  letter-spacing: -0.5px; }}
+p {{ margin: 0; color: #60727d; }}
+code {{ display: block; margin-top: 28px; font-size: 11px; color: #60727d;
+  overflow-wrap: anywhere; }}
+</style></head><body><main>
+<svg viewBox="0 0 32 32" fill="none" stroke="currentColor" stroke-width="1.25"
+aria-hidden="true"><rect x="3" y="3" width="26" height="26" rx="5"/>
+<path d="M3 11h26M11 11v18"/></svg>
+<h1>{1}</h1><p>{2}</p><code>{3}</code>
+</main></body></html>""".format(
+        html.escape(title),
+        html.escape(heading),
+        html.escape(description),
+        html.escape(path_label),
+    )
 
 
 def main(argv: "typing.Union[typing.Sequence[str], None]" = None) -> int:

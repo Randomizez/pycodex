@@ -24,6 +24,7 @@ from pycodex.events import (
     AssistantDeltaEvent,
     AutoCompactCompletedEvent,
     CommandCompletedEvent,
+    CompactCompletedEvent,
     InputRequestedEvent,
     SessionClosedEvent,
     SessionStateEvent,
@@ -127,6 +128,7 @@ const resizePrompt = () => {};
 const renderTabs = () => {};
 const renderQueueHint = () => {};
 const updateContextMeter = () => {};
+const updatePromptPlaceholder = () => {};
 const updateSpinnerNotifyUi = () => {};
 const notifySessionDone = () => {};
 const isNearBottom = () => false;
@@ -879,11 +881,20 @@ def test_session_list_uses_lightweight_summary(monkeypatch):
 
 def test_web_view_projects_context_tool_and_stream_events():
     view = WebSessionView()
-    view.set_context_window_tokens(100000)
+    runtime = AgentRuntime(
+        Agent(
+            ScriptedModelClient([]),
+            ToolRegistry(),
+            ContextConfig(
+                model_context_window=100000, model_auto_compact_token_limit=80000
+            ),
+        )
+    )
+    view.handle_event(SessionStateEvent("attach", runtime.snapshot()))
     view.handle_event(TokenCountEvent({"total_tokens": 56000}, "turn"))
     view.handle_event(TurnStartedEvent("turn", ("hello",)))
     view.handle_event(AssistantDeltaEvent("part", "turn"))
-    assert view.snapshot()["context_remaining_percent"] == 50
+    assert view.snapshot()["context_remaining_percent"] == 30
     assert view.snapshot()["turns"][-1]["thinking"] == "part"
     view.handle_event(TurnInterruptedEvent("turn", 1, "partial", 0))
     assert view.snapshot()["turns"][-1]["response"] == "partial"
@@ -898,6 +909,74 @@ def test_web_view_projects_context_tool_and_stream_events():
         for event in subscriber.get_nowait()["events"]
     )
     view.close()
+
+
+@pytest.mark.parametrize(
+    "compact_limit,max_len,current,remaining",
+    [
+        (80000, 100000, None, 100),
+        (80000, 100000, 0, 100),
+        (80000, 100000, 60000, 25),
+        (80000, 100000, 79999, 1),
+        (80000, 100000, 80000, 0),
+        (80000, 100000, 81000, 0),
+        (80000, None, 60000, 25),
+        (None, 100000, 60000, 40),
+        (None, None, 60000, None),
+    ],
+)
+def test_web_context_meter_uses_compact_threshold(
+    compact_limit, max_len, current, remaining
+):
+    runtime = AgentRuntime(
+        Agent(
+            ScriptedModelClient([]),
+            ToolRegistry(),
+            ContextConfig(
+                model_context_window=max_len,
+                model_auto_compact_token_limit=compact_limit,
+            ),
+        )
+    )
+    view = WebSessionView()
+    view.handle_event(SessionStateEvent("attach", runtime.snapshot()))
+    if current is not None:
+        view.handle_event(TokenCountEvent({"total_tokens": current}, "turn"))
+    for state in (view.snapshot(), view.summary()):
+        assert state["usage_tokens"] == current
+        assert state["auto_compact_token_limit"] == compact_limit
+        assert state["max_context_window"] == max_len
+        assert state["context_remaining_percent"] == remaining
+
+
+@pytest.mark.parametrize(
+    "completed",
+    [
+        AutoCompactCompletedEvent("turn", "pre_turn", 80000, 80000, 10, 1, 0),
+        CompactCompletedEvent("turn", "manual", None, None, 10, 1, 0, 0),
+    ],
+)
+def test_web_context_usage_clears_after_compaction(completed):
+    runtime = AgentRuntime(
+        Agent(
+            ScriptedModelClient([]),
+            ToolRegistry(),
+            ContextConfig(
+                model_context_window=100000, model_auto_compact_token_limit=80000
+            ),
+        )
+    )
+    view = WebSessionView()
+    view.handle_event(SessionStateEvent("attach", runtime.snapshot()))
+    view.handle_event(TokenCountEvent({"total_tokens": 80000}, "turn"))
+    view.handle_event(completed)
+    assert view.snapshot()["usage_tokens"] is None
+    assert view.snapshot()["context_remaining_percent"] == 100
+    view.handle_event(TokenCountEvent({"total_tokens": 8000}, "turn"))
+    assert view.snapshot()["usage_tokens"] == 8000
+    assert view.snapshot()["context_remaining_percent"] == 90
+    view.handle_event(SessionStateEvent("history", runtime.snapshot()))
+    assert view.snapshot()["usage_tokens"] is None
 
 
 async def test_workspace_displays_steer_and_enqueue_in_execution_order():

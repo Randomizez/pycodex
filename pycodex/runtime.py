@@ -148,6 +148,12 @@ class AgentRuntime:
             "closed": self.agent.is_shutdown,
             "accepts_input": self.agent.accepts_input,
             "context_window": self.agent.context_manager.resolve_model_context_window(),
+            "max_context_window": (
+                self.agent.context_manager.resolve_model_max_context_window()
+            ),
+            "auto_compact_token_limit": (
+                self.agent.context_manager.resolve_auto_compact_token_limit()
+            ),
             "usage_tokens": self.agent._last_total_usage_tokens,
             "background_work_count": self._background_work_count,
             "input_request": self._input_request_event(),

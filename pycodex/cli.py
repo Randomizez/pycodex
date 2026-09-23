@@ -3,11 +3,13 @@ import asyncio
 import inspect
 import os
 import shlex
+import signal
 import sys
 import tempfile
 import threading
 import traceback
 import typing
+from contextlib import contextmanager
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -178,6 +180,25 @@ async def run_cli(args):
             await runtime.close()
 
 
+@contextmanager
+def _cli_sigint_handler(runtime):
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def handle_sigint(signum, frame):
+        if not runtime.accepts_input:
+            # A second interrupt must not re-enter asyncio's shutdown waits.
+            os._exit(130)
+        signal.default_int_handler(signum, frame)
+
+    previous_handler = signal.signal(signal.SIGINT, handle_sigint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
 async def run_interactive_session(runtime, json_mode, config_path=None, view=None):
     if view is None:
         view = CliSessionView()
@@ -189,28 +210,29 @@ async def run_interactive_session(runtime, json_mode, config_path=None, view=Non
             render_result("turn", future.result(), True, view.write_line)
 
     view.display.start(runtime.commands())
-    try:
-        while not view.display.closed:
-            try:
-                raw_line = await view.poll_prompt()
-            except EOFError:
-                break
-            if raw_line is None:
-                await asyncio.sleep(0.05)
-                continue
-            try:
-                receipt = await runtime.submit_input(raw_line, sender="cli")
-            except Exception as exc:
-                view.display.show_error(str(exc))
-                continue
-            if json_mode and receipt.kind == "turn":
-                receipt.future.add_done_callback(show_result)
-    finally:
+    with _cli_sigint_handler(runtime):
         try:
-            await runtime.close()
+            while not view.display.closed:
+                try:
+                    raw_line = await view.poll_prompt()
+                except EOFError:
+                    break
+                if raw_line is None:
+                    await asyncio.sleep(0.05)
+                    continue
+                try:
+                    receipt = await runtime.submit_input(raw_line, sender="cli")
+                except Exception as exc:
+                    view.display.show_error(str(exc))
+                    continue
+                if json_mode and receipt.kind == "turn":
+                    receipt.future.add_done_callback(show_result)
         finally:
-            runtime.detach(frontend_id)
-            view.close()
+            try:
+                await runtime.close()
+            finally:
+                runtime.detach(frontend_id)
+                view.close()
     return 0
 
 
@@ -251,6 +273,7 @@ class Prompter:
                 lambda: self.prompt,
                 refresh_interval=0.12,
                 bottom_toolbar=self._get_status,
+                set_exception_handler=False,
             )
 
     def _get_status(self):
