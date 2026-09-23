@@ -178,6 +178,7 @@ class WebSessionView:
         self._title = ""
         self._model = "pycodex"
         self._rollout_path = ""
+        self._recorded_rollout_path = ""
         self._input_request = None
         self._accepts_input = True
         self._spinner_status = ""
@@ -305,6 +306,7 @@ class WebSessionView:
                 "spinner": self._spinner_status,
                 "model": self._model,
                 "rollout_path": self._rollout_path,
+                "recorded_rollout_path": self._recorded_rollout_path,
                 "input_request": _json_safe(self._input_request),
                 "queued_inputs": [
                     {"queue": turn["queue"], "prompt": turn["prompt"]}
@@ -334,6 +336,7 @@ class WebSessionView:
             state = event.state
             self._model = state["model"]
             self._rollout_path = state["rollout_path"]
+            self._recorded_rollout_path = state["recorded_rollout_path"]
             self._input_request = state["input_request"]
             self._accepts_input = state["accepts_input"]
             if event.reason in {"attach", "history", "model"}:
@@ -668,8 +671,15 @@ class WorkspaceInteractiveSession:
     def rollout_path(self) -> str:
         return self.view.snapshot()["rollout_path"]
 
-    async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
-        self.runtime.resume(rollout_path, title)
+    async def restore_from_rollout(
+        self, rollout_path: str, title: str = "", fork: bool = False
+    ) -> None:
+        if rollout_path:
+            self.runtime.resume(rollout_path, title)
+            if fork:
+                self.runtime.fork()
+        else:
+            self.runtime.set_title(title)
 
 
 class ThreadedWorkspaceInteractiveSession:
@@ -787,14 +797,16 @@ class ThreadedWorkspaceInteractiveSession:
             return ""
         return self._session.rollout_path()
 
-    async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
+    async def restore_from_rollout(
+        self, rollout_path: str, title: str = "", fork: bool = False
+    ) -> None:
         session = self._session
         loop = self._worker_loop
         if session is None or loop is None:
             return
 
         future = asyncio.run_coroutine_threadsafe(
-            session.restore_from_rollout(rollout_path, title=title),
+            session.restore_from_rollout(rollout_path, title=title, fork=fork),
             loop,
         )
         await asyncio.wrap_future(future)

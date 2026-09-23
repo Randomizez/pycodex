@@ -205,6 +205,9 @@ Current behavior:
   real replies after compaction remain visible, including after resume or fork.
 - `/fork` allocates a new Agent/provider session id and lazy rollout while
   preserving current history and the workspace tab; the original rollout stays intact
+- workspace tabs follow the fork's rollout once it is written. Before that,
+  restart restores the source recording and creates a fresh fork, preserving
+  history and title without appending to the source file.
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
   compaction path automatically when the latest reported usage reaches that
   threshold before a follow-up sampling request or the next user turn

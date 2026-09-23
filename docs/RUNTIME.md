@@ -121,6 +121,24 @@ own; unlinking a Feishu card only detaches that frontend. Web submits directly
 to the backend, including across its worker-thread boundary: it does not run a
 CLI shell or maintain an extra prompt queue.
 
+Workspace tab persistence follows recording changes as well as explicit titles.
+Once a fork's first turn or successful compact creates its rollout, the saved tab
+points to that file, including when the model subsequently fails. Before the
+file exists, the tab stores the recorded ancestor's path with an explicit
+`fork: true` marker. Restart resumes that source and calls `runtime.fork()` to
+allocate a fresh identity and lazy destination; further work never appends to
+the source. Repeated pending forks retain the same recorded ancestor. An empty
+titled tab saves just its title until it has a recording. These are explicit
+restore states: an invalid saved source path still raises an error and closes
+the partially created session.
+`Agent.recorded_session_file_path` and the snapshot's `recorded_rollout_path`
+identify a successfully written or explicitly resumed recording. A lazy
+destination has no recorded path yet. The runtime broadcasts a `recording`
+state change after the first successful write; an unrelated file at the
+destination does not count as that write.
+The workspace manager keeps its persistence subscriber attached while sessions
+drain during close, then waits for the final events before releasing its state.
+
 The queue has no separate public `shutdown()` or worker-start entry point.
 `close()` switches off `accepts_input` and wakes the worker. The worker exits when
 the queues are empty; there is no special shutdown submission. Its result carries

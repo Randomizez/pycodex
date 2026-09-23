@@ -59,6 +59,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   验证普通/JSON 回执不创建额外任务，移除逐个 argparse 字段、
   相同 buffer 状态和重复恢复流程的微测试。
 - `test_workspace_server.py` 以路由安全、工作区 CRUD、tab 持久化、线程隔离为主；
+  fork 重启覆盖普通/线程会话、连续未落盘 fork、标题更新、续写与源文件隔离，
+  并覆盖 compact/模型失败后的恢复路径、关闭排空、空标签页和无效源路径。
   验证启动/清理失败仍回收线程，取消关闭调用方不打断当前 turn；
   `/history` 整条命令只产生一条控制消息，不逐行挤占聊天记录；
   执行前端实际切换/渲染代码，验证关闭 tab 后恢复已访问 tab 的内容、草稿和

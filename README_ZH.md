@@ -105,6 +105,8 @@ Agent 不保存 Runtime/Queue 引用，也不取输入或完成提交回执。st
 取消；运行中的 steer 保留逻辑 turn id，但每次执行重新计数。裸 Agent 调用方直接
 收到停止异常，待处理输入只有 Runtime worker 才能执行。
 `/fork` 保留历史、分配新 session id 和延迟创建的新 rollout，不改写旧文件。
+工作区标签页会在新 rollout 落盘后更新恢复路径；尚未落盘时保存源记录和待 fork
+标记，重启后从源记录重新分叉，保留历史与标题，后续续写不会写回源文件。
 完整契约见 `docs/RUNTIME.md`。
 
 Python 回调统一接收 `pycodex.events` 中的具体 `Event` dataclass，

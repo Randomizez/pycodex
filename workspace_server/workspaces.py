@@ -22,7 +22,7 @@ class WorkspaceStateStore:
             None if board_path is None else board_path.with_suffix(".pycodex-ws.json")
         )
 
-    def load_tabs(self) -> "typing.List[typing.Dict[str, str]]":
+    def load_tabs(self) -> "typing.List[typing.Dict[str, object]]":
         if self.path is None or not self.path.is_file():
             return []
 
@@ -44,10 +44,13 @@ class WorkspaceStateStore:
             title = str(tab.get("title") or "").strip()
             rollout_path = str(tab.get("rollout_path") or "").strip()
             if title or rollout_path:
-                result.append({"title": title, "rollout_path": rollout_path})
+                restored = {"title": title, "rollout_path": rollout_path}
+                if tab.get("fork") is True:
+                    restored["fork"] = True
+                result.append(restored)
         return result
 
-    def save_tabs(self, tabs: "typing.Iterable[typing.Dict[str, str]]") -> None:
+    def save_tabs(self, tabs: "typing.Iterable[typing.Dict[str, object]]") -> None:
         if self.path is None:
             return
 
@@ -55,6 +58,7 @@ class WorkspaceStateStore:
             {
                 "title": str(tab.get("title") or ""),
                 "rollout_path": str(tab.get("rollout_path") or ""),
+                **({"fork": True} if tab.get("fork") is True else {}),
             }
             for tab in tabs
         ]
@@ -248,7 +252,8 @@ class WorkspaceSessionManager:
         self._sessions: "typing.Dict[str, object]" = {}
         self._session_order: "typing.List[str]" = []
         self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
-        self._persisted_titles: "typing.Dict[str, str]" = {}
+        self._tab_states: "typing.Dict[str, typing.Dict[str, object]]" = {}
+        self._saved_session_ids: "typing.Set[str]" = set()
         self._lock = asyncio.Lock()
         self._state_store = WorkspaceStateStore(board_path)
         self._persist_callback = persist_callback
@@ -268,42 +273,60 @@ class WorkspaceSessionManager:
             await self.create_session(
                 title=str(tab.get("title") or ""),
                 rollout_path=str(tab.get("rollout_path") or ""),
+                fork=tab.get("fork") is True,
             )
 
     async def close(self) -> None:
         sessions = list(self._sessions.values())
         watchers = list(self._state_watchers.values())
-        self._sessions.clear()
-        self._session_order = []
-        self._state_watchers.clear()
-        self._persisted_titles.clear()
-        for watcher in watchers:
-            watcher.cancel()
-        if watchers:
-            await asyncio.gather(*watchers, return_exceptions=True)
-        for session in sessions:
-            await session.close()
+        try:
+            for session in sessions:
+                await session.close()
+            if watchers:
+                await asyncio.gather(*watchers)
+        finally:
+            for watcher in watchers:
+                watcher.cancel()
+            if watchers:
+                await asyncio.gather(*watchers, return_exceptions=True)
+            self._sessions.clear()
+            self._session_order = []
+            self._state_watchers.clear()
+            self._tab_states.clear()
+            self._saved_session_ids.clear()
 
     async def create_session(
         self,
         title: str = "",
         rollout_path: str = "",
+        fork: bool = False,
     ) -> str:
         async with self._lock:
             session_id = uuid7_string()
             session = self._session_factory()
             await session.start()
 
-            if rollout_path:
-                await session.restore_from_rollout(rollout_path, title=title)
+            try:
+                if rollout_path or title:
+                    await session.restore_from_rollout(
+                        rollout_path, title=title, fork=fork
+                    )
+            except BaseException:
+                await session.close()
+                raise
 
             self._sessions[session_id] = session
             self._session_order.append(session_id)
-            self._persisted_titles[session_id] = str(
-                session_summary(session).get("title") or ""
-            )
+            self._tab_states[session_id] = {
+                "title": str(session_summary(session).get("title") or ""),
+                "rollout_path": rollout_path,
+                **({"fork": True} if fork else {}),
+            }
+            if title or rollout_path:
+                self._saved_session_ids.add(session_id)
+            subscriber = session.subscribe()
             self._state_watchers[session_id] = asyncio.create_task(
-                self._watch_session_title(session_id, session)
+                self._watch_session_state(session_id, session, subscriber)
             )
             return session_id
 
@@ -315,7 +338,8 @@ class WorkspaceSessionManager:
             if session is None:
                 raise KeyError(session_id)
             watcher = self._state_watchers.pop(session_id, None)
-            self._persisted_titles.pop(session_id, None)
+            self._tab_states.pop(session_id, None)
+            self._saved_session_ids.discard(session_id)
             self._session_order = [
                 item for item in self._session_order if item != session_id
             ]
@@ -325,20 +349,38 @@ class WorkspaceSessionManager:
         await session.close()
         self.persist_workspace_state()
 
-    async def _watch_session_title(self, session_id: str, session) -> None:
-        subscriber = session.subscribe()
+    async def _watch_session_state(self, session_id: str, session, subscriber) -> None:
         try:
             while True:
                 event = await subscriber.get()
                 if event is None:
                     return
-                if not isinstance(event, dict) or event.get("type") != "title_changed":
+                if not isinstance(event, dict) or "snapshot" not in event:
                     continue
-                title = str(event.get("title") or "")
-                if title == self._persisted_titles.get(session_id, ""):
-                    continue
-                self._persisted_titles[session_id] = title
-                self.persist_workspace_state()
+                reason = (
+                    event["payload"]["reason"]
+                    if event.get("kind") == "session_state"
+                    else None
+                )
+                previous = self._tab_states[session_id]
+                state = dict(previous)
+                snapshot = event["snapshot"]
+                state["title"] = str(snapshot.get("title") or "")
+                if reason == "identity" and state["rollout_path"]:
+                    # Recreate an unwritten fork from its recorded ancestor.
+                    state["fork"] = True
+                path = str(snapshot["recorded_rollout_path"] or "")
+                if path or not snapshot["rollout_path"]:
+                    state["rollout_path"] = path
+                    state.pop("fork", None)
+                self._tab_states[session_id] = state
+                save_requested = event.get("type") == "title_changed" or reason in {
+                    "identity",
+                    "history",
+                }
+                saved = session_id in self._saved_session_ids
+                if (save_requested or saved) and (state != previous or not saved):
+                    self.persist_workspace_state()
         finally:
             session.unsubscribe(subscriber)
 
@@ -348,13 +390,16 @@ class WorkspaceSessionManager:
             session = self._sessions.get(session_id)
             if session is None:
                 continue
-            summary = session_summary(session)
-            title = str(summary.get("title") or "").strip()
-            rollout_path = str(session.rollout_path() or "")
-            if not title and not rollout_path:
+            state = self._tab_states[session_id]
+            if not state["title"] and not state["rollout_path"]:
                 continue
-            tabs.append({"title": title, "rollout_path": rollout_path})
+            tabs.append(state)
         self._state_store.save_tabs(tabs)
+        self._saved_session_ids.update(
+            session_id
+            for session_id, state in self._tab_states.items()
+            if state["title"] or state["rollout_path"]
+        )
         if self._persist_callback is not None:
             self._persist_callback()
 

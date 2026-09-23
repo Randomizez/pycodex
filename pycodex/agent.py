@@ -123,6 +123,13 @@ class Agent:
         return recorder.rollout_path if recorder is not None else None
 
     @property
+    def recorded_session_file_path(self) -> "typing.Union[Path, None]":
+        recorder = self._rollout_recorder
+        if recorder is None or recorder._session_meta is not None:
+            return None
+        return recorder.rollout_path
+
+    @property
     def is_running(self) -> "bool":
         return not self._idle.is_set()
 

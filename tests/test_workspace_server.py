@@ -586,6 +586,237 @@ def test_sessions_persist_explicit_titles_and_restore_history(tmp_path):
         assert len(browser.get("/api/session").json()["snapshot"]["turns"]) == 1
 
 
+@pytest.mark.parametrize("threaded", [False, True])
+@pytest.mark.parametrize("continue_after_fork", [False, True])
+def test_workspace_fork_survives_restart(tmp_path, threaded, continue_after_fork):
+    board = tmp_path / "board.html"
+    store = WorkspaceStateStore(board)
+
+    def session_factory():
+        if threaded:
+            return ThreadedWorkspaceInteractiveSession(
+                make_session, asyncio.get_running_loop()
+            )
+        return make_session()
+
+    def send(browser, prompt):
+        response = browser.post("/api/session/message", json={"prompt": prompt})
+        assert response.status_code == 200
+        return response.json()["snapshot"]
+
+    def wait_reply(browser, prompt):
+        return wait_snapshot(
+            browser,
+            lambda state: any(
+                turn["prompt"] == prompt and turn["response"] == "done"
+                for turn in state["turns"]
+            ),
+        )
+
+    def conversation(state):
+        return [
+            (turn["prompt"], turn["response"])
+            for turn in state["turns"]
+            if turn["kind"] != "control"
+        ]
+
+    with TestClient(create_app(session_factory, board)) as browser:
+        send(browser, "before fork")
+        state = wait_reply(browser, "before fork")
+        original_path = Path(state["rollout_path"])
+        original_bytes = original_path.read_bytes()
+        send(browser, "/title saved")
+        state = send(browser, "/fork")
+        assert not Path(state["rollout_path"]).exists()
+        send(browser, "/title forked")
+        # A second pending fork must still restore from the recorded ancestor.
+        state = send(browser, "/fork")
+        fork_path = Path(state["rollout_path"])
+        assert fork_path != original_path
+        assert not fork_path.exists()
+        if continue_after_fork:
+            send(browser, "after fork")
+            wait_reply(browser, "after fork")
+
+    expected = [("before fork", "done")]
+    if continue_after_fork:
+        expected.append(("after fork", "done"))
+        assert store.load_tabs() == [
+            {"title": "forked", "rollout_path": str(fork_path)}
+        ]
+    else:
+        assert not fork_path.exists()
+        assert store.load_tabs() == [
+            {"title": "forked", "rollout_path": str(original_path), "fork": True}
+        ]
+
+    with TestClient(create_app(session_factory, board)) as browser:
+        state = browser.get("/api/session").json()["snapshot"]
+        assert state["title"] == "forked"
+        assert conversation(state) == expected
+        restored_path = Path(state["rollout_path"])
+        assert restored_path != original_path
+        if continue_after_fork:
+            assert restored_path == fork_path
+        else:
+            assert not restored_path.exists()
+        send(browser, "after restart")
+        assert conversation(wait_reply(browser, "after restart")) == expected + [
+            ("after restart", "done")
+        ]
+
+    assert original_path.read_bytes() == original_bytes
+    assert store.load_tabs() == [
+        {"title": "forked", "rollout_path": str(restored_path)}
+    ]
+
+
+def test_titled_empty_workspace_tab_survives_restart(tmp_path):
+    board = tmp_path / "board.html"
+    store = WorkspaceStateStore(board)
+    with TestClient(create_app(make_session, board)) as browser:
+        response = browser.post("/api/session/message", json={"prompt": "/title empty"})
+        assert response.status_code == 200
+        path = Path(response.json()["snapshot"]["rollout_path"])
+        assert not path.exists()
+    assert store.load_tabs() == [{"title": "empty", "rollout_path": ""}]
+
+    with TestClient(create_app(make_session, board)) as browser:
+        state = browser.get("/api/session").json()["snapshot"]
+        assert state["title"] == "empty"
+        assert not state["turns"]
+        browser.post("/api/session/message", json={"prompt": "first prompt"})
+        state = wait_snapshot(
+            browser,
+            lambda item: item["turns"] and item["turns"][-1]["response"] == "done",
+        )
+    assert store.load_tabs() == [
+        {"title": "empty", "rollout_path": state["rollout_path"]}
+    ]
+
+
+@pytest.mark.parametrize("command", ["/title saved prompt", "/resume 1"])
+def test_workspace_explicit_save_keeps_unchanged_state(tmp_path, command):
+    board = tmp_path / "board.html"
+    store = WorkspaceStateStore(board)
+    with TestClient(create_app(make_session, board)) as browser:
+        browser.post("/api/session/message", json={"prompt": "saved prompt"})
+        state = wait_snapshot(
+            browser, lambda s: s["turns"] and s["turns"][-1]["response"] == "done"
+        )
+        assert store.load_tabs() == []
+        response = browser.post("/api/session/message", json={"prompt": command})
+        assert response.status_code == 200
+    assert store.load_tabs() == [
+        {"title": "saved prompt", "rollout_path": state["rollout_path"]}
+    ]
+
+
+@pytest.mark.parametrize("next_input", ["/compact", "failed turn"])
+def test_workspace_fork_saves_new_target_after_compact_or_failure(tmp_path, next_input):
+    board = tmp_path / "board.html"
+    store = WorkspaceStateStore(board)
+
+    def respond(prompt, count):
+        if count == 2 and next_input == "failed turn":
+            raise RuntimeError("offline model failure")
+        return ModelResponse([AssistantMessage("done")])
+
+    def session_factory():
+        return make_session(ScriptedModelClient(response_factory=respond))
+
+    with TestClient(create_app(session_factory, board)) as browser:
+        browser.post("/api/session/message", json={"prompt": "before fork"})
+        state = wait_snapshot(
+            browser, lambda s: s["turns"] and s["turns"][-1]["response"] == "done"
+        )
+        original_path = Path(state["rollout_path"])
+        original_bytes = original_path.read_bytes()
+        browser.post("/api/session/message", json={"prompt": "/title saved"})
+        response = browser.post("/api/session/message", json={"prompt": "/fork"})
+        fork_path = Path(response.json()["snapshot"]["rollout_path"])
+        browser.post("/api/session/message", json={"prompt": next_input})
+        if next_input == "failed turn":
+            wait_snapshot(browser, lambda s: s["turns"][-1]["status"] == "error")
+    assert fork_path.is_file()
+    assert store.load_tabs() == [{"title": "saved", "rollout_path": str(fork_path)}]
+    assert original_path.read_bytes() == original_bytes
+    with TestClient(create_app(session_factory, board)) as browser:
+        assert browser.get("/api/session").json()["snapshot"]["rollout_path"] == str(
+            fork_path
+        )
+
+
+async def test_workspace_close_persists_fork_after_draining_turn(tmp_path):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 2:
+            entered.set()
+            await release.wait()
+        return ModelResponse([AssistantMessage("done")])
+
+    session = make_session(ScriptedModelClient(response_factory=respond))
+    board = tmp_path / "board.html"
+    manager = WorkspaceSessionManager(lambda: session, board)
+    await manager.start()
+    first = await session.runtime.submit_input("before fork")
+    await first.future
+    await session.submit("/title saved")
+    await session.submit("/fork")
+    fork_path = session.runtime.agent.session_file_path
+    second = await session.runtime.submit_input("after fork")
+    await entered.wait()
+    closing = asyncio.create_task(manager.close())
+    try:
+        await asyncio.sleep(0)
+        assert not closing.done()
+    finally:
+        release.set()
+        await closing
+    await second.future
+    assert WorkspaceStateStore(board).load_tabs() == [
+        {"title": "saved", "rollout_path": str(fork_path)}
+    ]
+
+
+async def test_workspace_missing_restore_path_still_fails_and_closes_session(tmp_path):
+    session = make_session()
+    board = tmp_path / "board.html"
+    missing_path = str(tmp_path / "missing-rollout.jsonl")
+    WorkspaceStateStore(board).save_tabs(
+        [{"title": "saved", "rollout_path": missing_path, "fork": True}]
+    )
+    manager = WorkspaceSessionManager(lambda: session, board)
+    with pytest.raises(FileNotFoundError):
+        await manager.start()
+    assert session.runtime.agent.is_shutdown
+    assert not manager.list_sessions()
+
+
+def test_workspace_does_not_save_a_fork_destination_owned_by_another_writer(tmp_path):
+    board = tmp_path / "board.html"
+    with TestClient(create_app(make_session, board)) as browser:
+        browser.post("/api/session/message", json={"prompt": "before fork"})
+        state = wait_snapshot(
+            browser, lambda s: s["turns"] and s["turns"][-1]["response"] == "done"
+        )
+        original_path = state["rollout_path"]
+        browser.post("/api/session/message", json={"prompt": "/title saved"})
+        response = browser.post("/api/session/message", json={"prompt": "/fork"})
+        fork_path = Path(response.json()["snapshot"]["rollout_path"])
+        fork_path.write_text("another writer", encoding="utf-8")
+        browser.post("/api/session/message", json={"prompt": "after fork"})
+        state = wait_snapshot(browser, lambda s: s["turns"][-1]["status"] == "error")
+        assert state["recorded_rollout_path"] is None
+        assert "File exists" in state["turns"][-1]["error"]
+    assert fork_path.read_text(encoding="utf-8") == "another writer"
+    assert WorkspaceStateStore(board).load_tabs() == [
+        {"title": "saved", "rollout_path": original_path, "fork": True}
+    ]
+
+
 def test_workspace_resume_hides_compact_handoff_and_keeps_real_reply(tmp_path):
     model = ScriptedModelClient(
         [

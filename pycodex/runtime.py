@@ -91,6 +91,7 @@ class AgentRuntime:
         self._input_request = None
         self._background_work_count = 0
         self._active_turn = None
+        self._recorded_rollout_path = agent.recorded_session_file_path
         environment = agent.tool_registry.runtime_environment
         environment.request_user_input_manager.set_handler(self._request_user_input)
         environment.request_permissions_manager.set_handler(self._request_permissions)
@@ -133,9 +134,13 @@ class AgentRuntime:
 
     def snapshot(self):
         rollout_path = self.agent.session_file_path
+        recorded_path = self.agent.recorded_session_file_path
         return {
             "session_id": self.agent.session_id,
             "rollout_path": str(rollout_path) if rollout_path is not None else None,
+            "recorded_rollout_path": (
+                str(recorded_path) if recorded_path is not None else None
+            ),
             "model": self.agent.model_name,
             "title": self.title,
             "history": conversation_history_to_turns(self.agent.history),
@@ -153,6 +158,7 @@ class AgentRuntime:
         }
 
     def publish_state(self, reason):
+        self._recorded_rollout_path = self.agent.recorded_session_file_path
         self._publish(SessionStateEvent(reason, self.snapshot()))
 
     def require_idle(self, operation):
@@ -177,6 +183,11 @@ class AgentRuntime:
             self.title = title or str(resumed["title"])
         self.publish_state("history" if path is not None else "admission")
         return resumed
+
+    def fork(self):
+        self.require_idle("fork")
+        self.agent.fork()
+        self.publish_state("identity")
 
     async def start(self, config_path=None):
         if config_path is not None:
@@ -289,9 +300,7 @@ class AgentRuntime:
                 "pruned_tool_results": result.pruned_tool_results,
             }
         if command == "fork":
-            self.require_idle("fork")
-            self.agent.fork()
-            self.publish_state("identity")
+            self.fork()
             return {"kind": "forked", "session_id": self.agent.session_id}
         if command in {"exit", "quit"}:
             await self.close()
@@ -582,6 +591,8 @@ class AgentRuntime:
                 self.publish_state("auto_title")
         if isinstance(event, TerminalEvent) and event.background_work_count is not None:
             self._background_work_count = event.background_work_count
+        if self.agent.recorded_session_file_path != self._recorded_rollout_path:
+            self.publish_state("recording")
         self._publish(event)
 
     def _publish(self, event: "Event"):
