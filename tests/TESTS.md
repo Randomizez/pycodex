@@ -61,6 +61,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `test_workspace_server.py` 以路由安全、工作区 CRUD、tab 持久化、线程隔离为主；
   验证启动/清理失败仍回收线程，取消关闭调用方不打断当前 turn；
   `/history` 整条命令只产生一条控制消息，不逐行挤占聊天记录；
+  执行前端实际切换/渲染代码，验证关闭 tab 后恢复已访问 tab 的内容、草稿和
+  滚动位置，以及旧轮询迟到或报错时不能覆盖当前 tab；
   不再把 CSS 颜色、函数名等实现细节当成独立回归。
 - 恢复失败按缺失/空文件/损坏/无 session id 选代表状态，不再对不改变执行路径的
   persisted/closed 标志做完整笛卡尔积。数据落盘原子性、路径隔离、SSE 协议、

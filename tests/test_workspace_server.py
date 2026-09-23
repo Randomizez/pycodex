@@ -1,8 +1,10 @@
 import asyncio
 import json
+import subprocess
 import threading
 import time
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -100,6 +102,109 @@ def wait_snapshot(client, predicate, path="/api/session"):
             return snapshot
         time.sleep(0.01)
     raise AssertionError("session did not reach expected state")
+
+
+@pytest.mark.parametrize("late_poll", ["none", "success", "error"])
+def test_closing_active_tab_restores_visited_tab(late_poll):
+    source = (
+        Path(__file__).parents[1] / "workspace_server" / "workspace.html"
+    ).read_text(encoding="utf-8")
+    fragments = []
+    for start, end in [
+        ("    let pollTimer = null;", "    const markdownRenderer ="),
+        ("    function stateForSession(", "    function renderTabs("),
+        ("    function messageSignature(", "    function startPolling("),
+        ("    function renderSnapshot(", "    function renderTurn("),
+        ("    async function switchSession(", '    form.addEventListener("submit"'),
+    ]:
+        fragments.append(source[source.index(start) : source.index(end)])
+    script = r"""
+const assert = require("assert").strict;
+const log = {textContent: "", scrollTop: 0, scrollHeight: 1000, clientHeight: 100};
+const prompt = {value: ""};
+const relativeUrl = path => path;
+const resizePrompt = () => {};
+const renderTabs = () => {};
+const renderQueueHint = () => {};
+const updateContextMeter = () => {};
+const updateSpinnerNotifyUi = () => {};
+const notifySessionDone = () => {};
+const isNearBottom = () => false;
+const scrollToBottom = () => {};
+const setSpinner = text => { spinnerText = text; };
+const addEntry = (_role, text) => { log.textContent += text; };
+const renderTurn = turn => { log.textContent += turn.response; };
+""" + "\n".join(fragments)
+    script += r"""
+const tabs = [{id: "a"}, {id: "b"}];
+let serverTabs = tabs.slice();
+function snapshot(id) {
+  return {turns: [{prompt: `prompt ${id}`, response: `answer ${id}`}],
+          spinner: "", queued_inputs: []};
+}
+function response(id) {
+  const payload = {session_id: id, sessions: serverTabs.slice(), snapshot: snapshot(id)};
+  return {ok: true, json: async () => payload};
+}
+let delayOldPoll = false;
+let finishOldPoll;
+const fetch = async (path, options = {}) => {
+  if (options.method === "DELETE") {
+    serverTabs = [tabs[0]];
+    return {ok: true, json: async () => ({ok: true, sessions: serverTabs.slice()})};
+  }
+  const id = path.endsWith("=b") ? "b" : "a";
+  const reply = response(id);
+  if (delayOldPoll && id === "b") {
+    // Deliver a late response even if the browser has already aborted it.
+    return new Promise((resolve, reject) => {
+      finishOldPoll = () => {
+        if (process.argv[2] === "error") reject(new Error("old tab is gone"));
+        else resolve(reply);
+      };
+    });
+  }
+  return reply;
+};
+(async () => {
+  sessions = tabs.slice();
+  activeSessionId = "a";
+  renderSnapshot(snapshot("a"));
+  prompt.value = "draft a";
+  log.scrollTop = 123;
+  await switchSession("b");
+  assert.equal(log.textContent, "answer b");
+  prompt.value = "draft b";
+  log.scrollTop = 9;
+  delayOldPoll = process.argv[2] !== "none";
+  const oldPoll = delayOldPoll ? pollSession() : null;
+  await closeSession("b");
+  assert.equal(activeSessionId, "a");
+  assert.equal(log.textContent, "answer a");
+  assert.equal(prompt.value, "draft a");
+  assert.equal(log.scrollTop, 123);
+  assert.equal(sessionState.has("b"), false);
+  if (oldPoll) {
+    finishOldPoll();
+    await oldPoll;
+  }
+  assert.equal(activeSessionId, "a");
+  assert.deepEqual(sessions.map(tab => tab.id), ["a"]);
+  assert.equal(spinnerText, "");
+  assert.equal(log.textContent, "answer a");
+  await pollSession();
+  assert.equal(log.textContent, "answer a");
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        ["node", "-", late_poll],
+        input=script,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        universal_newlines=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_typed_event_wire_preserves_existing_fields():

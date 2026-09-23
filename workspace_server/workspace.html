@@ -748,7 +748,7 @@
     const newTabButton = document.getElementById("newTab");
     let pollTimer = null;
     let boardPollTimer = null;
-    let pollInFlight = false;
+    let sessionPoll = null;
     let boardPollInFlight = false;
     let lastBoardSignature = null;
     let lastRenderedSignature = "";
@@ -1358,17 +1358,21 @@
     }
 
     async function pollSession() {
-      if (pollInFlight) return;
-      pollInFlight = true;
       const requestedSessionId = activeSessionId;
+      if (sessionPoll) {
+        if (sessionPoll.sessionId === requestedSessionId) return;
+        sessionPoll.controller.abort();
+      }
+      const request = {sessionId: requestedSessionId, controller: new AbortController()};
+      sessionPoll = request;
       try {
         const path = requestedSessionId
           ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
           : "api/session";
-        const response = await fetch(relativeUrl(path));
+        const response = await fetch(relativeUrl(path), {signal: request.controller.signal});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const payload = await response.json();
-        if (requestedSessionId && requestedSessionId !== activeSessionId) {
+        if (sessionPoll !== request || requestedSessionId !== activeSessionId) {
           return;
         }
         if (payload.session_id && payload.session_id !== activeSessionId) {
@@ -1377,9 +1381,11 @@
         updateSessions(payload.sessions || []);
         renderSnapshot(payload.snapshot);
       } catch (error) {
-        setSpinner(`poll error: ${error.message}`);
+        if (sessionPoll === request && requestedSessionId === activeSessionId) {
+          setSpinner(`poll error: ${error.message}`);
+        }
       } finally {
-        pollInFlight = false;
+        if (sessionPoll === request) sessionPoll = null;
       }
     }
 
@@ -1582,21 +1588,11 @@
         addEntry("error", payload.error || `HTTP ${response.status}`, "error");
         return;
       }
-      sessionState.delete(sessionId);
       updateSessions(payload.sessions || []);
       if (activeSessionId === sessionId) {
-        activeSessionId = sessions.length ? sessions[0].id || "" : "";
-        lastRenderedSignature = "";
-        prompt.value = "";
-        resizePrompt();
-        suppressScrollSave = true;
-        log.textContent = "";
-        renderQueueHint([]);
-        suppressScrollSave = false;
-        await pollSession();
-      } else {
-        renderTabs();
+        await switchSession(sessions[0].id);
       }
+      sessionState.delete(sessionId);
     }
 
     form.addEventListener("submit", (event) => {

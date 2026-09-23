@@ -71,6 +71,11 @@ commands and lets close wait for accepted command work.
 Web command output preserves the event's plain text, including resume-list
 numbering and line breaks.
 
+Closing the active workspace tab uses the same browser transition as selecting
+another tab: reset that tab's render signature, restore its draft and scroll
+position, and request its snapshot immediately. A pending poll for the previous
+tab is aborted; late responses or errors cannot overwrite the selected tab.
+
 Frontends subscribe with `attach(handler)` and unsubscribe with `detach(id)`.
 Attach delivers an immediate `session_state`: identity, model, title, canonical
 history, active turn/partial output, usage, plan, input request and admission

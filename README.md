@@ -279,7 +279,9 @@ Current behavior:
   time when it expires.
 - while a background command or clock is pending, the idle status is
   `idle: sleeping`
-- only the active workspace tab shows its close button
+- only the active workspace tab shows its close button; closing it restores
+  the selected tab's conversation, draft, and scroll position immediately
+  after its snapshot loads
 - `--vllm-endpoint http://host:port` automatically launches a local
   `responses_server` compatibility layer; when the URL path is empty it is
   normalized to `/v1`, and `/responses` requests are still forwarded to the
