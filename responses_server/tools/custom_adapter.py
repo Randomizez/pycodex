@@ -1,7 +1,6 @@
-
-from copy import deepcopy
 import json
 import typing
+from copy import deepcopy
 
 
 class CustomToolAdapterError(ValueError):
@@ -82,8 +81,8 @@ It is important to remember:
 """
 
 
-def collect_custom_tool_names(raw_tools: 'object') -> 'typing.Set[str]':
-    names: 'typing.Set[str]' = set()
+def collect_custom_tool_names(raw_tools: "object") -> "typing.Set[str]":
+    names: "typing.Set[str]" = set()
     if not isinstance(raw_tools, list):
         return names
     for raw_tool in raw_tools:
@@ -95,7 +94,9 @@ def collect_custom_tool_names(raw_tools: 'object') -> 'typing.Set[str]':
     return names
 
 
-def build_tool_definition(raw_tool: 'typing.Dict[str, object]') -> 'typing.Dict[str, object]':
+def build_tool_definition(
+    raw_tool: "typing.Dict[str, object]",
+) -> "typing.Dict[str, object]":
     name = _required_tool_name(raw_tool)
     description = _build_description(raw_tool)
     input_description = (
@@ -125,7 +126,7 @@ def build_tool_definition(raw_tool: 'typing.Dict[str, object]') -> 'typing.Dict[
     }
 
 
-def build_tool_call(raw_item: 'typing.Dict[str, object]') -> 'typing.Dict[str, object]':
+def build_tool_call(raw_item: "typing.Dict[str, object]") -> "typing.Dict[str, object]":
     name = _required_item_name(raw_item)
     return {
         "id": str(raw_item.get("call_id", "")).strip() or name,
@@ -141,7 +142,9 @@ def build_tool_call(raw_item: 'typing.Dict[str, object]') -> 'typing.Dict[str, o
     }
 
 
-def build_output_item(tool_call: 'typing.Dict[str, object]', index: 'int') -> 'typing.Dict[str, object]':
+def build_output_item(
+    tool_call: "typing.Dict[str, object]", index: "int"
+) -> "typing.Dict[str, object]":
     function = tool_call.get("function") or {}
     if not isinstance(function, dict):
         raise CustomToolAdapterError(
@@ -149,9 +152,7 @@ def build_output_item(tool_call: 'typing.Dict[str, object]', index: 'int') -> 't
         )
     name = str(function.get("name", "")).strip()
     if not name:
-        raise CustomToolAdapterError(
-            "outcomming custom tool call is missing `name`"
-        )
+        raise CustomToolAdapterError("outcomming custom tool call is missing `name`")
     return {
         "type": "custom_tool_call",
         "call_id": str(tool_call.get("id", "")).strip() or f"call_{index}",
@@ -160,7 +161,7 @@ def build_output_item(tool_call: 'typing.Dict[str, object]', index: 'int') -> 't
     }
 
 
-def extract_input_text(raw_arguments: 'object') -> 'str':
+def extract_input_text(raw_arguments: "object") -> "str":
     if isinstance(raw_arguments, dict):
         parsed = deepcopy(raw_arguments)
     else:
@@ -186,7 +187,7 @@ def extract_input_text(raw_arguments: 'object') -> 'str':
     return str(raw_arguments or "")
 
 
-def _build_description(raw_tool: 'typing.Dict[str, object]') -> 'str':
+def _build_description(raw_tool: "typing.Dict[str, object]") -> "str":
     name = _tool_name(raw_tool)
     if name == APPLY_PATCH_NAME:
         return APPLY_PATCH_CHAT_DESCRIPTION
@@ -200,7 +201,7 @@ def _build_description(raw_tool: 'typing.Dict[str, object]') -> 'str':
 
     raw_format = raw_tool.get("format")
     if isinstance(raw_format, dict):
-        format_lines: 'typing.List[str]' = []
+        format_lines: "typing.List[str]" = []
         format_type = str(raw_format.get("type", "")).strip()
         syntax = str(raw_format.get("syntax", "")).strip()
         definition = str(raw_format.get("definition", "") or "").strip()
@@ -217,18 +218,18 @@ def _build_description(raw_tool: 'typing.Dict[str, object]') -> 'str':
     return "\n\n".join(parts)
 
 
-def _tool_name(raw_tool: 'typing.Dict[str, object]') -> 'str':
+def _tool_name(raw_tool: "typing.Dict[str, object]") -> "str":
     return str(raw_tool.get("name", "")).strip()
 
 
-def _required_tool_name(raw_tool: 'typing.Dict[str, object]') -> 'str':
+def _required_tool_name(raw_tool: "typing.Dict[str, object]") -> "str":
     name = _tool_name(raw_tool)
     if not name:
         raise CustomToolAdapterError("custom tool definition is missing `name`")
     return name
 
 
-def _required_item_name(raw_item: 'typing.Dict[str, object]') -> 'str':
+def _required_item_name(raw_item: "typing.Dict[str, object]") -> "str":
     name = str(raw_item.get("name", "")).strip()
     if not name:
         raise CustomToolAdapterError("custom tool call is missing `name`")

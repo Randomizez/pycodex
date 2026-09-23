@@ -1,6 +1,7 @@
 """Optional tool that executes code in the current IPython kernel."""
 
-from ..utils.toolcall_visualize import colorize_tool_message, tool_summary
+from ..events import ToolCompletedEvent
+from ..utils.event_helpers import colorize_tool_message
 from .base_tool import BaseTool, ToolContext
 
 
@@ -28,7 +29,7 @@ class IPythonTool(BaseTool):
         self._shell = shell
         self.name = name
 
-    async def run(self, context: 'ToolContext', args):
+    async def run(self, context: "ToolContext", args):
         del context
         if not isinstance(args, dict):
             return {"error": "arguments must be an object"}
@@ -55,9 +56,7 @@ class IPythonTool(BaseTool):
             data = getattr(item, "data", None)
             if isinstance(data, dict):
                 display_outputs.append(
-                    data.get("text/plain")
-                    or data.get("text/html")
-                    or repr(data)
+                    data.get("text/plain") or data.get("text/html") or repr(data)
                 )
             else:
                 display_outputs.append(repr(item))
@@ -106,9 +105,7 @@ def _install_agent_shortcut(shell):
         if not prompt.strip():
             return [f"{indent}print('Usage: @{agent_name} <prompt>')\n"]
 
-        return [
-            f"{indent}print({agent_name}.ask({prompt!r}).output_text)\n"
-        ]
+        return [f"{indent}print({agent_name}.ask({prompt!r}).output_text)\n"]
 
     shell.input_transformers_cleanup.append(transform)
     shell.user_ns["_pycodex_agent_shortcut_transform"] = transform
@@ -117,13 +114,13 @@ def _install_agent_shortcut(shell):
 
 def attach_ipython_event_printer(agent, color=True):
     def handle_event(event):
-        if event.kind == "tool_completed":
-            tool_name = str(event.payload.get("tool_name", "")).strip()
-            message = tool_summary(event.payload)
+        if isinstance(event, ToolCompletedEvent):
+            tool_name = event.call.name
+            message = event.visualize()
             for line in message.splitlines() or [""]:
                 print(colorize_tool_message(line, color, tool_name), flush=True)
 
-    agent.set_event_handler(handle_event)
+    agent.event_handler = handle_event
     return handle_event
 
 
@@ -137,7 +134,7 @@ def attach_ipython_tool(
         raise RuntimeError("not running inside IPython")
 
     tool = IPythonTool(shell, name=name)
-    agent._tool_registry.register(tool)
+    agent.tool_registry.register(tool)
     if shortcut:
         _install_agent_shortcut(shell)
     if print_tool_events:

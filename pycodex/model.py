@@ -1,39 +1,48 @@
-
 import asyncio
 import json
 import os
 import re
+import threading
+import typing
 import urllib.parse
+import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable
-from .compat import Protocol
 
 import requests
-import typing
+
+from .compat import Protocol
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
     import tomli as tomllib
 
+from .events import (
+    AssistantDeltaEvent,
+    ModelEvent,
+    StreamErrorEvent,
+    TokenCountEvent,
+    ToolCalledEvent,
+)
+from .model_metadata import model_metadata
 from .protocol import (
     AssistantMessage,
     JSONDict,
+    ModelOutputItem,
     ModelResponse,
-    ModelStreamEvent,
     Prompt,
     ReasoningItem,
     ToolCall,
 )
-from .model_metadata import model_metadata
 from .utils import build_user_agent, uuid7_string
 
 DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
-ModelStreamEventHandler = Callable[[ModelStreamEvent], None]
-NOOP_MODEL_STREAM_EVENT_HANDLER: 'ModelStreamEventHandler' = lambda _event: None
+ModelStreamEventHandler = Callable[[ModelEvent], None]
+NOOP_MODEL_STREAM_EVENT_HANDLER: "ModelStreamEventHandler" = lambda _event: None
 DEFAULT_STREAM_MAX_RETRIES = 5
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 INITIAL_RETRY_DELAY_SECONDS = 0.2
@@ -44,39 +53,52 @@ RATE_LIMIT_RETRY_AFTER_RE = re.compile(
 
 
 class ModelClient(Protocol):
+    @property
+    def model(self) -> "str":
+        """Return the current model identifier."""
+
     async def complete(
         self,
-        prompt: 'Prompt',
-        event_handler: 'ModelStreamEventHandler' = NOOP_MODEL_STREAM_EVENT_HANDLER,
-    ) -> 'ModelResponse':
+        prompt: "Prompt",
+        event_handler: "ModelStreamEventHandler" = NOOP_MODEL_STREAM_EVENT_HANDLER,
+    ) -> "ModelResponse":
         """Return the next batch of model output items for the current prompt."""
 
 
-@dataclass(frozen=True, )
+class ModelControl(Protocol):
+    model: "str"
+
+    async def list_models(self) -> "typing.List[str]":
+        """List the models available to an interactive session."""
+
+
+@dataclass(
+    frozen=True,
+)
 class ResponsesProviderConfig:
-    model: 'str'
-    provider_name: 'str'
-    base_url: 'str'
-    api_key_env: 'typing.Union[str, None]'
-    use_chat_completion: 'bool' = False
-    wire_api: 'str' = "responses"
-    query_params: 'typing.Dict[str, str]' = field(default_factory=dict)
-    reasoning_effort: 'typing.Union[str, None]' = None
-    reasoning_summary: 'typing.Union[str, None]' = None
-    verbosity: 'typing.Union[str, None]' = None
-    sandbox_mode: 'typing.Union[str, None]' = None
-    beta_features_header: 'typing.Union[str, None]' = None
-    stream_max_retries: 'typing.Union[int, None]' = None
-    stream_idle_timeout_ms: 'typing.Union[int, None]' = None
-    service_tier: 'typing.Union[str, None]' = None
-    responses_lite_override: 'typing.Union[bool, None]' = None
+    model: "str"
+    provider_name: "str"
+    base_url: "str"
+    api_key_env: "typing.Union[str, None]"
+    use_chat_completion: "bool" = False
+    wire_api: "str" = "responses"
+    query_params: "typing.Dict[str, str]" = field(default_factory=dict)
+    reasoning_effort: "typing.Union[str, None]" = None
+    reasoning_summary: "typing.Union[str, None]" = None
+    verbosity: "typing.Union[str, None]" = None
+    sandbox_mode: "typing.Union[str, None]" = None
+    beta_features_header: "typing.Union[str, None]" = None
+    stream_max_retries: "typing.Union[int, None]" = None
+    stream_idle_timeout_ms: "typing.Union[int, None]" = None
+    service_tier: "typing.Union[str, None]" = None
+    responses_lite_override: "typing.Union[bool, None]" = None
 
     @classmethod
     def from_codex_config(
         cls,
-        config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
-        profile: 'typing.Union[str, None]' = None,
-    ) -> 'ResponsesProviderConfig':
+        config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
+        profile: "typing.Union[str, None]" = None,
+    ) -> "ResponsesProviderConfig":
         data = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
         selected = dict(data)
         if profile is not None:
@@ -98,16 +120,12 @@ class ResponsesProviderConfig:
             for key, value in provider.get("query_params", {}).items()
         }
         features = selected.get("features", {})
-        beta_features: 'typing.List[str]' = []
+        beta_features: "typing.List[str]" = []
         if isinstance(features, dict) and features.get("guardian_approval") is True:
             beta_features.append("guardian_approval")
-        use_chat_completion = _optional_bool(
-            selected.get("use_chat_completion")
-        )
+        use_chat_completion = _optional_bool(selected.get("use_chat_completion"))
         if use_chat_completion is None:
-            use_chat_completion = _optional_bool(
-                provider.get("use_chat_completion")
-            )
+            use_chat_completion = _optional_bool(provider.get("use_chat_completion"))
         if use_chat_completion is None:
             use_chat_completion = False
         return cls(
@@ -125,10 +143,12 @@ class ResponsesProviderConfig:
             sandbox_mode=selected.get("sandbox_mode"),
             beta_features_header=",".join(beta_features) or None,
             stream_max_retries=_optional_int(provider.get("stream_max_retries")),
-            stream_idle_timeout_ms=_optional_int(provider.get("stream_idle_timeout_ms")),
+            stream_idle_timeout_ms=_optional_int(
+                provider.get("stream_idle_timeout_ms")
+            ),
         )
 
-    def api_key(self) -> 'typing.Union[str, None]':
+    def api_key(self) -> "typing.Union[str, None]":
         if not self.api_key_env:
             return None
         value = os.environ.get(self.api_key_env, "")
@@ -140,33 +160,31 @@ class ResponsesProviderConfig:
 
     def with_overrides(
         self,
-        model: 'typing.Union[str, None]' = None,
-        reasoning_effort: 'typing.Union[str, None]' = None,
-    ) -> 'ResponsesProviderConfig':
+        model: "typing.Union[str, None]" = None,
+        reasoning_effort: "typing.Union[str, None]" = None,
+    ) -> "ResponsesProviderConfig":
         return replace(
             self,
             model=self.model if model is None else model,
             reasoning_effort=(
-                self.reasoning_effort
-                if reasoning_effort is None
-                else reasoning_effort
+                self.reasoning_effort if reasoning_effort is None else reasoning_effort
             ),
         )
 
-    def effective_stream_max_retries(self) -> 'int':
+    def effective_stream_max_retries(self) -> "int":
         if self.stream_max_retries is None:
             return DEFAULT_STREAM_MAX_RETRIES
         return max(int(self.stream_max_retries), 0)
 
-    def effective_stream_idle_timeout_seconds(self) -> 'float':
+    def effective_stream_idle_timeout_seconds(self) -> "float":
         if self.stream_idle_timeout_ms is None:
             return DEFAULT_STREAM_IDLE_TIMEOUT_MS / 1000.0
         return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
 
-    def metadata(self) -> 'typing.Union[JSONDict, None]':
+    def metadata(self) -> "typing.Union[JSONDict, None]":
         return model_metadata(self.model)
 
-    def use_responses_lite(self) -> 'bool':
+    def use_responses_lite(self) -> "bool":
         if self.responses_lite_override is not None:
             return self.responses_lite_override
         metadata = self.metadata()
@@ -174,7 +192,7 @@ class ResponsesProviderConfig:
             return False
         return metadata.get("use_responses_lite") is True
 
-    def effective_reasoning_effort(self) -> 'typing.Union[str, None]':
+    def effective_reasoning_effort(self) -> "typing.Union[str, None]":
         if self.reasoning_effort is not None:
             return str(self.reasoning_effort)
         metadata = self.metadata()
@@ -182,7 +200,7 @@ class ResponsesProviderConfig:
             return None
         return _optional_metadata_string(metadata, "default_reasoning_level")
 
-    def effective_reasoning_summary(self) -> 'typing.Union[str, None]':
+    def effective_reasoning_summary(self) -> "typing.Union[str, None]":
         summary = self.reasoning_summary
         if summary is None:
             metadata = self.metadata()
@@ -195,7 +213,7 @@ class ResponsesProviderConfig:
             return None
         return str(summary)
 
-    def effective_verbosity(self) -> 'typing.Union[str, None]':
+    def effective_verbosity(self) -> "typing.Union[str, None]":
         if self.verbosity is not None:
             return str(self.verbosity)
         metadata = self.metadata()
@@ -203,7 +221,7 @@ class ResponsesProviderConfig:
             return None
         return _optional_metadata_string(metadata, "default_verbosity")
 
-    def effective_service_tier(self) -> 'typing.Union[str, None]':
+    def effective_service_tier(self) -> "typing.Union[str, None]":
         service_tier = self.service_tier
         if service_tier is None:
             return None
@@ -225,7 +243,9 @@ class ResponsesProviderConfig:
         return None
 
 
-def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union[bool, None]':
+def _optional_bool(
+    value: "typing.Union[bool, str, int, None]",
+) -> "typing.Union[bool, None]":
     if value is None:
         return None
     if isinstance(value, bool):
@@ -239,15 +259,15 @@ def _optional_bool(value: 'typing.Union[bool, str, int, None]') -> 'typing.Union
 
 
 def _metadata_supports_reasoning(
-    metadata: 'typing.Union[JSONDict, None]',
-) -> 'bool':
+    metadata: "typing.Union[JSONDict, None]",
+) -> "bool":
     return metadata is not None and metadata.get("supports_reasoning_summaries") is True
 
 
 def _optional_metadata_string(
-    metadata: 'typing.Union[JSONDict, None]',
-    key: 'str',
-) -> 'typing.Union[str, None]':
+    metadata: "typing.Union[JSONDict, None]",
+    key: "str",
+) -> "typing.Union[str, None]":
     if metadata is None:
         return None
     value = metadata.get(key)
@@ -257,7 +277,7 @@ def _optional_metadata_string(
     return text or None
 
 
-def _strip_image_details(items: 'typing.Iterable[object]') -> 'None':
+def _strip_image_details(items: "typing.Iterable[object]") -> "None":
     for item in items:
         if not isinstance(item, dict):
             continue
@@ -269,7 +289,7 @@ def _strip_image_details(items: 'typing.Iterable[object]') -> 'None':
             _strip_image_detail_from_content_items(output)
 
 
-def _strip_image_detail_from_content_items(items: 'typing.Iterable[object]') -> 'None':
+def _strip_image_detail_from_content_items(items: "typing.Iterable[object]") -> "None":
     for item in items:
         if isinstance(item, dict) and item.get("type") == "input_image":
             item.pop("detail", None)
@@ -279,13 +299,39 @@ class ResponsesApiError(RuntimeError):
     pass
 
 
+class ContextLengthExceeded(ResponsesApiError):
+    def __init__(self, message: "str") -> "None":
+        super().__init__(message)
+        self.usage: "typing.Union[typing.Dict[str, int], None]" = None
+        self.token_limit: "typing.Union[int, None]" = None
+        requested = re.search(r"requested\s+([0-9,]+)\s+tokens", message, re.IGNORECASE)
+        if requested is not None:
+            total = int(requested.group(1).replace(",", ""))
+            self.usage = {"total_tokens": total, "input_tokens": total}
+            split = re.search(
+                r"\(([0-9,]+)\s+in\s+the\s+messages,\s+([0-9,]+)\s+in\s+the\s+completion\)",
+                message,
+                re.IGNORECASE,
+            )
+            if split is not None:
+                self.usage["input_tokens"] = int(split.group(1).replace(",", ""))
+                self.usage["output_tokens"] = int(split.group(2).replace(",", ""))
+        limit = re.search(
+            r"maximum\s+context\s+length\s+is\s+([0-9,]+)\s+tokens",
+            message,
+            re.IGNORECASE,
+        )
+        if limit is not None:
+            self.token_limit = int(limit.group(1).replace(",", ""))
+
+
 class ResponsesIncompleteError(ResponsesApiError):
     def __init__(
         self,
-        message: 'str',
-        partial_items: 'typing.Sequence[object]',
-        reason: 'str' = "",
-    ) -> 'None':
+        message: "str",
+        partial_items: "typing.Sequence[ModelOutputItem]",
+        reason: "str" = "",
+    ) -> "None":
         super().__init__(message)
         self.partial_items = tuple(partial_items)
         self.reason = reason
@@ -294,21 +340,21 @@ class ResponsesIncompleteError(ResponsesApiError):
 class ResponsesRetryableError(ResponsesApiError):
     def __init__(
         self,
-        message: 'str',
-        retry_delay_seconds: 'typing.Union[float, None]' = None,
-    ) -> 'None':
+        message: "str",
+        retry_delay_seconds: "typing.Union[float, None]" = None,
+    ) -> "None":
         super().__init__(message)
         self.retry_delay_seconds = retry_delay_seconds
 
 
 @dataclass
 class _StreamDiagnostics:
-    raw_lines_received: 'int' = 0
-    sse_events_received: 'int' = 0
-    output_items_received: 'int' = 0
-    last_sse_event_name: 'str' = ""
-    last_event_type: 'str' = ""
-    last_payload_excerpt: 'str' = ""
+    raw_lines_received: "int" = 0
+    sse_events_received: "int" = 0
+    output_items_received: "int" = 0
+    last_sse_event_name: "str" = ""
+    last_event_type: "str" = ""
+    last_payload_excerpt: "str" = ""
 
 
 class ResponsesModelClient:
@@ -321,40 +367,49 @@ class ResponsesModelClient:
 
     def __init__(
         self,
-        config: 'ResponsesProviderConfig',
-        timeout_seconds: 'float' = 120.0,
-        session_id: 'typing.Union[str, None]' = None,
-        originator: 'str' = DEFAULT_ORIGINATOR,
-        user_agent: 'typing.Union[str, None]' = None,
-        openai_subagent: 'typing.Union[str, None]' = None,
-    ) -> 'None':
+        config: "ResponsesProviderConfig",
+        timeout_seconds: "float" = 120.0,
+        session_id: "typing.Union[str, None]" = None,
+        originator: "str" = DEFAULT_ORIGINATOR,
+        user_agent: "typing.Union[str, None]" = None,
+        openai_subagent: "typing.Union[str, None]" = None,
+    ) -> "None":
         self._config = config
-        self.model = config.model
         self._timeout_seconds = timeout_seconds
         self._session_id = session_id or uuid7_string()
         self._originator = originator
         self._user_agent = user_agent or build_user_agent(originator)
         self._openai_subagent = openai_subagent
 
+    @property
+    def model(self) -> "str":
+        return self._config.model
+
+    @model.setter
+    def model(self, model: "str") -> "None":
+        self._config = replace(self._config, model=model)
+
     @classmethod
     def from_codex_config(
         cls,
-        config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
-        profile: 'typing.Union[str, None]' = None,
-        timeout_seconds: 'float' = 120.0,
-        originator: 'str' = DEFAULT_ORIGINATOR,
-        user_agent: 'typing.Union[str, None]' = None,
-    ) -> 'ResponsesModelClient':
+        config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
+        profile: "typing.Union[str, None]" = None,
+        timeout_seconds: "float" = 120.0,
+        originator: "str" = DEFAULT_ORIGINATOR,
+        user_agent: "typing.Union[str, None]" = None,
+    ) -> "ResponsesModelClient":
         config = ResponsesProviderConfig.from_codex_config(config_path, profile)
-        return cls(config, timeout_seconds, originator=originator, user_agent=user_agent)
+        return cls(
+            config, timeout_seconds, originator=originator, user_agent=user_agent
+        )
 
     def with_overrides(
         self,
-        model: 'typing.Union[str, None]' = None,
-        reasoning_effort: 'typing.Union[str, None]' = None,
-        session_id: 'typing.Union[str, None]' = None,
-        openai_subagent: 'typing.Union[str, None]' = None,
-    ) -> 'ResponsesModelClient':
+        model: "typing.Union[str, None]" = None,
+        reasoning_effort: "typing.Union[str, None]" = None,
+        session_id: "typing.Union[str, None]" = None,
+        openai_subagent: "typing.Union[str, None]" = None,
+    ) -> "ResponsesModelClient":
         return ResponsesModelClient(
             self._config.with_overrides(
                 model or self.model,
@@ -365,82 +420,85 @@ class ResponsesModelClient:
             originator=self._originator,
             user_agent=self._user_agent,
             openai_subagent=(
-                self._openai_subagent
-                if openai_subagent is None
-                else openai_subagent
+                self._openai_subagent if openai_subagent is None else openai_subagent
             ),
         )
 
-    def responses_url(self) -> 'str':
+    def responses_url(self) -> "str":
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/responses"
         if self._config.query_params:
             return f"{url}?{urllib.parse.urlencode(self._config.query_params)}"
         return url
 
-    def models_url(self) -> 'str':
+    def models_url(self) -> "str":
         base_url = self._config.base_url.rstrip("/")
         url = f"{base_url}/models"
         if self._config.query_params:
             return f"{url}?{urllib.parse.urlencode(self._config.query_params)}"
         return url
 
-    async def list_models(self) -> 'typing.List[str]':
+    async def list_models(self) -> "typing.List[str]":
         return await asyncio.to_thread(self.list_models_sync)
 
-    def list_models_sync(self) -> 'typing.List[str]':
+    def list_models_sync(self) -> "typing.List[str]":
         return self._list_models_sync()
 
     async def complete(
         self,
-        prompt: 'Prompt',
-        event_handler: 'ModelStreamEventHandler' = NOOP_MODEL_STREAM_EVENT_HANDLER,
-    ) -> 'ModelResponse':
+        prompt: "Prompt",
+        event_handler: "ModelStreamEventHandler" = NOOP_MODEL_STREAM_EVENT_HANDLER,
+    ) -> "ModelResponse":
         retries = 0
         max_retries = self._config.effective_stream_max_retries()
-        while True:
-            try:
-                return await asyncio.to_thread(
-                    self._complete_sync,
-                    prompt,
-                    event_handler,
-                )
-            except (ResponsesRetryableError, ResponsesIncompleteError) as exc:
-                if (
-                    isinstance(exc, ResponsesRetryableError)
-                    and _is_context_length_error_message(str(exc))
-                ):
-                    raise ResponsesApiError(str(exc)) from exc
-                if retries >= max_retries:
-                    raise
-                retries += 1
-                delay_seconds = (
-                    exc.retry_delay_seconds
-                    if isinstance(exc, ResponsesRetryableError)
-                    else None
-                )
-                if delay_seconds is None:
-                    delay_seconds = self._retry_delay_seconds(retries)
-                event_handler(
-                    ModelStreamEvent(
-                        kind="stream_error",
-                        payload={
-                            "message": f"Reconnecting... {retries}/{max_retries}",
-                            "attempt": retries,
-                            "max_retries": max_retries,
-                            "delay_seconds": delay_seconds,
-                            "error": str(exc),
-                        },
+        loop = asyncio.get_running_loop()
+        active = True
+        callback_lock = threading.Lock()
+
+        def deliver(event):
+            if active:
+                event_handler(event)
+
+        def receive(event):
+            with callback_lock:
+                if active:
+                    loop.call_soon_threadsafe(deliver, event)
+
+        try:
+            while True:
+                try:
+                    return await asyncio.to_thread(
+                        self._complete_sync,
+                        prompt,
+                        receive,
                     )
-                )
-                if delay_seconds > 0:
-                    await asyncio.sleep(delay_seconds)
+                except ResponsesRetryableError as exc:
+                    if retries >= max_retries:
+                        raise
+                    retries += 1
+                    delay_seconds = exc.retry_delay_seconds
+                    if delay_seconds is None:
+                        delay_seconds = self._retry_delay_seconds(retries)
+                    event_handler(
+                        StreamErrorEvent(
+                            f"Reconnecting... {retries}/{max_retries}",
+                            retries,
+                            max_retries,
+                            delay_seconds,
+                            str(exc),
+                        )
+                    )
+                    if delay_seconds > 0:
+                        await asyncio.sleep(delay_seconds)
+        finally:
+            with callback_lock:
+                active = False
 
     def _complete_sync(
         self,
-        prompt: 'Prompt',
-        event_handler: 'ModelStreamEventHandler',
-    ) -> 'ModelResponse':
+        prompt: "Prompt",
+        event_handler: "ModelStreamEventHandler",
+    ) -> "ModelResponse":
         payload = self._build_payload(prompt)
         body = json.dumps(payload).encode("utf-8")
         url = self.responses_url()
@@ -481,6 +539,8 @@ class ResponsesModelClient:
                             f"responses request failed with status {response.status_code}: "
                             f"{error_body[:500]}"
                         )
+                        if _is_context_length_error_message(error_body):
+                            raise ContextLengthExceeded(message)
                         if response.status_code >= 500:
                             raise ResponsesRetryableError(message)
                         raise ResponsesApiError(message)
@@ -498,26 +558,37 @@ class ResponsesModelClient:
                 self._format_transport_error(url, exc, diagnostics)
             ) from exc
 
-    def _build_payload(self, prompt: 'Prompt') -> 'typing.Dict[str, object]':
+    def _build_payload(self, prompt: "Prompt") -> "typing.Dict[str, object]":
         use_responses_lite = self._config.use_responses_lite()
         input_items = [item.serialize() for item in prompt.input]
         if use_responses_lite:
             _strip_image_details(input_items)
 
         tools = [tool.serialize() for tool in prompt.tools]
-        payload: 'typing.Dict[str, object]' = {
+        payload: "typing.Dict[str, object]" = {
             "model": self.model,
             "input": input_items,
-            "parallel_tool_calls": prompt.parallel_tool_calls and not use_responses_lite,
+            "parallel_tool_calls": prompt.parallel_tool_calls
+            and not use_responses_lite,
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": self._session_id,
         }
         if use_responses_lite:
-            prefix: 'typing.List[typing.Dict[str, object]]' = [
+            prefix_namespace = uuid.uuid5(uuid.NAMESPACE_OID, self._session_id)
+            prefix: "typing.List[typing.Dict[str, object]]" = [
                 {
                     "type": "additional_tools",
+                    "id": "at_"
+                    + str(
+                        uuid.uuid5(
+                            prefix_namespace,
+                            json.dumps(
+                                tools, ensure_ascii=False, separators=(",", ":")
+                            ),
+                        )
+                    ),
                     "role": "developer",
                     "tools": tools,
                 }
@@ -526,6 +597,8 @@ class ResponsesModelClient:
                 prefix.append(
                     {
                         "type": "message",
+                        "id": "msg_"
+                        + str(uuid.uuid5(prefix_namespace, prompt.base_instructions)),
                         "role": "developer",
                         "content": [
                             {
@@ -543,7 +616,7 @@ class ResponsesModelClient:
         if prompt.tools or use_responses_lite:
             payload["tool_choice"] = "auto"
 
-        reasoning: 'typing.Dict[str, str]' = {}
+        reasoning: "typing.Dict[str, str]" = {}
         reasoning_effort = self._config.effective_reasoning_effort()
         reasoning_summary = self._config.effective_reasoning_summary()
         if reasoning_effort is not None:
@@ -568,7 +641,7 @@ class ResponsesModelClient:
 
         return payload
 
-    def _list_models_sync(self) -> 'typing.List[str]':
+    def _list_models_sync(self) -> "typing.List[str]":
         prepared = requests.PreparedRequest()
         prepared.prepare(
             method="GET",
@@ -606,7 +679,7 @@ class ResponsesModelClient:
         data = payload.get("data")
         if not isinstance(data, list):
             raise ResponsesApiError("models response is missing `data` list")
-        models: 'typing.List[str]' = []
+        models: "typing.List[str]" = []
         for item in data:
             if not isinstance(item, dict):
                 continue
@@ -615,7 +688,7 @@ class ResponsesModelClient:
                 models.append(model_id)
         return models
 
-    def _build_headers(self, prompt: 'Prompt') -> 'typing.Dict[str, str]':
+    def _build_headers(self, prompt: "Prompt") -> "typing.Dict[str, str]":
         headers = {
             "content-type": "application/json",
             "accept": "text/event-stream",
@@ -640,7 +713,7 @@ class ResponsesModelClient:
             )
         return headers
 
-    def _build_model_list_headers(self) -> 'typing.Dict[str, str]':
+    def _build_model_list_headers(self) -> "typing.Dict[str, str]":
         headers = {
             "accept": "application/json",
             "originator": self._originator,
@@ -658,10 +731,10 @@ class ResponsesModelClient:
     def _parse_stream(
         self,
         response,
-        event_handler: 'ModelStreamEventHandler',
-        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
-    ) -> 'ModelResponse':
-        items: 'typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]' = []
+        event_handler: "ModelStreamEventHandler",
+        diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
+    ) -> "ModelResponse":
+        items: "typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]" = ([])
         saw_completed = False
         last_event_type = ""
 
@@ -680,12 +753,7 @@ class ResponsesModelClient:
                 diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
-                event_handler(
-                    ModelStreamEvent(
-                        kind="assistant_delta",
-                        payload={"delta": str(payload.get("delta", ""))},
-                    )
-                )
+                event_handler(AssistantDeltaEvent(str(payload.get("delta", ""))))
                 continue
 
             if event_type == "response.output_item.done":
@@ -695,31 +763,41 @@ class ResponsesModelClient:
                     and item_payload.get("type") == "web_search_call"
                 ):
                     action_payload = item_payload.get("action")
-                    event_payload = {
-                        "call_id": str(item_payload.get("id", "web_search")),
-                        "tool_name": "web_search",
-                    }
+                    action_type = None
                     if isinstance(action_payload, dict):
-                        event_payload["action_type"] = str(
-                            action_payload.get("type", "")
-                        )
-                        if "query" in action_payload:
-                            event_payload["query"] = str(action_payload.get("query", ""))
-                        queries = action_payload.get("queries")
-                        if isinstance(queries, list):
-                            event_payload["queries"] = [
-                                str(query) for query in queries if str(query).strip()
-                            ]
-                        if "url" in action_payload:
-                            event_payload["url"] = str(action_payload.get("url", ""))
-                        if "pattern" in action_payload:
-                            event_payload["pattern"] = str(
-                                action_payload.get("pattern", "")
-                            )
+                        action_type = str(action_payload.get("type", ""))
+                    else:
+                        action_payload = {}
+                    queries = action_payload.get("queries")
                     event_handler(
-                        ModelStreamEvent(
-                            kind="tool_call",
-                            payload=event_payload,
+                        ToolCalledEvent(
+                            call_id=str(item_payload.get("id", "web_search")),
+                            tool_name="web_search",
+                            action_type=action_type,
+                            query=(
+                                str(action_payload["query"])
+                                if "query" in action_payload
+                                else None
+                            ),
+                            queries=(
+                                tuple(
+                                    str(query)
+                                    for query in queries
+                                    if str(query).strip()
+                                )
+                                if isinstance(queries, list)
+                                else None
+                            ),
+                            url=(
+                                str(action_payload["url"])
+                                if "url" in action_payload
+                                else None
+                            ),
+                            pattern=(
+                                str(action_payload["pattern"])
+                                if "pattern" in action_payload
+                                else None
+                            ),
                         )
                     )
                     continue
@@ -727,15 +805,7 @@ class ResponsesModelClient:
                 parsed = self._parse_output_item(item_payload)
                 if parsed is not None:
                     if isinstance(parsed, ToolCall):
-                        event_handler(
-                            ModelStreamEvent(
-                                kind="tool_call",
-                                payload={
-                                    "call_id": parsed.call_id,
-                                    "tool_name": parsed.name,
-                                },
-                            )
-                        )
+                        event_handler(ToolCalledEvent(parsed.call_id, parsed.name))
                     items.append(parsed)
                     if diagnostics is not None:
                         diagnostics.output_items_received += 1
@@ -750,12 +820,7 @@ class ResponsesModelClient:
                         usage = dict(response_usage)
                 elif isinstance(payload.get("usage"), dict):
                     usage = dict(payload["usage"])
-                event_handler(
-                    ModelStreamEvent(
-                        kind="token_count",
-                        payload={"usage": usage},
-                    )
-                )
+                event_handler(TokenCountEvent(usage))
                 saw_completed = True
                 break
 
@@ -784,22 +849,17 @@ class ResponsesModelClient:
 
     def _parse_output_item(
         self,
-        item: 'typing.Dict[str, object]',
-    ) -> 'typing.Union[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], None]':
+        item: "typing.Dict[str, object]",
+    ) -> "typing.Union[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], None]":
         item_type = item.get("type")
         if item_type == "reasoning":
             return ReasoningItem(payload=dict(item))
 
         if item_type == "message" and item.get("role") == "assistant":
-            content = item.get("content", [])
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict) and part.get("type") == "output_text":
-                    text_parts.append(str(part.get("text", "")))
-            return AssistantMessage(text="".join(text_parts))
+            return AssistantMessage.from_response_item(item)
 
         if item_type == "function_call":
-            raw_arguments = str(item.get("arguments", "") or "{}")
+            raw_arguments = item["arguments"]
             arguments = json.loads(raw_arguments)
             if not isinstance(arguments, dict):
                 raise ResponsesApiError(
@@ -809,6 +869,9 @@ class ResponsesModelClient:
                 call_id=str(item["call_id"]),
                 name=str(item["name"]),
                 arguments=arguments,
+                id=item.get("id"),
+                raw_arguments=raw_arguments,
+                namespace=item.get("namespace"),
             )
 
         if item_type == "custom_tool_call":
@@ -817,6 +880,9 @@ class ResponsesModelClient:
                 name=str(item["name"]),
                 arguments=str(item.get("input", "")),
                 tool_type="custom",
+                id=item.get("id"),
+                namespace=item.get("namespace"),
+                status=item.get("status"),
             )
 
         return None
@@ -824,10 +890,10 @@ class ResponsesModelClient:
     def _iter_sse_events(
         self,
         response,
-        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
+        diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
     ):
-        event_name: 'typing.Union[str, None]' = None
-        data_lines: 'typing.List[str]' = []
+        event_name: "typing.Union[str, None]" = None
+        data_lines: "typing.List[str]" = []
 
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -870,7 +936,7 @@ class ResponsesModelClient:
     def _track_stream_lines(
         self,
         response,
-        diagnostics: '_StreamDiagnostics',
+        diagnostics: "_StreamDiagnostics",
     ):
         for raw_line in response:
             diagnostics.raw_lines_received += 1
@@ -878,8 +944,8 @@ class ResponsesModelClient:
 
     def _base_error_details(
         self,
-        url: 'str',
-    ) -> 'typing.List[typing.Tuple[str, str]]':
+        url: "str",
+    ) -> "typing.List[typing.Tuple[str, str]]":
         return [
             ("provider", self._config.provider_name),
             ("model", self.model),
@@ -889,9 +955,9 @@ class ResponsesModelClient:
 
     def _format_error_message(
         self,
-        summary: 'str',
-        details: 'typing.Iterable[typing.Tuple[str, str]]',
-    ) -> 'str':
+        summary: "str",
+        details: "typing.Iterable[typing.Tuple[str, str]]",
+    ) -> "str":
         lines = [summary]
         for label, value in details:
             text = str(value).strip()
@@ -902,10 +968,10 @@ class ResponsesModelClient:
 
     def _format_transport_error(
         self,
-        url: 'str',
-        exc: 'BaseException',
-        diagnostics: 'typing.Union[_StreamDiagnostics, None]' = None,
-    ) -> 'str':
+        url: "str",
+        exc: "BaseException",
+        diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
+    ) -> "str":
         details = self._base_error_details(url)
         if diagnostics is not None:
             details.extend(self._transport_diagnostics_details(diagnostics))
@@ -940,9 +1006,9 @@ class ResponsesModelClient:
 
     def _format_response_failed_error(
         self,
-        message: 'str',
-        code: 'str' = "",
-    ) -> 'str':
+        message: "str",
+        code: "str" = "",
+    ) -> "str":
         details = self._base_error_details(self.responses_url())
         details.append(("detail", message))
         if code:
@@ -961,10 +1027,10 @@ class ResponsesModelClient:
 
     def _format_response_incomplete_error(
         self,
-        payload: 'typing.Dict[str, object]',
-        output_item_count: 'int',
-        reason: 'typing.Union[str, None]' = None,
-    ) -> 'str':
+        payload: "typing.Dict[str, object]",
+        output_item_count: "int",
+        reason: "typing.Union[str, None]" = None,
+    ) -> "str":
         details = self._base_error_details(self.responses_url())
         if reason:
             details.append(("reason", reason))
@@ -981,7 +1047,7 @@ class ResponsesModelClient:
             details,
         )
 
-    def _response_incomplete_reason(self, payload: 'typing.Dict[str, object]') -> 'str':
+    def _response_incomplete_reason(self, payload: "typing.Dict[str, object]") -> "str":
         response = payload.get("response")
         incomplete_details = (
             response.get("incomplete_details") if isinstance(response, dict) else None
@@ -990,7 +1056,9 @@ class ResponsesModelClient:
             return ""
         return str(incomplete_details.get("reason") or "").strip()
 
-    def _raise_response_failed_error(self, payload: 'typing.Dict[str, object]') -> 'None':
+    def _raise_response_failed_error(
+        self, payload: "typing.Dict[str, object]"
+    ) -> "None":
         response = payload.get("response")
         error = response.get("error") if isinstance(response, dict) else None
         if not isinstance(error, dict):
@@ -1000,10 +1068,13 @@ class ResponsesModelClient:
 
         message = str(error.get("message") or "responses stream failed")
         code = str(error.get("code") or error.get("type") or "").strip()
-        if _is_context_length_error_message(message):
-            raise ResponsesApiError(self._format_response_failed_error(message, code))
+        if code == "context_length_exceeded" or _is_context_length_error_message(
+            message
+        ):
+            raise ContextLengthExceeded(
+                self._format_response_failed_error(message, code)
+            )
         if code in {
-            "context_length_exceeded",
             "insufficient_quota",
             "invalid_prompt",
             "model_output_invalid",
@@ -1018,9 +1089,9 @@ class ResponsesModelClient:
 
     def _format_incomplete_stream_error(
         self,
-        last_event_type: 'str',
-        output_item_count: 'int',
-    ) -> 'str':
+        last_event_type: "str",
+        output_item_count: "int",
+    ) -> "str":
         details = self._base_error_details(self.responses_url())
         if last_event_type:
             details.append(("last_event", last_event_type))
@@ -1045,10 +1116,10 @@ class ResponsesModelClient:
 
     def _format_invalid_event_error(
         self,
-        event_name: 'str',
-        raw_data: 'str',
-        exc: 'json.JSONDecodeError',
-    ) -> 'str':
+        event_name: "str",
+        raw_data: "str",
+        exc: "json.JSONDecodeError",
+    ) -> "str":
         details = self._base_error_details(self.responses_url())
         details.append(("event", event_name or "message"))
         details.append(("exception", type(exc).__name__))
@@ -1062,9 +1133,9 @@ class ResponsesModelClient:
 
     def _transport_diagnostics_details(
         self,
-        diagnostics: '_StreamDiagnostics',
-    ) -> 'typing.List[typing.Tuple[str, str]]':
-        details: 'typing.List[typing.Tuple[str, str]]' = [
+        diagnostics: "_StreamDiagnostics",
+    ) -> "typing.List[typing.Tuple[str, str]]":
+        details: "typing.List[typing.Tuple[str, str]]" = [
             ("raw_lines_received", str(diagnostics.raw_lines_received)),
             ("sse_events_received", str(diagnostics.sse_events_received)),
             ("output_items_received", str(diagnostics.output_items_received)),
@@ -1077,21 +1148,21 @@ class ResponsesModelClient:
             details.append(("last_payload_excerpt", diagnostics.last_payload_excerpt))
         return details
 
-    def _truncate_excerpt(self, text: 'str', limit: 'int') -> 'str':
+    def _truncate_excerpt(self, text: "str", limit: "int") -> "str":
         if len(text) <= limit:
             return text
         return f"{text[:limit]}..."
 
-    def _retry_delay_seconds(self, attempt: 'int') -> 'float':
+    def _retry_delay_seconds(self, attempt: "int") -> "float":
         return INITIAL_RETRY_DELAY_SECONDS * (
             RETRY_BACKOFF_FACTOR ** max(min(attempt - 1, 10), 0)
-        ) # 200s max
+        )  # 200s max
 
     def _try_parse_retry_after_seconds(
         self,
-        code: 'str',
-        message: 'str',
-    ) -> 'typing.Union[float, None]':
+        code: "str",
+        message: "str",
+    ) -> "typing.Union[float, None]":
         if code != "rate_limit_exceeded":
             return None
         match = RATE_LIMIT_RETRY_AFTER_RE.search(message)
@@ -1104,13 +1175,13 @@ class ResponsesModelClient:
         return value
 
 
-def _optional_int(value: 'object') -> 'typing.Union[int, None]':
+def _optional_int(value: "object") -> "typing.Union[int, None]":
     if value is None:
         return None
     return int(value)
 
 
-def _is_context_length_error_message(message: 'str') -> 'bool':
+def _is_context_length_error_message(message: "str") -> "bool":
     lower = message.lower()
     return (
         "context_length_exceeded" in lower
@@ -1120,7 +1191,7 @@ def _is_context_length_error_message(message: 'str') -> 'bool':
     )
 
 
-def _requests_verify_setting() -> 'typing.Union[typing.Union[str, bool], None]':
+def _requests_verify_setting() -> "typing.Union[typing.Union[str, bool], None]":
     for env_name in ("REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE", "SSL_CERT_FILE"):
         value = os.environ.get(env_name, "").strip()
         if value:

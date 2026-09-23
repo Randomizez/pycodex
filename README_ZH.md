@@ -2,6 +2,8 @@
 
 中文 README。English version: `README.md`
 
+0.3.0 发版准备与 Python API 迁移说明：`docs/RELEASE_0.3.0.md`。
+
 PyPI distributions：
 
 - 主包：`python-codex`
@@ -69,35 +71,76 @@ uv run pycodex
 
 ## 目录
 
-- `pycodex/protocol.py`：最小的会话 item / prompt / event 协议
+- `pycodex/protocol.py`：最小的会话 item / prompt 协议
+- `pycodex/events.py`：类型化事件、纯文本视图及有状态展示逻辑
+- `pycodex/utils/event_helpers.py`：无状态的文本、颜色、摘要及结果格式化 helpers
+- `pycodex/utils/image_utils.py`：图片加载、缩放和 data URL 转换
 - `pycodex/model.py`：模型客户端协议和 Responses API 适配器
-- `pycodex/cli.py`：`pycodex` 单轮命令行入口
+- `pycodex/cli.py`：单轮/交互命令行入口、终端 I/O 执行器和输入循环
+- `pycodex/bootstrap.py`：与前端无关的模型、工具、Agent 和会话装配
 - `pycodex/tools/base_tool.py`：`BaseTool`、`ToolRegistry`、`ToolContext`
 - `pycodex/tools/`：具体工具实现
 - `pycodex/agent.py`：主循环
-- `pycodex/runtime.py`：外层提交队列
+- `pycodex/runtime.py`：统一会话命令、提交队列和前端事件订阅
 - `tests/test_agent.py`：核心行为测试
 
 ## 当前对齐状态
 
+当前前后端边界为 `CLI / Web / 飞书 -> AgentRuntime -> Agent`，不再额外套 Session。
+所有会话命令、steer/queue 策略、模型/历史/标题状态、交互问答和权限响应、
+worker 启停及连接清理都由后端统一处理，前端只做输入和展示适配。
+Web 不再导入或运行 CLI shell，飞书运行中也能提交 steer 和回答问题。
+IPython 是明确的例外：`ipython_agent()` 仍返回裸 Agent。
+
+外部程序使用 `pycodex.bootstrap.build_model/build_agent/build_runtime` 装配，
+通过 `await runtime.start()`、`runtime.attach(handler)`、
+`await runtime.submit_input(text, sender)` 和 `await receipt.future` 交互。
+`detach` 只移除一个前端，`close` 才停止接纳并自然排空会话。
+队列统一通过 `start()` / `close()` 启停；重复或并发关闭复用 worker 的完成结果和异常，
+不再入队特殊关闭请求。停止接纳后，worker 排空已有请求便退出，最后统一清理工具。
+后台唤醒也遵守同一个接纳开关；取消关闭调用方不会取消 worker 或 Agent turn。
+Agent 不保存 Runtime/Queue 引用，也不取输入或完成提交回执。steer 由 Runtime 调用
+`agent.stop_asap()`：当前请求和已发出的工具先完成并记录，在安全边界抛出
+`TurnInterrupted`，随后 Runtime 结算旧回执、启动下一批 `run_turn`。这不是 Task
+取消；运行中的 steer 保留逻辑 turn id，但每次执行重新计数。裸 Agent 调用方直接
+收到停止异常，待处理输入只有 Runtime worker 才能执行。
+`/fork` 保留历史、分配新 session id 和延迟创建的新 rollout，不改写旧文件。
+完整契约见 `docs/RUNTIME.md`。
+
+Python 回调统一接收 `pycodex.events` 中的具体 `Event` dataclass，
+例如 `TurnStartedEvent` / `ToolCompletedEvent`；自定义模型客户端发送
+`AssistantDeltaEvent` 等 `ModelEvent`。不再使用通用事件 payload 字典，
+事件通过 `event.visualize()` 生成可复用的纯文本，通过 `event.render(display)`
+执行有状态展示。每个 CLI 实例和飞书卡片独占 `EventDisplay`，事件体系负责着色、
+流缓冲、状态和输入提示更新；前端只执行 log/status/prompt 回调及展示刷新，不维护
+展示 handler mapping。飞书关闭颜色，展示有长度上限的近期记录和当前流式文本，
+不再单独维护上一轮答案、工具、重试和问答的展示规则。Web 保留独立投影，
+事件 JSON 格式不变。
+
 当前进度可以分成两层看：
 
 - prompt/context 对齐：
-  - 非交互 `exec` 路径下，`instructions` 和 `input` 已经对齐到上游 Codex；
-  - 这一层现在主要由 `pycodex/context.py` 和 vendored prompt data 负责。
+  - 2026-09-23 使用 Codex CLI 0.153.4 重抓：`gpt-5.4` 首轮、resume、
+    工具 follow-up，以及带后缀 Astra 的首轮/resume，共享 context 一致；
+  - 元数据按最长 slug 前缀匹配，wire model 不改名；提示和回放 metadata
+    已更新，比较的明确排除项见 `docs/CONTEXT.md`。
 - turn-loop 语义对齐：
   - `AgentLoop` 默认不再使用固定 12 轮上限；
   - 现在和上游一样，按 “还有没有 follow-up / tool handoff” 自然收敛；
   - 本地不再保留额外的 iteration-limit 参数。
 - request-level 对齐：
-  - 非交互 `exec` 路径的 request body 已基本对齐；
-  - 默认 CLI 的 non-exec 首轮请求现在也已切到 `codex-tui` + `<collaboration_mode>` 这条上游路径；
-  - 默认 CLI 的两轮主线程对话 request/header 也已补抓并对齐，包括后续 turn 不再携带 `workspaces`；
-  - 当前剩余重点主要转向更外围的行为分支，而不是这条已比较路径上的 request/header。
-- tool round-trip 对齐：
-  - `request_user_input` 的 Default-mode unavailable 路径已按真实 upstream capture 对齐；
-  - Plan-mode happy path 现在也已按 upstream 源码补齐到工具/协议层：会强制 `isOther=true`、要求非空 `options`，并以 JSON 字符串 + `success=true` 回传结构化答案；
-  - 新增了一个基于 `tests/fake_responses_server.py` proxy 模式的 deterministic round-trip compare 脚本 `tests/compare_request_user_input_roundtrip.py`；它在本机已安装的 `codex-cli 0.115.0` 上确认：Plan-mode live capture 里唯一剩余的 `function_call_output` schema 差异是 `pycodex` 多带了 `success=true`。
+  - **不宣称原始 request 严格相同**：客户端 item ID、工具目录、上游新版
+    遥测和部分 permission profile 仍有差异；
+  - 默认 CLI 继续使用 `codex-tui` 身份，但按用户要求移除了协作模式指令；
+  - `tests/compare_context_requests.py` 分开报告原始差异和共享 context
+    排除项，旧版 interactive 抓包不代表当前版本已经重新验证。
+- 结构化问答：
+  - `request_user_input` 直接使用注册的交互 handler，不再受模式限制；
+  - 仍会强制 `isOther=true`、要求非空 `options`，并以 JSON 字符串 + `success=true` 回传结构化答案；
+  - 没有 handler 或用户取消时返回取消结果；工具测试和 CLI 集成测试覆盖这些路径。
+
+协作模式的配置字段、提示模板和门控均已删除；普通 CLI/Web 交互、`update_plan`
+和子 Agent 保留，不依赖协作模式。
 
 更细的对齐说明见 `docs/ALIGNMENT.md`。
 
@@ -141,7 +184,8 @@ pycodex doctor
 
 - 没有 argv prompt 且 stdin 是 TTY 时，进入交互模式
 - 有 argv prompt 或 stdin 管道输入时，执行单轮请求
-- 交互模式下支持 `/exit` 和 `/quit`
+- 交互模式通过 `/exit`、`/quit`、空提示符上的 Ctrl+D 或一次 Ctrl+C 正常退出；
+  `[closing]` 提示表示正在等待已接收的工作结束并清理资源，不取消模型或工具调用。
 - 交互模式下会显示简洁阶段事件流，例如工具执行状态和模型回看工具结果
 - assistant 文本会按流式 delta 直接打印
 - 交互模式下支持 `/history`、`/title`、`/model` 和 `/resume`

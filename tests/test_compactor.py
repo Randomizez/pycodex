@@ -7,105 +7,33 @@ from pycodex.utils.compactor import (
 )
 
 
-def test_compact_prompt_preserves_active_user_text_and_language() -> 'None':
-    assert "concise verbatim excerpts" in DEFAULT_COMPACT_PROMPT
-    assert "in their original language" in DEFAULT_COMPACT_PROMPT
-    assert "user's primary language" in DEFAULT_COMPACT_PROMPT
-
-
-def test_compact_replaces_history_with_summary_only() -> 'None':
+def test_compact_replaces_all_prior_context_with_language_preserving_summary():
     history = (
-        UserMessage(text="first user"),
-        AssistantMessage(text="first assistant"),
-        UserMessage(text="second user"),
-        UserMessage(text=DEFAULT_COMPACT_PROMPT),
-        AssistantMessage(text="checkpoint summary"),
+        UserMessage("real user"),
+        AssistantMessage("old answer"),
+        UserMessage(SUMMARY_PREFIX + "\nold summary"),
+        UserMessage('<subagent_notification>{"status":"done"}</subagent_notification>'),
+        UserMessage('<exec_command_completed>{"exit_code":0}</exec_command_completed>'),
+        UserMessage(DEFAULT_COMPACT_PROMPT),
+        AssistantMessage("new summary"),
     )
+    assert compact(history) == (UserMessage(SUMMARY_PREFIX + "\nnew summary"),)
+    assert "Continue the current task directly" in SUMMARY_PREFIX
+    for instruction in (
+        "concise verbatim excerpts",
+        "in their original language",
+        "user's primary language",
+    ):
+        assert instruction in DEFAULT_COMPACT_PROMPT
 
-    compacted = compact(history)
 
-    assert [type(item).__name__ for item in compacted] == [
-        "UserMessage",
-    ]
-    assert compacted[0].text == f"{SUMMARY_PREFIX}\ncheckpoint summary"
-    assert "Continue the current task directly" in compacted[0].text
-
-
-def test_compact_filters_previous_summary_messages() -> 'None':
+def test_prune_oldest_tool_response_keeps_other_pairs_intact():
     history = (
-        UserMessage(text="real user"),
-        UserMessage(text=f"{SUMMARY_PREFIX}\nold summary"),
-        UserMessage(text=DEFAULT_COMPACT_PROMPT),
-        AssistantMessage(text="new summary"),
+        UserMessage("first"),
+        ToolCall("old", "echo", {}),
+        ToolResult("old", "echo", "large"),
+        AssistantMessage("after first"),
+        ToolCall("new", "echo", {}),
+        ToolResult("new", "echo", "recent"),
     )
-
-    compacted = compact(history)
-
-    assert [item.text for item in compacted] == [
-        f"{SUMMARY_PREFIX}\nnew summary",
-    ]
-
-
-def test_compact_filters_synthetic_subagent_notifications() -> 'None':
-    history = (
-        UserMessage(text="real user"),
-        UserMessage(
-            text=(
-                "<subagent_notification>\n"
-                '{"agent_id":"agent_1","status":{"completed":"done"}}\n'
-                "</subagent_notification>"
-            )
-        ),
-        AssistantMessage(text="new summary"),
-    )
-
-    compacted = compact(history)
-
-    assert [item.text for item in compacted] == [
-        f"{SUMMARY_PREFIX}\nnew summary",
-    ]
-
-
-def test_compact_filters_synthetic_exec_completion_notifications() -> 'None':
-    history = (
-        UserMessage(text="real user"),
-        UserMessage(
-            text=(
-                "<exec_command_completed>\n"
-                '{"session_id":1000,"exit_code":0,"command":"sleep 1"}\n'
-                "</exec_command_completed>"
-            )
-        ),
-        AssistantMessage(text="new summary"),
-    )
-
-    compacted = compact(history)
-
-    assert [item.text for item in compacted] == [
-        f"{SUMMARY_PREFIX}\nnew summary",
-    ]
-
-
-def test_prune_oldest_tool_response_removes_matching_call_pair() -> 'None':
-    history = (
-        UserMessage(text="first"),
-        ToolCall(call_id="call_1", name="echo", arguments={}),
-        ToolResult(call_id="call_1", name="echo", output="old large output"),
-        AssistantMessage(text="after first"),
-        ToolCall(call_id="call_2", name="echo", arguments={}),
-        ToolResult(call_id="call_2", name="echo", output="new output"),
-    )
-
-    pruned = prune_oldest_tool_response(history)
-
-    assert pruned is not None
-    assert [type(item).__name__ for item in pruned] == [
-        "UserMessage",
-        "AssistantMessage",
-        "ToolCall",
-        "ToolResult",
-    ]
-    assert isinstance(pruned[2], ToolCall)
-    assert pruned[2].call_id == "call_2"
-    assert isinstance(pruned[3], ToolResult)
-    assert pruned[3].call_id == "call_2"
+    assert prune_oldest_tool_response(history) == (history[0],) + history[3:]

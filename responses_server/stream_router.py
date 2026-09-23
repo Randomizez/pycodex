@@ -1,25 +1,20 @@
-
-import json
 import http.client
+import json
 import ssl
+import typing
 import urllib.error
 import urllib.request
 
 from .config import CompatServerConfig
-from .messages_api import (
-    MessagesAPIAdapterError,
-    build_messages_request,
-    iter_chat_chunks as iter_chat_chunks_from_messages,
-    saw_message_stop as messages_saw_message_stop,
-)
+from .messages_api import MessagesAPIAdapterError, build_messages_request
+from .messages_api import iter_chat_chunks as iter_chat_chunks_from_messages
+from .messages_api import saw_message_stop as messages_saw_message_stop
 from .session_store import StoredResponse
 from .tools import WebSearchTool, collect_custom_tool_names
-from .tools.custom_adapter import (
-    CustomToolAdapterError,
-    build_output_item as build_custom_output_item,
-    build_tool_call as build_custom_tool_call,
-    build_tool_definition as build_custom_tool_definition,
-)
+from .tools.custom_adapter import CustomToolAdapterError
+from .tools.custom_adapter import build_output_item as build_custom_output_item
+from .tools.custom_adapter import build_tool_call as build_custom_tool_call
+from .tools.custom_adapter import build_tool_definition as build_custom_tool_definition
 from .tools.web_search import (
     build_followup_request,
     build_output_items,
@@ -28,7 +23,6 @@ from .tools.web_search import (
     partition_tool_calls,
 )
 from .trajectory_dump import TrajectoryDumpWriter
-import typing
 
 
 class UnsupportedIncommingFeature(ValueError):
@@ -38,23 +32,23 @@ class UnsupportedIncommingFeature(ValueError):
 class OutcommingChatError(RuntimeError):
     def __init__(
         self,
-        message: 'str',
-        error_type: 'typing.Union[str, None]' = None,
-    ) -> 'None':
+        message: "str",
+        error_type: "typing.Union[str, None]" = None,
+    ) -> "None":
         super().__init__(message)
         self.error_type = error_type
 
 
 class StreamRouter:
-    def __init__(self, config: 'CompatServerConfig') -> 'None':
+    def __init__(self, config: "CompatServerConfig") -> "None":
         self._config = config
         self._mock_web_search = WebSearchTool()
 
     def _provider_capability(
         self,
-        explicit_support: 'typing.Dict[str, bool]',
-        default: 'typing.Union[bool, None]' = None,
-    ) -> 'bool':
+        explicit_support: "typing.Dict[str, bool]",
+        default: "typing.Union[bool, None]" = None,
+    ) -> "bool":
         provider_name = str(self._config.model_provider or "").strip().lower()
         if provider_name in explicit_support:
             return explicit_support[provider_name]
@@ -64,7 +58,7 @@ class StreamRouter:
             return default
         raise KeyError("provider capability map is missing `vllm` fallback")
 
-    def _supports_chat_reasoning(self) -> 'bool':
+    def _supports_chat_reasoning(self) -> "bool":
         # Unknown providers inherit the vLLM compatibility behavior unless a
         # provider is explicitly declared otherwise.
         return self._provider_capability(
@@ -74,7 +68,7 @@ class StreamRouter:
             }
         )
 
-    def _supports_stream_usage(self) -> 'bool':
+    def _supports_stream_usage(self) -> "bool":
         return self._provider_capability(
             {
                 "vllm": True,
@@ -84,8 +78,8 @@ class StreamRouter:
 
     def validate_incomming_request(
         self,
-        incomming_request: 'typing.Dict[str, object]',
-    ) -> 'None':
+        incomming_request: "typing.Dict[str, object]",
+    ) -> "None":
         model = str(incomming_request.get("model", "")).strip()
         if not model:
             raise UnsupportedIncommingFeature("incomming request is missing `model`")
@@ -104,11 +98,11 @@ class StreamRouter:
 
     def collect_custom_tool_names(
         self,
-        incomming_request: 'typing.Dict[str, object]',
-    ) -> 'typing.Set[str]':
+        incomming_request: "typing.Dict[str, object]",
+    ) -> "typing.Set[str]":
         return collect_custom_tool_names(incomming_request.get("tools") or [])
 
-    def list_models(self) -> 'typing.Dict[str, object]':
+    def list_models(self) -> "typing.Dict[str, object]":
         request = urllib.request.Request(
             self._config.outcomming_models_url(),
             headers=self._build_headers(accept="application/json"),
@@ -118,8 +112,8 @@ class StreamRouter:
 
     def build_outcomming_request(
         self,
-        incomming_request: 'typing.Dict[str, object]',
-    ) -> 'typing.Dict[str, object]':
+        incomming_request: "typing.Dict[str, object]",
+    ) -> "typing.Dict[str, object]":
         model = str(incomming_request.get("model", "")).strip()
         if not model:
             raise UnsupportedIncommingFeature("incomming request is missing `model`")
@@ -135,7 +129,7 @@ class StreamRouter:
         if not isinstance(input_items, list):
             raise UnsupportedIncommingFeature("incomming `input` must be a list")
 
-        payload: 'typing.Dict[str, object]' = {
+        payload: "typing.Dict[str, object]" = {
             "model": model,
             "messages": self._responses_input_to_chat_messages(
                 instructions,
@@ -180,7 +174,7 @@ class StreamRouter:
 
         return payload
 
-    def open_outcomming_stream(self, outcomming_request: 'typing.Dict[str, object]'):
+    def open_outcomming_stream(self, outcomming_request: "typing.Dict[str, object]"):
         outcomming_api = self._config.normalized_outcomming_api()
         if outcomming_api == "messages":
             return self._open_outcomming_messages_stream(outcomming_request)
@@ -192,7 +186,7 @@ class StreamRouter:
 
     def _open_outcomming_chat_stream(
         self,
-        outcomming_request: 'typing.Dict[str, object]',
+        outcomming_request: "typing.Dict[str, object]",
     ):
         request = urllib.request.Request(
             self._config.outcomming_chat_completions_url(),
@@ -253,7 +247,7 @@ class StreamRouter:
 
     def _open_outcomming_messages_stream(
         self,
-        outcomming_request: 'typing.Dict[str, object]',
+        outcomming_request: "typing.Dict[str, object]",
     ):
         try:
             messages_request = build_messages_request(outcomming_request)
@@ -273,7 +267,7 @@ class StreamRouter:
                 timeout=self._config.timeout_seconds,
             ) as response:
                 try:
-                    stream_state: 'typing.Dict[str, object]' = {}
+                    stream_state: "typing.Dict[str, object]" = {}
                     for event_name, data in self._iter_sse_events(response):
                         if not data:
                             continue
@@ -319,10 +313,10 @@ class StreamRouter:
 
     def route_stream(
         self,
-        stored_response: 'StoredResponse',
-        outcomming_request: 'typing.Dict[str, object]',
-        custom_tool_names: 'typing.Union[typing.Set[str], None]' = None,
-        trajectory_dump: 'typing.Union[TrajectoryDumpWriter, None]' = None,
+        stored_response: "StoredResponse",
+        outcomming_request: "typing.Dict[str, object]",
+        custom_tool_names: "typing.Union[typing.Set[str], None]" = None,
+        trajectory_dump: "typing.Union[TrajectoryDumpWriter, None]" = None,
     ):
         yield (
             "response.created",
@@ -337,9 +331,9 @@ class StreamRouter:
             },
         )
 
-        text_parts: 'typing.List[str]' = []
-        reasoning_parts: 'typing.List[str]' = []
-        latest_usage: 'typing.Dict[str, object]' = {}
+        text_parts: "typing.List[str]" = []
+        reasoning_parts: "typing.List[str]" = []
+        latest_usage: "typing.Dict[str, object]" = {}
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = self._open_tracked_outcomming_stream(
             current_request,
@@ -348,9 +342,9 @@ class StreamRouter:
         retried_reasoning_only_output = False
 
         while True:
-            tool_calls: 'typing.Dict[int, typing.Dict[str, object]]' = {}
-            finish_reasons: 'typing.List[str]' = []
-            current_usage: 'typing.Dict[str, object]' = {}
+            tool_calls: "typing.Dict[int, typing.Dict[str, object]]" = {}
+            finish_reasons: "typing.List[str]" = []
+            current_usage: "typing.Dict[str, object]" = {}
             reasoning_start = len(reasoning_parts)
             text_start = len(text_parts)
             for chunk in current_stream:
@@ -464,8 +458,8 @@ class StreamRouter:
 
     def _open_tracked_outcomming_stream(
         self,
-        outcomming_request: 'typing.Dict[str, object]',
-        trajectory_dump: 'typing.Union[TrajectoryDumpWriter, None]' = None,
+        outcomming_request: "typing.Dict[str, object]",
+        trajectory_dump: "typing.Union[TrajectoryDumpWriter, None]" = None,
     ):
         outcomming_stream = self.open_outcomming_stream(outcomming_request)
         if trajectory_dump is None:
@@ -477,17 +471,17 @@ class StreamRouter:
 
     def _responses_input_to_chat_messages(
         self,
-        instructions: 'str',
-        input_items: 'typing.List[object]',
-    ) -> 'typing.List[typing.Dict[str, object]]':
-        messages: 'typing.List[typing.Dict[str, object]]' = []
+        instructions: "str",
+        input_items: "typing.List[object]",
+    ) -> "typing.List[typing.Dict[str, object]]":
+        messages: "typing.List[typing.Dict[str, object]]" = []
         if instructions:
             messages.append({"role": "developer", "content": instructions})
 
-        pending_assistant: 'typing.Union[typing.Dict[str, object], None]' = None
-        pending_tool_images: 'typing.List[typing.Dict[str, object]]' = []
+        pending_assistant: "typing.Union[typing.Dict[str, object], None]" = None
+        pending_tool_images: "typing.List[typing.Dict[str, object]]" = []
 
-        def flush_pending_assistant() -> 'None':
+        def flush_pending_assistant() -> "None":
             nonlocal pending_assistant
             if pending_assistant is None:
                 return
@@ -501,7 +495,7 @@ class StreamRouter:
             messages.append(pending_assistant)
             pending_assistant = None
 
-        def flush_pending_tool_images() -> 'None':
+        def flush_pending_tool_images() -> "None":
             if not pending_tool_images:
                 return
             messages.append({"role": "user", "content": list(pending_tool_images)})
@@ -537,9 +531,9 @@ class StreamRouter:
                     continue
                 flush_pending_assistant()
                 if image_parts:
-                    content: 'object' = (
-                        ([{"type": "text", "text": text}] if text else []) + image_parts
-                    )
+                    content: "object" = (
+                        [{"type": "text", "text": text}] if text else []
+                    ) + image_parts
                 else:
                     content = text
                 messages.append({"role": role, "content": content})
@@ -631,7 +625,7 @@ class StreamRouter:
         flush_pending_tool_images()
         return messages
 
-    def _coerce_positive_int(self, raw_value: 'object') -> 'typing.Union[int, None]':
+    def _coerce_positive_int(self, raw_value: "object") -> "typing.Union[int, None]":
         if isinstance(raw_value, bool):
             return None
         if isinstance(raw_value, int) and raw_value > 0:
@@ -640,8 +634,8 @@ class StreamRouter:
 
     def _split_content_parts(
         self,
-        raw_content: 'object',
-    ) -> 'typing.Tuple[str, typing.List[typing.Dict[str, object]]]':
+        raw_content: "object",
+    ) -> "typing.Tuple[str, typing.List[typing.Dict[str, object]]]":
         if raw_content is None:
             return "", []
         if isinstance(raw_content, str):
@@ -651,8 +645,8 @@ class StreamRouter:
                 "message `content` must be a list or string"
             )
 
-        text_parts: 'typing.List[str]' = []
-        image_parts: 'typing.List[typing.Dict[str, object]]' = []
+        text_parts: "typing.List[str]" = []
+        image_parts: "typing.List[typing.Dict[str, object]]" = []
         for part in raw_content:
             if not isinstance(part, dict):
                 raise UnsupportedIncommingFeature(
@@ -672,14 +666,14 @@ class StreamRouter:
 
     def _build_chat_image_part(
         self,
-        part: 'typing.Dict[str, object]',
-    ) -> 'typing.Dict[str, object]':
+        part: "typing.Dict[str, object]",
+    ) -> "typing.Dict[str, object]":
         image_url = str(part.get("image_url", "") or "").strip()
         if not image_url:
             raise UnsupportedIncommingFeature(
                 "`input_image` content parts must carry a non-empty `image_url`"
             )
-        image_payload: 'typing.Dict[str, object]' = {"url": image_url}
+        image_payload: "typing.Dict[str, object]" = {"url": image_url}
         detail = part.get("detail")
         if isinstance(detail, str) and detail in {"auto", "low", "high"}:
             image_payload["detail"] = detail
@@ -687,18 +681,18 @@ class StreamRouter:
 
     def _split_tool_output_parts(
         self,
-        raw_output: 'object',
-    ) -> 'typing.Tuple[str, typing.List[typing.Dict[str, object]]]':
+        raw_output: "object",
+    ) -> "typing.Tuple[str, typing.List[typing.Dict[str, object]]]":
         if isinstance(raw_output, str):
             return raw_output, []
         if isinstance(raw_output, list):
             return self._split_content_parts(raw_output)
         return json.dumps(raw_output, ensure_ascii=False), []
 
-    def _coalesce_reasoning_text(self, raw_item: 'typing.Dict[str, object]') -> 'str':
+    def _coalesce_reasoning_text(self, raw_item: "typing.Dict[str, object]") -> "str":
         content = raw_item.get("content")
         if isinstance(content, list):
-            text_parts: 'typing.List[str]' = []
+            text_parts: "typing.List[str]" = []
             for part in content:
                 if not isinstance(part, dict):
                     continue
@@ -725,8 +719,10 @@ class StreamRouter:
                 return value
         return ""
 
-    def _translate_tools(self, incomming_tools: 'typing.List[object]') -> 'typing.List[typing.Dict[str, object]]':
-        translated: 'typing.List[typing.Dict[str, object]]' = []
+    def _translate_tools(
+        self, incomming_tools: "typing.List[object]"
+    ) -> "typing.List[typing.Dict[str, object]]":
+        translated: "typing.List[typing.Dict[str, object]]" = []
         for raw_tool in incomming_tools:
             if not isinstance(raw_tool, dict):
                 raise UnsupportedIncommingFeature("tool definitions must be objects")
@@ -761,7 +757,7 @@ class StreamRouter:
             )
         return translated
 
-    def _translate_tool_choice(self, raw_tool_choice: 'object') -> 'object':
+    def _translate_tool_choice(self, raw_tool_choice: "object") -> "object":
         if isinstance(raw_tool_choice, str):
             return raw_tool_choice
         if not isinstance(raw_tool_choice, dict):
@@ -784,14 +780,14 @@ class StreamRouter:
 
     def _consume_chat_chunk(
         self,
-        payload: 'typing.Dict[str, object]',
-        reasoning_parts: 'typing.List[str]',
-        text_parts: 'typing.List[str]',
-        tool_calls: 'typing.Dict[int, typing.Dict[str, object]]',
-        current_usage: 'typing.Dict[str, object]',
-        finish_reasons: 'typing.List[str]',
-    ) -> 'typing.List[typing.Tuple[str, typing.Dict[str, object]]]':
-        events: 'typing.List[typing.Tuple[str, typing.Dict[str, object]]]' = []
+        payload: "typing.Dict[str, object]",
+        reasoning_parts: "typing.List[str]",
+        text_parts: "typing.List[str]",
+        tool_calls: "typing.Dict[int, typing.Dict[str, object]]",
+        current_usage: "typing.Dict[str, object]",
+        finish_reasons: "typing.List[str]",
+    ) -> "typing.List[typing.Tuple[str, typing.Dict[str, object]]]":
+        events: "typing.List[typing.Tuple[str, typing.Dict[str, object]]]" = []
         usage = payload.get("usage")
         if isinstance(usage, dict):
             self._capture_usage_snapshot(current_usage, usage)
@@ -882,9 +878,9 @@ class StreamRouter:
 
     def _capture_usage_snapshot(
         self,
-        current_usage: 'typing.Dict[str, object]',
-        usage: 'typing.Dict[str, object]',
-    ) -> 'None':
+        current_usage: "typing.Dict[str, object]",
+        usage: "typing.Dict[str, object]",
+    ) -> "None":
         scalar_mappings = (
             ("input_tokens", usage.get("input_tokens", usage.get("prompt_tokens"))),
             (
@@ -916,12 +912,12 @@ class StreamRouter:
 
     def _build_output_items(
         self,
-        reasoning_parts: 'typing.List[str]',
-        text_parts: 'typing.List[str]',
-        tool_calls: 'typing.Dict[int, typing.Dict[str, object]]',
-        custom_tool_names: 'typing.Set[str]',
-    ) -> 'typing.List[typing.Dict[str, object]]':
-        items: 'typing.List[typing.Dict[str, object]]' = []
+        reasoning_parts: "typing.List[str]",
+        text_parts: "typing.List[str]",
+        tool_calls: "typing.Dict[int, typing.Dict[str, object]]",
+        custom_tool_names: "typing.Set[str]",
+    ) -> "typing.List[typing.Dict[str, object]]":
+        items: "typing.List[typing.Dict[str, object]]" = []
         reasoning_text = "".join(reasoning_parts)
         if reasoning_text:
             items.append(
@@ -977,8 +973,7 @@ class StreamRouter:
             items.append(
                 {
                     "type": "function_call",
-                    "call_id": str(tool_call.get("id", "")).strip()
-                    or f"call_{index}",
+                    "call_id": str(tool_call.get("id", "")).strip() or f"call_{index}",
                     "name": name,
                     "arguments": arguments,
                 }
@@ -986,7 +981,9 @@ class StreamRouter:
 
         return items
 
-    def _request_json(self, request: 'urllib.request.Request') -> 'typing.Dict[str, object]':
+    def _request_json(
+        self, request: "urllib.request.Request"
+    ) -> "typing.Dict[str, object]":
         try:
             with urllib.request.urlopen(
                 request,
@@ -1009,7 +1006,7 @@ class StreamRouter:
                 f"outcomming request failed: {exc.reason}"
             ) from exc
 
-    def _build_headers(self, accept: 'str') -> 'typing.Dict[str, str]':
+    def _build_headers(self, accept: "str") -> "typing.Dict[str, str]":
         headers = {
             "Accept": accept,
             "Content-Type": "application/json",
@@ -1020,8 +1017,8 @@ class StreamRouter:
         return headers
 
     def _iter_sse_events(self, response):
-        event_name: 'typing.Union[str, None]' = None
-        data_lines: 'typing.List[str]' = []
+        event_name: "typing.Union[str, None]" = None
+        data_lines: "typing.List[str]" = []
 
         for raw_line in response:
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")

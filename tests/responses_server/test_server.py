@@ -1,30 +1,36 @@
-
 import json
 import socket
 import threading
+import typing
 
-from fastapi.testclient import TestClient
 import pytest
 import requests
+from fastapi.testclient import TestClient
+
 from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
     APPLY_PATCH_CHAT_INPUT_DESCRIPTION,
 )
+from tests.responses_server.fake_chat_completions_server import CaptureStore
 from tests.responses_server.fake_chat_completions_server import (
-    CaptureStore,
     build_messages_server as build_fake_messages_server,
+)
+from tests.responses_server.fake_chat_completions_server import (
     build_messages_text_events,
     build_messages_tool_use_events,
+)
+from tests.responses_server.fake_chat_completions_server import (
     build_test_server as build_fake_chat_server,
+)
+from tests.responses_server.fake_chat_completions_server import (
     build_text_chunks,
     build_tool_call_chunks,
 )
-import typing
 
 
-def test_responses_server_streams_text_from_chat_backend(tmp_path) -> 'None':
+def test_responses_server_streams_text_from_chat_backend(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -88,7 +94,7 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     tmp_path,
     monkeypatch,
     finish_reason,
-) -> 'None':
+) -> "None":
     dump_root = tmp_path / "dump"
     monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
     capture_store = CaptureStore(tmp_path / "chat_capture")
@@ -149,9 +155,7 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     dump_file = dump_root / "dump.jsonl"
     assert dump_file.exists()
     dump_records = [
-        json.loads(line)
-        for line in dump_file.read_text().splitlines()
-        if line.strip()
+        json.loads(line) for line in dump_file.read_text().splitlines() if line.strip()
     ]
     assert dump_records == [
         {
@@ -172,7 +176,7 @@ def test_responses_server_dumps_forwarded_chat_token_trajectory(
     assert isinstance(dump_records[0]["send_timestamp"], float)
 
 
-def test_responses_server_streams_text_from_messages_backend(tmp_path) -> 'None':
+def test_responses_server_streams_text_from_messages_backend(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "messages_capture")
     fake_messages_server = build_fake_messages_server(
         capture_store,
@@ -244,7 +248,7 @@ def test_responses_server_streams_text_from_messages_backend(tmp_path) -> 'None'
 
 def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -376,7 +380,7 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert request["path"] == "/v1/chat/completions"
 
 
-def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> 'None':
+def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> "None":
     router = StreamRouter(CompatServerConfig(model_provider="vllm"))
     base_request = {
         "model": "gpt-5.4",
@@ -402,7 +406,7 @@ def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> 'Non
     assert "chat_template_kwargs" not in without_reasoning
 
 
-def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> 'None':
+def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -491,7 +495,7 @@ def test_responses_server_vllm_requests_and_returns_usage(tmp_path) -> 'None':
 
 def test_responses_server_stepfun_uses_latest_usage_snapshot_instead_of_summing(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -589,7 +593,7 @@ def test_responses_server_stepfun_uses_latest_usage_snapshot_instead_of_summing(
 
 def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -692,7 +696,7 @@ def test_responses_server_vllm_reconstructs_reasoning_history_for_outcomming_cha
 
 def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_chat(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -770,7 +774,7 @@ def test_responses_server_stepfun_reconstructs_reasoning_history_for_outcomming_
 
 def test_responses_server_retries_terminal_reasoning_only_chat_output_once(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     reasoning_only_chunks = [
         {
@@ -857,7 +861,7 @@ def test_responses_server_retries_terminal_reasoning_only_chat_output_once(
 
 def test_responses_server_fails_terminal_reasoning_only_chat_output_after_retry(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -937,7 +941,7 @@ def test_responses_server_fails_terminal_reasoning_only_chat_output_after_retry(
 
 def test_responses_server_preserves_request_model_without_default_override(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -977,7 +981,7 @@ def test_responses_server_preserves_request_model_without_default_override(
     assert request["body"]["model"] == "gpt-5.4"
 
 
-def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> 'None':
+def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1030,10 +1034,10 @@ def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> 'None':
 def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     def _tag_vllm_payload(
-        outcomming_request: 'typing.Dict[str, object]',
-    ) -> 'typing.Dict[str, object]':
+        outcomming_request: "typing.Dict[str, object]",
+    ) -> "typing.Dict[str, object]":
         outcomming_request["provider_tag"] = "vllm"
         return outcomming_request
 
@@ -1086,7 +1090,7 @@ def test_responses_server_unknown_provider_falls_back_to_vllm_processor(
 
 def test_responses_server_unknown_provider_reconstructs_reasoning_history_like_vllm(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1164,10 +1168,10 @@ def test_responses_server_unknown_provider_reconstructs_reasoning_history_like_v
 def test_responses_server_uses_model_provider_payload_processor_for_each_request(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     def _tag_demo_payload(
-        outcomming_request: 'typing.Dict[str, object]',
-    ) -> 'typing.Dict[str, object]':
+        outcomming_request: "typing.Dict[str, object]",
+    ) -> "typing.Dict[str, object]":
         outcomming_request["provider_tag"] = "demo"
         return outcomming_request
 
@@ -1242,7 +1246,9 @@ def test_responses_server_uses_model_provider_payload_processor_for_each_request
     assert second_request["body"]["provider_tag"] == "demo"
 
 
-def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path) -> 'None':
+def test_responses_server_translates_chat_tool_calls_to_incomming_items(
+    tmp_path,
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1297,7 +1303,9 @@ def test_responses_server_translates_chat_tool_calls_to_incomming_items(tmp_path
     assert '\\"text\\":\\"hello\\"' in body
 
 
-def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path) -> 'None':
+def test_responses_server_reconstructs_tool_history_for_outcomming_chat(
+    tmp_path,
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1383,7 +1391,7 @@ def test_responses_server_reconstructs_tool_history_for_outcomming_chat(tmp_path
     ]
 
 
-def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> 'None':
+def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1466,7 +1474,10 @@ def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> 
             "role": "user",
             "content": [
                 {"type": "text", "text": "look"},
-                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_url, "detail": "high"},
+                },
             ],
         },
         {
@@ -1492,7 +1503,7 @@ def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> 
 
 def test_responses_server_forwards_input_images_to_outcomming_messages(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "messages_capture")
     fake_messages_server = build_fake_messages_server(
         capture_store,
@@ -1563,7 +1574,7 @@ def test_responses_server_forwards_input_images_to_outcomming_messages(
     ]
 
 
-def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> 'None':
+def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1645,7 +1656,7 @@ def test_responses_server_adapts_custom_tools_for_chat_backend(tmp_path) -> 'Non
     ]
 
 
-def test_responses_server_adapts_custom_tools_for_messages_backend(tmp_path) -> 'None':
+def test_responses_server_adapts_custom_tools_for_messages_backend(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "messages_capture")
     fake_messages_server = build_fake_messages_server(
         capture_store,
@@ -1729,7 +1740,7 @@ def test_responses_server_adapts_custom_tools_for_messages_backend(tmp_path) -> 
 
 def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -1805,9 +1816,7 @@ def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
                     "type": "function",
                     "function": {
                         "name": "apply_patch",
-                        "arguments": (
-                            '{"input":"*** Begin Patch\\n*** End Patch\\n"}'
-                        ),
+                        "arguments": ('{"input":"*** Begin Patch\\n*** End Patch\\n"}'),
                     },
                 }
             ],
@@ -1822,14 +1831,14 @@ def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
 
 def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
         build_tool_call_chunks(
             "call_1",
             "apply_patch",
-            ['{"input":"', "*** Begin Patch\\n*** End Patch\\n\"}"],
+            ['{"input":"', '*** Begin Patch\\n*** End Patch\\n"}'],
         ),
     )
     fake_chat_server.start()
@@ -1884,7 +1893,7 @@ def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
     assert '"input": "*** Begin Patch\\n*** End Patch\\n"' in body
 
 
-def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None':
+def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
         capture_store,
@@ -2039,7 +2048,7 @@ def test_responses_server_mocks_web_search_and_continues_chat(tmp_path) -> 'None
 def test_responses_server_dumps_all_forwarded_requests_for_mock_web_search(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     dump_root = tmp_path / "dump"
     monkeypatch.setenv("PYCODEX_DUMP", str(dump_root))
     capture_store = CaptureStore(tmp_path / "chat_capture")
@@ -2162,7 +2171,7 @@ def test_responses_server_dumps_all_forwarded_requests_for_mock_web_search(
 
 def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
     tmp_path,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "messages_capture")
     fake_messages_server = build_fake_messages_server(
         capture_store,
@@ -2271,10 +2280,10 @@ def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
     }
     assert second_request["body"]["messages"][-1]["role"] == "user"
     assert second_request["body"]["messages"][-1]["content"][0]["type"] == "tool_result"
-    assert (
-        second_request["body"]["messages"][-1]["content"][0]["tool_use_id"] == "ws_1"
-    )
-    assert json.loads(second_request["body"]["messages"][-1]["content"][0]["content"]) == {
+    assert second_request["body"]["messages"][-1]["content"][0]["tool_use_id"] == "ws_1"
+    assert json.loads(
+        second_request["body"]["messages"][-1]["content"][0]["content"]
+    ) == {
         "query": "github codex",
         "queries": ["github codex"],
         "results": [],
@@ -2283,7 +2292,9 @@ def test_responses_server_turns_mock_web_search_calls_into_messages_followup(
 
 
 @pytest.mark.parametrize("partial", [False, True])
-def test_responses_server_preserves_downstream_sse_error(tmp_path, monkeypatch, partial):
+def test_responses_server_preserves_downstream_sse_error(
+    tmp_path, monkeypatch, partial
+):
     monkeypatch.setenv("PYCODEX_DUMP", str(tmp_path / "trajectory"))
     chunks = []
     if partial:
@@ -2331,14 +2342,17 @@ def test_responses_server_preserves_downstream_sse_error(tmp_path, monkeypatch, 
     assert len(records) == 1
     assert records[0]["tokens"] == (
         {"prefill": [11, 12], "decode": [21]}
-        if partial else {"prefill": [], "decode": []}
+        if partial
+        else {"prefill": [], "decode": []}
     )
     assert records[0]["stream_completed"] is False
     assert records[0]["stream_error_type"] == "OutcommingChatError"
 
 
-def test_responses_server_turns_truncated_downstream_stream_into_response_failed() -> 'None':
-    def serve_truncated_stream(listener: 'socket.socket') -> 'None':
+def test_responses_server_turns_truncated_downstream_stream_into_response_failed() -> (
+    "None"
+):
+    def serve_truncated_stream(listener: "socket.socket") -> "None":
         conn, _addr = listener.accept()
         try:
             # Read request headers (up to the empty line)
@@ -2356,7 +2370,7 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
                 body_so_far = b""
             else:
                 header_bytes = request_bytes[:sep_idx]
-                body_so_far = request_bytes[sep_idx + 4:]
+                body_so_far = request_bytes[sep_idx + 4 :]
 
             # Parse Content-Length to consume the exact request body
             content_length = 0
@@ -2466,7 +2480,7 @@ def test_responses_server_turns_truncated_downstream_stream_into_response_failed
 
 def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
     monkeypatch,
-) -> 'None':
+) -> "None":
     def raise_timeout(*args, **kwargs):
         del args, kwargs
         raise TimeoutError("read operation timed out")
@@ -2504,7 +2518,7 @@ def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
     assert "outcomming chat request timed out after 12.5s" in response.text
 
 
-def test_managed_response_server_forces_asyncio_loop() -> 'None':
+def test_managed_response_server_forces_asyncio_loop() -> "None":
     server = ManagedResponseServer(
         CompatServerConfig(
             outcomming_base_url="http://127.0.0.1:8000/v1",

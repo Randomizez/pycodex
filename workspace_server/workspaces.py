@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from pycodex.utils import uuid7_string
 
-
 SessionFactory = typing.Callable[[], object]
 
 
@@ -59,25 +58,28 @@ class WorkspaceStateStore:
             }
             for tab in tabs
         ]
-        payload = json.dumps(
-            {"version": 1, "tabs": state_tabs},
-            ensure_ascii=False,
-            indent=2,
-        ) + "\n"
+        payload = (
+            json.dumps(
+                {"version": 1, "tabs": state_tabs},
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        )
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(payload, encoding="utf-8")
 
 
 @dataclass(frozen=True)
 class WorkspaceDefinition:
-    workspace_id: 'str'
-    board_path: 'typing.Union[Path, None]'
-    work_dir: 'Path'
+    workspace_id: "str"
+    board_path: "typing.Union[Path, None]"
+    work_dir: "Path"
 
 
 def load_workspace_definitions(
-    config_path: 'typing.Union[str, Path]',
-) -> 'typing.List[WorkspaceDefinition]':
+    config_path: "typing.Union[str, Path]",
+) -> "typing.List[WorkspaceDefinition]":
     path = Path(config_path).expanduser().resolve()
     if not path.exists():
         return []
@@ -112,7 +114,9 @@ def load_workspace_definitions(
         if work_dir_value is None:
             work_dir_value = item.get("cwd")
         if not str(work_dir_value or "").strip():
-            raise ValueError("workspace `{0}` is missing `work_dir`".format(workspace_id))
+            raise ValueError(
+                "workspace `{0}` is missing `work_dir`".format(workspace_id)
+            )
         work_dir = _resolve_workspace_path(str(work_dir_value), path.parent)
         if not work_dir.is_dir():
             raise ValueError(
@@ -127,7 +131,9 @@ def load_workspace_definitions(
         if board_value is not False:
             if not isinstance(board_value, str) or not board_value.strip():
                 raise ValueError(
-                    "workspace `{0}` requires a board path or false".format(workspace_id)
+                    "workspace `{0}` requires a board path or false".format(
+                        workspace_id
+                    )
                 )
             board_path = _resolve_workspace_path(board_value, path.parent)
             if board_path in seen_boards:
@@ -152,8 +158,8 @@ def load_workspace_definitions(
 
 
 def save_workspace_definitions(
-    config_path: 'typing.Union[str, Path]',
-    definitions: 'typing.Iterable[WorkspaceDefinition]',
+    config_path: "typing.Union[str, Path]",
+    definitions: "typing.Iterable[WorkspaceDefinition]",
 ) -> None:
     path = Path(config_path).expanduser().resolve()
     base_dir = path.parent
@@ -171,9 +177,9 @@ def save_workspace_definitions(
 
 
 def _workspace_definition_to_json(
-    definition: 'WorkspaceDefinition',
-    base_dir: 'Path',
-) -> 'typing.Dict[str, object]':
+    definition: "WorkspaceDefinition",
+    base_dir: "Path",
+) -> "typing.Dict[str, object]":
     result = {
         "id": definition.workspace_id,
         "work_dir": _format_path_for_workspace_config(definition.work_dir, base_dir),
@@ -188,7 +194,7 @@ def _workspace_definition_to_json(
     return result
 
 
-def _format_path_for_workspace_config(path: 'Path', base_dir: 'Path') -> 'str':
+def _format_path_for_workspace_config(path: "Path", base_dir: "Path") -> "str":
     resolved = path.resolve()
     try:
         relative = os.path.relpath(str(resolved), str(base_dir.resolve()))
@@ -201,14 +207,14 @@ def _format_path_for_workspace_config(path: 'Path', base_dir: 'Path') -> 'str':
     return relative
 
 
-def _resolve_workspace_path(value: str, base_dir: 'Path') -> 'Path':
+def _resolve_workspace_path(value: str, base_dir: "Path") -> "Path":
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
         path = base_dir / path
     return path.resolve()
 
 
-def _next_workspace_id(existing: 'typing.Container[str]') -> str:
+def _next_workspace_id(existing: "typing.Container[str]") -> str:
     index = 1
     while True:
         candidate = "workspace-{0}".format(index)
@@ -389,14 +395,15 @@ class WorkspaceSessionManager:
 
 @dataclass(frozen=True)
 class WorkspaceEntry:
-    definition: 'WorkspaceDefinition'
-    manager: 'WorkspaceSessionManager'
+    definition: "WorkspaceDefinition"
+    manager: "WorkspaceSessionManager"
 
-    def to_dict(self) -> 'typing.Dict[str, object]':
+    def to_dict(self) -> "typing.Dict[str, object]":
         return {
             "id": self.definition.workspace_id,
             "board_path": (
-                "" if self.definition.board_path is None
+                ""
+                if self.definition.board_path is None
                 else str(self.definition.board_path)
             ),
             "work_dir": str(self.definition.work_dir),
@@ -413,13 +420,13 @@ WorkspaceEntryFactory = typing.Callable[
 class WorkspaceRegistry:
     def __init__(
         self,
-        entries: 'typing.Iterable[WorkspaceEntry]',
-        config_path: 'typing.Union[str, Path, None]' = None,
+        entries: "typing.Iterable[WorkspaceEntry]",
+        config_path: "typing.Union[str, Path, None]" = None,
         entry_factory: "typing.Union[WorkspaceEntryFactory, None]" = None,
     ) -> None:
-        self._entries: 'typing.Dict[str, WorkspaceEntry]' = {}
-        self._name_to_key: 'typing.Dict[str, str]' = {}
-        self._order: 'typing.List[str]' = []
+        self._entries: "typing.Dict[str, WorkspaceEntry]" = {}
+        self._name_to_key: "typing.Dict[str, str]" = {}
+        self._order: "typing.List[str]" = []
         self._started = False
         self._config_path = (
             None if config_path is None else Path(config_path).expanduser().resolve()
@@ -430,7 +437,7 @@ class WorkspaceRegistry:
         if not self._entries and self._entry_factory is None:
             raise ValueError("at least one workspace is required")
 
-    def _register(self, entry: 'WorkspaceEntry') -> None:
+    def _register(self, entry: "WorkspaceEntry") -> None:
         workspace_id = entry.definition.workspace_id
         key = self._key_for_definition(entry.definition)
         if key in self._entries:
@@ -444,7 +451,7 @@ class WorkspaceRegistry:
         self._order.append(key)
         entry.manager.set_persist_callback(self.persist_definitions)
 
-    def _key_for_definition(self, definition: 'WorkspaceDefinition') -> str:
+    def _key_for_definition(self, definition: "WorkspaceDefinition") -> str:
         if definition.board_path is None:
             return "workspace:{0}".format(definition.workspace_id)
         return str(definition.board_path.resolve())
@@ -459,7 +466,7 @@ class WorkspaceRegistry:
             await self._entries[key].manager.close()
         self._started = False
 
-    def get(self, workspace_id: str) -> 'WorkspaceEntry':
+    def get(self, workspace_id: str) -> "WorkspaceEntry":
         workspace_id = normalize_workspace_id(workspace_id)
         if not workspace_id:
             raise KeyError(workspace_id)
@@ -473,11 +480,13 @@ class WorkspaceRegistry:
         name: str,
         work_dir: str = "./",
         board: "typing.Union[str, bool, None]" = None,
-    ) -> 'WorkspaceEntry':
+    ) -> "WorkspaceEntry":
         if self._entry_factory is None:
             raise ValueError("workspace creation is unavailable")
 
-        base_dir = self._config_path.parent if self._config_path is not None else Path.cwd()
+        base_dir = (
+            self._config_path.parent if self._config_path is not None else Path.cwd()
+        )
         resolved_work_dir = _resolve_workspace_path(str(work_dir or "./"), base_dir)
         resolved_work_dir.mkdir(parents=True, exist_ok=True)
 
@@ -493,7 +502,9 @@ class WorkspaceRegistry:
             board_path.parent.mkdir(parents=True, exist_ok=True)
             board_key = str(board_path.resolve())
             if board_key in self._entries:
-                raise ValueError("workspace board already exists: {0}".format(board_path))
+                raise ValueError(
+                    "workspace board already exists: {0}".format(board_path)
+                )
 
         workspace_id = normalize_workspace_id(name)
         if not workspace_id:
@@ -513,7 +524,7 @@ class WorkspaceRegistry:
         self.persist_definitions()
         return entry
 
-    async def delete_workspace(self, name: str) -> 'WorkspaceDefinition':
+    async def delete_workspace(self, name: str) -> "WorkspaceDefinition":
         workspace_id = normalize_workspace_id(name)
         if not workspace_id:
             raise KeyError(workspace_id)
@@ -535,11 +546,8 @@ class WorkspaceRegistry:
             [self._entries[key].definition for key in self._order],
         )
 
-    def list_workspaces(self) -> 'typing.List[typing.Dict[str, object]]':
-        return [
-            self._entries[key].to_dict()
-            for key in self._order
-        ]
+    def list_workspaces(self) -> "typing.List[typing.Dict[str, object]]":
+        return [self._entries[key].to_dict() for key in self._order]
 
 
 def session_snapshot(session) -> "typing.Dict[str, object]":

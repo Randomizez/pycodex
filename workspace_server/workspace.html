@@ -1168,6 +1168,7 @@
           draft: "",
           notifyWhenDone: false,
           wasRunning: false,
+          inputRequest: null,
         });
       }
       return sessionState.get(key);
@@ -1373,6 +1374,7 @@
     function renderSnapshot(snapshot) {
       if (!snapshot) return;
       const state = stateForSession(activeSessionId);
+      state.inputRequest = snapshot.input_request || null;
       const signature = messageSignature(snapshot);
       if (signature === state.lastRenderedSignature) {
         setSpinner(snapshot.spinner || "");
@@ -1524,7 +1526,7 @@
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       const text = prompt.value.trim();
-      if (!text) return;
+      if (!text && !stateForSession(activeSessionId).inputRequest) return;
       prompt.value = "";
       resizePrompt();
       stateForSession(activeSessionId).draft = "";

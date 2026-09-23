@@ -1,25 +1,45 @@
-
 import asyncio
 import json
 import random
-from dataclasses import dataclass, field
+import typing
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .compat import Literal
-from .protocol import ConversationItem, ToolCall, ToolResult, TurnResult
+from .events import (
+    CompactCompletedEvent,
+    CompactFailedEvent,
+    CompactStartedEvent,
+    Event,
+    TurnCompletedEvent,
+    TurnFailedEvent,
+    TurnInterruptedEvent,
+    TurnStartedEvent,
+)
+from .protocol import ConversationItem, ToolCall, ToolResult
 from .utils import uuid7_string
-import typing
 
 if TYPE_CHECKING:
-    from .runtime import CliSubmissionQueue
+    from .runtime import AgentRuntime
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
-PlanListener = Callable[[typing.Dict[str, object]], None]
-SubmissionQueueBuilder = Callable[
-    [typing.Union[str, None], typing.Union[str, None], typing.Tuple[ConversationItem, ...], str],
-    "CliSubmissionQueue",
+AgentStatus = typing.Union[
+    Literal["pending_init", "running", "shutdown", "not_found"],
+    typing.Dict[str, typing.Union[str, None]],
 ]
-AsyncJSONHandler = Callable[[typing.Dict[str, object]], Awaitable[typing.Union[typing.Dict[str, object], None]]]
+PlanListener = Callable[[typing.Dict[str, object]], None]
+AgentRuntimeBuilder = Callable[
+    [
+        typing.Union[str, None],
+        typing.Union[str, None],
+        typing.Tuple[ConversationItem, ...],
+        str,
+    ],
+    "AgentRuntime",
+]
+AsyncJSONHandler = Callable[
+    [typing.Dict[str, object]], Awaitable[typing.Union[typing.Dict[str, object], None]]
+]
 
 DEFAULT_AGENT_NICKNAME_CANDIDATES = (
     "Bacon",
@@ -114,22 +134,28 @@ DEFAULT_AGENT_NICKNAME_CANDIDATES = (
 )
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class PlanItem:
-    step: 'str'
-    status: 'PlanStatus'
+    step: "str"
+    status: "PlanStatus"
 
 
 class PlanStore:
-    def __init__(self) -> 'None':
-        self._explanation: 'typing.Union[str, None]' = None
-        self._plan: 'typing.Tuple[PlanItem, ...]' = ()
-        self._listener: 'PlanListener' = lambda _payload: None
+    def __init__(self) -> "None":
+        self._explanation: "typing.Union[str, None]" = None
+        self._plan: "typing.Tuple[PlanItem, ...]" = ()
+        self._listener: "PlanListener" = lambda _payload: None
 
-    def set_listener(self, listener: 'typing.Union[PlanListener, None]') -> 'None':
+    def set_listener(self, listener: "typing.Union[PlanListener, None]") -> "None":
         self._listener = listener or (lambda _payload: None)
 
-    def update(self, explanation: 'typing.Union[str, None]', plan: 'typing.Tuple[PlanItem, ...]') -> 'None':
+    def update(
+        self,
+        explanation: "typing.Union[str, None]",
+        plan: "typing.Tuple[PlanItem, ...]",
+    ) -> "None":
         in_progress = sum(1 for item in plan if item.status == "in_progress")
         if in_progress > 1:
             raise ValueError("at most one plan step can be in_progress")
@@ -139,30 +165,28 @@ class PlanStore:
             {
                 "explanation": explanation,
                 "plan": [
-                    {"step": item.step, "status": item.status}
-                    for item in self._plan
+                    {"step": item.step, "status": item.status} for item in self._plan
                 ],
             }
         )
 
-    def snapshot(self) -> 'typing.Dict[str, object]':
+    def snapshot(self) -> "typing.Dict[str, object]":
         return {
             "explanation": self._explanation,
-            "plan": [
-                {"step": item.step, "status": item.status}
-                for item in self._plan
-            ],
+            "plan": [{"step": item.step, "status": item.status} for item in self._plan],
         }
 
 
 class RequestUserInputManager:
-    def __init__(self) -> 'None':
-        self._handler: 'typing.Union[AsyncJSONHandler, None]' = None
+    def __init__(self) -> "None":
+        self._handler: "typing.Union[AsyncJSONHandler, None]" = None
 
-    def set_handler(self, handler: 'typing.Union[AsyncJSONHandler, None]') -> 'None':
+    def set_handler(self, handler: "typing.Union[AsyncJSONHandler, None]") -> "None":
         self._handler = handler
 
-    async def request(self, payload: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
+    async def request(
+        self, payload: "typing.Dict[str, object]"
+    ) -> "typing.Union[typing.Dict[str, object], None]":
         handler = self._handler
         if handler is None:
             return None
@@ -170,13 +194,15 @@ class RequestUserInputManager:
 
 
 class RequestPermissionsManager:
-    def __init__(self) -> 'None':
-        self._handler: 'typing.Union[AsyncJSONHandler, None]' = None
+    def __init__(self) -> "None":
+        self._handler: "typing.Union[AsyncJSONHandler, None]" = None
 
-    def set_handler(self, handler: 'typing.Union[AsyncJSONHandler, None]') -> 'None':
+    def set_handler(self, handler: "typing.Union[AsyncJSONHandler, None]") -> "None":
         self._handler = handler
 
-    async def request(self, payload: 'typing.Dict[str, object]') -> 'typing.Union[typing.Dict[str, object], None]':
+    async def request(
+        self, payload: "typing.Dict[str, object]"
+    ) -> "typing.Union[typing.Dict[str, object], None]":
         handler = self._handler
         if handler is None:
             return None
@@ -185,52 +211,52 @@ class RequestPermissionsManager:
 
 @dataclass
 class ManagedAgent:
-    agent_id: 'str'
-    queue: '"CliSubmissionQueue"'
-    worker_task: 'asyncio.Task[None]'
-    nickname: 'typing.Union[str, None]' = None
-    state: 'str' = "pending_init"
-    completed_message: 'typing.Union[str, None]' = None
-    error_message: 'typing.Union[str, None]' = None
-    pending_submission_ids: 'typing.Set[str]' = field(default_factory=set)
+    agent_id: "str"
+    runtime: '"AgentRuntime"'
+    nickname: "typing.Union[str, None]" = None
+    last_status: "AgentStatus" = "pending_init"
 
 
 class SubAgentManager:
-    def __init__(self) -> 'None':
-        self._queue_builder: 'typing.Union[SubmissionQueueBuilder, None]' = None
-        self._agents: 'typing.Dict[str, ManagedAgent]' = {}
+    def __init__(self) -> "None":
+        self._runtime_builder: "typing.Union[AgentRuntimeBuilder, None]" = None
+        self._agents: "typing.Dict[str, ManagedAgent]" = {}
         self._condition = asyncio.Condition()
-        self._available_nicknames: 'typing.List[str]' = []
+        self._available_nicknames: "typing.List[str]" = []
         self._nickname_random = random.Random()
 
-    def set_queue_builder(self, builder: 'typing.Union[SubmissionQueueBuilder, None]') -> 'None':
-        self._queue_builder = builder
+    def set_runtime_builder(
+        self, builder: "typing.Union[AgentRuntimeBuilder, None]"
+    ) -> "None":
+        self._runtime_builder = builder
 
     async def spawn_agent(
         self,
-        message: 'typing.Union[str, None]',
-        items: 'typing.Union[typing.List[typing.Dict[str, object]], None]',
-        agent_type: 'typing.Union[str, None]',
-        fork_context: 'bool',
-        model: 'typing.Union[str, None]',
-        reasoning_effort: 'typing.Union[str, None]',
-        history: 'typing.Tuple[ConversationItem, ...]',
-    ) -> 'typing.Dict[str, object]':
-        builder = self._queue_builder
+        message: "typing.Union[str, None]",
+        items: "typing.Union[typing.List[typing.Dict[str, object]], None]",
+        agent_type: "typing.Union[str, None]",
+        fork_context: "bool",
+        model: "typing.Union[str, None]",
+        reasoning_effort: "typing.Union[str, None]",
+        history: "typing.Tuple[ConversationItem, ...]",
+    ) -> "typing.Dict[str, object]":
+        builder = self._runtime_builder
         if builder is None:
-            raise RuntimeError("spawn_agent is unavailable before queue initialization")
+            raise RuntimeError(
+                "spawn_agent is unavailable before runtime initialization"
+            )
 
         initial_history = _fork_context_history(history) if fork_context else ()
         agent_id = uuid7_string()
-        queue = builder(model, reasoning_effort, initial_history, agent_id)
-        worker_task = asyncio.create_task(queue.run_forever())
+        runtime = builder(model, reasoning_effort, initial_history, agent_id)
+        await runtime.start()
         nickname = self._next_nickname()
         managed = ManagedAgent(
             agent_id=agent_id,
-            queue=queue,
-            worker_task=worker_task,
+            runtime=runtime,
             nickname=nickname,
         )
+        runtime.event_handler = lambda event: self._handle_agent_event(managed, event)
         async with self._condition:
             self._agents[agent_id] = managed
             self._condition.notify_all()
@@ -246,58 +272,65 @@ class SubAgentManager:
 
     async def send_input(
         self,
-        agent_id: 'str',
-        prompt_text: 'str',
-        interrupt: 'bool',
-    ) -> 'typing.Dict[str, object]':
+        agent_id: "str",
+        prompt_text: "str",
+        interrupt: "bool",
+    ) -> "typing.Dict[str, object]":
         managed = self._agents.get(agent_id)
         if managed is None:
             raise RuntimeError(f"unknown agent: {agent_id}")
-        if managed.state == "shutdown":
+        if managed.runtime.agent.is_shutdown:
             raise RuntimeError(f"agent is shutdown: {agent_id}")
 
-        submission_id, future = await managed.queue.enqueue_user_turn(
+        submission_id, future = await managed.runtime.enqueue_user_turn(
             prompt_text,
             queue="steer" if interrupt else "enqueue",
         )
-        managed.state = "running"
-        managed.completed_message = None
-        managed.error_message = None
-        managed.pending_submission_ids.add(submission_id)
-        asyncio.create_task(self._track_submission(managed, submission_id, future))
+        future.add_done_callback(self._submission_finished)
         async with self._condition:
             self._condition.notify_all()
         return {"submission_id": submission_id}
 
-    async def resume_agent(self, agent_id: 'str') -> 'typing.Dict[str, object]':
+    async def resume_agent(self, agent_id: "str") -> "typing.Dict[str, object]":
         managed = self._agents.get(agent_id)
         if managed is None:
             return {"status": "not_found"}
-        if managed.worker_task.done():
-            managed.worker_task = asyncio.create_task(managed.queue.run_forever())
-            managed.state = "pending_init"
-            managed.completed_message = None
-            managed.error_message = None
+        if managed.runtime.agent.is_shutdown:
+            managed.runtime.resume()
+            managed.last_status = "pending_init"
+            await managed.runtime.start()
         async with self._condition:
             self._condition.notify_all()
         return {"status": self._status_payload(managed)}
 
-    async def close_agent(self, agent_id: 'str') -> 'typing.Dict[str, object]':
+    async def close_agent(self, agent_id: "str") -> "typing.Dict[str, object]":
         managed = self._agents.get(agent_id)
         if managed is None:
             return {"previous_status": "not_found"}
         previous_status = self._status_payload(managed)
-        if not managed.worker_task.done():
-            managed.queue._agent.interrupt_asap = True
-            await managed.queue.shutdown()
-            await managed.worker_task
-        managed.state = "shutdown"
-        managed.pending_submission_ids.clear()
+        await managed.runtime.close()
         async with self._condition:
             self._condition.notify_all()
         return {"previous_status": previous_status}
 
-    def _next_nickname(self) -> 'str':
+    async def shutdown(self) -> "None":
+        errors = []
+        for agent_id in tuple(self._agents):
+            try:
+                await self.close_agent(agent_id)
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            for error in errors[1:]:
+                asyncio.get_running_loop().call_exception_handler(
+                    {
+                        "message": "Sub-agent close failed",
+                        "exception": error,
+                    }
+                )
+            raise errors[0]
+
+    def _next_nickname(self) -> "str":
         if not self._available_nicknames:
             self._available_nicknames = list(DEFAULT_AGENT_NICKNAME_CANDIDATES)
             self._nickname_random.shuffle(self._available_nicknames)
@@ -305,59 +338,62 @@ class SubAgentManager:
 
     async def wait_agents(
         self,
-        agent_ids: 'typing.List[str]',
-        timeout_ms: 'int' = 30_000,
-    ) -> 'typing.Dict[str, object]':
+        agent_ids: "typing.List[str]",
+        timeout_ms: "int" = 30_000,
+    ) -> "typing.Dict[str, object]":
         timeout_seconds = max(timeout_ms, 1) / 1000.0
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_seconds
 
-        while True:
-            snapshot = {
-                agent_id: self._status_payload(self._agents.get(agent_id))
-                for agent_id in agent_ids
-            }
-            if any(self._is_final_status(status) for status in snapshot.values()):
-                return {"status": snapshot, "timed_out": False}
-
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return {"status": {}, "timed_out": True}
-
-            async with self._condition:
+        async with self._condition:
+            while True:
+                snapshot = {
+                    agent_id: self._status_payload(self._agents.get(agent_id))
+                    for agent_id in agent_ids
+                }
+                if any(self._is_final_status(status) for status in snapshot.values()):
+                    return {"status": snapshot, "timed_out": False}
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    return {"status": {}, "timed_out": True}
                 try:
                     await asyncio.wait_for(self._condition.wait(), timeout=remaining)
                 except asyncio.TimeoutError:
                     return {"status": {}, "timed_out": True}
 
-    async def _track_submission(
-        self,
-        managed: 'ManagedAgent',
-        submission_id: 'str',
-        future: 'asyncio.Future[typing.Union[TurnResult, None]]',
-    ) -> 'None':
-        try:
-            result = await future
-        except Exception as exc:  # pragma: no cover - background safety
-            managed.error_message = f"{type(exc).__name__}: {exc}"
-            managed.state = "errored"
-        else:
-            managed.completed_message = None if result is None else result.output_text
-            managed.state = "completed"
-        finally:
-            managed.pending_submission_ids.discard(submission_id)
-            if managed.pending_submission_ids and managed.error_message is None:
-                managed.completed_message = None
-                managed.state = "running"
-            async with self._condition:
-                self._condition.notify_all()
+    def _submission_finished(self, future: "asyncio.Future") -> "None":
+        if not future.cancelled():
+            future.exception()
+        asyncio.create_task(self._notify_waiters())
+
+    def _handle_agent_event(self, managed: "ManagedAgent", event: "Event") -> "None":
+        if isinstance(event, TurnCompletedEvent):
+            managed.last_status = {"completed": event.output_text}
+        elif isinstance(event, CompactCompletedEvent):
+            managed.last_status = {"completed": None}
+        elif isinstance(event, (TurnFailedEvent, CompactFailedEvent)):
+            managed.last_status = {
+                "errored": "{0}: {1}".format(
+                    event.error_type,
+                    event.error,
+                )
+            }
+        elif isinstance(event, TurnInterruptedEvent):
+            managed.last_status = {"errored": "TurnInterrupted: turn interrupted"}
+        elif not isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
+            return
+        asyncio.create_task(self._notify_waiters())
+
+    async def _notify_waiters(self) -> "None":
+        async with self._condition:
+            self._condition.notify_all()
 
     def _compose_prompt(
         self,
-        message: 'typing.Union[str, None]',
-        items: 'typing.Union[typing.List[typing.Dict[str, object]], None]',
-    ) -> 'str':
-        parts: 'typing.List[str]' = []
+        message: "typing.Union[str, None]",
+        items: "typing.Union[typing.List[typing.Dict[str, object]], None]",
+    ) -> "str":
+        parts: "typing.List[str]" = []
         if message:
             parts.append(message.strip())
         for item in items or []:
@@ -374,18 +410,20 @@ class SubAgentManager:
                 parts.append(json.dumps(item, ensure_ascii=False))
         return "\n\n".join(part for part in parts if part)
 
-    def _status_payload(self, managed: 'typing.Union[ManagedAgent, None]') -> 'object':
+    def _status_payload(
+        self, managed: "typing.Union[ManagedAgent, None]"
+    ) -> "AgentStatus":
         if managed is None:
             return "not_found"
-        if managed.error_message is not None:
-            return {"errored": managed.error_message}
-        if managed.state == "completed":
-            return {"completed": managed.completed_message}
-        if managed.state in {"pending_init", "running", "shutdown"}:
-            return managed.state
-        return managed.state
+        agent = managed.runtime.agent
+        if agent.is_shutdown:
+            return "shutdown"
+        if managed.runtime.is_busy:
+            return "running"
+        status = managed.last_status
+        return dict(status) if isinstance(status, dict) else status
 
-    def _is_final_status(self, status: 'object') -> 'bool':
+    def _is_final_status(self, status: "AgentStatus") -> "bool":
         if isinstance(status, str):
             return status in {"shutdown", "not_found"}
         if isinstance(status, dict):
@@ -394,8 +432,8 @@ class SubAgentManager:
 
 
 def _fork_context_history(
-    history: 'typing.Tuple[ConversationItem, ...]',
-) -> 'typing.Tuple[ConversationItem, ...]':
+    history: "typing.Tuple[ConversationItem, ...]",
+) -> "typing.Tuple[ConversationItem, ...]":
     call_ids = set()
     result_ids = set()
     for item in history:
@@ -416,19 +454,12 @@ def _fork_context_history(
 
 
 class AgentRuntimeEnvironment:
-    def __init__(self) -> 'None':
+    def __init__(self) -> "None":
         self.plan_store = PlanStore()
         self.subagent_manager = SubAgentManager()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
 
 
-def create_agent_runtime_environment() -> 'AgentRuntimeEnvironment':
+def create_agent_runtime_environment() -> "AgentRuntimeEnvironment":
     return AgentRuntimeEnvironment()
-
-
-_RUNTIME_ENV = create_agent_runtime_environment()
-
-
-def get_agent_runtime_environment() -> 'AgentRuntimeEnvironment':
-    return _RUNTIME_ENV

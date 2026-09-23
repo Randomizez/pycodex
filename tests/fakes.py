@@ -1,11 +1,13 @@
-
+import typing
 from typing import Awaitable, Callable, Iterable
 
+from pycodex.events import AssistantDeltaEvent, ModelEvent, ToolCalledEvent
 from pycodex.model import NOOP_MODEL_STREAM_EVENT_HANDLER
-from pycodex.protocol import AssistantMessage, ModelResponse, ModelStreamEvent, Prompt, ToolCall
-import typing
+from pycodex.protocol import AssistantMessage, ModelResponse, Prompt, ToolCall
 
-ResponseFactory = Callable[[Prompt, int], typing.Union[ModelResponse, Awaitable[ModelResponse]]]
+ResponseFactory = Callable[
+    [Prompt, int], typing.Union[ModelResponse, Awaitable[ModelResponse]]
+]
 
 
 class ScriptedModelClient:
@@ -13,21 +15,23 @@ class ScriptedModelClient:
 
     def __init__(
         self,
-        responses: 'typing.Union[Iterable[ModelResponse], None]' = None,
-        response_factory: 'typing.Union[ResponseFactory, None]' = None,
-    ) -> 'None':
+        responses: "typing.Union[Iterable[ModelResponse], None]" = None,
+        response_factory: "typing.Union[ResponseFactory, None]" = None,
+        model: "str" = "scripted",
+    ) -> "None":
         if responses is None and response_factory is None:
             raise ValueError("either responses or response_factory must be provided")
         self._responses = iter(responses or [])
         self._response_factory = response_factory
-        self.prompts: 'typing.List[Prompt]' = []
+        self.model = model
+        self.prompts: "typing.List[Prompt]" = []
         self.call_count = 0
 
     async def complete(
         self,
-        prompt: 'Prompt',
-        event_handler: 'Callable[[ModelStreamEvent], None]' = NOOP_MODEL_STREAM_EVENT_HANDLER,
-    ) -> 'ModelResponse':
+        prompt: "Prompt",
+        event_handler: "Callable[[ModelEvent], None]" = NOOP_MODEL_STREAM_EVENT_HANDLER,
+    ) -> "ModelResponse":
         self.prompts.append(prompt)
         self.call_count += 1
 
@@ -45,21 +49,8 @@ class ScriptedModelClient:
 
         for item in final_response.items:
             if isinstance(item, AssistantMessage):
-                event_handler(
-                    ModelStreamEvent(
-                        kind="assistant_delta",
-                        payload={"delta": item.text},
-                    )
-                )
+                event_handler(AssistantDeltaEvent(item.text))
             elif isinstance(item, ToolCall):
-                event_handler(
-                    ModelStreamEvent(
-                        kind="tool_call",
-                        payload={
-                            "call_id": item.call_id,
-                            "tool_name": item.name,
-                        },
-                    )
-                )
+                event_handler(ToolCalledEvent(item.call_id, item.name))
 
         return final_response

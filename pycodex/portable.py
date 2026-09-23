@@ -1,9 +1,9 @@
-
 import hashlib
 import json
 import os
 import shutil
 import tempfile
+import typing
 import zipfile
 from io import BytesIO
 from pathlib import Path, PurePosixPath
@@ -12,7 +12,6 @@ from urllib.parse import quote, urlparse
 
 import requests
 from Cryptodome.Cipher import AES
-import typing
 
 try:
     import tomllib
@@ -46,9 +45,9 @@ ProgressHandler = Callable[[str], None]
 
 
 def upload_codex_home(
-    put_text: 'typing.Union[str, None]' = None,
-    event_handler: 'typing.Union[ProgressHandler, None]' = None,
-) -> 'str':
+    put_text: "typing.Union[str, None]" = None,
+    event_handler: "typing.Union[ProgressHandler, None]" = None,
+) -> "str":
     source_dir, server = _parse_put_spec(put_text)
     resolved_source_dir = resolve_put_source_dir(source_dir)
     server_address, base_url = resolve_storage_server(server)
@@ -86,9 +85,9 @@ def upload_codex_home(
 
 
 def bootstrap_called_home(
-    call_text: 'str',
-    storage_root: 'typing.Union[typing.Union[str, Path], None]' = None,
-) -> 'Path':
+    call_text: "str",
+    storage_root: "typing.Union[typing.Union[str, Path], None]" = None,
+) -> "Path":
     secret, call_id, server_address, base_url = _parse_call_spec(call_text)
     root = resolve_storage_root(storage_root)
     cache_key = hashlib.sha256(call_text.strip().encode("utf-8")).hexdigest()[:16]
@@ -128,7 +127,9 @@ def bootstrap_called_home(
     return home_dir / DEFAULT_ENTRY_CONFIG
 
 
-def resolve_put_source_dir(source_dir: 'typing.Union[typing.Union[str, Path], None]') -> 'Path':
+def resolve_put_source_dir(
+    source_dir: "typing.Union[typing.Union[str, Path], None]",
+) -> "Path":
     if source_dir is None or str(source_dir).strip() == "":
         candidate = Path.home() / ".codex"
     else:
@@ -138,13 +139,13 @@ def resolve_put_source_dir(source_dir: 'typing.Union[typing.Union[str, Path], No
     if not resolved.is_dir():
         raise RemoteStorageError(f"Codex home is not a directory: {resolved}")
     if not config_path.is_file():
-        raise RemoteStorageError(
-            f"Codex home is missing required file: {config_path}"
-        )
+        raise RemoteStorageError(f"Codex home is missing required file: {config_path}")
     return resolved
 
 
-def resolve_storage_root(storage_root: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'Path':
+def resolve_storage_root(
+    storage_root: "typing.Union[typing.Union[str, Path], None]" = None,
+) -> "Path":
     if storage_root is not None:
         return Path(storage_root).expanduser().resolve()
     env_value = os.environ.get(STORAGE_ROOT_ENV, "").strip()
@@ -153,7 +154,9 @@ def resolve_storage_root(storage_root: 'typing.Union[typing.Union[str, Path], No
     return _discover_project_root() / STORAGE_CACHE_DIRNAME
 
 
-def resolve_storage_server(server: 'typing.Union[str, None]' = None) -> 'typing.Tuple[str, str]':
+def resolve_storage_server(
+    server: "typing.Union[str, None]" = None,
+) -> "typing.Tuple[str, str]":
     raw_value = (server or os.environ.get(STORAGE_SERVER_ENV) or "").strip()
     if not raw_value:
         raw_value = DEFAULT_STORAGE_SERVER
@@ -167,7 +170,7 @@ def resolve_storage_server(server: 'typing.Union[str, None]' = None) -> 'typing.
     return raw_value, f"http://{raw_value}{STORAGE_API_PREFIX}"
 
 
-def _build_bundle_bytes(root: 'Path', emit: 'ProgressHandler') -> 'bytes':
+def _build_bundle_bytes(root: "Path", emit: "ProgressHandler") -> "bytes":
     files = _collect_upload_files(root)
     emit("[put] mode: whitelist")
     emit(f"[put] packing {len(files)} files")
@@ -179,8 +182,8 @@ def _build_bundle_bytes(root: 'Path', emit: 'ProgressHandler') -> 'bytes':
     return buffer.getvalue()
 
 
-def _collect_upload_files(root: 'Path') -> 'typing.List[str]':
-    included: 'typing.Set[str]' = set()
+def _collect_upload_files(root: "Path") -> "typing.List[str]":
+    included: "typing.Set[str]" = set()
     for relative_name in ALLOWED_TOP_LEVEL_FILES:
         candidate = root / relative_name
         if candidate.is_file():
@@ -195,17 +198,19 @@ def _collect_upload_files(root: 'Path') -> 'typing.List[str]':
     return sorted(included)
 
 
-def _collect_config_referenced_files(root: 'Path') -> 'typing.Set[str]':
+def _collect_config_referenced_files(root: "Path") -> "typing.Set[str]":
     config_path = root / DEFAULT_ENTRY_CONFIG
     if not config_path.is_file():
         return set()
     data = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    referenced: 'typing.Set[str]' = set()
+    referenced: "typing.Set[str]" = set()
     candidates = [data]
     profiles = data.get("profiles")
     if isinstance(profiles, dict):
         candidates.extend(
-            profile_data for profile_data in profiles.values() if isinstance(profile_data, dict)
+            profile_data
+            for profile_data in profiles.values()
+            if isinstance(profile_data, dict)
         )
     for candidate in candidates:
         model_instructions_file = candidate.get("model_instructions_file")
@@ -217,7 +222,9 @@ def _collect_config_referenced_files(root: 'Path') -> 'typing.Set[str]':
     return referenced
 
 
-def _normalize_optional_relative_file(root: 'Path', value: 'str') -> 'typing.Union[str, None]':
+def _normalize_optional_relative_file(
+    root: "Path", value: "str"
+) -> "typing.Union[str, None]":
     candidate = Path(value)
     if candidate.is_absolute():
         return None
@@ -231,17 +238,19 @@ def _normalize_optional_relative_file(root: 'Path', value: 'str') -> 'typing.Uni
     return resolved.relative_to(root_resolved).as_posix()
 
 
-def _encrypt_bundle(bundle_bytes: 'bytes', secret: 'str') -> 'bytes':
+def _encrypt_bundle(bundle_bytes: "bytes", secret: "str") -> "bytes":
     nonce = os.urandom(NONCE_LENGTH)
     cipher = AES.new(_encryption_key(secret), AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(bundle_bytes)
     return ENCRYPTED_BUNDLE_MAGIC + nonce + ciphertext + tag
 
 
-def _decrypt_bundle(payload: 'bytes', secret: 'str') -> 'bytes':
+def _decrypt_bundle(payload: "bytes", secret: "str") -> "bytes":
     if not payload.startswith(ENCRYPTED_BUNDLE_MAGIC):
         raise RemoteStorageError("stored bundle is not a recognized encrypted payload")
-    nonce = payload[len(ENCRYPTED_BUNDLE_MAGIC) : len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH]
+    nonce = payload[
+        len(ENCRYPTED_BUNDLE_MAGIC) : len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH
+    ]
     encrypted = payload[len(ENCRYPTED_BUNDLE_MAGIC) + NONCE_LENGTH :]
     if len(encrypted) < 16:
         raise RemoteStorageError("call secret is invalid or bundle is corrupted")
@@ -253,22 +262,24 @@ def _decrypt_bundle(payload: 'bytes', secret: 'str') -> 'bytes':
         cipher.verify(tag)
         return plaintext
     except ValueError as exc:
-        raise RemoteStorageError("call secret is invalid or bundle is corrupted") from exc
+        raise RemoteStorageError(
+            "call secret is invalid or bundle is corrupted"
+        ) from exc
 
 
-def _encryption_key(secret: 'str') -> 'bytes':
+def _encryption_key(secret: "str") -> "bytes":
     return hashlib.sha256(secret.encode("utf-8")).digest()
 
 
-def _call_id_from_payload(payload: 'bytes') -> 'str':
+def _call_id_from_payload(payload: "bytes") -> "str":
     return _base58_encode(hashlib.sha256(payload).digest()[:8])
 
 
-def _base58_encode(payload: 'bytes') -> 'str':
+def _base58_encode(payload: "bytes") -> "str":
     number = int.from_bytes(payload, "big")
     if number == 0:
         return TOKEN_BASE58_ALPHABET[0]
-    encoded: 'typing.List[str]' = []
+    encoded: "typing.List[str]" = []
     while number:
         number, remainder = divmod(number, 58)
         encoded.append(TOKEN_BASE58_ALPHABET[remainder])
@@ -277,7 +288,9 @@ def _base58_encode(payload: 'bytes') -> 'str':
     return prefix + "".join(encoded)
 
 
-def _parse_put_spec(put_text: 'typing.Union[str, None]') -> 'typing.Tuple[typing.Union[str, None], typing.Union[str, None]]':
+def _parse_put_spec(
+    put_text: "typing.Union[str, None]",
+) -> "typing.Tuple[typing.Union[str, None], typing.Union[str, None]]":
     raw_value = (put_text or "").strip()
     if not raw_value:
         return None, None
@@ -296,10 +309,12 @@ def _parse_put_spec(put_text: 'typing.Union[str, None]') -> 'typing.Tuple[typing
     return raw_value, None
 
 
-def _parse_call_spec(call_text: 'str') -> 'typing.Tuple[str, str, str, str]':
+def _parse_call_spec(call_text: "str") -> "typing.Tuple[str, str, str, str]":
     raw_value = call_text.strip()
     if not raw_value or "@" not in raw_value:
-        raise RemoteStorageError("call spec must look like <secret>-<call_id>@<host:port>")
+        raise RemoteStorageError(
+            "call spec must look like <secret>-<call_id>@<host:port>"
+        )
     secret_and_call_id, server_text = raw_value.rsplit("@", 1)
     if "-" not in secret_and_call_id:
         raise RemoteStorageError("call spec must include secret and call_id")
@@ -310,7 +325,7 @@ def _parse_call_spec(call_text: 'str') -> 'typing.Tuple[str, str, str, str]':
     return secret, call_id, server_address, base_url
 
 
-def _download_encrypted_bundle(base_url: 'str', call_id: 'str') -> 'bytes':
+def _download_encrypted_bundle(base_url: "str", call_id: "str") -> "bytes":
     url = f"{base_url}/call/{quote(call_id, safe='')}"
     try:
         response = requests.get(url, timeout=(5.0, 120.0))
@@ -319,15 +334,22 @@ def _download_encrypted_bundle(base_url: 'str', call_id: 'str') -> 'bytes':
     if response.status_code == 404:
         raise RemoteStorageError(f"call id not found: {call_id}")
     if response.status_code >= 400:
-        raise RemoteStorageError(f"call download failed with status {response.status_code}")
+        raise RemoteStorageError(
+            f"call download failed with status {response.status_code}"
+        )
     payload = response.content
-    expected_sha256 = response.headers.get("X-Pycodex-Sha256", "").strip().lower() or None
-    if expected_sha256 is not None and hashlib.sha256(payload).hexdigest() != expected_sha256:
+    expected_sha256 = (
+        response.headers.get("X-Pycodex-Sha256", "").strip().lower() or None
+    )
+    if (
+        expected_sha256 is not None
+        and hashlib.sha256(payload).hexdigest() != expected_sha256
+    ):
         raise RemoteStorageError("downloaded bundle checksum mismatch")
     return payload
 
 
-def _extract_bundle_bytes(bundle_bytes: 'bytes', destination: 'Path') -> 'None':
+def _extract_bundle_bytes(bundle_bytes: "bytes", destination: "Path") -> "None":
     destination.mkdir(parents=True, exist_ok=True)
     destination_resolved = destination.resolve()
     try:
@@ -341,22 +363,29 @@ def _extract_bundle_bytes(bundle_bytes: 'bytes', destination: 'Path') -> 'None':
                 continue
             _normalize_member_path(member_name, field_name="bundle member")
             target_path = (destination_resolved / member_name).resolve()
-            if target_path != destination_resolved and destination_resolved not in target_path.parents:
+            if (
+                target_path != destination_resolved
+                and destination_resolved not in target_path.parents
+            ):
                 raise RemoteStorageError("bundle contains unsafe paths")
         archive.extractall(destination)
 
 
-def _resolve_extracted_home(extract_root: 'Path') -> 'Path':
+def _resolve_extracted_home(extract_root: "Path") -> "Path":
     direct_config = extract_root / DEFAULT_ENTRY_CONFIG
     if direct_config.is_file():
         return extract_root
     children = [child for child in extract_root.iterdir() if child.name != "__MACOSX"]
-    if len(children) == 1 and children[0].is_dir() and (children[0] / DEFAULT_ENTRY_CONFIG).is_file():
+    if (
+        len(children) == 1
+        and children[0].is_dir()
+        and (children[0] / DEFAULT_ENTRY_CONFIG).is_file()
+    ):
         return children[0]
     raise RemoteStorageError("bundle is missing required config file after extraction")
 
 
-def _load_cached_metadata(metadata_path: 'Path') -> 'typing.Dict[str, object]':
+def _load_cached_metadata(metadata_path: "Path") -> "typing.Dict[str, object]":
     if not metadata_path.is_file():
         return {}
     try:
@@ -366,7 +395,7 @@ def _load_cached_metadata(metadata_path: 'Path') -> 'typing.Dict[str, object]':
     return payload if isinstance(payload, dict) else {}
 
 
-def _check_storage_server(server_address: 'str', base_url: 'str') -> 'None':
+def _check_storage_server(server_address: "str", base_url: "str") -> "None":
     parsed = urlparse(base_url)
     health_url = f"{parsed.scheme}://{parsed.netloc}{HEALTHCHECK_PATH}"
     try:
@@ -381,15 +410,17 @@ def _check_storage_server(server_address: 'str', base_url: 'str') -> 'None':
         )
 
 
-def _discover_project_root(start: 'typing.Union[Path, None]' = None) -> 'Path':
+def _discover_project_root(start: "typing.Union[Path, None]" = None) -> "Path":
     current = (start or Path.cwd()).resolve()
     for candidate in (current, *current.parents):
-        if (candidate / "pyproject.toml").is_file() and (candidate / "pycodex").is_dir():
+        if (candidate / "pyproject.toml").is_file() and (
+            candidate / "pycodex"
+        ).is_dir():
             return candidate
     return current
 
 
-def _normalize_member_path(value: 'str', field_name: 'str') -> 'str':
+def _normalize_member_path(value: "str", field_name: "str") -> "str":
     path = PurePosixPath(value)
     if not value or path.is_absolute():
         raise RemoteStorageError(f"{field_name} must be relative")

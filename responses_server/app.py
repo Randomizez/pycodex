@@ -1,44 +1,52 @@
-
 import argparse
 import asyncio
-from dataclasses import replace
 import json
 import socket
 import threading
 import time
+import typing
+from dataclasses import replace
 from typing import Iterator
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-import uvicorn
 
 from .config import CompatServerConfig
 from .server import ResponseServer
 from .stream_router import OutcommingChatError, UnsupportedIncommingFeature
-import typing
 
 
-def _run_uvicorn_server(server) -> 'None':
+def _run_uvicorn_server(server) -> "None":
     asyncio.set_event_loop(asyncio.new_event_loop())
     server.run()
 
 
-def _format_sse_event(event_name: 'str', payload: 'typing.Dict[str, object]') -> 'bytes':
+def _format_sse_event(
+    event_name: "str", payload: "typing.Dict[str, object]"
+) -> "bytes":
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event_name}\ndata: {data}\n\n".encode("utf-8")
 
 
-def _stream_events(response_server: 'ResponseServer', request_body: 'typing.Dict[str, object]', request_headers: 'typing.Dict[str, str]') -> 'Iterator[bytes]':
+def _stream_events(
+    response_server: "ResponseServer",
+    request_body: "typing.Dict[str, object]",
+    request_headers: "typing.Dict[str, str]",
+) -> "Iterator[bytes]":
     try:
-        event_iter = response_server.start_response_stream(request_body, request_headers)
+        event_iter = response_server.start_response_stream(
+            request_body, request_headers
+        )
         for event_name, payload in event_iter:
             yield _format_sse_event(event_name, payload)
     except OutcommingChatError as exc:
-        
+
         import traceback
+
         exc_info = traceback.format_exception(type(exc), exc, exc.__traceback__)
         error = {
-            "message": '\n'.join(exc_info),
+            "message": "\n".join(exc_info),
         }
         error_type = getattr(exc, "error_type", None)
         if error_type:
@@ -54,7 +62,7 @@ def _stream_events(response_server: 'ResponseServer', request_body: 'typing.Dict
         )
 
 
-def build_parser() -> 'argparse.ArgumentParser':
+def build_parser() -> "argparse.ArgumentParser":
     parser = argparse.ArgumentParser(
         prog="python -m responses_server",
         description=(
@@ -77,7 +85,7 @@ def build_parser() -> 'argparse.ArgumentParser':
     return parser
 
 
-def run_server(config: 'CompatServerConfig') -> 'None':
+def run_server(config: "CompatServerConfig") -> "None":
     uvicorn.run(
         ManagedResponseServer.build_app(config),
         host=config.host,
@@ -87,10 +95,10 @@ def run_server(config: 'CompatServerConfig') -> 'None':
 
 
 def launch_chat_completion_compat_server(
-    base_url: 'str',
-    api_key_env: 'typing.Union[str, None]' = None,
-    model_provider: 'typing.Union[str, None]' = None,
-    outcomming_api: 'str' = "chat_completions",
+    base_url: "str",
+    api_key_env: "typing.Union[str, None]" = None,
+    model_provider: "typing.Union[str, None]" = None,
+    outcomming_api: "str" = "chat_completions",
 ):
     config = CompatServerConfig.from_base_url(
         base_url,
@@ -106,10 +114,10 @@ def launch_chat_completion_compat_server(
 class ManagedResponseServer:
     @staticmethod
     def build_app(
-        config: 'CompatServerConfig',
+        config: "CompatServerConfig",
         session_store=None,
         stream_router=None,
-    ) -> 'FastAPI':
+    ) -> "FastAPI":
         response_server = ResponseServer(
             config,
             session_store=session_store,
@@ -120,7 +128,7 @@ class ManagedResponseServer:
 
         @app.get("/health")
         @app.get("/healthz")
-        async def health() -> 'typing.Dict[str, bool]':
+        async def health() -> "typing.Dict[str, bool]":
             return {"ok": True}
 
         @app.get("/models")
@@ -136,7 +144,7 @@ class ManagedResponseServer:
 
         @app.post("/responses")
         @app.post("/v1/responses")
-        async def responses(request: 'Request'):
+        async def responses(request: "Request"):
             try:
                 request_body = await request.json()
             except Exception as exc:
@@ -151,8 +159,7 @@ class ManagedResponseServer:
                 )
 
             request_headers = {
-                str(key).lower(): str(value)
-                for key, value in request.headers.items()
+                str(key).lower(): str(value) for key, value in request.headers.items()
             }
             try:
                 response_server.stream_router.validate_incomming_request(request_body)
@@ -173,7 +180,7 @@ class ManagedResponseServer:
 
         return app
 
-    def __init__(self, config: 'CompatServerConfig') -> 'None':
+    def __init__(self, config: "CompatServerConfig") -> "None":
         port = config.port or _reserve_free_port()
         self._config = replace(config, port=port)
         self._app = self.build_app(self._config)
@@ -193,10 +200,10 @@ class ManagedResponseServer:
         )
 
     @property
-    def base_url(self) -> 'str':
+    def base_url(self) -> "str":
         return f"http://{self._config.host}:{self._config.port}/v1"
 
-    def start(self, timeout_seconds: 'float' = 10.0) -> 'None':
+    def start(self, timeout_seconds: "float" = 10.0) -> "None":
         self._thread.start()
         deadline = time.time() + timeout_seconds
         while not self._server.started:
@@ -206,16 +213,14 @@ class ManagedResponseServer:
                 )
             time.sleep(0.01)
 
-    def stop(self, timeout_seconds: 'float' = 5.0) -> 'None':
+    def stop(self, timeout_seconds: "float" = 5.0) -> "None":
         self._server.should_exit = True
         self._thread.join(timeout=timeout_seconds)
         if self._thread.is_alive():
-            raise RuntimeError(
-                "timed out waiting for managed responses server to stop"
-            )
+            raise RuntimeError("timed out waiting for managed responses server to stop")
 
 
-def main() -> 'None':
+def main() -> "None":
     args = build_parser().parse_args()
     run_server(
         CompatServerConfig(
@@ -234,7 +239,7 @@ if __name__ == "__main__":
     main()
 
 
-def _reserve_free_port() -> 'int':
+def _reserve_free_port() -> "int":
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind(("127.0.0.1", 0))

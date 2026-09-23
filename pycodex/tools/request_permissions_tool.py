@@ -81,10 +81,10 @@ class RequestPermissionsTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, request_manager: 'RequestPermissionsManager') -> 'None':
+    def __init__(self, request_manager: "RequestPermissionsManager") -> "None":
         self._request_manager = request_manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         permissions = args.get("permissions")
         if not isinstance(permissions, dict):
@@ -94,11 +94,21 @@ class RequestPermissionsTool(BaseTool):
 
         response = await self._request_manager.request(
             {
-                "reason": None if args.get("reason") in (None, "") else str(args.get("reason")),
-                "environment_id": None if args.get("environment_id") in (None, "") else str(args.get("environment_id")),
+                "reason": (
+                    None
+                    if args.get("reason") in (None, "")
+                    else str(args.get("reason"))
+                ),
+                "environment_id": (
+                    None
+                    if args.get("environment_id") in (None, "")
+                    else str(args.get("environment_id"))
+                ),
                 "permissions": permissions,
             }
         )
         if response is None:
-            return "Error: request_permissions was cancelled before receiving a response."
+            return (
+                "Error: request_permissions was cancelled before receiving a response."
+            )
         return response

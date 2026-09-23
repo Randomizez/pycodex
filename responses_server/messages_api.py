@@ -9,8 +9,8 @@ class MessagesAPIAdapterError(ValueError):
 
 
 def build_messages_request(
-    outcomming_request: 'typing.Dict[str, object]',
-) -> 'typing.Dict[str, object]':
+    outcomming_request: "typing.Dict[str, object]",
+) -> "typing.Dict[str, object]":
     model = str(outcomming_request.get("model", "")).strip()
     if not model:
         raise MessagesAPIAdapterError("outcomming request is missing `model`")
@@ -19,13 +19,11 @@ def build_messages_request(
     if not isinstance(raw_messages, list):
         raise MessagesAPIAdapterError("outcomming request `messages` must be a list")
 
-    system_blocks: 'typing.List[typing.Dict[str, object]]' = []
-    messages: 'typing.List[typing.Dict[str, object]]' = []
+    system_blocks: "typing.List[typing.Dict[str, object]]" = []
+    messages: "typing.List[typing.Dict[str, object]]" = []
     for raw_message in raw_messages:
         if not isinstance(raw_message, dict):
-            raise MessagesAPIAdapterError(
-                "outcomming request messages must be objects"
-            )
+            raise MessagesAPIAdapterError("outcomming request messages must be objects")
         role = str(raw_message.get("role", "")).strip()
         if role in {"developer", "system"}:
             text = str(raw_message.get("content", "") or "")
@@ -60,7 +58,7 @@ def build_messages_request(
             f"unsupported outcomming message role for messages API: {role!r}"
         )
 
-    payload: 'typing.Dict[str, object]' = {
+    payload: "typing.Dict[str, object]" = {
         "model": model,
         "messages": messages,
         "max_tokens": _resolve_max_tokens(outcomming_request),
@@ -84,12 +82,12 @@ def build_messages_request(
 
 
 def iter_chat_chunks(
-    event_name: 'typing.Union[str, None]',
-    payload: 'typing.Dict[str, object]',
-    state: 'typing.Dict[str, object]',
-) -> 'typing.List[typing.Dict[str, object]]':
+    event_name: "typing.Union[str, None]",
+    payload: "typing.Dict[str, object]",
+    state: "typing.Dict[str, object]",
+) -> "typing.List[typing.Dict[str, object]]":
     event_type = str(payload.get("type") or event_name or "").strip()
-    chunks: 'typing.List[typing.Dict[str, object]]' = []
+    chunks: "typing.List[typing.Dict[str, object]]" = []
 
     if event_type == "message_start":
         message = payload.get("message") or {}
@@ -188,13 +186,15 @@ def iter_chat_chunks(
     return chunks
 
 
-def saw_message_stop(state: 'typing.Dict[str, object]') -> 'bool':
+def saw_message_stop(state: "typing.Dict[str, object]") -> "bool":
     return bool(state.get("saw_message_stop"))
 
 
-def _build_text_blocks(raw_content: 'object') -> 'typing.List[typing.Dict[str, object]]':
+def _build_text_blocks(
+    raw_content: "object",
+) -> "typing.List[typing.Dict[str, object]]":
     if isinstance(raw_content, list):
-        blocks: 'typing.List[typing.Dict[str, object]]' = []
+        blocks: "typing.List[typing.Dict[str, object]]" = []
         for raw_part in raw_content:
             if not isinstance(raw_part, dict):
                 raise MessagesAPIAdapterError("message content parts must be objects")
@@ -219,8 +219,8 @@ def _build_text_blocks(raw_content: 'object') -> 'typing.List[typing.Dict[str, o
 
 
 def _build_image_block(
-    raw_part: 'typing.Dict[str, object]',
-) -> 'typing.Dict[str, object]':
+    raw_part: "typing.Dict[str, object]",
+) -> "typing.Dict[str, object]":
     image_url = raw_part.get("image_url") or {}
     if not isinstance(image_url, dict):
         raise MessagesAPIAdapterError("`image_url` content parts must be objects")
@@ -233,7 +233,7 @@ def _build_image_block(
         return {"type": "image", "source": {"type": "url", "url": url}}
 
     header, _, data = url.partition(",")
-    media_type = header[len("data:"):].split(";")[0].strip()
+    media_type = header[len("data:") :].split(";")[0].strip()
     if not media_type or not header.endswith(";base64"):
         raise MessagesAPIAdapterError(
             "`image_url` data URLs must be base64 encoded with a media type"
@@ -249,9 +249,9 @@ def _build_image_block(
 
 
 def _build_assistant_blocks(
-    raw_message: 'typing.Dict[str, object]',
-) -> 'typing.List[typing.Dict[str, object]]':
-    blocks: 'typing.List[typing.Dict[str, object]]' = []
+    raw_message: "typing.Dict[str, object]",
+) -> "typing.List[typing.Dict[str, object]]":
+    blocks: "typing.List[typing.Dict[str, object]]" = []
     reasoning = str(raw_message.get("reasoning", "") or "")
     if reasoning:
         blocks.append({"type": "thinking", "thinking": reasoning})
@@ -284,8 +284,8 @@ def _build_assistant_blocks(
 
 
 def _build_tool_result_block(
-    raw_message: 'typing.Dict[str, object]',
-) -> 'typing.Dict[str, object]':
+    raw_message: "typing.Dict[str, object]",
+) -> "typing.Dict[str, object]":
     return {
         "type": "tool_result",
         "tool_use_id": str(raw_message.get("tool_call_id", "")).strip(),
@@ -294,9 +294,9 @@ def _build_tool_result_block(
 
 
 def _translate_tools(
-    raw_tools: 'object',
-) -> 'typing.List[typing.Dict[str, object]]':
-    translated: 'typing.List[typing.Dict[str, object]]' = []
+    raw_tools: "object",
+) -> "typing.List[typing.Dict[str, object]]":
+    translated: "typing.List[typing.Dict[str, object]]" = []
     if not isinstance(raw_tools, list):
         return translated
     for raw_tool in raw_tools:
@@ -321,9 +321,9 @@ def _translate_tools(
 
 
 def _translate_tool_choice(
-    raw_tool_choice: 'object',
-    parallel_tool_calls: 'object',
-) -> 'typing.Union[typing.Dict[str, object], None]':
+    raw_tool_choice: "object",
+    parallel_tool_calls: "object",
+) -> "typing.Union[typing.Dict[str, object], None]":
     if raw_tool_choice is None:
         if parallel_tool_calls is False:
             return {
@@ -332,7 +332,7 @@ def _translate_tool_choice(
             }
         return None
 
-    translated: 'typing.Dict[str, object]'
+    translated: "typing.Dict[str, object]"
     if isinstance(raw_tool_choice, str):
         choice = raw_tool_choice.strip()
         if choice == "auto":
@@ -355,9 +355,7 @@ def _translate_tool_choice(
             if not name:
                 name = str(raw_tool_choice.get("name", "")).strip()
             if not name:
-                raise MessagesAPIAdapterError(
-                    "function tool_choice is missing `name`"
-                )
+                raise MessagesAPIAdapterError("function tool_choice is missing `name`")
             translated = {
                 "type": "tool",
                 "name": name,
@@ -376,7 +374,7 @@ def _translate_tool_choice(
     return translated
 
 
-def _parse_json_object(raw_value: 'object') -> 'typing.Dict[str, object]':
+def _parse_json_object(raw_value: "object") -> "typing.Dict[str, object]":
     if isinstance(raw_value, dict):
         return dict(raw_value)
     if isinstance(raw_value, str):
@@ -399,7 +397,7 @@ def _parse_json_object(raw_value: 'object') -> 'typing.Dict[str, object]':
     )
 
 
-def _resolve_max_tokens(outcomming_request: 'typing.Dict[str, object]') -> 'int':
+def _resolve_max_tokens(outcomming_request: "typing.Dict[str, object]") -> "int":
     raw_value = outcomming_request.get("max_tokens")
     if isinstance(raw_value, bool):
         return DEFAULT_MESSAGES_MAX_TOKENS
@@ -408,7 +406,7 @@ def _resolve_max_tokens(outcomming_request: 'typing.Dict[str, object]') -> 'int'
     return DEFAULT_MESSAGES_MAX_TOKENS
 
 
-def _usage_chunk(raw_usage: 'object') -> 'typing.Union[typing.Dict[str, object], None]':
+def _usage_chunk(raw_usage: "object") -> "typing.Union[typing.Dict[str, object], None]":
     usage = _translate_usage(raw_usage)
     if not usage:
         return None
@@ -418,10 +416,10 @@ def _usage_chunk(raw_usage: 'object') -> 'typing.Union[typing.Dict[str, object],
     }
 
 
-def _translate_usage(raw_usage: 'object') -> 'typing.Dict[str, object]':
+def _translate_usage(raw_usage: "object") -> "typing.Dict[str, object]":
     if not isinstance(raw_usage, dict):
         return {}
-    usage: 'typing.Dict[str, object]' = {}
+    usage: "typing.Dict[str, object]" = {}
     input_tokens = raw_usage.get("input_tokens")
     output_tokens = raw_usage.get("output_tokens")
     if isinstance(input_tokens, int):
@@ -434,7 +432,7 @@ def _translate_usage(raw_usage: 'object') -> 'typing.Dict[str, object]':
     elif isinstance(input_tokens, int) and isinstance(output_tokens, int):
         usage["total_tokens"] = input_tokens + output_tokens
 
-    input_details: 'typing.Dict[str, int]' = {}
+    input_details: "typing.Dict[str, int]" = {}
     cache_creation = raw_usage.get("cache_creation_input_tokens")
     if isinstance(cache_creation, int):
         input_details["cache_creation_input_tokens"] = cache_creation
@@ -446,7 +444,7 @@ def _translate_usage(raw_usage: 'object') -> 'typing.Dict[str, object]':
     return usage
 
 
-def _normalize_index(raw_index: 'object') -> 'int':
+def _normalize_index(raw_index: "object") -> "int":
     if isinstance(raw_index, int):
         return raw_index
     try:
@@ -455,7 +453,7 @@ def _normalize_index(raw_index: 'object') -> 'int':
         return 0
 
 
-def _translate_stop_reason(raw_stop_reason: 'object') -> 'typing.Union[str, None]':
+def _translate_stop_reason(raw_stop_reason: "object") -> "typing.Union[str, None]":
     if not isinstance(raw_stop_reason, str):
         return None
     stop_reason = raw_stop_reason.strip()
@@ -470,21 +468,21 @@ def _translate_stop_reason(raw_stop_reason: 'object') -> 'typing.Union[str, None
     return stop_reason
 
 
-def _chat_text_chunk(text: 'str') -> 'typing.Dict[str, object]':
+def _chat_text_chunk(text: "str") -> "typing.Dict[str, object]":
     return _chat_delta_chunk({"content": text})
 
 
-def _chat_reasoning_chunk(reasoning: 'str') -> 'typing.Dict[str, object]':
+def _chat_reasoning_chunk(reasoning: "str") -> "typing.Dict[str, object]":
     return _chat_delta_chunk({"reasoning_content": reasoning})
 
 
 def _chat_tool_chunk(
-    index: 'int',
-    call_id: 'str' = "",
-    name: 'str' = "",
-    arguments: 'str' = "",
-) -> 'typing.Dict[str, object]':
-    tool_call: 'typing.Dict[str, object]' = {
+    index: "int",
+    call_id: "str" = "",
+    name: "str" = "",
+    arguments: "str" = "",
+) -> "typing.Dict[str, object]":
+    tool_call: "typing.Dict[str, object]" = {
         "index": index,
         "function": {},
     }
@@ -502,7 +500,7 @@ def _chat_tool_chunk(
     return _chat_delta_chunk({"tool_calls": [tool_call]})
 
 
-def _chat_delta_chunk(delta: 'typing.Dict[str, object]') -> 'typing.Dict[str, object]':
+def _chat_delta_chunk(delta: "typing.Dict[str, object]") -> "typing.Dict[str, object]":
     return {
         "choices": [
             {
@@ -514,7 +512,7 @@ def _chat_delta_chunk(delta: 'typing.Dict[str, object]') -> 'typing.Dict[str, ob
     }
 
 
-def _chat_finish_chunk(finish_reason: 'str') -> 'typing.Dict[str, object]':
+def _chat_finish_chunk(finish_reason: "str") -> "typing.Dict[str, object]":
     return {
         "choices": [
             {
@@ -526,5 +524,5 @@ def _chat_finish_chunk(finish_reason: 'str') -> 'typing.Dict[str, object]':
     }
 
 
-def _dump_json(raw_value: 'object') -> 'str':
+def _dump_json(raw_value: "object") -> "str":
     return json.dumps(raw_value, ensure_ascii=False, separators=(",", ":"))

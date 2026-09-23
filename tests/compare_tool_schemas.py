@@ -20,14 +20,12 @@ import signal
 import subprocess
 import threading
 import time
+import typing
 from dataclasses import dataclass
-from pycodex.compat import ThreadingHTTPServer
-
-from pycodex.compat import shlex_join
 from pathlib import Path
 
+from pycodex.compat import ThreadingHTTPServer, shlex_join
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
-import typing
 
 try:
     import tomllib
@@ -42,16 +40,18 @@ DEFAULT_TIMEOUT_SECONDS = 180.0
 TESTS_MD_PATH = Path(__file__).with_name("TESTS.md")
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class RunCapture:
-    label: 'str'
-    request_path: 'Path'
-    request_body: 'typing.Dict[str, object]'
-    request_headers: 'typing.Dict[str, str]'
-    tool_map: 'typing.Dict[str, typing.Dict[str, object]]'
+    label: "str"
+    request_path: "Path"
+    request_body: "typing.Dict[str, object]"
+    request_headers: "typing.Dict[str, str]"
+    tool_map: "typing.Dict[str, typing.Dict[str, object]]"
 
 
-def build_parser() -> 'argparse.ArgumentParser':
+def build_parser() -> "argparse.ArgumentParser":
     parser = argparse.ArgumentParser(
         prog="uv run python tests/compare_tool_schemas.py",
         description=(
@@ -83,7 +83,7 @@ def build_parser() -> 'argparse.ArgumentParser':
     return parser
 
 
-def main() -> 'None':
+def main() -> "None":
     args = build_parser().parse_args()
     config_path = Path(args.config).resolve()
     output_root = Path(args.root).resolve()
@@ -139,7 +139,7 @@ def main() -> 'None':
         )
 
 
-def load_provider_info(config_path: 'Path') -> 'typing.Tuple[str, str]':
+def load_provider_info(config_path: "Path") -> "typing.Tuple[str, str]":
     data = tomllib.loads(config_path.read_text())
     provider_name = str(data["model_provider"])
     provider = data["model_providers"][provider_name]
@@ -147,9 +147,9 @@ def load_provider_info(config_path: 'Path') -> 'typing.Tuple[str, str]':
     return provider_name, upstream_base_url
 
 
-def load_tool_names_from_tests_md(path: 'Path') -> 'typing.List[str]':
+def load_tool_names_from_tests_md(path: "Path") -> "typing.List[str]":
     lines = path.read_text().splitlines()
-    tool_names: 'typing.List[str]' = []
+    tool_names: "typing.List[str]" = []
     inside_table = False
     for line in lines:
         if line.strip() == "| tool name | test prompt | expected behavior |":
@@ -176,13 +176,13 @@ def load_tool_names_from_tests_md(path: 'Path') -> 'typing.List[str]':
 
 
 def run_upstream_codex_capture(
-    config_path: 'Path',
-    provider_name: 'str',
-    upstream_base_url: 'str',
-    output_root: 'Path',
-    prompt: 'str',
-    timeout_seconds: 'float',
-) -> 'RunCapture':
+    config_path: "Path",
+    provider_name: "str",
+    upstream_base_url: "str",
+    output_root: "Path",
+    prompt: "str",
+    timeout_seconds: "float",
+) -> "RunCapture":
     capture_root = output_root / "upstream"
     log_root = output_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
@@ -200,18 +200,18 @@ def run_upstream_codex_capture(
 
 
 def run_pycodex_capture(
-    config_path: 'Path',
-    upstream_base_url: 'str',
-    output_root: 'Path',
-    prompt: 'str',
-    timeout_seconds: 'float',
-) -> 'RunCapture':
+    config_path: "Path",
+    upstream_base_url: "str",
+    output_root: "Path",
+    prompt: "str",
+    timeout_seconds: "float",
+) -> "RunCapture":
     capture_root = output_root / "pycodex"
     log_root = output_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
     temp_config_path = build_proxy_config_copy(config_path, output_root / "config")
 
-    def resolve_proxy_url(proxy_url: 'str') -> 'None':
+    def resolve_proxy_url(proxy_url: "str") -> "None":
         rewrite_config_base_url(temp_config_path, proxy_url)
 
     proxy_url = run_proxy_capture(
@@ -235,14 +235,14 @@ def run_pycodex_capture(
 
 
 def run_proxy_capture(
-    capture_root: 'Path',
-    upstream_base_url: 'str',
-    timeout_seconds: 'float',
-    command: 'typing.List[str]',
-    command_log_path: 'Path',
-    cwd: 'Path',
+    capture_root: "Path",
+    upstream_base_url: "str",
+    timeout_seconds: "float",
+    command: "typing.List[str]",
+    command_log_path: "Path",
+    cwd: "Path",
     placeholder_resolver,
-) -> 'str':
+) -> "str":
     if capture_root.exists():
         shutil.rmtree(capture_root)
     capture_store = CaptureStore(capture_root)
@@ -333,11 +333,13 @@ def run_proxy_capture(
     return proxy_url
 
 
-def proxy_url_placeholder() -> 'str':
+def proxy_url_placeholder() -> "str":
     return "__PYCODEX_PROXY_BASE_URL__"
 
 
-def build_upstream_codex_command(provider_name: 'str', prompt: 'str') -> 'typing.List[str]':
+def build_upstream_codex_command(
+    provider_name: "str", prompt: "str"
+) -> "typing.List[str]":
     inner_command = shlex_join(
         [
             "codex",
@@ -350,7 +352,7 @@ def build_upstream_codex_command(provider_name: 'str', prompt: 'str') -> 'typing
     return ["script", "-qfec", inner_command, "/dev/null"]
 
 
-def build_proxy_config_copy(config_path: 'Path', config_root: 'Path') -> 'Path':
+def build_proxy_config_copy(config_path: "Path", config_root: "Path") -> "Path":
     if config_root.exists():
         shutil.rmtree(config_root)
     config_root.mkdir(parents=True, exist_ok=True)
@@ -378,7 +380,7 @@ def build_proxy_config_copy(config_path: 'Path', config_root: 'Path') -> 'Path':
     return target_config_path
 
 
-def rewrite_config_base_url(config_path: 'Path', proxy_url: 'str') -> 'None':
+def rewrite_config_base_url(config_path: "Path", proxy_url: "str") -> "None":
     data = tomllib.loads(config_path.read_text())
     provider_name = str(data["model_provider"])
     section_pattern = re.compile(
@@ -398,11 +400,13 @@ def rewrite_config_base_url(config_path: 'Path', proxy_url: 'str') -> 'None':
     )
     if count != 1:
         raise RuntimeError(f"base_url entry not found for provider {provider_name}")
-    rewritten = raw_text[: match.start()] + header + replaced_body + raw_text[match.end() :]
+    rewritten = (
+        raw_text[: match.start()] + header + replaced_body + raw_text[match.end() :]
+    )
     config_path.write_text(rewritten)
 
 
-def load_first_post_capture(label: 'str', capture_root: 'Path') -> 'RunCapture':
+def load_first_post_capture(label: "str", capture_root: "Path") -> "RunCapture":
     request_files = sorted(capture_root.glob("*_POST_*.json"))
     if not request_files:
         raise RuntimeError(f"no POST capture found for {label} under {capture_root}")
@@ -411,7 +415,7 @@ def load_first_post_capture(label: 'str', capture_root: 'Path') -> 'RunCapture':
     request_body = capture["body"]
     request_headers = capture["headers"]
     tools = request_body.get("tools", [])
-    tool_map: 'typing.Dict[str, typing.Dict[str, object]]' = {}
+    tool_map: "typing.Dict[str, typing.Dict[str, object]]" = {}
     for tool in tools:
         if not isinstance(tool, dict):
             continue
@@ -428,17 +432,21 @@ def load_first_post_capture(label: 'str', capture_root: 'Path') -> 'RunCapture':
 
 
 def compare_tool_maps(
-    tool_names: 'typing.List[str]',
-    upstream_map: 'typing.Dict[str, typing.Dict[str, object]]',
-    pycodex_map: 'typing.Dict[str, typing.Dict[str, object]]',
-) -> 'typing.List[typing.Dict[str, str]]':
-    rows: 'typing.List[typing.Dict[str, str]]' = []
+    tool_names: "typing.List[str]",
+    upstream_map: "typing.Dict[str, typing.Dict[str, object]]",
+    pycodex_map: "typing.Dict[str, typing.Dict[str, object]]",
+) -> "typing.List[typing.Dict[str, str]]":
+    rows: "typing.List[typing.Dict[str, str]]" = []
     for tool_name in tool_names:
         upstream_schema = upstream_map.get(tool_name)
         pycodex_schema = pycodex_map.get(tool_name)
         upstream_present = upstream_schema is not None
         pycodex_present = pycodex_schema is not None
-        equal = upstream_schema == pycodex_schema if upstream_present and pycodex_present else False
+        equal = (
+            upstream_schema == pycodex_schema
+            if upstream_present and pycodex_present
+            else False
+        )
         if upstream_present and pycodex_present:
             note = "same" if equal else schema_note(upstream_schema, pycodex_schema)
         elif upstream_present:
@@ -452,7 +460,13 @@ def compare_tool_maps(
                 "tool_name": tool_name,
                 "upstream_present": "yes" if upstream_present else "no",
                 "pycodex_present": "yes" if pycodex_present else "no",
-                "equal": "yes" if equal else ("n/a" if not upstream_present or not pycodex_present else "no"),
+                "equal": (
+                    "yes"
+                    if equal
+                    else (
+                        "n/a" if not upstream_present or not pycodex_present else "no"
+                    )
+                ),
                 "note": note,
             }
         )
@@ -460,9 +474,9 @@ def compare_tool_maps(
 
 
 def schema_note(
-    upstream_schema: 'typing.Dict[str, object]',
-    pycodex_schema: 'typing.Dict[str, object]',
-) -> 'str':
+    upstream_schema: "typing.Dict[str, object]",
+    pycodex_schema: "typing.Dict[str, object]",
+) -> "str":
     upstream_keys = sorted(str(key) for key in upstream_schema.keys())
     pycodex_keys = sorted(str(key) for key in pycodex_schema.keys())
     if upstream_keys != pycodex_keys:
@@ -473,7 +487,7 @@ def schema_note(
     return "same keys, different values"
 
 
-def terminate_process_group(pid: 'int', force: 'bool' = False) -> 'None':
+def terminate_process_group(pid: "int", force: "bool" = False) -> "None":
     sig = signal.SIGKILL if force else signal.SIGTERM
     try:
         os.killpg(pid, sig)

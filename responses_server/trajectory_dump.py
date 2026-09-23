@@ -10,14 +10,14 @@ import urllib.error
 class TrajectoryDumpWriter:
     ENV_VAR = "PYCODEX_DUMP"
 
-    def __init__(self, root_dir: 'str') -> 'None':
+    def __init__(self, root_dir: "str") -> "None":
         self._root_dir = os.path.abspath(root_dir)
         self._dump_path = os.path.join(self._root_dir, "dump.jsonl")
         self._lock = threading.Lock()
         os.makedirs(self._root_dir, exist_ok=True)
 
     @classmethod
-    def from_env(cls) -> 'typing.Union[TrajectoryDumpWriter, None]':
+    def from_env(cls) -> "typing.Union[TrajectoryDumpWriter, None]":
         root_dir = str(os.environ.get(cls.ENV_VAR, "") or "").strip()
         if not root_dir:
             return None
@@ -26,7 +26,7 @@ class TrajectoryDumpWriter:
     def wrap_stream(
         self,
         outcomming_stream,
-        outcomming_request: 'typing.Dict[str, object]',
+        outcomming_request: "typing.Dict[str, object]",
     ):
         def iter_stream():
             capture = _TrajectoryCapture(
@@ -53,7 +53,7 @@ class TrajectoryDumpWriter:
 
         return iter_stream()
 
-    def _append_record(self, record: 'typing.Dict[str, object]') -> 'None':
+    def _append_record(self, record: "typing.Dict[str, object]") -> "None":
         serialized = json.dumps(record, ensure_ascii=False)
         with self._lock:
             os.makedirs(self._root_dir, exist_ok=True)
@@ -65,16 +65,16 @@ class TrajectoryDumpWriter:
 class _TrajectoryCapture:
     def __init__(
         self,
-        writer: 'TrajectoryDumpWriter',
-        send_timestamp: 'float',
-        outcomming_request: 'typing.Dict[str, object]',
-    ) -> 'None':
+        writer: "TrajectoryDumpWriter",
+        send_timestamp: "float",
+        outcomming_request: "typing.Dict[str, object]",
+    ) -> "None":
         self._writer = writer
         self._send_timestamp = float(send_timestamp)
         self._outcomming_request = json.loads(json.dumps(outcomming_request))
         self._prefill_token_ids = None
         self._decode_token_ids = []
-        self._usage: 'typing.Dict[str, object]' = {}
+        self._usage: "typing.Dict[str, object]" = {}
         self._finish_reason = None
         self._closed = False
         self.stream_completed = False
@@ -82,7 +82,7 @@ class _TrajectoryCapture:
         self.stream_error_cause_type = None
         self.stream_error_http_status = None
 
-    def observe_chunk(self, payload: 'object') -> 'None':
+    def observe_chunk(self, payload: "object") -> "None":
         if not isinstance(payload, dict):
             return
         usage = payload.get("usage")
@@ -105,7 +105,7 @@ class _TrajectoryCapture:
             if normalized_decode:
                 self._decode_token_ids.extend(normalized_decode)
 
-    def flush(self) -> 'None':
+    def flush(self) -> "None":
         if self._closed:
             return
         self._closed = True
@@ -127,13 +127,12 @@ class _TrajectoryCapture:
             self._writer._append_record(record)
         except Exception as exc:
             print(
-                "responses_server: failed to append PYCODEX_DUMP trajectory: %s"
-                % exc,
+                "responses_server: failed to append PYCODEX_DUMP trajectory: %s" % exc,
                 file=sys.stderr,
             )
 
 
-def _normalize_token_ids(raw_value: 'object') -> 'typing.Union[typing.List[int], None]':
+def _normalize_token_ids(raw_value: "object") -> "typing.Union[typing.List[int], None]":
     if not isinstance(raw_value, list):
         return None
     token_ids = []

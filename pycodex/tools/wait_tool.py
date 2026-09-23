@@ -9,10 +9,11 @@ Expected behavior:
 - Return only the new output since the previous `exec` / `wait` snapshot.
 """
 
+import typing
+
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 from .code_mode_manager import DEFAULT_WAIT_YIELD_TIME_MS, CodeModeManager
-import typing
 
 
 class WaitTool(BaseTool):
@@ -59,10 +60,10 @@ class WaitTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, manager: 'CodeModeManager') -> 'None':
+    def __init__(self, manager: "CodeModeManager") -> "None":
         self._manager = manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         cell_id = str(args.get("cell_id", "")).strip()
         if not cell_id:
@@ -74,7 +75,7 @@ class WaitTool(BaseTool):
             terminate=bool(args.get("terminate", False)),
         )
 
-    def _optional_int(self, args: 'JSONDict', key: 'str') -> 'typing.Union[int, None]':
+    def _optional_int(self, args: "JSONDict", key: "str") -> "typing.Union[int, None]":
         value = args.get(key)
         if value in (None, ""):
             return None

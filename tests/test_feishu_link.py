@@ -3,8 +3,8 @@ import sys
 import threading
 import types
 
-from pycodex.feishu_card import PycodexCard
 import pycodex.feishu_link as feishu_link
+from pycodex.feishu_card import PycodexCard
 from pycodex.feishu_link import _FeishuCardActionListener, _release_feishu_listener
 
 
@@ -133,7 +133,9 @@ def test_feishu_listener_stops_when_last_link_is_released(monkeypatch) -> None:
     assert feishu_link._LISTENER is None
 
 
-def test_feishu_listener_does_not_stop_until_all_links_are_released(monkeypatch) -> None:
+def test_feishu_listener_does_not_stop_until_all_links_are_released(
+    monkeypatch,
+) -> None:
     listener = _FeishuCardActionListener(PycodexCard(app_id="app", app_secret="secret"))
     first = _Object(message_id="om_first")
     second = _Object(message_id="om_second")
@@ -163,7 +165,9 @@ def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
     monkeypatch.setattr(feishu_link, "_LISTENER", first)
 
     _release_feishu_listener(first, link)
-    second = feishu_link._feishu_listener(PycodexCard(app_id="app", app_secret="secret"))
+    second = feishu_link._feishu_listener(
+        PycodexCard(app_id="app", app_secret="secret")
+    )
 
     assert second is not first
     assert feishu_link._LISTENER is second

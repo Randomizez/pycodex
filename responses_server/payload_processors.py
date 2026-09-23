@@ -1,4 +1,3 @@
-
 """Provider-specific post-process hooks for canonical outgoing chat requests.
 
 Each downstream chat-completions provider may have its own payload quirks:
@@ -8,9 +7,10 @@ building one canonical `outcomming_request`, while `server.py` selects the
 appropriate hook from `CompatServerConfig.model_provider`.
 """
 
+import typing
 from copy import deepcopy
 from typing import Callable, Optional
-import typing
+
 from typing_extensions import TypedDict
 
 ChatMessage = typing.Dict[str, object]
@@ -25,27 +25,29 @@ class OutgoingRequest(TypedDict):
     not rely on TypedDict inheritance.
     """
 
-    model: 'str'
-    messages: 'typing.List[ChatMessage]'
-    stream: 'bool'
-    chat_template_kwargs: 'Optional[typing.Dict[str, object]]'
-    max_tokens: 'Optional[int]'
-    tools: 'Optional[typing.List[typing.Dict[str, object]]]'
-    tool_choice: 'Optional[object]'
-    parallel_tool_calls: 'Optional[bool]'
-    return_token_ids: 'Optional[bool]'
+    model: "str"
+    messages: "typing.List[ChatMessage]"
+    stream: "bool"
+    chat_template_kwargs: "Optional[typing.Dict[str, object]]"
+    max_tokens: "Optional[int]"
+    tools: "Optional[typing.List[typing.Dict[str, object]]]"
+    tool_choice: "Optional[object]"
+    parallel_tool_calls: "Optional[bool]"
+    return_token_ids: "Optional[bool]"
 
 
 PayloadPostProcessor = Callable[[OutgoingRequest], OutgoingRequest]
 
 
-def _identity(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
+def _identity(outcomming_request: "OutgoingRequest") -> "OutgoingRequest":
     """Keep the canonical request unchanged."""
 
     return outcomming_request
 
 
-def _drop_developer_messages(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
+def _drop_developer_messages(
+    outcomming_request: "OutgoingRequest",
+) -> "OutgoingRequest":
     """Remove all developer-role messages for providers that reject them."""
 
     outcomming_request["messages"] = [
@@ -55,17 +57,20 @@ def _drop_developer_messages(outcomming_request: 'OutgoingRequest') -> 'Outgoing
     ]
     return outcomming_request
 
-def _replace_developer_messages(outcomming_request: 'OutgoingRequest') -> 'OutgoingRequest':
+
+def _replace_developer_messages(
+    outcomming_request: "OutgoingRequest",
+) -> "OutgoingRequest":
     """Replace all developer-role messages to system-role messages"""
 
-    for message in outcomming_request['messages']:
+    for message in outcomming_request["messages"]:
         if message.get("role") == "developer":
-            message['role'] = "system"
+            message["role"] = "system"
 
     return outcomming_request
 
 
-PAYLOAD_POST_PROCESSORS: 'typing.Dict[str, PayloadPostProcessor]' = {
+PAYLOAD_POST_PROCESSORS: "typing.Dict[str, PayloadPostProcessor]" = {
     "stepfun": _replace_developer_messages,
     "vllm": _identity,
 }
@@ -73,9 +78,9 @@ PAYLOAD_POST_PROCESSORS: 'typing.Dict[str, PayloadPostProcessor]' = {
 
 
 def post_process_outcomming_request(
-    outcomming_request: 'OutgoingRequest',
-    model_provider: 'typing.Union[str, None]',
-) -> 'OutgoingRequest':
+    outcomming_request: "OutgoingRequest",
+    model_provider: "typing.Union[str, None]",
+) -> "OutgoingRequest":
     """Apply the provider-specific payload hook to one outgoing request.
 
     This is the single wrapper around `PAYLOAD_POST_PROCESSORS`: it normalizes

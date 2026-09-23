@@ -48,7 +48,58 @@ Tool-specific status uses two inputs:
 - proxy captures of actual upstream Codex and `pycodex` requests/results
 - source inspection against the latest upstream tool specifications
 
-## Status checkpoint (2026-06-23)
+## Context audit (2026-09-23)
+
+This audit uses installed `codex-cli 0.153.4` and its matching
+`rust-v0.153.4` source commit `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`.
+It does not use the older local source checkout or claim to track upstream HEAD.
+The public documentation endpoint returned HTTP 403; the executable captures and
+matching source are the evidence for this checkpoint.
+
+`tests/compare_context_requests.py` sends both the real Codex CLI and the
+production pycodex runtime to isolated localhost SSE fixtures. No account,
+credentials, real model calls, or user's config are needed.
+
+- `gpt-5.4`, pragmatic personality, high reasoning: first request, file resume,
+  and reasoning → `exec_command` → follow-up have equal shared context.
+- `gpt-6-astra:caishi-azure`, default personality, xhigh reasoning: first request
+  and file resume have equal shared context after the explicitly listed
+  exclusions below. The original model name stays on the wire.
+- Shared model prompts are refreshed from the pinned catalog. Metadata lookup
+  uses longest-prefix matching, including the narrowly scoped provider namespace
+  fallback; suffixed names no longer fall back to generic instructions or lose
+  Responses-lite, reasoning, verbosity, and context-window metadata.
+- Developer sections now follow custom instructions → skills → permissions.
+  Skills use root aliases, system-before-user display order, YAML invocation
+  policy, and model-specific usage-guidance inclusion.
+- Environment context includes filesystem XML. Assistant IDs, phases, text-part
+  boundaries, tool-call IDs/namespaces/raw arguments, and reasoning are retained
+  through sampling and rollout replay. Unified-exec output no longer prepends
+  the local-only `Command:` line. Responses-lite prefix IDs use upstream's
+  thread-scoped UUIDv5 construction.
+
+**This is not full request parity.** The report retains raw context differences
+and separately shows shared-context exclusions, tool-declaration differences,
+non-context body differences, and header differences:
+
+- Local user/context messages and tool results do not synthesize upstream's
+  UUIDv7 item IDs. Provider-supplied assistant/tool-call metadata is not ignored.
+- Collaboration-mode and multi-agent-v2 developer blocks remain intentionally
+  absent. The local tool catalog still differs, including the local clock,
+  legacy sub-agent tools, and absent goal/deferred/code-mode-v2 tool surfaces.
+- Upstream's newer `client_metadata` and identity/telemetry headers are not
+  replicated. The existing local client identity remains unchanged.
+- This audit does not re-certify interactive steer, model switching, remote
+  compaction, custom permission profiles, or external/plugin skill discovery.
+  Restricted sandbox defaults still differ in permissions text (network access
+  and the workspace-write writable-roots sentence), despite matching filesystem
+  XML for the tested default profiles.
+
+The helper exits nonzero when raw context differs, even if shared context is
+equal. See `docs/CONTEXT.md` for the precise projection and reproduction commands.
+The existing `closing` / `stop_asap()` / natural-drain lifecycle is unchanged.
+
+## Historical checkpoint (2026-06-23)
 
 - Latest upstream source checked: `openai/codex` `83c4934`
   (`2026-06-23 00:31:56 -0700`, `Remove redundant Codex Apps cache guard`).
@@ -80,16 +131,16 @@ Tool-specific status uses two inputs:
   it can reply first for long tasks and will be invoked to continue when the
   task finishes.
 
-## Result
+## Historical result (0.138.0)
 
-As of this snapshot, prompt/context parity is achieved for the compared
+In that older snapshot, prompt/context parity was achieved for the compared
 non-interactive `exec` comparison:
 
 - `instructions` match exactly
 - `input` match exactly
 
-In other words, the model-visible prompt dump for `pycodex` and upstream Codex
-is currently identical for this comparison scenario.
+That result is specific to its captured version and normalization. It is not
+a claim of strict equality with 0.153.4; use the context audit above instead.
 
 Tool alignment is also materially improved: all default local tool classes have
 been reviewed/refreshed against the latest upstream-facing specs where a current
@@ -112,17 +163,17 @@ At the time of writing:
   the turn naturally converges like upstream Codex
 - request body parity is aligned for the compared `exec` path, modulo dynamic
   identifiers
-- the default CLI non-exec first turn now follows the captured upstream
-  `codex-tui` context path (`originator = codex-tui` plus
-  `<collaboration_mode>` in the developer message)
+- the default CLI keeps `originator = codex-tui`, but intentionally no longer
+  injects collaboration-mode developer instructions
 - the second-turn non-exec history shape is now aligned at the message level:
   prior user turn, reasoning item, and assistant reply are threaded back in the
   same order as the captured upstream resume path
 - transport/header parity is now aligned for the compared path, including the
   sub-agent `x-openai-subagent` header and the observed `workspaces` omission
   on later sub-agent turns
-- request-visible tool schema parity is aligned for the compared exec-mode and
-  default TUI captured paths where upstream still exposes the same tool names
+- request-visible tool schema comparisons cover the exec-mode and default TUI
+  paths; intentional local differences include removing the mode restriction
+  from the `request_user_input` description
 - class-level tool descriptions, input schemas, output schemas, and notable
   runtime result shapes have been refreshed across the default local tool set
 
@@ -131,16 +182,18 @@ The current upstream-aligned subset already matches:
 - exec-mode upstream tool subset membership for the compared path; pycodex
   additionally inserts its `clock` extension after `write_stdin`
 - `include = ["reasoning.encrypted_content"]`
-- model-visible prompt fields (`instructions` and `input`)
+- model-visible prompt fields (`instructions` and `input`), except the
+  intentionally removed collaboration instructions
 - request-scoped `prompt_cache_key`
 - session-scoped request id headers
 - turn metadata header shape (`turn_id` + `sandbox`)
 - mode-aware `originator` header
-- exact exec-mode tool schema payloads on the compared path, now generated from
-  class-level tool specs rather than vendored JSON snapshots
+- exec-mode tool schema payloads on the compared path, now generated from
+  class-level tool specs rather than vendored JSON snapshots, with the
+  intentional local differences recorded below
 - `User-Agent` string for the compared non-interactive path
 
-The main remaining deltas are now outside the prompt dump itself:
+Beyond these intentional prompt/tool differences, remaining deltas include:
 
 - dynamic run-specific values such as generated session ids and turn ids
 - behavior outside the compared non-interactive `exec` path and the captured
@@ -264,27 +317,15 @@ schema 一致的工具有：
   - 下一轮里的 `function_call_output` schema 一致
   - 参数值会因模型自由生成 explanation / step 文案而不同，但外层 shape 一致
 - `request_user_input`
-  - 当前默认 `codex-tui` / Default mode 路径下，强制触发这个 tool call 时，
-    upstream Codex 和 `pycodex` 都会回传同一个固定错误：
-    `request_user_input is unavailable in Default mode`
-  - 这说明 Default-mode 下的 `function_call` / `function_call_output` round-trip
-    已对齐
-  - Plan-mode happy path 现在也已按 upstream 源码建模：handler 会要求每个问题都带
+  - 协作模式及对应门控已按用户要求移除；工具直接使用注册的交互 handler，
+    没有 handler 或用户取消时返回取消结果，不再回传模式不可用错误
+  - handler 仍要求每个问题都带
     非空 `options`、自动给每个问题补 `isOther=true`，并把结构化答案序列化成
     JSON 字符串回传到下一轮 `function_call_output.output`，同时补 `success=true`
-  - 类内 schema 已补齐 upstream 最新的 `autoResolutionMs` 字段；runtime 会把非空值
+  - 类内 schema 保留 `autoResolutionMs` 字段；runtime 会把非空值
     clamp 到 `[60000, 240000]` 后交给交互层
-  - 当前仓库已经新增 deterministic proxy compare 脚本
-    `uv run python tests/compare_request_user_input_roundtrip.py`
-  - 该脚本会用同一套固定 origin SSE + proxy capture，同步比较 upstream Codex
-    和 `pycodex` 的 Plan-mode round-trip。当前在本机已安装的
-    `codex-cli 0.115.0` 上，first request 的 Plan-mode collaboration prompt
-    与 `function_call` 已一致；second request 里唯一剩余的 live schema 差异是
-    `pycodex` 的 `function_call_output` 多了 `success=true`
-  - 这和当前 GitHub `openai/codex` `main` 分支源码并不完全一致：源码里的
-    `FunctionCallOutputPayload` 与 `request_user_input` handler 都允许/传递
-    `success`。因此这里需要区分“本机 installed Codex 0.115.0 live capture”
-    和“upstream main 源码建模”两层结论
+  - 工具描述不再宣称模式限制，这是有意保留的 upstream 差异。旧模式专用
+    round-trip 对齐脚本已删除；现由工具测试和 CLI 交互集成测试验证问答链路
 - `view_image`
   - `function_call` item schema 一致
   - 下一轮里的 `function_call_output` schema 一致
@@ -324,8 +365,7 @@ schema 一致的工具有：
   - 同一条链路里还顺手补齐了两个 request-level 差异：
     sub-agent request 现在只暴露 upstream 那 6 个工具
     `exec_command` / `write_stdin` / `update_plan` / `apply_patch` /
-    `web_search` / `view_image`，并且不再注入 `<collaboration_mode>` developer
-    block
+    `web_search` / `view_image`
   - request body 里的 `prompt_cache_key` 现在也改成和 upstream 一样：
     parent thread 维持自己的稳定 session id，而 sub-agent thread 则改用
     `agent_id` 本身，不再错误复用 parent 的 cache key
@@ -383,7 +423,7 @@ schema 一致的工具有：
 | `wait` | `not exposed` | `class aligned` | 默认首轮路径不带；code-mode wait schema/runtime 已刷新，仍需 code-mode request-visible 抓包复测 |
 | `web_search` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 provider-native payload 相等，包含 `search_content_types=["text","image"]`；`web_search_call` shape 一致；provider-native tool 无单独客户端 `tool_result` |
 | `update_plan` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后首轮 schema 相等；`function_call` / `function_call_output` 外层 shape 一致 |
-| `request_user_input` | `round-trip same (Default mode); Plan mode source-aligned` | `class aligned` | Default-mode unavailable 路径已 capture 对齐；Plan-mode 按 upstream main 建模，包含 `success=true` 和 `autoResolutionMs` clamp；本机 installed `codex-cli 0.115.0` live capture 仍少 `success=true` |
+| `request_user_input` | `intentional availability/description delta` | `mode-free input handler` | 不再按协作模式门控；保留非空 options、`isOther=true`、JSON 字符串答案、`success=true` 和 `autoResolutionMs` clamp；无 handler 或取消时回传取消结果 |
 | `request_permissions` | `not exposed` | `class aligned` | 默认首轮路径不带；类内 desc/schema 已补 `environment_id` passthrough，交互 handler 仍是最小实现 |
 | `apply_patch` | `first-request same; round-trip same` | `class aligned` | 删除 fallback 后 custom grammar 相等；`custom_tool_call` / `custom_tool_call_output` 外层 shape 一致；输出包装已对齐，仅剩具体文件路径差异 |
 | `grep_files` | `not exposed` | `local shim` | 默认首轮路径不带；本地文件搜索 helper 有 schema/smoke，但当前 upstream 默认 CLI 没有同名 official payload 可直接对齐 |
@@ -668,21 +708,25 @@ The remaining explicit alignment work is:
 当前 `pycodex` 的对齐策略：
 
 - 我们优先对齐“下一次发出去的请求体”，尤其是 `input` 里的 messages 顺序，而不是强求内部控制流和 upstream 完全同构
-- 当前实现里，`AgentRuntime` 负责 steer/queue 语义；内部实现已经收成两个同构 queue：`enqueue` 与 `steer` 走同一个 runtime API，只是调度优先级和 steer 的 interrupt/coalesce 规则不同
-- 运行中收到 steer 时，runtime 会先请求当前 `AgentLoop` 在安全边界停下，再把多个 steer 文本批量交给下一次 `run_turn(texts, turn_id=...)`
-- 因此，下一次请求体里的 `input` 现在可以把多个 steer 文本按顺序并到 history 尾部，并且继续沿用同一个 `turn_id`；这一点已经明显比旧版 `cancel + 单条新 turn` 更接近 upstream
-- 通过 `tests/compare_steer_request_bodies.py` 的 fake/proxy capture 对比，当前 steer 首轮/次轮 request body 在忽略 `prompt_cache_key` 后已与本机 installed `codex-cli 0.115.0` 对齐；这里比较的是“默认 steer”路径，因此脚本会先去掉本机用户配置里的顶层 `service_tier`，避免把本地 fast-mode 设置误记成 steer 差异。同一 steer turn 的 follow-up request 仍需继续带 `workspaces`
-- 仍未完全一致的点主要是内部控制流：本地实现仍是在 runtime 层结束一次 `run_turn(...)` 再启动下一次；upstream 则更倾向于在同一个 active turn 里继续 follow-up
+- 当前 `AgentRuntime` 保留两个内部同构 queue：`enqueue` 与 `steer` 使用同一个提交 API，但调度优先级和合并规则不同；没有第三层 Session 抽象。
+- 按用户在 2026-09-23 明确要求，恢复协作式 stop-asap：Runtime 调用 `agent.stop_asap()`，Agent 完成当前请求和已发出的工具，在安全边界抛出 `TurnInterrupted`；Runtime 捕获后结算回执，再调用下一次 `run_turn`。Agent 不知道外部队列存在，不保留 runtime 引用或输入交接回调。
+- Runtime 自己执行的 turn 收到 steer 时，下一次请求继续沿用相同逻辑 `turn_id`，但会重新发 `turn_started` 并重置该次执行的 iteration。compact 结束后也检查停止请求，避免多发一次旧输入的采样。
+- 原 submission 的 Future 收到 `SubmissionInterrupted`，批量 steer Futures 共享最终结果；直接 await `run_turn` / `maybe_invoke` 的调用方收到 `TurnInterrupted`。裸 Agent 不再替外层消费队列，pending 输入必须由 Runtime worker 执行。
+- 历史上通过 `tests/compare_steer_request_bodies.py` 的 fake/proxy capture，默认 steer 的首轮/次轮 request body 在忽略 `prompt_cache_key` 后与本机 installed `codex-cli 0.115.0` 对齐。该脚本去掉顶层 `service_tier`，避免把本地 fast-mode 配置混进默认语义；同一 steer turn 的 follow-up request 继续带 `workspaces`。
+- 2026-09-22 的后续整理按用户确认改为普通串行协程：Agent 不持有 turn Task，`maybe_invoke` 在 idle 时直接 await `run_turn`，clock 与子 Agent 状态改用既有生命周期事件。验证依据是本地请求体、生命周期和交互回归测试，未重新执行 installed CLI live capture；不要把历史 capture 当成本次重新验证。
+- 前后端分离将会话命令、问答、权限和生命周期统一到当前 `AgentRuntime`，CLI/Web/飞书都调用 `submit_input` 并独立订阅状态/事件；IPython 按明确约定保留裸 Agent。公共装配位于 `bootstrap.py`，Web 不再导入 CLI shell。这是本地架构契约和回归验证，不是新增的 upstream wire parity 声明。
 
 ## timeout / interrupt 对齐现状
 
 - `pycodex` 现在已经补上最小的 provider 级 stream retry：`ResponsesProviderConfig`
   支持 `stream_max_retries` / `stream_idle_timeout_ms`，默认值对齐 upstream 的
   `300_000 ms` SSE idle timeout；代码在 `pycodex/model.py`
-- 当前实现会把 `response.failed`、stream 在 `response.completed` 前断开、以及
-  `requests` 侧的读流异常统一视为 retryable stream error，并在
+- 当前实现会把 stream 在 `response.completed` 前断开、`requests` 侧的读流异常、
+  以及明确分类为可重试的服务端错误视为 retryable stream error，并在
   `ResponsesModelClient.complete(...)` 里按 backoff 重试；重试前会向外发
-  `ModelStreamEvent(kind="stream_error")`，CLI 会显示 `[status] Reconnecting...`
+  `StreamErrorEvent`，CLI 会显示 `[status] Reconnecting...`
+- `ContextLengthExceeded` 由 Agent compact 后重试，不属于 provider 网络重试；
+  terminal `response.incomplete` 也不重连。
 - 这一点已经明显更接近 upstream 在 `run_sampling_request(...)` 里对
   `CodexErr::Stream(...)` / `CodexErr::Timeout` 的 backoff retry + `StreamError`
   前端通知语义；对应参考仍在 `core/src/model_provider_info.rs`、
@@ -696,6 +740,11 @@ The remaining explicit alignment work is:
   `inject_input(...)` -> `pending_input`，只有显式 interrupt 才会真正取消当前 task；
   取消时会通过 `CancellationToken` 中止活跃请求/工具，终止 unified-exec 进程，并把
   `<turn_aborted>` marker 持久化到 history
-- `pycodex` 当前 steer 仍主要靠 `AgentLoop.interrupt_asap` 在 loop 边界抛
-  `TurnInterrupted`；它不会主动打断正在阻塞的模型流读取或正在运行的 tool，也不会写
-  `<turn_aborted>` marker，因此 interrupt 语义仍明显弱于 upstream
+- `pycodex` 的 steer 在安全边界协作式结束当前执行，再由 Runtime 启动下一批输入，不取消模型或工具。
+  按当前用户明确约定，运行时刻意不提供主动 turn 取消：`Agent.cancel`、
+  `queue.cancel_current`、Task 监听与取消后的 synthetic tool-result 修复路径已删除。
+  `close_agent`、queue shutdown 和 workspace close 都等待已接收工作自然结束；
+  下游请求一直不结束时，关闭也会继续等待。这不是 upstream interrupt 对齐。
+- Responses worker-thread 回调回到所属事件循环执行；请求级 teardown 后不交付
+  迟到事件的保护仍保留，但不是 Agent 取消接口，也不保证物理停止 HTTP 线程或
+  外部 shell 进程。当前仍不写 upstream 同款 `<turn_aborted>` marker。

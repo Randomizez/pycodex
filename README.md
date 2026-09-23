@@ -2,6 +2,8 @@
 
 English README. Chinese version: `README_ZH.md`
 
+0.3.0 release preparation and Python API migration: `docs/RELEASE_0.3.0.md`.
+
 PyPI distributions:
 
 - Primary package: `python-codex`
@@ -75,13 +77,17 @@ nailing the core tool-augmented reasoning loop first.
 
 ## Layout
 
-- `pycodex/protocol.py`: minimal conversation item / prompt / event protocol
+- `pycodex/protocol.py`: minimal conversation item / prompt protocol
+- `pycodex/events.py`: typed events, plain-text views and stateful presentation
+- `pycodex/utils/event_helpers.py`: stateless text, color, summary and result-formatting helpers
+- `pycodex/utils/image_utils.py`: image loading, resizing and data-URL preparation
 - `pycodex/model.py`: model client protocol and Responses API adapter
-- `pycodex/cli.py`: single-turn and interactive `pycodex` CLI entry points
+- `pycodex/cli.py`: single-turn/interactive entry points, terminal I/O executor and input loop
+- `pycodex/bootstrap.py`: frontend-independent model, tools, Agent and session assembly
 - `pycodex/tools/base_tool.py`: `BaseTool`, `ToolRegistry`, `ToolContext`
 - `pycodex/tools/`: concrete tool implementations
 - `pycodex/agent.py`: inner turn loop
-- `pycodex/runtime.py`: outer submission queue
+- `pycodex/runtime.py`: session commands, submission queues and frontend event subscriptions
 - `tests/test_agent.py`: core behavior tests
 
 ## Current Alignment Status
@@ -89,35 +95,32 @@ nailing the core tool-augmented reasoning loop first.
 Current progress is easiest to read in layers:
 
 - prompt/context alignment:
-  - on the non-interactive `exec` path, `instructions` and `input` already
-    match upstream Codex;
+  - the 2026-09-23 audit uses Codex CLI 0.153.4: shared context matches for
+    `gpt-5.4` first/resume/tool-follow-up requests and suffixed Astra first/resume
+    requests, with explicit exclusions recorded in `docs/CONTEXT.md`;
   - this layer is now mainly handled by `pycodex/context.py` plus vendored
-    prompt data.
+    prompt data; model lookup uses the longest matching slug prefix without
+    rewriting the requested model name.
 - turn-loop semantic alignment:
   - `AgentLoop` no longer uses a fixed 12-iteration cap by default;
   - like upstream, it now converges naturally based on whether there is still
     follow-up work or tool handoff to do;
   - the local iteration-limit parameter is gone.
 - request-level alignment:
-  - the non-interactive `exec` request body is mostly aligned;
-  - the default CLI non-exec first request now also follows the upstream
-    `codex-tui` + `<collaboration_mode>` path;
-  - the default CLI two-turn main-thread request/header behavior has also been
-    captured and aligned, including omitting `workspaces` on later turns;
-  - the remaining work is now more about outer behavior branches than this
-    already-compared request/header path.
-- tool round-trip alignment:
-  - the Default-mode unavailable path for `request_user_input` is aligned to
-    real upstream captures;
-  - the Plan-mode happy path is also aligned at the tool/protocol layer based
-    on upstream source: it forces `isOther=true`, requires non-empty `options`,
-    and returns structured answers as a JSON string plus `success=true`;
-  - there is now a deterministic round-trip comparison helper,
-    `tests/compare_request_user_input_roundtrip.py`, built on the proxy mode in
-    `tests/fake_responses_server.py`; against the locally installed
-    `codex-cli 0.115.0`, the only remaining Plan-mode live-capture schema
-    difference is that `pycodex` includes `success=true` in
-    `function_call_output`.
+  - full raw request parity is **not** claimed: client-generated message/result
+    IDs, the tool catalog, new upstream telemetry, and some permission profiles
+    still differ;
+  - the default CLI keeps the `codex-tui` client identity, but intentionally
+    omits collaboration-mode developer instructions;
+  - `tests/compare_context_requests.py` keeps raw differences separate from
+    shared-context exclusions; older interactive captures are not a fresh
+    certification of 0.153.4 interactive behavior.
+- structured user input:
+  - `request_user_input` uses the registered input handler without mode gating;
+  - it forces `isOther=true`, requires non-empty `options`, and returns
+    structured answers as a JSON string plus `success=true`;
+  - without an input handler, or when the user cancels, it returns a cancelled
+    response. CLI integration and tool-level tests cover both paths.
 
 See `docs/ALIGNMENT.md` for more detailed notes.
 
@@ -178,7 +181,9 @@ Current behavior:
 - with an argv prompt or piped stdin, run a single turn
 - `pycodex-ws` starts the standalone browser workspace manager and serves each
   workspace with a board pane and a pycodex session pane
-- interactive mode supports `/exit` and `/quit`
+- interactive mode exits through `/exit`, `/quit`, Ctrl+D on an empty prompt,
+  or a single Ctrl+C; accepted work finishes before cleanup and normal exit.
+  A `[closing]` message explains the wait; Ctrl+C does not cancel model/tool calls.
 - interactive mode shows a compact event stream for user-visible phases such as
   tool execution and model follow-up after tool results
 - assistant text is printed from streaming deltas directly
@@ -193,8 +198,8 @@ Current behavior:
 - `/compact` synthesizes a local handoff summary, replaces the in-memory
   conversation history with the compacted view, and appends a compacted-history
   entry to the rollout so later `/resume` sees the same state
-- `/fork` generates a new model session id while preserving the current history,
-  rollout, and workspace tab
+- `/fork` allocates a new Agent/provider session id and lazy rollout while
+  preserving current history and the workspace tab; the original rollout stays intact
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
   compaction path automatically when the latest reported usage reaches that
   threshold before a follow-up sampling request or the next user turn
@@ -320,11 +325,12 @@ pycodex --put /data/.codex/@127.0.0.1:5577
 
 ```python
 import asyncio
+from pathlib import Path
 
 from pycodex import (
-    AgentLoop,
+    Agent,
     BaseTool,
-    ContextManager,
+    ContextConfig,
     ResponsesModelClient,
     ToolRegistry,
 )
@@ -345,13 +351,14 @@ class EchoTool(BaseTool):
 
 
 async def main() -> None:
-    model = ResponsesModelClient.from_codex_config()
-    context_manager = ContextManager.from_codex_config()
+    config_path = Path.home() / ".codex" / "config.toml"
+    model = ResponsesModelClient.from_codex_config(config_path)
+    context_config = ContextConfig.from_codex_config(config_path)
 
     tools = ToolRegistry()
     tools.register(EchoTool())
 
-    agent = AgentLoop(model, tools, context_manager)
+    agent = Agent(model, tools, context_config)
     result = await agent.run_turn(
         ["Call the echo tool with text=hello, then tell me what it returned."]
     )
@@ -360,6 +367,206 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+
+### Turn lifecycle
+
+`Agent` requires a model client, tool registry, and `ContextConfig`. It creates
+its own `ContextManager`; cwd, instruction overrides and
+extra contextual messages belong in that config. The client's model identifier
+is authoritative for the Agent's context. Standalone context construction uses
+`ContextManager(config)`; load files through `ContextConfig.from_codex_config`.
+
+Collaboration modes and their prompt templates are removed. There is no mode
+switch in `ContextConfig`, `ToolContext` or `build_agent`; normal interaction,
+`update_plan`, structured user input and sub-agents remain independent features.
+
+Dependencies are ordinary attributes: `model_client`, `tool_registry`,
+`context_manager` and `event_handler`. The Agent has no Runtime/Queue reference;
+`AgentRuntime` calls its public methods and subscribes to its events.
+Pure getter/setter wrappers are removed. `history` remains a tuple snapshot,
+and `model_name` and lifecycle properties remain derived values.
+
+The Agent owns its rollout recorder. `session_file_path=None` means **create a
+new recorded session**, not disable recording. By default it allocates a UUIDv7
+session id and a path under the configured Codex home's `sessions/` directory.
+Construction does not create the file or its parent directories. The first
+history append or successful compaction creates it, writing metadata and the
+current initial history before the new records. An explicit constructor path
+selects a new file; an existing destination raises `FileExistsError` instead of
+being overwritten or implicitly resumed. Exclusive creation also prevents
+overwriting a file that appears between construction and the first write.
+`agent.session_id` and the read-only `agent.session_file_path` expose the session
+identity and location without exposing the recorder.
+
+```python
+agent = Agent(model, tools, context_config, session_file_path=None)
+agent.resume("~/.codex/sessions/2026/09/22/rollout-example.jsonl")
+```
+
+`resume(path)` reads an existing file, restores history and session identity, and
+continues appending to that same file. Paths accept `~`; the existing
+concatenated-JSON and compact-checkpoint loader is reused. Constructing an Agent
+and immediately resuming another file leaves no unused rollout behind. Initial
+history, including forked child history, is recorded only when the new session
+first writes. `history` is read-only; there is no public `replace_history()`
+interface.
+
+An `Agent` executes one turn or manual compaction at a time.
+There are two public turn interfaces:
+
+- `agent.ask(text)` blocks and returns the turn result.
+- `await agent.run_turn(texts, turn_id=None)` executes the ordinary coroutine
+  and returns the turn result.
+
+The Agent does not create, hold or return a per-turn Task. Creating a coroutine
+does not start it or mark the Agent busy. A host that needs concurrent UI/input
+handling can schedule the coroutine with `asyncio.create_task`; synchronous code
+can use `ask` or `asyncio.run(agent.run_turn([...]))`. `start_turn` is removed.
+
+`agent.is_running` reflects actual execution. One idle event backs both that
+state and `await agent.wait_until_idle()`; `finally` releases it on exit.
+Starting an overlapping operation raises `RuntimeError`; use `AgentRuntime`
+for queued or steer submissions. `maybe_invoke` skips a busy or closed Agent;
+when idle, it directly awaits the same `run_turn` path and propagates errors.
+It returns `True` after that turn finishes, not immediately after scheduling.
+
+`runtime.is_busy` includes active Agent work and pending submissions, including
+direct/background turns that bypass the queue. CLI, web, and Feishu use this
+state instead of tracking another busy flag. There is no Agent cancellation API:
+`agent.cancel()`, `runtime.cancel_current()` and Task listeners are removed.
+
+Steer asks `agent.stop_asap()` to end the current execution at a safe boundary.
+The in-flight request and all issued tools finish first; the Agent records their
+results, emits `turn_interrupted` and raises `TurnInterrupted`, without knowing
+why the stop was requested. Runtime alone settles submission futures and starts
+the next batch. Runtime-owned steer retains its logical turn id, but starts a new
+`run_turn` execution with a fresh iteration count. `/queue` does not request a stop.
+Checks after compaction prevent an extra sample when steer arrives during it.
+Direct Agent calls never consume Runtime queues; their caller observes
+`TurnInterrupted`, and pending input waits for the Runtime worker.
+
+The core loop has one threshold-compaction entry, then samples, commits output
+and executes tools or finishes. Before the first sample, compaction precedes new
+user input; later it includes completed tool results. Context-overflow recovery
+stays inside sampling: compact and retry once without counting another iteration
+or replaying tools. Stops are checked before each request attempt and after the
+issued tool batch, without a separate preparation wrapper. Network retries remain
+inside the provider.
+
+`await agent.compact()` computes a summary and commits the replacement history
+only after the summary and rollout checkpoint succeed. Failed compaction leaves
+the active history unchanged, including tool results pruned from retry prompts.
+History persistence failures are surfaced rather than silently ignored.
+Manual and automatic compaction share the same execution/observation path.
+
+Sub-agent status comes from Agent lifecycle events and current busy/queue state,
+including direct and background invocations. Bare `Agent.shutdown()` rejects new
+calls and disables background hooks, but lets the current turn finish. `runtime.close()`,
+`close_agent`, and workspace close wait for accepted work and child workers to
+finish naturally; a stuck request can therefore keep close waiting.
+`resume_agent` explicitly reopens the child. No turn-abort or synthetic
+interruption-result recovery is performed.
+
+Queue lifecycle uses only `start()` and `close()`. Closing switches off admission;
+the worker exits when the queues are empty, without a special shutdown request.
+Background invocations obey the same admission switch. Tool shutdown hooks run
+once, after draining accepted work. Concurrent or repeated close calls share the
+worker's completion and errors; cancelling a caller does not cancel its Agent turn.
+
+CLI, web and Feishu restore through the backend's `runtime.resume(session_file_path)`,
+which delegates to `agent.resume(session_file_path)`. It rejects
+active or queued work, loads history, restores supported provider session
+identity, switches its internal recorder, and clears stale usage in one
+synchronous operation. Load failures leave the existing session unchanged.
+The backend broadcasts restored history/title/identity to all attached views.
+`agent.resume()` without a path reopens the same in-memory Agent and rebinds its
+tool callbacks, without reading or writing a file or changing history, identity,
+recorder or usage. It returns `None` and also rejects active or queued work.
+Sub-agent services use this form even when the child has never written a rollout.
+There is no separate `reopen()` method.
+Model switching and history replacement remain explicit operations because they
+enforce state consistency, not merely assign a field.
+
+### Shared session backend
+
+CLI, Web and Feishu all use `AgentRuntime.submit_input`: not just `/model`
+and `/resume`, but every session command, steer/queue admission, interactive
+questions and permissions, state notifications and shutdown. Frontends only
+adapt input and render events. Web no longer imports or runs the CLI shell.
+IPython is the deliberate exception: `ipython_agent()` still returns a bare Agent.
+
+```python
+from pycodex.bootstrap import build_agent, build_model, build_runtime
+
+async def run_session():
+    runtime = build_runtime(build_agent(build_model()))
+    await runtime.start()
+    observer = runtime.attach(lambda event: print(event.kind))
+    try:
+        receipt = await runtime.submit_input("/model", sender="application")
+        result = await receipt.future
+        return result
+    finally:
+        await runtime.close()
+        runtime.detach(observer)
+```
+
+Attach immediately supplies a state snapshot; subsequent events synchronize
+all views. Detach does not close the backend. Plain input steers at the next
+sampling boundary, `/queue` waits for its own turn, and busy Feishu cards still
+accept steer or question answers. Unknown slash commands report errors instead
+of silently entering model history. See [runtime contracts](docs/RUNTIME.md)
+for command receipts, structured answers and session ownership.
+
+Python observers receive typed `Event` dataclasses from `pycodex.events`, such
+as `TurnStartedEvent` and `ToolCompletedEvent`, not generic payload dictionaries.
+Custom model clients emit `ModelEvent` variants such as `AssistantDeltaEvent`.
+Events provide reusable plain text through `event.visualize()`, or render through
+`event.render(display)`. Each CLI view and Feishu card owns an `EventDisplay` with
+independent stream/queue state and log/status/prompt callbacks. Events own colors,
+flushing, status transitions and prompt text; frontends execute I/O or update their
+display fields. Feishu disables colors and shows a bounded recent transcript plus
+the live stream, rather than a separate last-answer/last-turn projection.
+There is no display-handler mapping. Web retains its own projection and unchanged
+event JSON format.
+
+### Internal contracts
+
+- Tools implement async `BaseTool.run`; synchronous implementations are not
+  implicitly accepted. Tool-specific follow-up messages come from
+  `BaseTool.follow_up_messages`, not tool-name checks in the Agent loop.
+- Completed tool results are committed individually. Explicitly parallel tool
+  batches wait for all their operations before propagating a commit failure;
+  they do not cancel remaining operations or invent interruption results.
+- Background tools bind their own callbacks through `BaseTool.bind_agent`.
+  The Agent does not reach into specific tools' private managers.
+- Event observers report failures to the asyncio exception handler without
+  changing the execution result. Provider stream callbacks run on the owning
+  event loop and stop delivering when their request is finished or cancelled.
+- `ModelClient.model` is a required read-only model identifier, also supplied by
+  test clients. `Agent.model_name` reads it directly, without `getattr` fallback.
+  `ModelClient.complete` returns a `ModelResponse` containing only supported
+  output item types. Context overflow is reported as `ContextLengthExceeded`;
+  provider-specific text classification stays inside the Responses client.
+- A terminal `response.incomplete` is not a disconnected stream and is not
+  retried. For `max_output_tokens`, done assistant/reasoning items are retained
+  for the next turn, but uncommitted text deltas and unresolved tool calls are not.
+- Interactive clients expose the `ModelControl` interface in `pycodex.model`.
+  Use `agent.set_model(name)` to update provider metadata, context instructions,
+  context limits, and usage state together.
+- Runtime services belong to the tool registry. Pass an explicit environment to
+  `ToolRegistry(environment)` or `get_tools(environment)` when needed; the Agent
+  uses `agent.tool_registry.runtime_environment`, not a forwarding Agent property.
+  The global `get_agent_runtime_environment()` and
+  separate `Agent(..., runtime_environment=...)` entry points are removed.
+- Each sub-agent gets its own context manager and runtime services. The sub-agent
+  service retains terminal event status, rather than inspecting Task results.
+- Every Agent records its session, including direct and child Agents; external
+  callers no longer construct or inject `SessionRolloutRecorder`. The outer queue
+  remains optional and no worker starts implicitly. Empty initial history and a
+  no-op event callback remain valid defaults.
+
+See `docs/RUNTIME.md` for state ownership and failure semantics.
 
 ## Alignment Checklist
 
@@ -417,21 +624,22 @@ Repository-specific compatibility / transition tools:
   queue are in place.
 - [x] non-interactive `exec` `instructions` alignment - base instructions match
   upstream.
-- [x] non-interactive `exec` `input` alignment - prompt input matches upstream.
+- [x] shared `exec` context content - the audited first/resume/tool-follow-up
+  scenarios match after documented exclusions; raw item identity is not equal.
 - [x] developer/contextual-user message shape alignment - message/content shape
   matches upstream.
 - [x] `AGENTS.md` + `<environment_context>` injection alignment - context
   assembly order matches upstream.
-- [x] non-interactive `exec` upstream tool subset alignment - the aligned
-  subset has converged; pycodex additionally exposes `clock`.
+- [ ] complete 0.153.4 tool catalog alignment - local `clock`, legacy sub-agent
+  tools, and upstream goal/deferred/code-mode-v2 surfaces still differ.
 - [x] `include = ["reasoning.encrypted_content"]` - reasoning include field is
   aligned.
 - [x] `prompt_cache_key` - request-level prompt cache key is implemented.
 - [x] `x-client-request-id` - request id header is implemented.
 - [x] `x-codex-turn-metadata` - turn id / sandbox header is implemented.
 - [x] `originator` - mode-aware originator header is implemented.
-- [x] exact `user-agent` string alignment - aligned on the non-interactive
-  `exec` path.
+- [ ] current identity/telemetry header parity - local identity remains
+  unchanged; the audit records upstream's newer headers and `client_metadata`.
 - [x] field-by-field upstream exec-mode tool schema alignment - aligned tools
   use class-level specs; `clock` is documented separately as an extension.
 - [ ] full interactive-mode and non-`exec` behavior alignment - the non-exec

@@ -11,6 +11,7 @@ except ImportError:  # pragma: no cover - Python 3.6 path
     class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
+
 try:
     from importlib import metadata as importlib_metadata
 except ImportError:  # pragma: no cover - Python 3.6 path
@@ -20,6 +21,7 @@ try:
     from typing import Literal, Protocol, TypeAlias
 except ImportError:  # pragma: no cover - Python 3.6 path
     from typing_extensions import Literal, Protocol  # type: ignore
+
     try:
         from typing_extensions import TypeAlias  # type: ignore
     except ImportError:  # pragma: no cover - old typing_extensions
@@ -34,6 +36,9 @@ def _get_running_loop_compat():
 
 
 def patch_asyncio():
+    if not hasattr(asyncio, "current_task"):
+        asyncio.current_task = asyncio.Task.current_task
+
     if not hasattr(asyncio, "create_task"):
         asyncio.create_task = asyncio.ensure_future
 
@@ -41,6 +46,7 @@ def patch_asyncio():
         asyncio.get_running_loop = _get_running_loop_compat
 
     if not hasattr(asyncio, "to_thread"):
+
         async def to_thread(func, *args, **kwargs):
             loop = asyncio.get_event_loop()
             call = functools.partial(func, *args, **kwargs)
@@ -49,6 +55,7 @@ def patch_asyncio():
         asyncio.to_thread = to_thread
 
     if not hasattr(asyncio, "run"):
+
         def run(main):
             loop = asyncio.new_event_loop()
             try:

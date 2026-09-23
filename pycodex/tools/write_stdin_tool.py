@@ -10,6 +10,8 @@ Expected behavior:
 - Reuse the same `session_id` until the process exits.
 """
 
+import typing
+
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 from .unified_exec_manager import (
@@ -17,7 +19,6 @@ from .unified_exec_manager import (
     UNIFIED_EXEC_OUTPUT_SCHEMA,
     UnifiedExecManager,
 )
-import typing
 
 MIN_WRITE_YIELD_TIME_MS = 250
 MAX_WRITE_YIELD_TIME_MS = 30_000
@@ -54,10 +55,10 @@ class WriteStdinTool(BaseTool):
     output_schema = UNIFIED_EXEC_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, manager: 'UnifiedExecManager') -> 'None':
+    def __init__(self, manager: "UnifiedExecManager") -> "None":
         self._manager = manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         session_id = args.get("session_id")
         if session_id is None:
@@ -71,7 +72,7 @@ class WriteStdinTool(BaseTool):
             max_output_tokens=self._optional_int(args, "max_output_tokens"),
         )
 
-    def _yield_time_ms(self, args: 'JSONDict', chars: 'str') -> 'int':
+    def _yield_time_ms(self, args: "JSONDict", chars: "str") -> "int":
         if chars:
             return self._bounded_int(
                 args,
@@ -88,7 +89,7 @@ class WriteStdinTool(BaseTool):
             MAX_WRITE_STDIN_POLL_YIELD_TIME_MS,
         )
 
-    def _optional_int(self, args: 'JSONDict', key: 'str') -> 'typing.Union[int, None]':
+    def _optional_int(self, args: "JSONDict", key: "str") -> "typing.Union[int, None]":
         value = args.get(key)
         if value in (None, ""):
             return None
@@ -96,11 +97,11 @@ class WriteStdinTool(BaseTool):
 
     def _bounded_int(
         self,
-        args: 'JSONDict',
-        key: 'str',
-        default: 'int',
-        minimum: 'int',
-        maximum: 'int',
-    ) -> 'int':
+        args: "JSONDict",
+        key: "str",
+        default: "int",
+        minimum: "int",
+        maximum: "int",
+    ) -> "int":
         value = int(args.get(key, default))
         return min(max(value, minimum), maximum)

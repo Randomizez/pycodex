@@ -1,43 +1,43 @@
+import typing
 
 from .config import CompatServerConfig
 from .payload_processors import post_process_outcomming_request
 from .session_store import SessionStore
 from .stream_router import StreamRouter
 from .trajectory_dump import TrajectoryDumpWriter
-import typing
 
 
 class ResponseServer:
     def __init__(
         self,
-        config: 'CompatServerConfig',
-        session_store: 'typing.Union[SessionStore, None]' = None,
-        stream_router: 'typing.Union[StreamRouter, None]' = None,
-    ) -> 'None':
+        config: "CompatServerConfig",
+        session_store: "typing.Union[SessionStore, None]" = None,
+        stream_router: "typing.Union[StreamRouter, None]" = None,
+    ) -> "None":
         self._config = config
         self._session_store = session_store or SessionStore()
         self._stream_router = stream_router or StreamRouter(config)
         self._trajectory_dump = TrajectoryDumpWriter.from_env()
 
     @property
-    def config(self) -> 'CompatServerConfig':
+    def config(self) -> "CompatServerConfig":
         return self._config
 
     @property
-    def session_store(self) -> 'SessionStore':
+    def session_store(self) -> "SessionStore":
         return self._session_store
 
     @property
-    def stream_router(self) -> 'StreamRouter':
+    def stream_router(self) -> "StreamRouter":
         return self._stream_router
 
-    def list_models(self) -> 'typing.Dict[str, object]':
+    def list_models(self) -> "typing.Dict[str, object]":
         return self._stream_router.list_models()
 
     def start_response_stream(
         self,
-        request_body: 'typing.Dict[str, object]',
-        request_headers: 'typing.Dict[str, str]',
+        request_body: "typing.Dict[str, object]",
+        request_headers: "typing.Dict[str, str]",
     ):
         outcomming_request = self._stream_router.build_outcomming_request(request_body)
         if self._trajectory_dump is not None:

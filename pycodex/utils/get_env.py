@@ -1,22 +1,22 @@
 import os
 import platform
 import re
-from datetime import datetime
-from pathlib import Path
 import subprocess
 import typing
+from datetime import datetime
+from pathlib import Path
 
 from ..compat import importlib_metadata
 
 
-def get_shell_name() -> 'str':
+def get_shell_name() -> "str":
     shell_path = os.environ.get("SHELL")
     if shell_path:
         return Path(shell_path).name or shell_path
     return "bash"
 
 
-def get_timezone_name() -> 'str':
+def get_timezone_name() -> "str":
     timezone_env = os.environ.get("TZ")
     if timezone_env:
         return timezone_env
@@ -33,7 +33,9 @@ def get_timezone_name() -> 'str':
         return "Etc/UTC"
     name = str(timezone)
     return name or "Etc/UTC"
-def get_sandbox_tag(sandbox_mode: 'typing.Union[str, None]') -> 'str':
+
+
+def get_sandbox_tag(sandbox_mode: "typing.Union[str, None]") -> "str":
     if sandbox_mode == "danger-full-access":
         return "none"
     if sandbox_mode == "read-only":
@@ -43,7 +45,9 @@ def get_sandbox_tag(sandbox_mode: 'typing.Union[str, None]') -> 'str':
     return "none"
 
 
-def get_workspace_turn_metadata(cwd: 'typing.Union[str, Path]') -> 'typing.Union[typing.Dict[str, object], None]':
+def get_workspace_turn_metadata(
+    cwd: "typing.Union[str, Path]",
+) -> "typing.Union[typing.Dict[str, object], None]":
     resolved_cwd = Path(cwd).resolve()
     repo_root = _git_output(
         resolved_cwd,
@@ -52,7 +56,7 @@ def get_workspace_turn_metadata(cwd: 'typing.Union[str, Path]') -> 'typing.Union
     if repo_root is None:
         return None
 
-    workspace: 'typing.Dict[str, object]' = {}
+    workspace: "typing.Dict[str, object]" = {}
     head = _git_output(resolved_cwd, ["rev-parse", "HEAD"])
     if head is not None:
         workspace["latest_git_commit_hash"] = head
@@ -70,7 +74,7 @@ def get_workspace_turn_metadata(cwd: 'typing.Union[str, Path]') -> 'typing.Union
     return {"workspaces": {repo_root: workspace}}
 
 
-def build_user_agent(originator: 'str') -> 'str':
+def build_user_agent(originator: "str") -> "str":
     version = get_package_version()
     terminal = get_terminal_user_agent_token()
     os_name, os_version = get_os_info()
@@ -79,7 +83,7 @@ def build_user_agent(originator: 'str') -> 'str':
     return f"{originator}/{version} ({os_name} {os_version}; {arch}) {terminal}{suffix}"
 
 
-def get_package_version() -> 'str':
+def get_package_version() -> "str":
     detected = _detect_upstream_codex_version()
     if detected is not None:
         return detected
@@ -94,10 +98,10 @@ def get_package_version() -> 'str':
     return "0.1.0"
 
 
-def get_os_info() -> 'typing.Tuple[str, str]':
+def get_os_info() -> "typing.Tuple[str, str]":
     os_release = Path("/etc/os-release")
     if os_release.is_file():
-        values: 'typing.Dict[str, str]' = {}
+        values: "typing.Dict[str, str]" = {}
         os_release_text = os_release.read_text(
             encoding="utf-8",
             errors="replace",
@@ -114,7 +118,7 @@ def get_os_info() -> 'typing.Tuple[str, str]':
     return platform.system(), platform.release()
 
 
-def get_terminal_user_agent_token() -> 'str':
+def get_terminal_user_agent_token() -> "str":
     term_program = os.environ.get("TERM_PROGRAM", "")
     if term_program.lower() == "tmux":
         client_termname = _tmux_display_message("#{client_termname}")
@@ -127,7 +131,7 @@ def get_terminal_user_agent_token() -> 'str':
     return "unknown"
 
 
-def _git_output(cwd: 'Path', args: 'typing.List[str]') -> 'typing.Union[str, None]':
+def _git_output(cwd: "Path", args: "typing.List[str]") -> "typing.Union[str, None]":
     try:
         completed = subprocess.run(
             ["git", *args],
@@ -143,11 +147,11 @@ def _git_output(cwd: 'Path', args: 'typing.List[str]') -> 'typing.Union[str, Non
     return value or None
 
 
-def _git_remote_urls(cwd: 'Path') -> 'typing.Dict[str, str]':
+def _git_remote_urls(cwd: "Path") -> "typing.Dict[str, str]":
     remote_names = _git_output(cwd, ["remote"])
     if remote_names is None:
         return {}
-    remotes: 'typing.Dict[str, str]' = {}
+    remotes: "typing.Dict[str, str]" = {}
     for name in remote_names.splitlines():
         remote_name = name.strip()
         if not remote_name:
@@ -158,7 +162,7 @@ def _git_remote_urls(cwd: 'Path') -> 'typing.Dict[str, str]':
     return remotes
 
 
-def _git_has_changes(cwd: 'Path') -> 'typing.Union[bool, None]':
+def _git_has_changes(cwd: "Path") -> "typing.Union[bool, None]":
     try:
         completed = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -173,7 +177,7 @@ def _git_has_changes(cwd: 'Path') -> 'typing.Union[bool, None]':
     return bool(completed.stdout.strip())
 
 
-def _user_agent_suffix(originator: 'str', version: 'str') -> 'str':
+def _user_agent_suffix(originator: "str", version: "str") -> "str":
     if originator == "codex_exec":
         return f" (codex-exec; {version})"
     if originator == "codex-tui":
@@ -181,7 +185,7 @@ def _user_agent_suffix(originator: 'str', version: 'str') -> 'str':
     return ""
 
 
-def _normalize_os_version(version: 'str') -> 'str':
+def _normalize_os_version(version: "str") -> "str":
     parts = version.split(".")
     if len(parts) == 2 and all(part.isdigit() for part in parts):
         major, minor = parts
@@ -189,7 +193,7 @@ def _normalize_os_version(version: 'str') -> 'str':
     return version
 
 
-def _read_local_package_version() -> 'typing.Union[str, None]':
+def _read_local_package_version() -> "typing.Union[str, None]":
     pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
     if not pyproject_path.is_file():
         return None
@@ -203,7 +207,7 @@ def _read_local_package_version() -> 'typing.Union[str, None]':
     return match.group(1).strip() or None
 
 
-def _tmux_display_message(fmt: 'str') -> 'typing.Union[str, None]':
+def _tmux_display_message(fmt: "str") -> "typing.Union[str, None]":
     try:
         output = subprocess.run(
             ["tmux", "display-message", "-p", fmt],
@@ -218,16 +222,14 @@ def _tmux_display_message(fmt: 'str') -> 'typing.Union[str, None]':
     return value or None
 
 
-def _sanitize_header_token(value: 'str') -> 'str':
+def _sanitize_header_token(value: "str") -> "str":
     return "".join(
-        character
-        if (character.isalnum() or character in {"-", "_", ".", "/"})
-        else "_"
+        character if (character.isalnum() or character in {"-", "_", ".", "/"}) else "_"
         for character in value
     )
 
 
-def _detect_upstream_codex_version() -> 'typing.Union[str, None]':
+def _detect_upstream_codex_version() -> "typing.Union[str, None]":
     try:
         output = subprocess.run(
             ["codex", "--version"],

@@ -9,7 +9,10 @@ Expected behavior:
   wait times out.
 """
 
-from ..protocol import JSONDict, JSONValue
+import json
+import typing
+
+from ..protocol import JSONDict, JSONValue, UserMessage
 from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import AGENT_STATUS_SCHEMA
 from .base_tool import BaseTool, ToolContext
@@ -63,10 +66,10 @@ class WaitAgentTool(BaseTool):
     output_schema = WAIT_AGENT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
+    def __init__(self, subagent_manager: "SubAgentManager") -> "None":
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         ids = args.get("ids")
         if not isinstance(ids, list) or not ids:
@@ -77,7 +80,27 @@ class WaitAgentTool(BaseTool):
         timeout_ms = self._timeout_ms(args)
         return await self._subagent_manager.wait_agents(agent_ids, timeout_ms)
 
-    def _timeout_ms(self, args: 'JSONDict') -> 'int':
+    def follow_up_messages(
+        self, output: "JSONValue"
+    ) -> "typing.Tuple[UserMessage, ...]":
+        if not isinstance(output, dict):
+            return ()
+        return tuple(
+            UserMessage(
+                text=(
+                    "<subagent_notification>\n"
+                    + json.dumps(
+                        {"agent_id": agent_id, "status": status},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
+                    + "\n</subagent_notification>"
+                )
+            )
+            for agent_id, status in output["status"].items()
+        )
+
+    def _timeout_ms(self, args: "JSONDict") -> "int":
         value = int(args.get("timeout_ms", DEFAULT_WAIT_AGENT_TIMEOUT_MS))
         return min(
             max(value, MIN_WAIT_AGENT_TIMEOUT_MS),

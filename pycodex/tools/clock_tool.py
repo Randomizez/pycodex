@@ -6,13 +6,19 @@ cancels the pending countdown, and every successful reply starts a fresh one.
 """
 
 import asyncio
-from datetime import datetime
 import math
+import typing
+from datetime import datetime
 
+from ..events import (
+    CompactCompletedEvent,
+    CompactStartedEvent,
+    Event,
+    TurnCompletedEvent,
+    TurnStartedEvent,
+)
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
-import typing
-
 
 CLOCK_STATE_OUTPUT_SCHEMA = {
     "type": "object",
@@ -34,25 +40,25 @@ CLOCK_STATE_OUTPUT_SCHEMA = {
 }
 
 
-def _current_time() -> 'str':
+def _current_time() -> "str":
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 class ClockManager:
-    def __init__(self, seconds_per_minute: 'float' = 60.0) -> 'None':
+    def __init__(self, seconds_per_minute: "float" = 60.0) -> "None":
         self._seconds_per_minute = seconds_per_minute
-        self._period_m: 'typing.Union[float, None]' = None
-        self._timer_task: 'typing.Union[asyncio.Task, None]' = None
+        self._period_m: "typing.Union[float, None]" = None
+        self._timer_task: "typing.Union[asyncio.Task, None]" = None
         self._generation = 0
-        self._notify_hook: 'typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]' = None
+        self._notify_hook: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]" = (None)
 
     def set_notify_hook(
         self,
-        callback: 'typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]',
-    ) -> 'None':
+        callback: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]",
+    ) -> "None":
         self._notify_hook = callback
 
-    def set_period(self, value: 'object') -> 'JSONDict':
+    def set_period(self, value: "object") -> "JSONDict":
         self._cancel_pending()
         if value is None:
             self._period_m = None
@@ -65,20 +71,20 @@ class ClockManager:
         self._period_m = period_m
         return self.snapshot()
 
-    def snapshot(self) -> 'JSONDict':
+    def snapshot(self) -> "JSONDict":
         return {
             "enabled": self.enabled,
             "period_m": self._period_m,
         }
 
     @property
-    def enabled(self) -> 'bool':
+    def enabled(self) -> "bool":
         return self._period_m is not None
 
-    def turn_started(self) -> 'None':
+    def turn_started(self) -> "None":
         self._cancel_pending()
 
-    def arm_after_reply(self) -> 'None':
+    def arm_after_reply(self) -> "None":
         self._cancel_pending()
         period_m = self._period_m
         if period_m is None or self._notify_hook is None:
@@ -91,17 +97,17 @@ class ClockManager:
             lambda task: None if task.cancelled() else task.exception()
         )
 
-    def cancel(self) -> 'None':
+    def cancel(self) -> "None":
         self.set_period(None)
 
-    def _cancel_pending(self) -> 'None':
+    def _cancel_pending(self) -> "None":
         self._generation += 1
         task = self._timer_task
         self._timer_task = None
         if task is not None and not task.done():
             task.cancel()
 
-    async def _wait_and_notify(self, generation: 'int', period_m: 'float') -> 'None':
+    async def _wait_and_notify(self, generation: "int", period_m: "float") -> "None":
         try:
             await asyncio.sleep(period_m * self._seconds_per_minute)
         except asyncio.CancelledError:
@@ -121,8 +127,16 @@ class ClockManager:
                     "current_time": _current_time(),
                 }
             )
-        except Exception:
-            started = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            asyncio.get_running_loop().call_exception_handler(
+                {
+                    "message": "Clock notification failed",
+                    "exception": exc,
+                }
+            )
+            return
 
         if (
             not started
@@ -147,9 +161,7 @@ class ClockTool(BaseTool):
                     {"type": "number"},
                     {"type": "null"},
                 ],
-                "description": (
-                    "Positive period in minutes, or null to cancel."
-                ),
+                "description": ("Positive period in minutes, or null to cancel."),
             },
         },
         "required": ["period_m"],
@@ -158,10 +170,26 @@ class ClockTool(BaseTool):
     output_schema = CLOCK_STATE_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, manager: 'ClockManager') -> 'None':
+    def __init__(self, manager: "ClockManager") -> "None":
         self._manager = manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    def bind_agent(self, agent) -> "None":
+        self._manager.set_notify_hook(agent.maybe_invoke)
+
+    def handle_agent_event(self, event: "Event") -> "None":
+        if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
+            self._manager.turn_started()
+        elif isinstance(event, (TurnCompletedEvent, CompactCompletedEvent)):
+            self._manager.arm_after_reply()
+
+    def shutdown(self) -> "None":
+        self._manager.cancel()
+        self._manager.set_notify_hook(None)
+
+    def background_work_count(self, after_reply: "bool") -> "int":
+        return int(after_reply and self._manager.enabled)
+
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         if not isinstance(args, dict) or "period_m" not in args:
             raise ValueError("clock requires period_m")

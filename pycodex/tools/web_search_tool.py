@@ -24,6 +24,8 @@ class WebSearchTool(BaseTool):
     }
     supports_parallel = False
 
-    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         del context, args
-        return "Error: web_search is provider-native and should not be executed locally."
+        return (
+            "Error: web_search is provider-native and should not be executed locally."
+        )

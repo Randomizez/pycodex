@@ -1,64 +1,40 @@
-from pycodex.protocol import AgentEvent, ToolCall, ToolResult
-from pycodex.tools.ipython_tool import IPythonTool, attach_ipython_event_printer
-
 import sys
 import types
+
+from pycodex.events import AssistantDeltaEvent, ToolCompletedEvent, ToolStartedEvent
+from pycodex.protocol import ToolCall, ToolResult
+from pycodex.tools.ipython_tool import IPythonTool, attach_ipython_event_printer
 
 
 class FakeAgent:
     def __init__(self):
         self.event_handler = None
 
-    def set_event_handler(self, event_handler):
-        self.event_handler = event_handler
 
-
-def test_ipython_event_printer_prints_completed_tool_events(capsys) -> 'None':
+def test_ipython_event_printer_prints_completed_tool_events(capsys) -> "None":
     agent = FakeAgent()
 
     handler = attach_ipython_event_printer(agent, color=False)
 
     assert agent.event_handler is handler
 
+    call = ToolCall("call_1", "exec_command", {"cmd": "pwd"})
+    handler(AssistantDeltaEvent("hello", "turn_1"))
+    handler(ToolStartedEvent("turn_1", call))
     handler(
-        AgentEvent(
-            kind="assistant_delta",
-            turn_id="turn_1",
-            payload={"delta": "hello"},
-        )
-    )
-    handler(
-        AgentEvent(
-            kind="tool_started",
-            turn_id="turn_1",
-            payload={"tool_name": "exec_command"},
-        )
-    )
-    handler(
-        AgentEvent(
-            kind="tool_completed",
-            turn_id="turn_1",
-            payload={
-                "tool_name": "exec_command",
-                "call": ToolCall(
-                    call_id="call_1",
-                    name="exec_command",
-                    arguments={"cmd": "pwd"},
-                ),
-                "result": ToolResult(
-                    call_id="call_1",
-                    name="exec_command",
-                    output="Exit code: 0\nOutput:\n/data/pycodex\n",
-                ),
-                "is_error": False,
-            },
+        ToolCompletedEvent(
+            "turn_1",
+            call,
+            ToolResult(
+                "call_1", "exec_command", "Exit code: 0\nOutput:\n/data/pycodex\n"
+            ),
         )
     )
 
     assert capsys.readouterr().out == "[exec_command] pwd -> /data/pycodex\n"
 
 
-async def test_ipython_tool_prints_io_without_storing_history(monkeypatch) -> 'None':
+async def test_ipython_tool_prints_io_without_storing_history(monkeypatch) -> "None":
     displayed = []
 
     class FakeCode:

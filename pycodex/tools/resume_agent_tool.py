@@ -43,10 +43,10 @@ class ResumeAgentTool(BaseTool):
     output_schema = RESUME_AGENT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
+    def __init__(self, subagent_manager: "SubAgentManager") -> "None":
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         agent_id = str(args.get("id", "")).strip()
         if not agent_id:

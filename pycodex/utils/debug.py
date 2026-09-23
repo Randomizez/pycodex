@@ -1,9 +1,9 @@
 import os
-from pathlib import Path
 import typing
+from pathlib import Path
 
 
-def get_debug_dir() -> 'typing.Union[Path, None]':
+def get_debug_dir() -> "typing.Union[Path, None]":
     value = os.environ.get("PYCODEX_DEBUG_LOG", "").strip()
     if not value:
         return None

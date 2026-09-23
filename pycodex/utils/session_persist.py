@@ -2,6 +2,8 @@ import json
 import mmap
 import os
 import re
+import typing
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
 
@@ -13,9 +15,8 @@ from ..protocol import (
     ToolResult,
     UserMessage,
 )
+from .event_helpers import shorten_title
 from .get_env import get_package_version
-from .visualize import shorten_title
-import typing
 
 SESSION_INDEX_FILENAME = "session_index.jsonl"
 ROLLUP_SESSION_DIRNAMES = ("sessions", "archived_sessions")
@@ -29,8 +30,8 @@ ROLLOUT_RECORD_PREFIX = b'\n{"timestamp":"'
 
 
 def resolve_codex_home(
-    config_path: 'typing.Union[str, None]' = None,
-) -> 'Path':
+    config_path: "typing.Union[str, None]" = None,
+) -> "Path":
     if config_path:
         return Path(config_path).expanduser().resolve().parent
     codex_home = os.environ.get("CODEX_HOME", "").strip()
@@ -40,45 +41,32 @@ def resolve_codex_home(
 
 
 class SessionRolloutRecorder:
-    def __init__(self, rollout_path: 'Path') -> 'None':
+    def __init__(self, rollout_path: "Path") -> "None":
         self.rollout_path = rollout_path
+        self._session_meta: "typing.Union[typing.Dict[str, object], None]" = None
 
     @classmethod
     def create(
         cls,
-        codex_home: 'Path',
-        session_id: 'str',
-        cwd: 'Path',
-        originator: 'str',
-        model_provider: 'typing.Union[str, None]',
-        base_instructions: 'str',
-    ) -> 'SessionRolloutRecorder':
-        recorder = cls(_rollout_path_for_session(codex_home, session_id))
-        recorder.write_session_meta(
-            session_id=session_id,
-            cwd=cwd,
-            originator=originator,
-            model_provider=model_provider,
-            base_instructions=base_instructions,
+        codex_home: "Path",
+        session_id: "str",
+        cwd: "Path",
+        originator: "str",
+        model_provider: "typing.Union[str, None]",
+        base_instructions: "str",
+        session_file_path: "typing.Union[str, Path, None]" = None,
+    ) -> "SessionRolloutRecorder":
+        path = (
+            Path(session_file_path)
+            if session_file_path is not None
+            else _rollout_path_for_session(codex_home, session_id)
         )
-        return recorder
-
-    @classmethod
-    def resume(
-        cls,
-        rollout_path: 'typing.Union[str, Path]',
-    ) -> 'SessionRolloutRecorder':
-        return cls(Path(rollout_path))
-
-    def write_session_meta(
-        self,
-        session_id: 'str',
-        cwd: 'Path',
-        originator: 'str',
-        model_provider: 'typing.Union[str, None]',
-        base_instructions: 'str',
-    ) -> 'None':
-        payload = {
+        recorder = cls(path.expanduser().resolve())
+        if recorder.rollout_path.exists():
+            raise FileExistsError(
+                "session file already exists: {0}".format(recorder.rollout_path)
+            )
+        recorder._session_meta = {
             "id": session_id,
             "timestamp": _timestamp_string(),
             "cwd": str(cwd),
@@ -88,68 +76,91 @@ class SessionRolloutRecorder:
             "model_provider": model_provider,
             "base_instructions": {"text": base_instructions},
         }
-        self._append_line("session_meta", payload)
+        return recorder
+
+    @classmethod
+    def resume(
+        cls,
+        rollout_path: "typing.Union[str, Path]",
+    ) -> "SessionRolloutRecorder":
+        return cls(Path(rollout_path).expanduser().resolve())
 
     def append_history_items(
         self,
-        items: 'typing.Iterable[ConversationItem]',
-    ) -> 'None':
-        for item in items:
-            self.append_history_item(item)
+        items: "typing.Iterable[ConversationItem]",
+        initial_history: "typing.Iterable[ConversationItem]" = (),
+    ) -> "None":
+        self._append_records(self._history_records(items), initial_history)
 
-    def append_history_item(self, item: 'ConversationItem') -> 'None':
-        if isinstance(item, UserMessage):
-            self._append_line("response_item", item.serialize())
-            self._append_line(
-                "event_msg",
-                {
+    @staticmethod
+    def _history_records(
+        items: "typing.Iterable[ConversationItem]",
+    ) -> "typing.Iterable[typing.Tuple[str, typing.Dict[str, object]]]":
+        for item in items:
+            serialized = item.serialize()
+            if isinstance(serialized, dict):
+                yield "response_item", serialized
+            if isinstance(item, UserMessage):
+                yield "event_msg", {
                     "type": "user_message",
                     "message": item.text,
                     "images": [],
                     "local_images": [],
                     "text_elements": [],
-                },
-            )
-            return
-        if isinstance(item, ToolResult):
-            self._append_line("response_item", item.serialize())
-            return
-        serialized = item.serialize()
-        if isinstance(serialized, dict):
-            self._append_line("response_item", serialized)
+                }
 
     def append_compacted_history(
         self,
-        history: 'typing.Iterable[ConversationItem]',
-    ) -> 'None':
+        history: "typing.Iterable[ConversationItem]",
+        initial_history: "typing.Iterable[ConversationItem]" = (),
+    ) -> "None":
         serialized_items = []
         for item in history:
             serialized = item.serialize()
             if isinstance(serialized, dict):
                 serialized_items.append(serialized)
-        self._append_line(
-            "compacted",
-            {"replacement_history": serialized_items},
+        self._append_records(
+            [("compacted", {"replacement_history": serialized_items})],
+            initial_history,
         )
 
-    def _append_line(self, item_type: 'str', payload: 'typing.Dict[str, object]') -> 'None':
+    def _append_records(
+        self,
+        records: "typing.Iterable[typing.Tuple[str, typing.Dict[str, object]]]",
+        initial_history: "typing.Iterable[ConversationItem]" = (),
+    ) -> "None":
+        records = list(records)
+        if not records:
+            return
+        mode = "a"
+        if self._session_meta is not None:
+            mode = "x"
+            records = (
+                [("session_meta", self._session_meta)]
+                + list(self._history_records(initial_history))
+                + records
+            )
         self.rollout_path.parent.mkdir(parents=True, exist_ok=True)
-        line = {
-            "timestamp": _timestamp_string(),
-            "type": item_type,
-            "payload": payload,
-        }
-        with self.rollout_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(line, ensure_ascii=False, separators=(",", ":")))
-            handle.write("\n")
-            handle.flush()
+        with self.rollout_path.open(mode, encoding="utf-8") as handle:
+            for item_type, payload in records:
+                line = {
+                    "timestamp": _timestamp_string(),
+                    "type": item_type,
+                    "payload": payload,
+                }
+                handle.write(
+                    json.dumps(line, ensure_ascii=False, separators=(",", ":"))
+                )
+                handle.write("\n")
+                handle.flush()
+        self._session_meta = None
 
 
 def list_resumable_sessions(
-    codex_home: 'Path',
-    limit: 'int' = 20,
-) -> 'typing.Tuple[typing.Dict[str, str], ...]':
-    latest_rollouts_by_id: 'typing.Dict[str, Path]' = {}
+    codex_home: "Path",
+    limit: "int" = 20,
+) -> "typing.Tuple[typing.Dict[str, str], ...]":
+    latest_rollouts_by_id: "typing.Dict[str, Path]" = {}
     for dirname in ROLLUP_SESSION_DIRNAMES:
         root = codex_home / dirname
         if not root.exists():
@@ -168,7 +179,7 @@ def list_resumable_sessions(
         key=lambda item: (item[1].stat().st_mtime, str(item[1])),
         reverse=True,
     )
-    sessions: 'typing.List[typing.Dict[str, str]]' = []
+    sessions: "typing.List[typing.Dict[str, str]]" = []
     for thread_id, path in ordered_paths[:limit]:
         thread_name = latest_names_by_id.get(thread_id, "")
         preview = _extract_first_user_message_preview(path)
@@ -185,10 +196,10 @@ def list_resumable_sessions(
     return tuple(sessions)
 
 
-def load_resumed_session(
-    codex_home: 'Path',
-    resume_index_text: 'str',
-) -> 'typing.Dict[str, object]':
+def select_resumable_session(
+    codex_home: "Path",
+    resume_index_text: "str",
+) -> "typing.Dict[str, str]":
     normalized_target = resume_index_text.strip()
     if not normalized_target.isdigit():
         raise ValueError("Usage: /resume <number>")
@@ -198,25 +209,19 @@ def load_resumed_session(
     if resume_index < 1 or resume_index > len(sessions):
         raise ValueError(f"Session not found: {normalized_target}")
 
-    session = sessions[resume_index - 1]
-    thread_id = session["thread_id"]
-    rollout_path = Path(session["rollout_path"])
-    return load_resumed_session_path(
-        rollout_path,
-        thread_name=_latest_thread_names_by_id(codex_home).get(thread_id),
-    )
+    return sessions[resume_index - 1]
 
 
 def load_resumed_session_path(
-    rollout_path: 'typing.Union[str, Path]',
-    thread_name: 'typing.Union[str, None]' = None,
-) -> 'typing.Dict[str, object]':
-    rollout_path = Path(rollout_path)
+    rollout_path: "typing.Union[str, Path]",
+    thread_name: "typing.Union[str, None]" = None,
+) -> "typing.Dict[str, object]":
+    rollout_path = Path(rollout_path).expanduser().resolve()
     thread_id = _thread_id_from_rollout_path(rollout_path) or ""
     session_id = thread_id
-    history: 'typing.List[ConversationItem]' = []
+    history: "typing.List[ConversationItem]" = []
     saw_user_turn = False
-    tool_names_by_call_id: 'typing.Dict[str, str]' = {}
+    tool_names_by_call_id: "typing.Dict[str, str]" = {}
 
     # A rollout is append-only, and a compacted entry replaces everything
     # before it for the next request.  Large tool outputs before the latest
@@ -224,6 +229,12 @@ def load_resumed_session_path(
     # restoring the active conversation.
     compacted_offset = _find_last_compacted_offset(rollout_path)
     entry_start_offset = compacted_offset if compacted_offset is not None else 0
+    if compacted_offset is not None:
+        with closing(_iter_rollout_entries(rollout_path)) as entries:
+            first_entry = next(entries)
+        metadata = first_entry.get("payload")
+        if first_entry.get("type") == "session_meta" and isinstance(metadata, dict):
+            session_id = str(metadata.get("id", "")).strip() or session_id
 
     for entry in _iter_rollout_entries(rollout_path, entry_start_offset):
         item_type = str(entry.get("type", "")).strip()
@@ -237,9 +248,7 @@ def load_resumed_session_path(
             replacement_history = payload.get("replacement_history")
             if isinstance(replacement_history, list):
                 history = _deserialize_compacted_history(replacement_history)
-                saw_user_turn = any(
-                    isinstance(item, UserMessage) for item in history
-                )
+                saw_user_turn = any(isinstance(item, UserMessage) for item in history)
                 tool_names_by_call_id = {
                     item.call_id: item.name
                     for item in history
@@ -253,7 +262,11 @@ def load_resumed_session_path(
                 saw_user_turn = True
             continue
 
-        if item_type != "response_item" or not saw_user_turn or not isinstance(payload, dict):
+        if (
+            item_type != "response_item"
+            or not saw_user_turn
+            or not isinstance(payload, dict)
+        ):
             continue
 
         _append_deserialized_response_item(
@@ -283,10 +296,10 @@ def load_resumed_session_path(
 
 
 def conversation_history_to_turns(
-    history: 'typing.Iterable[ConversationItem]',
-) -> 'typing.Tuple[typing.Tuple[str, str], ...]':
-    turns: 'typing.List[typing.Tuple[str, str]]' = []
-    current_user_text: 'typing.Union[str, None]' = None
+    history: "typing.Iterable[ConversationItem]",
+) -> "typing.Tuple[typing.Tuple[str, str], ...]":
+    turns: "typing.List[typing.Tuple[str, str]]" = []
+    current_user_text: "typing.Union[str, None]" = None
     current_assistant_text = ""
     for item in history:
         if isinstance(item, UserMessage):
@@ -303,10 +316,10 @@ def conversation_history_to_turns(
 
 
 def _trim_incomplete_tool_call_tail(
-    history: 'typing.List[ConversationItem]',
-) -> 'typing.List[ConversationItem]':
-    pending_call_ids: 'typing.Set[str]' = set()
-    call_indexes: 'typing.Dict[str, int]' = {}
+    history: "typing.List[ConversationItem]",
+) -> "typing.List[ConversationItem]":
+    pending_call_ids: "typing.Set[str]" = set()
+    call_indexes: "typing.Dict[str, int]" = {}
 
     for index, item in enumerate(history):
         if isinstance(item, ToolCall):
@@ -328,12 +341,12 @@ def _trim_incomplete_tool_call_tail(
     return history[:trim_start]
 
 
-def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
+def _latest_thread_names_by_id(codex_home: "Path") -> "typing.Dict[str, str]":
     index_path = codex_home / SESSION_INDEX_FILENAME
     if not index_path.exists():
         return {}
 
-    names_by_id: 'typing.Dict[str, str]' = {}
+    names_by_id: "typing.Dict[str, str]" = {}
     with index_path.open("r", encoding="utf-8", errors="replace") as handle:
         for raw_line in handle:
             line = raw_line.strip()
@@ -352,7 +365,7 @@ def _latest_thread_names_by_id(codex_home: 'Path') -> 'typing.Dict[str, str]':
     return names_by_id
 
 
-def _thread_id_from_rollout_path(path: 'Path') -> 'typing.Union[str, None]':
+def _thread_id_from_rollout_path(path: "Path") -> "typing.Union[str, None]":
     stem = path.stem
     if len(stem) < 36:
         return None
@@ -360,7 +373,9 @@ def _thread_id_from_rollout_path(path: 'Path') -> 'typing.Union[str, None]':
     return candidate if UUID_PATTERN.match(candidate) else None
 
 
-def _extract_first_user_message_preview(rollout_path: 'Path') -> 'typing.Union[str, None]':
+def _extract_first_user_message_preview(
+    rollout_path: "Path",
+) -> "typing.Union[str, None]":
     for entry in _iter_rollout_entries(rollout_path):
         if entry.get("type") != "event_msg":
             continue
@@ -374,8 +389,8 @@ def _extract_first_user_message_preview(rollout_path: 'Path') -> 'typing.Union[s
 
 
 def _find_last_compacted_offset(
-    rollout_path: 'Path',
-) -> 'typing.Union[int, None]':
+    rollout_path: "Path",
+) -> "typing.Union[int, None]":
     """Find the latest recorder-format compact checkpoint."""
 
     file_size = rollout_path.stat().st_size
@@ -407,9 +422,9 @@ def _find_last_compacted_offset(
 
 
 def _iter_rollout_entries(
-    rollout_path: 'Path',
-    start_offset: 'int' = 0,
-) -> 'typing.Iterable[typing.Dict[str, object]]':
+    rollout_path: "Path",
+    start_offset: "int" = 0,
+) -> "typing.Iterable[typing.Dict[str, object]]":
     decoder = json.JSONDecoder()
     buffer = ""
     start = 0
@@ -458,8 +473,8 @@ def _iter_rollout_entries(
         raise ValueError(f"no rollout entries found in {rollout_path}")
 
 
-def _extract_response_message_text(payload: 'typing.Dict[str, object]') -> 'str':
-    text_parts: 'typing.List[str]' = []
+def _extract_response_message_text(payload: "typing.Dict[str, object]") -> "str":
+    text_parts: "typing.List[str]" = []
     for item in payload.get("content") or []:
         if isinstance(item, dict) and item.get("type") in {"input_text", "output_text"}:
             text_parts.append(str(item.get("text", "")))
@@ -467,10 +482,10 @@ def _extract_response_message_text(payload: 'typing.Dict[str, object]') -> 'str'
 
 
 def _deserialize_compacted_history(
-    replacement_history: 'typing.Iterable[object]',
-) -> 'typing.List[ConversationItem]':
-    history: 'typing.List[ConversationItem]' = []
-    tool_names_by_call_id: 'typing.Dict[str, str]' = {}
+    replacement_history: "typing.Iterable[object]",
+) -> "typing.List[ConversationItem]":
+    history: "typing.List[ConversationItem]" = []
+    tool_names_by_call_id: "typing.Dict[str, str]" = {}
     for payload in replacement_history:
         if not isinstance(payload, dict):
             continue
@@ -484,19 +499,23 @@ def _deserialize_compacted_history(
 
 
 def _append_deserialized_response_item(
-    history: 'typing.List[ConversationItem]',
-    payload: 'typing.Dict[str, object]',
-    tool_names_by_call_id: 'typing.Dict[str, str]',
-    include_user_messages: 'bool',
-) -> 'None':
+    history: "typing.List[ConversationItem]",
+    payload: "typing.Dict[str, object]",
+    tool_names_by_call_id: "typing.Dict[str, str]",
+    include_user_messages: "bool",
+) -> "None":
     response_item_type = str(payload.get("type", "")).strip()
     if response_item_type == "message":
         role = str(payload.get("role", "")).strip()
         if role == "assistant":
-            history.append(AssistantMessage(text=_extract_response_message_text(payload)))
+            history.append(AssistantMessage.from_response_item(payload))
             return
         if include_user_messages and role == "user":
-            history.append(UserMessage(text=_extract_response_message_text(payload)))
+            history.append(
+                UserMessage(
+                    text=_extract_response_message_text(payload), id=payload.get("id")
+                )
+            )
         return
 
     if response_item_type == "reasoning":
@@ -520,7 +539,16 @@ def _append_deserialized_response_item(
         name = str(payload.get("name", "")).strip()
         if not call_id or not name:
             return
-        history.append(ToolCall(call_id=call_id, name=name, arguments=arguments))
+        history.append(
+            ToolCall(
+                call_id=call_id,
+                name=name,
+                arguments=arguments,
+                id=payload.get("id"),
+                raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
+                namespace=payload.get("namespace"),
+            )
+        )
         tool_names_by_call_id[call_id] = name
         return
 
@@ -535,6 +563,9 @@ def _append_deserialized_response_item(
                 name=name,
                 arguments=str(payload.get("input", "")),
                 tool_type="custom",
+                id=payload.get("id"),
+                namespace=payload.get("namespace"),
+                status=payload.get("status"),
             )
         )
         tool_names_by_call_id[call_id] = name
@@ -553,7 +584,10 @@ def _append_deserialized_response_item(
     ):
         content_items = tuple(dict(item) for item in raw_output)
         output = json.dumps(raw_output, ensure_ascii=False)
-    elif isinstance(raw_output, (dict, list, str, int, float, bool)) or raw_output is None:
+    elif (
+        isinstance(raw_output, (dict, list, str, int, float, bool))
+        or raw_output is None
+    ):
         output = raw_output
     else:
         output = str(raw_output)
@@ -563,6 +597,7 @@ def _append_deserialized_response_item(
             name=tool_names_by_call_id.get(call_id, ""),
             output=output,
             content_items=content_items,
+            id=payload.get("id"),
             success=(
                 payload.get("success")
                 if isinstance(payload.get("success"), bool)
@@ -577,7 +612,7 @@ def _append_deserialized_response_item(
     )
 
 
-def _rollout_path_for_session(codex_home: 'Path', session_id: 'str') -> 'Path':
+def _rollout_path_for_session(codex_home: "Path", session_id: "str") -> "Path":
     now = datetime.now().astimezone()
     return (
         codex_home
@@ -589,5 +624,5 @@ def _rollout_path_for_session(codex_home: 'Path', session_id: 'str') -> 'Path':
     )
 
 
-def _timestamp_string() -> 'str':
+def _timestamp_string() -> "str":
     return datetime.now().astimezone().isoformat(timespec="milliseconds")

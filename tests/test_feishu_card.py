@@ -1,6 +1,23 @@
 import json
 
-from pycodex.feishu_card import PycodexCard
+import pytest
+
+from pycodex.events import (
+    AssistantDeltaEvent,
+    Event,
+    InputRequestedEvent,
+    InputResolvedEvent,
+    SessionClosedEvent,
+    SessionStateEvent,
+    StreamErrorEvent,
+    ToolCompletedEvent,
+    ToolStartedEvent,
+    TurnCompletedEvent,
+    TurnFailedEvent,
+    TurnStartedEvent,
+)
+from pycodex.feishu_card import CARD_OUTPUT_LIMIT, PycodexCard
+from pycodex.protocol import ToolCall, ToolResult
 
 
 class _Response:
@@ -24,7 +41,9 @@ class _FakeSession:
         self.posts.append({"url": url, "json": json, "timeout": timeout})
         if self._post_responses:
             return _Response(self._post_responses.pop(0))
-        return _Response({"code": 0, "tenant_access_token": "tenant-token", "expire": 3600})
+        return _Response(
+            {"code": 0, "tenant_access_token": "tenant-token", "expire": 3600}
+        )
 
     def request(self, method, url, params=None, json=None, headers=None, timeout=None):
         self.requests.append(
@@ -65,8 +84,7 @@ def _working_markdown_content(card):
 
 def _has_element(card, element_id):
     return any(
-        element.get("element_id") == element_id
-        for element in card["body"]["elements"]
+        element.get("element_id") == element_id for element in card["body"]["elements"]
     )
 
 
@@ -86,16 +104,41 @@ def test_feishu_card_uses_session_connected_header_and_input_status() -> None:
 
     rendered = card.render()
     assert rendered["header"]["title"]["content"] == "Session Connected"
-    assert _prompt_input(rendered)["placeholder"]["content"] == "Ask pycodex..."
+    assert _prompt_input(rendered)["placeholder"]["content"] == "pycodex> pycodex"
 
-    card.status = "Running"
-    card.status_detail = "Model request started."
+    card.apply_event(TurnStartedEvent("turn", ("hello",)))
     rendered = card.render()
 
     assert rendered["header"]["title"]["content"] == "Session Connected"
+    assert rendered["header"]["template"] == "blue"
     assert _prompt_input(rendered)["placeholder"]["content"] == (
-        "Running - Model request started."
+        "pycodex> turn_started"
     )
+    assert not _prompt_input(rendered)["disabled"]
+
+
+def test_feishu_card_delegates_unknown_events_to_its_own_plain_display() -> None:
+    class RenderedEvent(Event):
+        def render(self, display):
+            display.write("new event")
+            display.set_status("custom activity")
+            display.set_prompt("custom> ")
+            display.stream_buffer = "live text"
+
+    card = PycodexCard()
+    other = PycodexCard()
+    card.apply_event(RenderedEvent())
+
+    assert card.display is not other.display
+    assert not card.display.color_enabled
+    assert other.output_text == other.display.stream_buffer == ""
+    rendered = card.render()
+    assert _answer_markdown_content(rendered) == "new event"
+    assert _working_markdown_content(rendered) == "live text"
+    assert (
+        _prompt_input(rendered)["placeholder"]["content"] == "custom> custom activity"
+    )
+    assert "\\u001b" not in json.dumps(rendered)
 
 
 def test_feishu_card_send_falls_back_to_code_mode_without_mutating_output() -> None:
@@ -151,45 +194,172 @@ def test_feishu_card_update_falls_back_to_escaped_code_mode() -> None:
     )
 
 
-def test_feishu_card_preserves_previous_output_while_next_turn_runs() -> None:
+def test_feishu_card_keeps_recent_rendered_turns_with_bounded_output() -> None:
     card = PycodexCard()
-    card.output_text = "previous answer"
+    card.apply_event(TurnCompletedEvent("previous", 1, "previous answer", 0))
 
-    card.set_queued("next prompt", sender="alice")
-    assert card.output_text == "(*last turn)\nprevious answer"
+    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
+    assert card.output_text == "assistant> previous answer\nuser> next prompt"
 
-    card.apply_event({"kind": "turn_started", "user_text": "next prompt"})
-    assert card.output_text == "(*last turn)\nprevious answer"
+    card.apply_event(TurnCompletedEvent("turn", 1, "new answer", 0))
+    assert card.output_text.endswith("\nassistant> new answer")
+    assert card.status is None
 
-    card.apply_event({"kind": "turn_completed", "output_text": "new answer"})
-    assert card.output_text == "new answer"
+    card.apply_event(
+        TurnCompletedEvent("long", 1, "x" * CARD_OUTPUT_LIMIT + "latest", 0)
+    )
+    assert len(card.output_text) == CARD_OUTPUT_LIMIT
+    assert card.output_text.endswith("latest")
+    assert "previous answer" not in card.output_text
 
 
 def test_feishu_card_shows_current_delta_segment_above_input() -> None:
     card = PycodexCard()
     card.output_text = "previous answer"
-    card.apply_event({"kind": "turn_started", "user_text": "next prompt"})
+    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
 
-    card.apply_event({"kind": "assistant_delta", "delta": "first "})
-    card.apply_event({"kind": "assistant_delta", "delta": "segment"})
+    card.apply_event(AssistantDeltaEvent("first ", "turn"))
+    card.apply_event(AssistantDeltaEvent("segment", "turn"))
     rendered = card.render()
 
-    assert _answer_markdown_content(rendered) == "(*last turn)\nprevious answer"
+    assert _answer_markdown_content(rendered) == "previous answer\nuser> next prompt"
     assert _element(rendered, "working_output_box")["background_style"] == "green-50"
     assert _working_markdown_content(rendered) == "first segment"
 
-    card.apply_event({"kind": "tool_started", "tool_name": "shell"})
-    card.apply_event({"kind": "tool_completed", "summary": "done"})
-    assert _working_markdown_content(card.render()) == "first segment"
-
-    card.apply_event({"kind": "assistant_delta", "delta": "second "})
-    card.apply_event({"kind": "assistant_delta", "delta": "segment"})
-    assert _working_markdown_content(card.render()) == "second segment"
-
-    card.apply_event({"kind": "turn_completed", "output_text": "final answer"})
+    call = ToolCall("call", "shell", {"command": ["pwd"]})
+    card.apply_event(ToolStartedEvent("turn", call))
+    card.apply_event(
+        ToolCompletedEvent("turn", call, ToolResult("call", "shell", "done"))
+    )
     rendered = card.render()
-    assert _answer_markdown_content(rendered) == "final answer"
     assert not _has_element(rendered, "working_output_box")
+    assert _answer_markdown_content(rendered).endswith(
+        "assistant> first segment\n[shell] pwd -> done"
+    )
+
+    card.apply_event(AssistantDeltaEvent("final ", "turn"))
+    card.apply_event(AssistantDeltaEvent("answer", "turn"))
+    assert _working_markdown_content(card.render()) == "final answer"
+
+    card.apply_event(TurnCompletedEvent("turn", 1, "final answer", 0))
+    rendered = card.render()
+    assert _answer_markdown_content(rendered).endswith("assistant> final answer")
+    assert card.output_text.count("assistant> final answer") == 1
+    assert not _has_element(rendered, "working_output_box")
+
+
+def test_feishu_card_shared_buffer_discards_retries_and_flushes_fatal_output() -> None:
+    card = PycodexCard()
+    card.apply_event(AssistantDeltaEvent("discarded"))
+    assert _working_markdown_content(card.render()) == "discarded"
+
+    card.apply_event(StreamErrorEvent("Retrying", 1, 2, 0, "lost"))
+    assert "discarded" not in json.dumps(card.render())
+    assert not _has_element(card.render(), "working_output_box")
+
+    card.apply_event(AssistantDeltaEvent("retained"))
+    card.apply_event(TurnFailedEvent("turn", 1, "failed", "RuntimeError", 0))
+    assert card.output_text == "[status] Retrying\nassistant> retained\nError: failed"
+    assert not _has_element(card.render(), "working_output_box")
+
+
+@pytest.mark.parametrize(
+    "request_kind,other,prompt",
+    [
+        ("questions", False, "answer> "),
+        ("questions", True, "other> "),
+        ("permissions", False, "permissions> "),
+    ],
+)
+def test_feishu_card_uses_shared_input_prompts(request_kind, other, prompt) -> None:
+    card = PycodexCard()
+    request = InputRequestedEvent(
+        "request",
+        request_kind,
+        other,
+        question={
+            "header": "Choice",
+            "question": "Which?",
+            "options": [{"label": "First", "description": "Use first"}],
+        },
+        permissions={"permissions": {"network": {"enabled": True}}},
+    )
+    card.apply_event(request)
+    rendered = card.render()
+    assert _answer_markdown_content(rendered) == request.visualize()
+    assert _prompt_input(rendered)["placeholder"]["content"].startswith(prompt)
+    assert not _prompt_input(rendered)["disabled"]
+
+    card.apply_event(InputResolvedEvent("request"))
+    assert _prompt_input(card.render())["placeholder"]["content"] == "pycodex> pycodex"
+
+
+def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> None:
+    card = PycodexCard()
+    request = InputRequestedEvent("request", "questions", True)
+    state = {
+        "model": "restored-model",
+        "title": "Restored",
+        "closed": False,
+        "accepts_input": True,
+        "busy": True,
+        "background_work_count": 0,
+        "context_window": None,
+        "usage_tokens": None,
+        "input_request": request,
+        "history": (("previous", "answer"), ("live", "partial")),
+        "active_turn": {
+            "turn_id": "turn",
+            "submission_id": "submission",
+            "user_texts": ["live"],
+            "assistant_text": "partial",
+            "completed_history": (("previous", "answer"),),
+        },
+    }
+    card.apply_event(SessionStateEvent("attach", state))
+    assert card.output_text == (
+        "user> previous\nassistant> answer\nuser> live\nassistant> partial\n"
+        + request.visualize()
+    )
+    assert card.prompt_text == "other> "
+    assert card.display.stream_buffer == ""
+    assert card.render()["header"]["title"]["content"] == "Session Connected · Restored"
+
+    card.apply_event(AssistantDeltaEvent("stale"))
+    card.apply_event(
+        SessionStateEvent(
+            "history",
+            dict(
+                state,
+                history=(),
+                active_turn=None,
+                input_request=None,
+                busy=False,
+            ),
+        )
+    )
+    assert card.output_text == card.display.stream_buffer == ""
+    assert _answer_markdown_content(card.render()) == "Ready."
+    assert (
+        _prompt_input(card.render())["placeholder"]["content"]
+        == "pycodex> restored-model"
+    )
+
+
+def test_feishu_card_disables_closed_input_and_removes_detached_input() -> None:
+    card = PycodexCard()
+    card.apply_event(AssistantDeltaEvent("last output"))
+    card.apply_event(SessionClosedEvent())
+    rendered = card.render()
+    assert rendered["header"]["title"]["content"] == "Session Closed"
+    assert _answer_markdown_content(rendered) == "assistant> last output"
+    assert _prompt_input(rendered)["disabled"]
+    assert not _has_element(rendered, "working_output_box")
+
+    card.detach()
+    rendered = card.render()
+    assert rendered["header"]["title"]["content"] == "Session Detached"
+    assert not _has_element(rendered, "prompt_input")
 
 
 def test_resolve_name_uses_default_email_domain_from_env(monkeypatch) -> None:
@@ -217,7 +387,9 @@ def test_resolve_name_without_default_email_domain_does_not_guess(monkeypatch) -
     assert lookups == []
 
 
-def test_feishu_card_from_env_reads_refresh_token_for_user_auth(tmp_path, monkeypatch) -> None:
+def test_feishu_card_from_env_reads_refresh_token_for_user_auth(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "refresh-token")
 
@@ -226,7 +398,9 @@ def test_feishu_card_from_env_reads_refresh_token_for_user_auth(tmp_path, monkey
     assert card.refresh_token == "refresh-token"
 
 
-def test_feishu_card_from_env_reads_fixed_refresh_token_store(tmp_path, monkeypatch) -> None:
+def test_feishu_card_from_env_reads_fixed_refresh_token_store(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
     token_path = tmp_path / ".codex" / ".feishu_refresh_token"
@@ -238,7 +412,9 @@ def test_feishu_card_from_env_reads_fixed_refresh_token_store(tmp_path, monkeypa
     assert card.refresh_token == "file-refresh"
 
 
-def test_feishu_card_can_exchange_refresh_token_for_user_token(tmp_path, monkeypatch) -> None:
+def test_feishu_card_can_exchange_refresh_token_for_user_token(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     session = _FakeSession(
         [{"code": 0, "data": {"message_id": "om_test"}}],
@@ -273,7 +449,9 @@ def test_feishu_card_can_exchange_refresh_token_for_user_token(tmp_path, monkeyp
     assert card.refresh_token == "next-refresh-token"
 
 
-def test_feishu_card_persists_rotated_refresh_token_to_store(tmp_path, monkeypatch) -> None:
+def test_feishu_card_persists_rotated_refresh_token_to_store(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
     token_path = tmp_path / ".codex" / ".feishu_refresh_token"
@@ -304,7 +482,9 @@ def test_feishu_card_persists_rotated_refresh_token_to_store(tmp_path, monkeypat
     assert session.posts[0]["json"]["refresh_token"] == "old-refresh"
 
 
-def test_feishu_card_rereads_refresh_token_store_for_each_exchange(tmp_path, monkeypatch) -> None:
+def test_feishu_card_rereads_refresh_token_store_for_each_exchange(
+    tmp_path, monkeypatch
+) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     token_path = tmp_path / ".codex" / ".feishu_refresh_token"
     token_path.parent.mkdir()

@@ -1,103 +1,26 @@
-
-import atexit
 import argparse
 import asyncio
+import inspect
 import os
 import shlex
 import sys
 import tempfile
+import threading
 import traceback
-from dataclasses import replace
-from pathlib import Path
-from typing import Sequence
-
-from .agent import Agent
-from .collaboration import DEFAULT_COLLABORATION_MODE, CollaborationMode
-from .compat import Literal
-from .context import ContextManager
-from .model import DEFAULT_CODEX_CONFIG_PATH, ResponsesModelClient, ResponsesProviderConfig
-from .portable import bootstrap_called_home, upload_codex_home
-from .runtime import CliSubmissionQueue
-from .runtime_services import AgentRuntimeEnvironment, create_agent_runtime_environment
-from .utils import CliSessionView, get_debug_dir, load_codex_dotenv, uuid7_string
-from .interactive_session import (
-    EXTRA_COMMANDS_LINE,
-    format_turn_output,
-    run_interactive_session as _run_interactive_session,
-    prompt_request_permissions,
-    prompt_request_user_input,
-)
-from .utils.session_persist import (
-    SessionRolloutRecorder,
-    resolve_codex_home,
-)
 import typing
 
-CliSessionMode = Literal["exec", "tui"]
-LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
-CLI_ORIGINATOR = "codex-tui"
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
+
+from .bootstrap import build_agent, build_model, build_runtime, configure_loguru
+from .events import DEFAULT_MAIN_PROMPT, EventDisplay
+from .model import DEFAULT_CODEX_CONFIG_PATH
+from .portable import bootstrap_called_home, upload_codex_home
+from .utils import get_debug_dir
+from .utils.event_helpers import format_error, render_result
 
 
-def launch_chat_completion_compat_server(*args, **kwargs):
-    from responses_server import (
-        launch_chat_completion_compat_server as launch_compat_server,
-    )
-
-    return launch_compat_server(*args, **kwargs)
-
-
-def _resolve_vllm_model(
-    endpoint: 'str',
-    provider_config: 'ResponsesProviderConfig',
-    timeout_seconds: 'float',
-) -> 'str':
-    from responses_server import CompatServerConfig
-
-    normalized = CompatServerConfig.from_base_url(endpoint)
-    probe_config = replace(
-        provider_config,
-        provider_name="vllm",
-        base_url=normalized.outcomming_base_url,
-        api_key_env=None,
-        query_params={},
-        responses_lite_override=False,
-    )
-    probe_client = ResponsesModelClient(
-        probe_config,
-        timeout_seconds,
-        originator=CLI_ORIGINATOR,
-    )
-    models = probe_client.list_models_sync()
-    if not models:
-        raise RuntimeError(
-            "vLLM endpoint returned no models from "
-            f"{normalized.outcomming_models_url()}"
-        )
-    return models[-1]
-
-
-def configure_loguru() -> 'None':
-    try:
-        from loguru import logger
-    except ImportError:  # pragma: no cover - dependency may be absent in minimal envs
-        return
-
-    logger.remove()
-    debug_dir = get_debug_dir()
-    if debug_dir is not None:
-        logger.add(str(debug_dir / "loguru.log"), level="DEBUG")
-        return
-
-    if os.environ.get("PYCODEX_DEBUG_STDERR", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        logger.add(sys.stderr, level="DEBUG")
-
-
-def build_parser() -> 'argparse.ArgumentParser':
+def build_parser():
     parser = argparse.ArgumentParser(
         prog="pycodex",
         description="Minimal Codex-style local CLI backed by ~/.codex/config.toml.",
@@ -109,17 +32,12 @@ def build_parser() -> 'argparse.ArgumentParser':
         "--put",
         default=None,
         metavar="PATH@SERVER",
-        help=(
-            "Upload a Codex home using `--put @host:port` or "
-            "`--put /path/.codex@host:port`."
-        ),
+        help="Upload a Codex home using `--put @host:port` or `--put /path/.codex@host:port`.",
     )
     parser.add_argument(
         "--call",
         default=None,
-        help=(
-            "Download and use a stored Codex home via <secret>-<call_id>@<host:port>."
-        ),
+        help="Download and use a stored Codex home via <secret>-<call_id>@<host:port>.",
     )
     parser.add_argument(
         "--config",
@@ -127,35 +45,24 @@ def build_parser() -> 'argparse.ArgumentParser':
         help="Path to Codex config.toml.",
     )
     parser.add_argument(
-        "--profile",
-        default=None,
-        help="Optional profile name from config.toml.",
+        "--profile", default=None, help="Optional profile name from config.toml."
     )
     parser.add_argument(
         "--vllm-endpoint",
         default=None,
-        help=(
-            "Optional base URL for a chat-completions-backed vLLM server. "
-            "When set, pycodex starts a local responses compat server for this "
-            "session and appends /v1 if the path is empty."
-        ),
+        help="Start a local responses compat server for a chat-completions-backed vLLM endpoint.",
     )
     parser.add_argument(
         "--use-chat-completion",
         default=False,
         action="store_true",
-        help=(
-            "When set, pycodex starts a local responses compat server for this session."
-        ),
+        help="Start a local responses compat server for this session.",
     )
     parser.add_argument(
         "--use-messages",
         default=False,
         action="store_true",
-        help=(
-            "When set, pycodex starts a local responses compat server and routes "
-            "to a downstream /v1/messages backend for this session."
-        ),
+        help="Route the local responses compat server to a downstream /v1/messages backend.",
     )
     parser.add_argument(
         "--system-prompt",
@@ -169,366 +76,39 @@ def build_parser() -> 'argparse.ArgumentParser':
         help="HTTP timeout for one model call.",
     )
     parser.add_argument(
-        "--json",
-        action="store_true",
-        help="Print the full TurnResult as JSON.",
+        "--json", action="store_true", help="Print the full TurnResult as JSON."
     )
     return parser
 
 
-def should_run_interactive(prompt_parts: 'Sequence[str]', stdin_is_tty: 'bool') -> 'bool':
+def should_run_interactive(prompt_parts, stdin_is_tty):
     return not prompt_parts and stdin_is_tty
 
 
-def resolve_prompt_text(prompt_parts: 'Sequence[str]') -> 'str':
+def resolve_prompt_text(prompt_parts):
     if prompt_parts:
         return " ".join(prompt_parts).strip()
-
     if not sys.stdin.isatty():
         prompt_text = sys.stdin.read().strip()
         if prompt_text:
             return prompt_text
-
     raise ValueError("prompt is required either as argv text or stdin")
 
 
-def get_tools(
-    runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
-    exec_mode: 'bool' = False,
-    cwd: 'typing.Union[str, Path, None]' = None,
-    toolset: 'typing.Union[typing.Iterable[str], None]' = None,
-):
-    from .tools import (
-        ApplyPatchTool,
-        ClockManager,
-        ClockTool,
-        CloseAgentTool,
-        CodeModeManager,
-        ExecTool,
-        ExecCommandTool,
-        GrepFilesTool,
-        ListDirTool,
-        ReadFileTool,
-        RequestPermissionsTool,
-        RequestUserInputTool,
-        ResumeAgentTool,
-        Registry,
-        SendInputTool,
-        ShellCommandTool,
-        ShellTool,
-        SpawnAgentTool,
-        UnifiedExecManager,
-        UpdatePlanTool,
-        ViewImageTool,
-        WaitAgentTool,
-        WaitTool,
-        WebSearchTool,
-        WriteStdinTool,
-    )
-
-    runtime_environment = runtime_environment or create_agent_runtime_environment()
-    registry = Registry()
-    code_mode_manager = CodeModeManager(registry, cwd=cwd)
-    unified_exec_manager = UnifiedExecManager(cwd=cwd)
-    clock_manager = ClockManager()
-    exec_tool = ExecTool(code_mode_manager)
-    wait_tool = WaitTool(code_mode_manager)
-    web_search_tool = WebSearchTool()
-    update_plan_tool = UpdatePlanTool(runtime_environment.plan_store)
-    request_user_input_tool = RequestUserInputTool(
-        runtime_environment.request_user_input_manager
-    )
-    request_permissions_tool = RequestPermissionsTool(
-        runtime_environment.request_permissions_manager
-    )
-    spawn_agent_tool = SpawnAgentTool(runtime_environment.subagent_manager)
-    send_input_tool = SendInputTool(runtime_environment.subagent_manager)
-    resume_agent_tool = ResumeAgentTool(runtime_environment.subagent_manager)
-    wait_agent_tool = WaitAgentTool(runtime_environment.subagent_manager)
-    close_agent_tool = CloseAgentTool(runtime_environment.subagent_manager)
-    apply_patch_tool = ApplyPatchTool(cwd=cwd)
-    shell_tool = ShellTool(cwd=cwd)
-    shell_command_tool = ShellCommandTool(cwd=cwd)
-    exec_command_tool = ExecCommandTool(unified_exec_manager)
-    write_stdin_tool = WriteStdinTool(unified_exec_manager)
-    clock_tool = ClockTool(clock_manager)
-    grep_files_tool = GrepFilesTool(cwd=cwd)
-    read_file_tool = ReadFileTool()
-    list_dir_tool = ListDirTool()
-    view_image_tool = ViewImageTool(cwd=cwd)
-    tools = (
-        shell_tool,
-        shell_command_tool,
-        exec_command_tool,
-        write_stdin_tool,
-        clock_tool,
-        exec_tool,
-        wait_tool,
-        web_search_tool,
-        update_plan_tool,
-        request_user_input_tool,
-        request_permissions_tool,
-        spawn_agent_tool,
-        send_input_tool,
-        resume_agent_tool,
-        wait_agent_tool,
-        close_agent_tool,
-        apply_patch_tool,
-        grep_files_tool,
-        read_file_tool,
-        list_dir_tool,
-        view_image_tool,
-    )
-    if toolset is not None:
-        available_tools = {tool.name: tool for tool in tools}
-        toolset = tuple(toolset)
-        unknown_tools = set(toolset) - set(available_tools)
-        if unknown_tools:
-            raise ValueError(
-                "unknown toolset entries: {0}".format(", ".join(sorted(unknown_tools)))
-            )
-        tools = tuple(available_tools[name] for name in toolset)
-    elif exec_mode:
-        tools = (
-            exec_command_tool,
-            write_stdin_tool,
-            clock_tool,
-            update_plan_tool,
-            request_user_input_tool,
-            apply_patch_tool,
-            web_search_tool,
-            view_image_tool,
-            spawn_agent_tool,
-            send_input_tool,
-            resume_agent_tool,
-            wait_agent_tool,
-            close_agent_tool,
-        )
-    for tool in tools:
-        registry.register(tool)
-    return registry
-
-
-def get_subagent_tools(
-    runtime_environment: 'typing.Union[AgentRuntimeEnvironment, None]' = None,
-    cwd: 'typing.Union[str, Path, None]' = None,
-):
-    from .tools import (
-        ApplyPatchTool,
-        ExecCommandTool,
-        Registry,
-        UnifiedExecManager,
-        UpdatePlanTool,
-        ViewImageTool,
-        WebSearchTool,
-        WriteStdinTool,
-    )
-
-    runtime_environment = runtime_environment or create_agent_runtime_environment()
-    registry = Registry()
-    unified_exec_manager = UnifiedExecManager(cwd=cwd)
-    registry.register(ExecCommandTool(unified_exec_manager))
-    registry.register(WriteStdinTool(unified_exec_manager))
-    registry.register(UpdatePlanTool(runtime_environment.plan_store))
-    registry.register(ApplyPatchTool(cwd=cwd))
-    registry.register(WebSearchTool())
-    registry.register(ViewImageTool(cwd=cwd))
-    return registry
-
-
-def build_agent(
-    client,
-    config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
-    profile: 'typing.Union[str, None]' = None,
-    system_prompt: 'typing.Union[str, None]' = None,
-    session_mode: 'CliSessionMode' = "exec",
-    collaboration_mode: 'CollaborationMode' = DEFAULT_COLLABORATION_MODE,
-    extra_contextual_user_messages: 'typing.Iterable[str]' = (),
-    cwd: 'typing.Union[str, Path, None]' = None,
-    toolset: 'typing.Union[typing.Iterable[str], None]' = None,
-) -> 'Agent':
-    config_path = str(config_path)
-    resolved_cwd = Path(cwd or Path.cwd()).resolve()
-    context_manager = ContextManager.from_codex_config(
-        config_path,
-        profile,
-        base_instructions_override=system_prompt,
-        collaboration_mode=collaboration_mode,
-        include_collaboration_instructions=session_mode == "tui",
-        extra_contextual_user_messages=extra_contextual_user_messages,
-        cwd=resolved_cwd,
-    )
-    session_id = getattr(client, "_session_id", None) or uuid7_string()
-    if hasattr(client, "_session_id"):
-        client._session_id = session_id
-    subagent_context_manager = ContextManager.from_codex_config(
-        config_path,
-        profile,
-        base_instructions_override=system_prompt,
-        include_collaboration_instructions=False,
-        extra_contextual_user_messages=extra_contextual_user_messages,
-        cwd=resolved_cwd,
-    )
-    runtime_environment = create_agent_runtime_environment()
-    runtime_environment.request_user_input_manager.set_handler(None)
-    runtime_environment.request_permissions_manager.set_handler(None)
-    rollout_recorder = SessionRolloutRecorder.create(
-        resolve_codex_home(config_path),
-        session_id,
-        context_manager.cwd,
-        getattr(client, "_originator", CLI_ORIGINATOR),
-        getattr(getattr(client, "_config", None), "provider_name", None),
-        context_manager.resolve_base_instructions(),
-    )
-
-    def make_subagent_queue_builder(base_client):
-        def build_subagent_queue(
-            model_override: 'typing.Union[str, None]',
-            reasoning_effort_override: 'typing.Union[str, None]',
-            initial_history=(),
-            session_id: 'typing.Union[str, None]' = None,
-        ) -> 'CliSubmissionQueue':
-            nested_client = base_client.with_overrides(
-                model_override,
-                reasoning_effort_override,
-                session_id=session_id,
-                openai_subagent="collab_spawn",
-            )
-            subagent_agent_runtime_environment = create_agent_runtime_environment()
-            subagent_agent_runtime_environment.request_user_input_manager.set_handler(None)
-            subagent_agent_runtime_environment.request_permissions_manager.set_handler(None)
-            subagent_agent_runtime_environment.subagent_manager.set_queue_builder(
-                make_subagent_queue_builder(nested_client)
-            )
-            sub_agent = Agent(
-                nested_client,
-                get_subagent_tools(subagent_agent_runtime_environment, cwd=resolved_cwd),
-                subagent_context_manager,
-                initial_history=tuple(initial_history),
-                runtime_environment=subagent_agent_runtime_environment,
-            )
-            return CliSubmissionQueue(sub_agent)
-
-        return build_subagent_queue
-
-    runtime_environment.subagent_manager.set_queue_builder(
-        make_subagent_queue_builder(client)
-    )
-    return Agent(
-        client,
-        get_tools(
-            runtime_environment,
-            exec_mode=True,
-            cwd=resolved_cwd,
-            toolset=toolset,
-        ),
-        context_manager,
-        rollout_recorder=rollout_recorder,
-        runtime_environment=runtime_environment,
-    )
-
-
-def build_model(
-    config_path: 'typing.Union[str, Path]' = DEFAULT_CODEX_CONFIG_PATH,
-    profile: 'typing.Union[str, None]' = None,
-    timeout_seconds: 'float' = 120.0,
-    managed_responses_base_url: 'typing.Union[str, None]' = None,
-    vllm_endpoint: 'typing.Union[str, None]' = None,
-    use_chat_completion: 'typing.Union[bool, None]' = None,
-    use_messages: 'bool' = False,
-):
-    load_codex_dotenv(config_path)
-    provider_config = ResponsesProviderConfig.from_codex_config(
-        config_path,
-        profile,
-    )
-    if use_chat_completion is None:
-        use_chat_completion = bool(provider_config.use_chat_completion)
-    if use_chat_completion and use_messages:
-        raise ValueError("--use-chat-completion and --use-messages cannot be combined")
-    if vllm_endpoint and use_messages:
-        raise ValueError("--vllm-endpoint and --use-messages cannot be combined")
-    uses_local_responses_compat = (
-        managed_responses_base_url is not None
-        or vllm_endpoint is not None
-        or bool(use_chat_completion)
-        or use_messages
-    )
-    if vllm_endpoint is not None:
-        provider_config = replace(
-            provider_config,
-            model=_resolve_vllm_model(
-                vllm_endpoint,
-                provider_config,
-                timeout_seconds,
-            ),
-        )
-    url, key_env = provider_config.base_url, provider_config.api_key_env
-    if managed_responses_base_url is not None:
-        url, key_env = (
-            managed_responses_base_url,
-            LOCAL_RESPONSES_SERVER_API_KEY_ENV,
-        )
-        os.environ.setdefault(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
-    elif vllm_endpoint or use_chat_completion or use_messages:
-        if vllm_endpoint:
-            managed_server = launch_chat_completion_compat_server(
-                vllm_endpoint,
-                model_provider="vllm",
-            )
-        else:
-            managed_server = launch_chat_completion_compat_server(
-                provider_config.base_url,
-                provider_config.api_key_env,
-                model_provider=provider_config.provider_name,
-                outcomming_api=(
-                    "messages" if use_messages else "chat_completions"
-                ),
-            )
-        atexit.register(managed_server.stop)
-        url, key_env = (
-            managed_server.base_url,
-            LOCAL_RESPONSES_SERVER_API_KEY_ENV,
-        )
-        os.environ.setdefault(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
-
-    provider_config = replace(
-        provider_config,
-        base_url=url,
-        api_key_env=key_env,
-        responses_lite_override=(
-            False if uses_local_responses_compat else provider_config.responses_lite_override
-        ),
-    )
-    return ResponsesModelClient(
-        provider_config,
-        timeout_seconds,
-        originator=CLI_ORIGINATOR,
-    )
-
-
-def build_cli_queue(agent: 'Agent') -> 'CliSubmissionQueue':
-    return CliSubmissionQueue(agent)
-
-
-async def run_interactive_session(
-    queue: 'CliSubmissionQueue',
-    json_mode: 'bool',
-    config_path: 'typing.Union[str, None]' = None,
-) -> 'int':
-    return await _run_interactive_session(
-        queue,
-        json_mode,
-        config_path,
-        view_factory=CliSessionView,
-    )
-
-
-async def run_cli(args: 'argparse.Namespace') -> 'int':
-    queued_agent = None
-    worker = None
+async def run_cli(args):
+    runtime = None
     debug_dir = get_debug_dir()
-    phase_handle = None if debug_dir is None else (debug_dir / "phase.log").open("a", encoding="utf-8")
+    phase_handle = (
+        None
+        if debug_dir is None
+        else (debug_dir / "phase.log").open("a", encoding="utf-8")
+    )
+
+    def phase(message):
+        if phase_handle is not None:
+            phase_handle.write(message + "\n")
+            phase_handle.flush()
+
     try:
         if args.put is not None and args.call:
             raise ValueError("--put and --call cannot be combined")
@@ -537,7 +117,8 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
         configure_loguru()
         config_path = args.config
         if args.put is not None:
-            def emit_put_log(message: 'str') -> 'None':
+
+            def emit_put_log(message):
                 print(message, flush=True)
 
             call_spec = upload_codex_home(args.put, event_handler=emit_put_log)
@@ -549,17 +130,11 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             print(f"pycodex --call {shlex.quote(call_spec)}", flush=True)
             return 0
         if args.call:
-            if phase_handle is not None:
-                phase_handle.write("bootstrap_called_home:start\n")
-                phase_handle.flush()
+            phase("bootstrap_called_home:start")
             config_path = bootstrap_called_home(args.call)
-            if phase_handle is not None:
-                phase_handle.write("bootstrap_called_home:done\n")
-                phase_handle.flush()
+            phase("bootstrap_called_home:done")
             os.environ["CODEX_HOME"] = str(config_path.parent)
-        if phase_handle is not None:
-            phase_handle.write("build_model:start\n")
-            phase_handle.flush()
+        phase("build_model:start")
         model = build_model(
             config_path=str(config_path),
             profile=args.profile,
@@ -568,79 +143,192 @@ async def run_cli(args: 'argparse.Namespace') -> 'int':
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
         )
-        if phase_handle is not None:
-            phase_handle.write("build_model:done\n")
-            phase_handle.write("build_agent:start\n")
-            phase_handle.flush()
+        phase("build_model:done")
+        phase("build_agent:start")
         agent = build_agent(
             model,
             config_path=str(config_path),
             profile=args.profile,
             system_prompt=args.system_prompt,
-            session_mode="tui",
         )
-        if phase_handle is not None:
-            phase_handle.write("build_agent:done\n")
-            phase_handle.write("build_cli_queue:start\n")
-            phase_handle.flush()
-        queued_agent = build_cli_queue(agent)
-        if phase_handle is not None:
-            phase_handle.write("build_cli_queue:done\n")
-            phase_handle.flush()
+        phase("build_agent:done")
+        runtime = build_runtime(agent)
         if should_run_interactive(args.prompt, sys.stdin.isatty()):
-            return await run_interactive_session(
-                queued_agent,
-                args.json,
-                str(config_path),
-            )
-        else:
-            prompt_text = resolve_prompt_text(args.prompt)
-            worker = asyncio.create_task(queued_agent.run_forever())
-            if phase_handle is not None:
-                phase_handle.write("submit_user_turn:start\n")
-                phase_handle.flush()
-            result = await queued_agent.submit_user_turn(prompt_text)
-            if phase_handle is not None:
-                phase_handle.write("submit_user_turn:done\n")
-                phase_handle.flush()
-            print(format_turn_output(result, args.json))
-            return 0
+            return await run_interactive_session(runtime, args.json, str(config_path))
+        prompt_text = resolve_prompt_text(args.prompt)
+        await runtime.start(str(config_path))
+        phase("submit_input:start")
+        receipt = await runtime.submit_input(prompt_text, "cli")
+        result = await receipt.future
+        phase("submit_input:done")
+        render_result(receipt.kind, result, args.json, print)
+        return 0
     except Exception as exc:
-        if phase_handle is not None:
-            phase_handle.write("fatal_exception\n")
-            phase_handle.flush()
+        phase("fatal_exception")
         if debug_dir is not None:
             (debug_dir / "fatal_error.txt").write_text(
                 traceback.format_exc(), encoding="utf-8"
             )
-        print(f"Error: {exc}", file=sys.stderr)
+        print(format_error(exc, indent=False), file=sys.stderr)
         return 1
     finally:
         if phase_handle is not None:
             phase_handle.close()
-        if queued_agent is not None and worker is not None:
-            await queued_agent.shutdown()
-            await worker
+        if runtime is not None:
+            await runtime.close()
 
-def ipython_agent(config_path: 'str' = DEFAULT_CODEX_CONFIG_PATH):
+
+async def run_interactive_session(runtime, json_mode, config_path=None, view=None):
+    if view is None:
+        view = CliSessionView()
+    await runtime.start(config_path)
+    frontend_id = runtime.attach(view.handle_event)
+
+    def show_result(future):
+        if not future.cancelled() and future.exception() is None:
+            render_result("turn", future.result(), True, view.write_line)
+
+    view.display.start(runtime.commands())
+    try:
+        while not view.display.closed:
+            try:
+                raw_line = await view.poll_prompt()
+            except EOFError:
+                break
+            if raw_line is None:
+                await asyncio.sleep(0.05)
+                continue
+            try:
+                receipt = await runtime.submit_input(raw_line, sender="cli")
+            except Exception as exc:
+                view.display.show_error(str(exc))
+                continue
+            if json_mode and receipt.kind == "turn":
+                receipt.future.add_done_callback(show_result)
+    finally:
+        try:
+            await runtime.close()
+        finally:
+            runtime.detach(frontend_id)
+            view.close()
+    return 0
+
+
+class Prompter:
+    def __init__(self, prompt: str = DEFAULT_MAIN_PROMPT, lock=None):
+        self.lock = lock or threading.Lock()
+        self._prompt_session = PromptSession(**prompt_session_kwargs())
+        self.prompt = prompt
+        self._status = None
+        self._status_frame_index = 0
+        self._prompt_task = None
+
+    def set_prompt(self, prompt):
+        self.prompt = prompt
+
+    def set_status(self, text):
+        self._status = text
+
+    async def poll_input(self) -> "typing.Union[str, None]":
+        if self._prompt_task is None:
+            self._prompt_task = asyncio.create_task(self._block_prompt())
+        done, _pending = await asyncio.wait(
+            {self._prompt_task},
+            timeout=0.05,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            return None
+        prompt_task, self._prompt_task = self._prompt_task, None
+        try:
+            return prompt_task.result()
+        except asyncio.CancelledError:
+            return None
+
+    async def _block_prompt(self):
+        with patch_stdout(raw=True):
+            return await self._prompt_session.prompt_async(
+                lambda: self.prompt,
+                refresh_interval=0.12,
+                bottom_toolbar=self._get_status,
+            )
+
+    def _get_status(self):
+        self._status_frame_index += 1
+        return EventDisplay.status_frame(self._status, self._status_frame_index)
+
+    def close(self) -> "None":
+        if self._prompt_task is not None and not self._prompt_task.done():
+            self._prompt_task.cancel()
+            self._prompt_task = None
+
+
+def prompt_session_kwargs() -> "typing.Dict[str, object]":
+    kwargs = {
+        "erase_when_done": True,
+        "enable_system_prompt": True,
+        "interrupt_exception": EOFError,
+    }
+    try:
+        parameters = inspect.signature(PromptSession.__init__).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if "show_frame" in parameters:
+        kwargs["show_frame"] = True
+    return kwargs
+
+
+class CliSessionView:
+    """Execute terminal I/O; events own presentation decisions and state."""
+
+    def __init__(self, context_window_tokens=None):
+        self._line_output = print
+        self._terminal_lock = threading.RLock()
+        self.prompter = Prompter(lock=self._terminal_lock)
+        color_enabled = sys.stdout.isatty() and os.environ.get(
+            "PYCODEX_NO_COLOR",
+            "",
+        ).strip().lower() not in {"1", "true", "yes", "on"}
+        self.display = EventDisplay(
+            self.write_line,
+            self.prompter.set_status,
+            self.prompter.set_prompt,
+            color_enabled,
+            context_window_tokens,
+        )
+
+    def handle_event(self, event):
+        with self._terminal_lock:
+            event.render(self.display)
+
+    def write_line(self, text):
+        with self._terminal_lock:
+            self._line_output(text)
+
+    async def poll_prompt(self, prompt=None):
+        if prompt:
+            self.prompter.set_prompt(prompt)
+        return await self.prompter.poll_input()
+
+    def close(self):
+        self.prompter.close()
+
+
+def ipython_agent(config_path=DEFAULT_CODEX_CONFIG_PATH):
     from loguru import logger
+
+    from .tools.ipython_tool import attach_ipython_tool
+
     logger.remove()
     logger.add(sys.stderr, level="INFO")
-
     model = build_model(config_path)
     agent = build_agent(client=model, config_path=config_path)
-
-    from pycodex.tools.ipython_tool import attach_ipython_tool
-
     attach_ipython_tool(agent)
-
     return agent
 
-def main(argv: 'typing.Union[Sequence[str], None]' = None) -> 'int':
-    raw_args = list(argv) if argv is not None else None
-    if raw_args is None:
-        raw_args = sys.argv[1:]
 
+def main(argv=None):
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
     if raw_args and raw_args[0] == "doctor":
         from .doctor import build_doctor_parser, run_doctor_cli
 
@@ -653,10 +341,8 @@ def main(argv: 'typing.Union[Sequence[str], None]' = None) -> 'int':
         except KeyboardInterrupt:
             return 130
         return 0
-
     parser = build_parser()
     args = parser.parse_args(raw_args)
-
     try:
         return asyncio.run(run_cli(args))
     except ValueError as exc:

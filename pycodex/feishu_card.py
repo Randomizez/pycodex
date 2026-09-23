@@ -1,10 +1,13 @@
 import json
 import os
-from pathlib import Path
 import time
 import typing
+from pathlib import Path
 
 import requests
+
+from .events import DEFAULT_MAIN_PROMPT, Event, EventDisplay, SessionStateEvent
+from .utils.event_helpers import completed_history
 
 FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 FEISHU_DOMAIN = "https://open.feishu.cn"
@@ -13,7 +16,6 @@ CARD_OUTPUT_LIMIT = 6500
 CARD_OUTPUT_MODE_MARKDOWN = "markdown"
 CARD_OUTPUT_MODE_CODE = "code"
 CARD_CONTENT_ERROR_MARKER = "Failed to create card content"
-LAST_TURN_PREFIX = "(*last turn)\n"
 
 
 class PycodexCard:
@@ -39,17 +41,13 @@ class PycodexCard:
         self.message_id = None
         self.callback_token = None
         self.session_key = None
-        self.status = "Idle"
-        self.status_detail = "Ready."
-        self.last_sender = "cli"
-        self.last_prompt = ""
+        self.status = None
+        self.prompt_text = DEFAULT_MAIN_PROMPT
         self.model_name = "pycodex"
         self.output_text = ""
-        self.working_output_text = ""
-        self._working_delta_active = False
-        self.error = ""
-        self.running = False
+        self.display = EventDisplay(self._log, self._set_status, self._set_prompt)
         self.detached = False
+        self.accepts_input = True
         self._user_access_token = None
         self._user_token_expires_at = 0.0
         self._tenant_token = None
@@ -68,7 +66,8 @@ class PycodexCard:
                 "LARK_VERIFICATION_TOKEN",
             ),
             encrypt_key=_env("FEISHU_ENCRYPT_KEY", "LARK_ENCRYPT_KEY"),
-            refresh_token=_read_refresh_token() or os.environ.get("FEISHU_REFRESH_TOKEN"),
+            refresh_token=_read_refresh_token()
+            or os.environ.get("FEISHU_REFRESH_TOKEN"),
         )
 
     def configured(self) -> bool:
@@ -146,144 +145,54 @@ class PycodexCard:
                 use_user_token=False,
             )
 
-    def set_queued(self, prompt: str, sender: str = "cli") -> None:
-        self.status = "Queued"
-        self.status_detail = "Waiting for pycodex."
-        self.last_sender = sender or "cli"
-        self.last_prompt = prompt
-        self._mark_last_turn_output()
-        self._reset_working_output()
-        self.error = ""
-        self.running = True
-
-    def set_snapshot(self, prompt: str, output: str) -> None:
-        self.last_prompt = prompt or self.last_prompt
-        self.output_text = output or self.output_text
-
     def detach(self) -> None:
-        self.status = "Detached"
-        self.status_detail = ""
-        self.error = ""
-        self.running = False
         self.detached = True
 
-    def apply_event(self, event) -> bool:
-        kind = getattr(event, "kind", None)
-        if kind is None and isinstance(event, dict):
-            kind = event.get("kind", "")
-        kind = str(kind or "")
-        payload = getattr(event, "payload", None)
-        if payload is None and isinstance(event, dict):
-            payload = event
-        if not isinstance(payload, dict):
-            payload = {}
-        if kind == "turn_started":
-            self.status = "Running"
-            self.status_detail = "Model request started."
-            was_running = self.running
-            self.running = True
-            self._reset_working_output()
-            prompt = payload.get("user_text") or "\n".join(
-                str(item) for item in payload.get("user_texts", []) or []
-            )
-            if prompt:
-                prompt_text = str(prompt)
-                if not (was_running and prompt_text == self.last_prompt):
-                    self.last_sender = "cli"
-                self.last_prompt = prompt_text
-            self._mark_last_turn_output()
-            self.error = ""
-            return False
-        if kind == "assistant_delta":
-            self.status = "Responding"
-            self.status_detail = "Receiving assistant output."
-            self._append_working_delta(str(payload.get("delta") or ""))
-            return False
-        if kind == "tool_started":
-            self.status = "Tool"
-            self.status_detail = str(payload.get("tool_name") or "tool")
-            self._finish_working_delta_segment()
-            return False
-        if kind == "tool_completed":
-            self.status_detail = str(
-                payload.get("summary") or payload.get("tool_name") or "tool completed"
-            )
-            self._finish_working_delta_segment()
-            return False
-        if kind == "stream_error":
-            self.status = "Retrying"
-            self.status_detail = str(
-                payload.get("summary") or payload.get("message") or ""
-            )
-            return False
-        if kind == "turn_completed":
-            final_text = str(payload.get("output_text") or "")
-            if final_text:
-                self.output_text = final_text
-            self.status = "Idle"
-            self.status_detail = "Turn completed."
-            self.running = False
-            self._reset_working_output()
-            return True
-        if kind in {"turn_failed", "submission_failed"}:
-            self.status = "Error"
-            self.error = str(payload.get("error") or kind)
-            self.status_detail = self.error
-            self.running = False
-            self._finish_working_delta_segment()
-            return True
-        if kind in {"turn_interrupted", "submission_cancelled"}:
-            self.status = "Idle"
-            self.status_detail = kind.replace("_", " ")
-            self.running = False
-            self._reset_working_output()
-            return True
-        return False
+    def apply_event(self, event: "Event") -> None:
+        if isinstance(event, SessionStateEvent):
+            state = event.state
+            self.model_name = state["model"]
+            self.accepts_input = state["accepts_input"]
+            self.display.closed = state["closed"]
+            if event.reason in {"attach", "history"}:
+                self.output_text = ""
+                self.display.stream_buffer = ""
+                self.prompt_text = DEFAULT_MAIN_PROMPT
+                if state["busy"]:
+                    self._set_status("working")
+                else:
+                    self.display.set_idle_status(state["background_work_count"])
+                for prompt, response in completed_history(state)[-1:]:
+                    self._log("user> " + prompt)
+                    if response:
+                        self._log("assistant> " + response)
+        event.render(self.display)
 
-    def _mark_last_turn_output(self) -> None:
-        if self.output_text and not self.output_text.startswith(LAST_TURN_PREFIX):
-            self.output_text = LAST_TURN_PREFIX + self.output_text
+    def _log(self, text: str) -> None:
+        self.output_text = (
+            self.output_text + ("\n" if self.output_text else "") + text
+        )[-CARD_OUTPUT_LIMIT:]
 
-    def _reset_working_output(self) -> None:
-        self.working_output_text = ""
-        self._working_delta_active = False
+    def _set_status(self, text: "typing.Union[str, None]") -> None:
+        self.status = text
 
-    def _finish_working_delta_segment(self) -> None:
-        self._working_delta_active = False
-
-    def _append_working_delta(self, delta: str) -> None:
-        if not delta:
-            return
-        if self._working_delta_active:
-            self.working_output_text += delta
-        else:
-            self.working_output_text = delta
-            self._working_delta_active = True
+    def _set_prompt(self, text: str) -> None:
+        self.prompt_text = text
 
     def render(
         self, output_mode: str = CARD_OUTPUT_MODE_MARKDOWN
     ) -> "typing.Dict[str, object]":
-        idle = str(self.status or "").lower() == "idle"
-        status_line = _escape_markdown(self.status)
-        if self.status_detail:
-            status_line += " - " + _escape_markdown(self.status_detail)
-        if self.error:
-            status_line += " - " + _escape_markdown(self.error)
-        input_disabled = self.running or self.detached
-        sender = _escape_markdown(self.last_sender or "cli")
-        prompt = _truncate(self.last_prompt, 1200) or "-"
-        output = _truncate(self.output_text, CARD_OUTPUT_LIMIT) or (
-            "Waiting for output..." if self.running else "Ready."
-        )
+        status = "Closed" if self.display.closed else self.status
+        input_disabled = not self.accepts_input or self.detached or self.display.closed
+        output = _truncate(self.output_text, CARD_OUTPUT_LIMIT) or "Ready."
         output_content = _render_output_content(output, output_mode)
-        working_output = _truncate(self.working_output_text, CARD_OUTPUT_LIMIT)
-        color, title = _status_template(self.status)
+        working_output = _truncate(self.display.stream_buffer, CARD_OUTPUT_LIMIT)
+        color, title = _status_template(
+            "Detached" if self.detached else status or "Idle"
+        )
+        if self.display.title:
+            title += " · " + self.display.title
         body_elements = [
-            {
-                "tag": "markdown",
-                "element_id": "prompt_md",
-                "content": f"> {sender}: **{_escape_code_block(prompt)}**",
-            },
             _output_box("answer_box", "answer_md", output_content, "grey-50"),
         ]
         if working_output:
@@ -317,7 +226,7 @@ class PycodexCard:
                     "disabled": input_disabled,
                     "placeholder": {
                         "tag": "plain_text",
-                        "content": f"Ask {self.model_name}..." if idle else status_line,
+                        "content": self.prompt_text + (status or self.model_name),
                     },
                     "behaviors": [{"type": "callback", "value": {"action": "send"}}],
                     "value": {"action": "send"},
@@ -603,13 +512,13 @@ def _display_user_name(user: "typing.Any") -> "typing.Union[str, None]":
 
 def _status_template(status: str) -> "typing.Tuple[str, str]":
     normalized = status.lower()
-    if normalized in {"error", "failed"}:
-        return "red", "Session Connected"
-    if normalized in {"running", "responding", "tool", "queued", "retrying"}:
-        return "blue", "Session Connected"
-    if normalized in {"detached"}:
+    if normalized == "detached":
         return "grey", "Session Detached"
-    return "green", "Session Connected"
+    if normalized == "closed":
+        return "grey", "Session Closed"
+    if normalized in {"idle", "idle: sleeping"}:
+        return "green", "Session Connected"
+    return "blue", "Session Connected"
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -662,10 +571,6 @@ def _output_box(
 
 def _is_card_content_error(exc: "BaseException") -> bool:
     return CARD_CONTENT_ERROR_MARKER in str(exc)
-
-
-def _escape_markdown(text: str) -> str:
-    return str(text or "").replace("`", "'")
 
 
 def _dig(value: "typing.Any", *path: str) -> "typing.Any":

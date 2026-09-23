@@ -26,4 +26,6 @@ def test_python_sources_parse_with_python36_grammar():
         except SyntaxError as exc:
             failures.append("%s:%s: %s" % (path, exc.lineno, exc.msg))
 
-    assert not failures, "Python 3.6-incompatible syntax found:\n%s" % "\n".join(failures)
+    assert not failures, "Python 3.6-incompatible syntax found:\n%s" % "\n".join(
+        failures
+    )

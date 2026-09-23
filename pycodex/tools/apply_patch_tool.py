@@ -11,6 +11,7 @@ Expected behavior:
   same success/error text shape Codex expects.
 """
 
+import typing
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +19,6 @@ from loguru import logger
 
 from ..protocol import JSONValue
 from .base_tool import BaseTool, ToolContext
-import typing
 
 APPLY_PATCH_LARK_GRAMMAR = """start: begin_patch hunk+ end_patch
 begin_patch: \"*** Begin Patch\" LF
@@ -46,28 +46,36 @@ class ApplyPatchError(RuntimeError):
     pass
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class _AddFileOp:
-    path: 'str'
-    content: 'str'
+    path: "str"
+    content: "str"
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class _DeleteFileOp:
-    path: 'str'
+    path: "str"
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class _UpdateSection:
-    lines: 'typing.Tuple[str, ...]'
-    anchor_end_of_file: 'bool' = False
+    lines: "typing.Tuple[str, ...]"
+    anchor_end_of_file: "bool" = False
 
 
-@dataclass(frozen=True, )
+@dataclass(
+    frozen=True,
+)
 class _UpdateFileOp:
-    path: 'str'
-    move_to: 'typing.Union[str, None]'
-    sections: 'typing.Tuple[_UpdateSection, ...]'
+    path: "str"
+    move_to: "typing.Union[str, None]"
+    sections: "typing.Tuple[_UpdateSection, ...]"
 
 
 class ApplyPatchTool(BaseTool):
@@ -84,20 +92,26 @@ class ApplyPatchTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, cwd: 'typing.Union[typing.Union[str, Path], None]' = None) -> 'None':
+    def __init__(
+        self, cwd: "typing.Union[typing.Union[str, Path], None]" = None
+    ) -> "None":
         self._workspace_root = Path(cwd or Path.cwd()).resolve()
 
-    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         del context
         patch_text = str(args)
-        logger.debug("apply_patch workspace={} bytes={}", self._workspace_root, len(patch_text))
+        logger.debug(
+            "apply_patch workspace={} bytes={}", self._workspace_root, len(patch_text)
+        )
         try:
             operations = self._parse_patch(patch_text)
             return self._format_result(self._apply_operations(operations), exit_code=0)
         except ApplyPatchError as exc:
             return self._format_result(str(exc), exit_code=1)
 
-    def _parse_patch(self, patch_text: 'str') -> 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]':
+    def _parse_patch(
+        self, patch_text: "str"
+    ) -> "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]":
         lines = patch_text.splitlines()
         if not lines:
             raise ApplyPatchError("patch rejected: empty patch")
@@ -106,7 +120,7 @@ class ApplyPatchTool(BaseTool):
                 "apply_patch verification failed: missing '*** Begin Patch' header"
             )
 
-        operations: 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]' = []
+        operations: "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]" = ([])
         index = 1
         while index < len(lines):
             line = lines[index]
@@ -123,7 +137,7 @@ class ApplyPatchTool(BaseTool):
             if line.startswith("*** Add File: "):
                 path = line[len("*** Add File: ") :]
                 index += 1
-                content_lines: 'typing.List[str]' = []
+                content_lines: "typing.List[str]" = []
                 while index < len(lines) and not lines[index].startswith("*** "):
                     entry = lines[index]
                     if not entry.startswith("+"):
@@ -136,7 +150,9 @@ class ApplyPatchTool(BaseTool):
                     raise ApplyPatchError(
                         f"apply_patch verification failed: add for {path} is missing file content"
                     )
-                operations.append(_AddFileOp(path=path, content=self._join_lines(content_lines)))
+                operations.append(
+                    _AddFileOp(path=path, content=self._join_lines(content_lines))
+                )
                 continue
 
             if line.startswith("*** Delete File: "):
@@ -153,8 +169,8 @@ class ApplyPatchTool(BaseTool):
                     move_to = lines[index][len("*** Move to: ") :]
                     index += 1
 
-                sections: 'typing.List[_UpdateSection]' = []
-                current_lines: 'typing.List[str]' = []
+                sections: "typing.List[_UpdateSection]" = []
+                current_lines: "typing.List[str]" = []
                 saw_hunk_header = False
                 anchor_end_of_file = False
                 while index < len(lines):
@@ -216,14 +232,16 @@ class ApplyPatchTool(BaseTool):
                 f"apply_patch verification failed: {line!r} is not a valid hunk header"
             )
 
-        raise ApplyPatchError("apply_patch verification failed: missing '*** End Patch' footer")
+        raise ApplyPatchError(
+            "apply_patch verification failed: missing '*** End Patch' footer"
+        )
 
     def _apply_operations(
         self,
-        operations: 'typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]',
-    ) -> 'str':
-        preview: 'typing.Dict[Path, typing.Union[str, None]]' = {}
-        summaries: 'typing.Dict[Path, str]' = {}
+        operations: "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]",
+    ) -> "str":
+        preview: "typing.Dict[Path, typing.Union[str, None]]" = {}
+        summaries: "typing.Dict[Path, str]" = {}
 
         for operation in operations:
             if isinstance(operation, _AddFileOp):
@@ -253,7 +271,9 @@ class ApplyPatchTool(BaseTool):
         self._write_preview(preview)
         return self._format_success(summaries)
 
-    def _read_preview_file(self, path: 'Path', preview: 'typing.Dict[Path, typing.Union[str, None]]') -> 'str':
+    def _read_preview_file(
+        self, path: "Path", preview: "typing.Dict[Path, typing.Union[str, None]]"
+    ) -> "str":
         if path in preview:
             content = preview[path]
             if content is None:
@@ -270,10 +290,10 @@ class ApplyPatchTool(BaseTool):
 
     def _apply_update(
         self,
-        path: 'Path',
-        original_text: 'str',
-        sections: 'typing.Tuple[_UpdateSection, ...]',
-    ) -> 'str':
+        path: "Path",
+        original_text: "str",
+        sections: "typing.Tuple[_UpdateSection, ...]",
+    ) -> "str":
         lines = original_text.splitlines()
         cursor = 0
         for section in sections:
@@ -282,7 +302,9 @@ class ApplyPatchTool(BaseTool):
             if not old_block and not new_block:
                 continue
 
-            match_index = self._find_match(lines, old_block, cursor, section.anchor_end_of_file)
+            match_index = self._find_match(
+                lines, old_block, cursor, section.anchor_end_of_file
+            )
             if match_index is None:
                 raise ApplyPatchError(
                     "apply_patch verification failed: Failed to find expected lines in "
@@ -294,11 +316,11 @@ class ApplyPatchTool(BaseTool):
 
     def _find_match(
         self,
-        lines: 'typing.List[str]',
-        old_block: 'typing.List[str]',
-        cursor: 'int',
-        anchor_end_of_file: 'bool',
-    ) -> 'typing.Union[int, None]':
+        lines: "typing.List[str]",
+        old_block: "typing.List[str]",
+        cursor: "int",
+        anchor_end_of_file: "bool",
+    ) -> "typing.Union[int, None]":
         if anchor_end_of_file:
             start = len(lines) - len(old_block)
             if start >= 0 and lines[start : start + len(old_block)] == old_block:
@@ -317,7 +339,9 @@ class ApplyPatchTool(BaseTool):
                 return start
         return None
 
-    def _write_preview(self, preview: 'typing.Dict[Path, typing.Union[str, None]]') -> 'None':
+    def _write_preview(
+        self, preview: "typing.Dict[Path, typing.Union[str, None]]"
+    ) -> "None":
         for path, content in preview.items():
             if content is None:
                 if path.exists():
@@ -326,7 +350,7 @@ class ApplyPatchTool(BaseTool):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
 
-    def _format_success(self, summaries: 'typing.Dict[Path, str]') -> 'str':
+    def _format_success(self, summaries: "typing.Dict[Path, str]") -> "str":
         buckets = {"A": [], "M": [], "D": []}
         for path, status in summaries.items():
             buckets[status].append(self._display_path(path))
@@ -336,26 +360,23 @@ class ApplyPatchTool(BaseTool):
                 lines.append(f"{status} {rel_path}")
         return " ".join(lines) + "\n"
 
-    def _format_result(self, output: 'str', exit_code: 'int') -> 'str':
+    def _format_result(self, output: "str", exit_code: "int") -> "str":
         return (
-            f"Exit code: {exit_code}\n"
-            "Wall time: 0 seconds\n"
-            "Output:\n"
-            f"{output}"
+            f"Exit code: {exit_code}\n" "Wall time: 0 seconds\n" "Output:\n" f"{output}"
         )
 
-    def _resolve_workspace_path(self, path_text: 'str') -> 'Path':
+    def _resolve_workspace_path(self, path_text: "str") -> "Path":
         path = Path(path_text).expanduser()
         resolved = path if path.is_absolute() else self._workspace_root / path
         return resolved.resolve()
 
-    def _display_path(self, path: 'Path') -> 'str':
+    def _display_path(self, path: "Path") -> "str":
         try:
             return path.relative_to(self._workspace_root).as_posix()
         except ValueError:
             return str(path)
 
-    def _join_lines(self, lines: 'typing.List[str]') -> 'str':
+    def _join_lines(self, lines: "typing.List[str]") -> "str":
         if not lines:
             return ""
         return "\n".join(lines) + "\n"

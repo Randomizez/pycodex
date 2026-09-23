@@ -6,11 +6,13 @@ import mimetypes
 import os
 import secrets
 import threading
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields, is_dataclass
+
 try:
     from contextlib import asynccontextmanager
 except ImportError:  # pragma: no cover - Python 3.6 compatibility
     asynccontextmanager = None
+import typing
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -22,22 +24,44 @@ from fastapi.responses import (
     Response,
 )
 
-from pycodex.cli import build_agent, build_cli_queue, build_model, configure_loguru
-from pycodex.interactive_session import run_interactive_session
-from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
-from pycodex.protocol import AgentEvent, ToolCall
-from pycodex.utils.session_persist import (
-    SessionRolloutRecorder,
-    load_resumed_session_path,
-)
-from pycodex.utils import uuid7_string
-from pycodex.utils.visualize import (
+from pycodex.bootstrap import build_agent, build_model, build_runtime, configure_loguru
+from pycodex.events import (
     IDLE_SLEEPING_STATUS,
-    background_work_count,
+    AssistantDeltaEvent,
+    AutoCompactCompletedEvent,
+    AutoCompactFailedEvent,
+    AutoCompactStartedEvent,
+    CommandCompletedEvent,
+    CommandFailedEvent,
+    CompactCompletedEvent,
+    CompactFailedEvent,
+    CompactStartedEvent,
+    Event,
+    InputQueuedEvent,
+    InputRequestedEvent,
+    InputResolvedEvent,
+    SessionClosedEvent,
+    SessionStateEvent,
+    StreamErrorEvent,
+    TerminalEvent,
+    TokenCountEvent,
+    ToolCalledEvent,
+    ToolCompletedEvent,
+    ToolStartedEvent,
+    TurnCompletedEvent,
+    TurnEvent,
+    TurnFailedEvent,
+    TurnInterruptedEvent,
+    TurnStartedEvent,
+)
+from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
+from pycodex.utils import uuid7_string
+from pycodex.utils.event_helpers import (
+    completed_history,
     percent_of_context_window_remaining,
     shorten_title,
-    tool_summary,
 )
+
 from .workspaces import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -46,8 +70,6 @@ from .workspaces import (
     load_workspace_definitions,
     session_snapshot,
 )
-import typing
-
 
 JSONValue = typing.Union[
     None,
@@ -141,93 +163,39 @@ def parse_listen(target: str) -> "typing.Tuple[str, int]":
 
 SessionFactory = typing.Callable[[], object]
 ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
-SESSION_CLOSE_TIMEOUT_SECONDS = 2.0
 SPINNER_STATUS_PREVIEW_LIMIT = 180
 AUTH_COOKIE_NAME = "pycodex_ws_auth"
 
 
 class WebSessionView:
     def __init__(self) -> None:
-        self._input_queue: "asyncio.Queue" = asyncio.Queue()
         self._subscribers: "typing.Set[asyncio.Queue]" = set()
         self._events: "typing.List[typing.Dict[str, object]]" = []
         self._turns: "typing.List[typing.Dict[str, object]]" = []
         self._turns_by_submission_id: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._turns_by_turn_id: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._title = ""
+        self._model = "pycodex"
+        self._rollout_path = ""
+        self._input_request = None
+        self._accepts_input = True
         self._spinner_status = ""
         self._stream_buffer = ""
         self._context_window_tokens: "typing.Union[int, None]" = None
         self._context_remaining_percent: "typing.Union[int, None]" = None
-        self._closed = False
         self._server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
-        self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
         self._lock = threading.RLock()
 
     def attach_server_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
         self._server_loop = loop
 
-    def attach_worker_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
-        self._worker_loop = loop
-
-    async def submit(self, prompt: str) -> "typing.Dict[str, object]":
-        prompt = str(prompt or "").strip()
-        if not prompt:
-            return {"ok": False, "error": "prompt is empty"}
-        await self._put_input(prompt)
-        await self._publish(
-            {
-                "type": "input",
-                "prompt": prompt,
-                "snapshot": self.snapshot(),
-            }
-        )
-        return {"ok": True, "type": "submitted", "snapshot": self.snapshot()}
-
-    async def _put_input(self, item: object) -> None:
-        worker_loop = self._worker_loop
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-        if worker_loop is None or worker_loop is running_loop:
-            await self._input_queue.put(item)
-            return
-        future = asyncio.run_coroutine_threadsafe(self._input_queue.put(item), worker_loop)
-        await asyncio.wrap_future(future)
-
-    async def poll_prompt(self, prompt: "typing.Union[str, None]" = None) -> "typing.Union[str, None]":
-        del prompt
-        if self._closed and self._input_queue.empty():
-            raise EOFError()
-        try:
-            item = self._input_queue.get_nowait()
-        except asyncio.QueueEmpty:
-            return None
-        if item is None:
-            raise EOFError()
-        return str(item)
-
-    async def get_prompt(self, prompt: "typing.Union[str, None]" = None) -> "str":
-        if prompt:
-            self.write_line(prompt)
-        item = await self._input_queue.get()
-        if item is None:
-            raise EOFError()
-        return str(item)
-
-    def handle_event(self, event: "AgentEvent") -> None:
+    def handle_event(self, event: "Event") -> None:
         with self._lock:
             self._apply_runtime_event(event)
-            payload = {
-                "type": "event",
-                "kind": str(getattr(event, "kind", "")),
-                "turn_id": str(getattr(event, "turn_id", "")),
-                "payload": _json_safe(getattr(event, "payload", {})),
-                "snapshot": self.snapshot(),
-            }
-            if payload["kind"] == "tool_completed":
-                payload["summary"] = tool_summary(getattr(event, "payload", {}))
+            payload = _event_data(event)
+            payload.update({"type": "event", "snapshot": self.snapshot()})
+            if isinstance(event, ToolCompletedEvent):
+                payload["summary"] = event.visualize()
         self._publish_nowait(payload)
 
     def finish_stream(self) -> None:
@@ -261,23 +229,6 @@ class WebSessionView:
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self._publish_nowait(event)
 
-    def show_history(self) -> None:
-        assistant_turns = [turn for turn in self._turns if turn.get("kind") != "control"]
-        if not assistant_turns:
-            self.write_line("No history yet.")
-            return
-        lines = ["Session: {0}".format(self._title or "untitled")]
-        for index, turn in enumerate(assistant_turns, start=1):
-            prompt = str(turn.get("prompt") or "")
-            response = str(turn.get("response") or turn.get("thinking") or "")
-            lines.append("[{0}]U> {1}".format(index, prompt))
-            if response:
-                lines.append("[{0}]A> {1}".format(index, response))
-        self.write_line("\n".join(lines))
-
-    def show_title(self) -> None:
-        self.write_line("Session: {0}".format(self._title or "untitled"))
-
     def set_session_title(self, title: str) -> None:
         with self._lock:
             self._set_title(title)
@@ -286,12 +237,6 @@ class WebSessionView:
                 "title": self._title,
                 "snapshot": self.snapshot(),
             }
-        self._publish_nowait(event)
-
-    def show_resumed_session(self, title: str) -> None:
-        with self._lock:
-            self._set_title(title)
-            event = {"type": "snapshot", "snapshot": self.snapshot()}
         self._publish_nowait(event)
 
     def load_session_history(
@@ -308,19 +253,15 @@ class WebSessionView:
             self._events = []
             for prompt, response in history:
                 submission_id = uuid7_string()
-                turn = self._ensure_turn(submission_id, submission_id, str(prompt or ""))
+                turn = self._ensure_turn(
+                    submission_id, submission_id, str(prompt or "")
+                )
                 turn["response"] = str(response or "")
                 turn["status"] = "completed"
                 turn["queue"] = "history"
                 turn["sender"] = "resume"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self._publish_nowait(event)
-
-    def show_steer_queued(self, turn_id: str, prompt: str) -> None:
-        del turn_id, prompt
-
-    def schedule_steer_inserted(self, turn_id: str, prompt: str) -> None:
-        del turn_id, prompt
 
     def set_context_window_tokens(
         self,
@@ -350,14 +291,8 @@ class WebSessionView:
 
     def close(self) -> None:
         with self._lock:
-            self._closed = True
             subscribers = tuple(self._subscribers)
             self._subscribers.clear()
-        worker_loop = self._worker_loop
-        if worker_loop is None:
-            self._input_queue.put_nowait(None)
-        else:
-            asyncio.run_coroutine_threadsafe(self._input_queue.put(None), worker_loop)
         self._publish_to_queues(subscribers, None)
 
     def snapshot(self) -> "typing.Dict[str, object]":
@@ -367,7 +302,10 @@ class WebSessionView:
                 "status": self._spinner_status,
                 "status_kind": "spinner" if self._spinner_status else "idle",
                 "spinner": self._spinner_status,
-                "model": "pycodex",
+                "model": self._model,
+                "rollout_path": self._rollout_path,
+                "input_request": _json_safe(self._input_request),
+                "accepts_input": self._accepts_input,
                 "title": self._title,
                 "context_remaining_percent": self._context_remaining_percent,
                 "turns": [_public_turn(turn) for turn in self._turns[-80:]],
@@ -376,6 +314,7 @@ class WebSessionView:
     def summary(self) -> "typing.Dict[str, object]":
         with self._lock:
             return {
+                "model": self._model,
                 "running": bool(self._spinner_status),
                 "spinner": self._spinner_status,
                 "title": self._title,
@@ -384,41 +323,91 @@ class WebSessionView:
                 "context_remaining_percent": self._context_remaining_percent,
             }
 
-    def _apply_runtime_event(self, event: "AgentEvent") -> None:
-        kind = str(getattr(event, "kind", "") or "")
-        payload = getattr(event, "payload", {})
-        if not isinstance(payload, dict):
-            payload = {}
-        if kind == "token_count":
-            self._update_context_window(payload.get("usage"))
+    def _apply_runtime_event(self, event: "Event") -> None:
+        if isinstance(event, SessionStateEvent):
+            state = event.state
+            self._model = state["model"]
+            self._rollout_path = state["rollout_path"]
+            self._input_request = state["input_request"]
+            self._accepts_input = state["accepts_input"]
+            if event.reason in {"attach", "history", "model"}:
+                self.set_context_window_tokens(state["context_window"])
+                if state["usage_tokens"] is not None:
+                    self._update_context_window({"total_tokens": state["usage_tokens"]})
+            if event.reason in {"attach", "history"}:
+                self.load_session_history(state["title"], completed_history(state))
+                active = state["active_turn"]
+                if active is not None:
+                    self._apply_runtime_event(
+                        TurnStartedEvent(
+                            active["turn_id"],
+                            tuple(active["user_texts"]),
+                            active["submission_id"],
+                        )
+                    )
+                    self._apply_runtime_event(
+                        AssistantDeltaEvent(
+                            active["assistant_text"],
+                            active["turn_id"],
+                            active["submission_id"],
+                        )
+                    )
+            elif event.reason == "title":
+                self.set_session_title(state["title"])
+            else:
+                self._set_title(state["title"])
             return
-        turn_id = str(payload.get("turn_id") or getattr(event, "turn_id", "") or "")
-        submission_id = str(payload.get("submission_id") or turn_id or "")
+        if isinstance(event, CommandCompletedEvent):
+            if event.result["kind"] in {"title_changed", "resumed"}:
+                return
+            message = event.visualize()
+            if message:
+                self.write_line(message)
+            return
+        if isinstance(event, CommandFailedEvent):
+            self.show_error(event.visualize())
+            return
+        if isinstance(event, InputRequestedEvent):
+            self._input_request = event
+            self.write_line(event.visualize())
+            return
+        if isinstance(event, InputResolvedEvent):
+            self._input_request = None
+            return
+        if isinstance(event, SessionClosedEvent):
+            self._accepts_input = False
+            self._spinner_status = ""
+            return
+        if isinstance(event, InputQueuedEvent):
+            turn = self._ensure_turn(event.submission_id, "", event.prompt)
+            turn["queue"] = event.queue
+            turn["sender"] = event.sender
+            return
+        if isinstance(event, TokenCountEvent):
+            self._update_context_window(event.usage)
+            return
+        if not isinstance(event, TurnEvent):
+            return
+        turn_id = event.turn_id
+        submission_id = event.submission_id or turn_id
         turn = self._turns_by_submission_id.get(submission_id)
-        if turn is None and turn_id and not submission_id:
-            turn = self._turns_by_turn_id.get(turn_id)
 
-        if kind == "turn_started":
-            self._set_spinner_status(kind)
-            prompt = payload.get("user_text") or "\n".join(
-                str(item) for item in payload.get("user_texts", []) or []
-            )
-            if not self._title and str(prompt or "").strip():
-                self._set_title(shorten_title(str(prompt or "")))
-            turn = self._ensure_turn(submission_id, turn_id, str(prompt or ""))
+        if isinstance(event, TurnStartedEvent):
+            self._set_spinner_status(event.kind)
+            turn = self._ensure_turn(submission_id, turn_id, event.visualize())
             turn["status"] = "running"
             turn["thinking"] = ""
             turn["_thinking_active"] = False
             turn["error"] = ""
             return
 
-        self._apply_spinner_event(kind, payload)
+        self._apply_spinner_event(event)
         if turn is None:
             return
 
-        if kind == "assistant_delta":
+        if isinstance(event, AssistantDeltaEvent):
             turn["status"] = "responding"
-            delta = str(payload.get("delta") or "")
+            delta = event.visualize()
             self._stream_buffer += delta
             if turn.get("_thinking_active"):
                 turn["thinking"] = str(turn.get("thinking") or "") + delta
@@ -427,19 +416,19 @@ class WebSessionView:
                 turn["_thinking_active"] = True
             return
 
-        if kind == "tool_started":
+        if isinstance(event, ToolStartedEvent):
             turn["status"] = "tool"
-            turn["tool_name"] = str(payload.get("tool_name") or "")
+            turn["tool_name"] = event.call.name
             turn["_thinking_active"] = False
             return
 
-        if kind == "tool_completed":
+        if isinstance(event, ToolCompletedEvent):
             turn["_thinking_active"] = False
             turn["status"] = "running"
             return
 
-        if kind == "turn_completed":
-            response = str(payload.get("output_text") or "")
+        if isinstance(event, TurnCompletedEvent):
+            response = event.visualize()
             if response:
                 turn["response"] = response
             elif turn.get("thinking"):
@@ -450,14 +439,16 @@ class WebSessionView:
             self._stream_buffer = ""
             return
 
-        if kind in {"turn_failed", "submission_failed"}:
+        if isinstance(event, TurnFailedEvent):
             turn["status"] = "error"
-            turn["error"] = str(payload.get("error") or kind)
+            turn["error"] = event.visualize()
             self._stream_buffer = ""
             return
 
-        if kind in {"turn_interrupted", "submission_cancelled"}:
-            if turn.get("thinking") and not turn.get("response"):
+        if isinstance(event, TurnInterruptedEvent):
+            if event.output_text:
+                turn["response"] = event.output_text
+            elif turn.get("thinking") and not turn.get("response"):
                 turn["response"] = str(turn.get("thinking") or "")
             turn["thinking"] = ""
             turn["_thinking_active"] = False
@@ -480,54 +471,38 @@ class WebSessionView:
             self._context_window_tokens,
         )
 
-    def _apply_spinner_event(
-        self,
-        kind: str,
-        payload: "typing.Dict[str, object]",
-    ) -> None:
-        if kind == "assistant_delta":
+    def _apply_spinner_event(self, event: "TurnEvent") -> None:
+        if isinstance(event, AssistantDeltaEvent):
             self._set_spinner_status("talking")
             return
-        if kind == "stream_error":
+        if isinstance(event, StreamErrorEvent):
             self._set_spinner_status("reconnecting")
             return
-        if kind == "auto_compact_started":
+        if isinstance(event, (AutoCompactStartedEvent, CompactStartedEvent)):
             self._set_spinner_status("compacting")
             return
-        if kind == "auto_compact_completed":
+        if isinstance(event, AutoCompactCompletedEvent):
             self._set_spinner_status("compacted")
             return
-        if kind == "tool_started":
-            tool_name = str(payload.get("tool_name") or "").strip()
-            call = payload.get("call")
-            if tool_name and isinstance(call, ToolCall):
-                self._set_spinner_status(
-                    shorten_title(
-                        "calling {0}({1})".format(tool_name, call.arguments),
-                        limit=SPINNER_STATUS_PREVIEW_LIMIT,
-                    )
+        if isinstance(event, ToolStartedEvent):
+            self._set_spinner_status(
+                shorten_title(
+                    event.visualize(),
+                    limit=SPINNER_STATUS_PREVIEW_LIMIT,
                 )
-            elif tool_name:
-                self._set_spinner_status("calling {0}".format(tool_name))
-            else:
-                self._set_spinner_status("calling provider tools")
+            )
             return
-        if kind == "tool_completed":
-            tool_name = str(payload.get("tool_name") or "").strip()
-            if tool_name:
-                self._set_spinner_status("called {0}".format(tool_name))
+        if isinstance(event, ToolCompletedEvent):
+            self._set_spinner_status("called {0}".format(event.call.name))
             return
-        if kind in {"turn_completed", "turn_failed", "turn_interrupted"}:
-            self._set_idle_spinner_status(payload)
-            return
-        if kind == "submission_failed":
-            self._set_spinner_status("")
+        if isinstance(event, TerminalEvent):
+            self._set_idle_spinner_status(event)
 
     def _set_spinner_status(self, text: "typing.Union[str, None]") -> None:
         self._spinner_status = str(text or "").strip()
 
-    def _set_idle_spinner_status(self, payload: "typing.Dict[str, object]") -> None:
-        if background_work_count(payload) > 0:
+    def _set_idle_spinner_status(self, event: "TerminalEvent") -> None:
+        if (event.background_work_count or 0) > 0:
             self._set_spinner_status(IDLE_SLEEPING_STATUS)
         else:
             self._set_spinner_status("")
@@ -619,58 +594,56 @@ class WebSessionView:
 
         loop.call_soon_threadsafe(publish)
 
-    async def _publish(self, event: "typing.Dict[str, object]") -> None:
-        self._publish_nowait(event)
-
 
 class WorkspaceInteractiveSession:
     def __init__(
         self,
-        queue,
+        runtime,
         config_path: "typing.Union[str, None]" = None,
     ) -> None:
-        self.queue = queue
+        self.runtime = runtime
         self.config_path = config_path
         self.view = WebSessionView()
-        self._task: "typing.Union[asyncio.Task[int], None]" = None
+        self._frontend_id = None
 
     async def start(self) -> "WorkspaceInteractiveSession":
-        if self._task is None:
-            self._task = asyncio.create_task(
-                run_interactive_session(
-                    self.queue,
-                    False,
-                    self.config_path,
-                    view=self.view,
-                    show_banner=False,
-                )
-            )
+        await self.runtime.start(self.config_path)
+        if self._frontend_id is None:
+            self._frontend_id = self.runtime.attach(self.view.handle_event)
         return self
 
     async def close(self) -> None:
-        self.view.close()
-        task = self._task
-        if task is None:
-            return
         try:
-            await asyncio.wait_for(
-                asyncio.shield(task),
-                timeout=SESSION_CLOSE_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            cancel_current = getattr(self.queue, "cancel_current", None)
-            if callable(cancel_current):
-                cancel_current()
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await self.runtime.close()
         finally:
-            self._task = None
+            self.detach()
 
-    async def submit(self, prompt: str, sender: str = "web") -> "typing.Dict[str, object]":
-        del sender
-        result = await self.view.submit(prompt)
-        result["snapshot"] = self.snapshot()
-        return result
+    def detach(self):
+        if self._frontend_id is not None:
+            self.runtime.detach(self._frontend_id)
+            self._frontend_id = None
+        self.view.close()
+
+    async def submit(
+        self, prompt: str, sender: str = "web"
+    ) -> "typing.Dict[str, object]":
+        try:
+            receipt = await self.runtime.submit_input(prompt, sender)
+        except (ValueError, RuntimeError) as exc:
+            return {"ok": False, "error": str(exc), "snapshot": self.snapshot()}
+        return {
+            "ok": True,
+            "type": "submitted",
+            "submission_id": receipt.submission_id,
+            "snapshot": self.snapshot(),
+        }
+
+    async def answer_input(self, request_id, answer):
+        try:
+            self.runtime.answer_input(request_id, answer)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc), "snapshot": self.snapshot()}
+        return {"ok": True, "type": "answered", "snapshot": self.snapshot()}
 
     def subscribe(self) -> "asyncio.Queue":
         return self.view.subscribe()
@@ -679,34 +652,16 @@ class WorkspaceInteractiveSession:
         self.view.unsubscribe(queue)
 
     def snapshot(self) -> "typing.Dict[str, object]":
-        snapshot = self.view.snapshot()
-        agent = getattr(self.queue, "_agent", None)
-        snapshot["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
-        return snapshot
+        return self.view.snapshot()
 
     def summary(self) -> "typing.Dict[str, object]":
-        summary = self.view.summary()
-        agent = getattr(self.queue, "_agent", None)
-        summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
-        return summary
+        return self.view.summary()
 
     def rollout_path(self) -> str:
-        recorder = getattr(getattr(self.queue, "_agent", None), "_rollout_recorder", None)
-        path = getattr(recorder, "rollout_path", None)
-        return "" if path is None else str(path)
+        return self.view.snapshot()["rollout_path"]
 
     async def restore_from_rollout(self, rollout_path: str, title: str = "") -> None:
-        resumed = load_resumed_session_path(rollout_path, thread_name=title or None)
-        agent = self.queue._agent
-        agent.replace_history(resumed["history"])
-        model_client = getattr(agent, "_model_client", None)
-        if hasattr(model_client, "_session_id"):
-            model_client._session_id = str(resumed["session_id"])
-        agent.set_rollout_recorder(SessionRolloutRecorder.resume(resumed["rollout_path"]))
-        self.view.load_session_history(
-            str(title or resumed["title"]),
-            tuple(resumed["turns"]),
-        )
+        self.runtime.resume(rollout_path, title)
 
 
 class ThreadedWorkspaceInteractiveSession:
@@ -722,7 +677,6 @@ class ThreadedWorkspaceInteractiveSession:
         self._thread: "typing.Union[threading.Thread, None]" = None
         self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
         self._ready = threading.Event()
-        self._closed = threading.Event()
         self._startup_error: "typing.Union[BaseException, None]" = None
         self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
 
@@ -737,66 +691,76 @@ class ThreadedWorkspaceInteractiveSession:
         self._thread.start()
         await asyncio.to_thread(self._ready.wait)
         if self._startup_error is not None:
-            raise RuntimeError("workspace session thread failed to start") from self._startup_error
+            raise RuntimeError(
+                "workspace session thread failed to start"
+            ) from self._startup_error
         return self
 
     def _thread_main(self) -> None:
         loop = asyncio.new_event_loop()
         self._worker_loop = loop
-        self._view.attach_worker_loop(loop)
         asyncio.set_event_loop(loop)
         try:
             session = self._session_factory()
             session.view = self._view
             self._session = session
-            loop.run_until_complete(session.start())
+            try:
+                loop.run_until_complete(session.start())
+            except BaseException:
+                loop.run_until_complete(session.close())
+                raise
             self._ready.set()
             loop.run_forever()
         except BaseException as exc:
             self._startup_error = exc
             self._ready.set()
         finally:
-            session = self._session
-            if session is not None:
-                try:
-                    loop.run_until_complete(session.close())
-                except BaseException:
-                    pass
             pending = asyncio.all_tasks(loop)
             for task in pending:
                 task.cancel()
             if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                loop.run_until_complete(
+                    asyncio.gather(*pending, return_exceptions=True)
+                )
             asyncio.set_event_loop(None)
             loop.close()
-            self._closed.set()
 
     async def close(self) -> None:
         session = self._session
         loop = self._worker_loop
-        if session is not None and loop is not None and loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(session.close(), loop)
-            try:
-                await asyncio.wait_for(
-                    asyncio.wrap_future(future),
-                    timeout=SESSION_CLOSE_TIMEOUT_SECONDS + 1.0,
+        try:
+            if session is not None and loop is not None and loop.is_running():
+                future = asyncio.wrap_future(
+                    asyncio.run_coroutine_threadsafe(session.close(), loop)
                 )
-            except (asyncio.TimeoutError, RuntimeError):
-                cancel_current = getattr(getattr(session, "queue", None), "cancel_current", None)
-                if callable(cancel_current):
-                    cancel_current()
-        if loop is not None and loop.is_running():
-            loop.call_soon_threadsafe(loop.stop)
-        thread = self._thread
-        if thread is not None:
-            await asyncio.to_thread(thread.join, SESSION_CLOSE_TIMEOUT_SECONDS + 1.0)
-        self._thread = None
+                try:
+                    await asyncio.shield(future)
+                except asyncio.CancelledError:
+                    await future
+                    raise
+        finally:
+            if loop is not None and loop.is_running():
+                loop.call_soon_threadsafe(loop.stop)
+            thread = self._thread
+            if thread is not None:
+                await asyncio.to_thread(thread.join)
+            self._thread = None
 
-    async def submit(self, prompt: str, sender: str = "web") -> "typing.Dict[str, object]":
-        del sender
-        result = await self._view.submit(prompt)
-        result["snapshot"] = self.snapshot()
-        return result
+    async def submit(
+        self, prompt: str, sender: str = "web"
+    ) -> "typing.Dict[str, object]":
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.submit(prompt, sender),
+            self._worker_loop,
+        )
+        return await asyncio.wrap_future(future)
+
+    async def answer_input(self, request_id, answer):
+        future = asyncio.run_coroutine_threadsafe(
+            self._session.answer_input(request_id, answer),
+            self._worker_loop,
+        )
+        return await asyncio.wrap_future(future)
 
     def subscribe(self) -> "asyncio.Queue":
         return self._view.subscribe()
@@ -805,20 +769,10 @@ class ThreadedWorkspaceInteractiveSession:
         self._view.unsubscribe(queue)
 
     def snapshot(self) -> "typing.Dict[str, object]":
-        snapshot = self._view.snapshot()
-        session = self._session
-        queue = getattr(session, "queue", None)
-        agent = getattr(queue, "_agent", None)
-        snapshot["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
-        return snapshot
+        return self._view.snapshot()
 
     def summary(self) -> "typing.Dict[str, object]":
-        summary = self._view.summary()
-        session = self._session
-        queue = getattr(session, "queue", None)
-        agent = getattr(queue, "_agent", None)
-        summary["model"] = getattr(getattr(agent, "_model_client", None), "model", "pycodex")
-        return summary
+        return self._view.summary()
 
     def rollout_path(self) -> str:
         if self._session is None:
@@ -856,7 +810,7 @@ def create_app(
 
 
 def create_multi_workspace_app(
-    registry: 'WorkspaceRegistry',
+    registry: "WorkspaceRegistry",
     password: "typing.Union[str, None]" = None,
 ) -> FastAPI:
     app = _create_lifespan_app(registry.start, registry.close)
@@ -942,7 +896,9 @@ def create_multi_workspace_app(
         return await _new_session_response(entry.manager)
 
     @app.delete("/w/{workspace_id}/api/sessions/{session_id}")
-    async def workspace_delete_session(workspace_id: str, session_id: str) -> JSONResponse:
+    async def workspace_delete_session(
+        workspace_id: str, session_id: str
+    ) -> JSONResponse:
         entry = _workspace_entry_or_404(registry, workspace_id)
         return await _delete_session_response(entry.manager, session_id)
 
@@ -963,8 +919,12 @@ def create_multi_workspace_app(
         return await _message_response(entry.manager, payload)
 
     @app.websocket("/w/{workspace_id}/ws/session")
-    async def workspace_websocket_session(workspace_id: str, websocket: WebSocket) -> None:
-        if not _auth_cookie_matches(auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)):
+    async def workspace_websocket_session(
+        workspace_id: str, websocket: WebSocket
+    ) -> None:
+        if not _auth_cookie_matches(
+            auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)
+        ):
             await websocket.close(code=1008)
             return
         try:
@@ -1012,7 +972,9 @@ def _install_auth(app: FastAPI, password: "typing.Union[str, None]") -> str:
 
     @app.post("/login")
     async def login(payload: "typing.Dict[str, object]") -> JSONResponse:
-        if not secrets.compare_digest(str(payload.get("password") or ""), password_text):
+        if not secrets.compare_digest(
+            str(payload.get("password") or ""), password_text
+        ):
             return JSONResponse(
                 {"ok": False, "error": "invalid password"},
                 status_code=401,
@@ -1116,6 +1078,7 @@ def _create_lifespan_app(
     close: "typing.Callable[[], typing.Awaitable[None]]",
 ) -> FastAPI:
     if asynccontextmanager is not None:
+
         @asynccontextmanager
         async def lifespan(_app):
             await start()
@@ -1135,6 +1098,7 @@ def _create_lifespan_app(
     @app.on_event("shutdown")
     async def shutdown() -> None:
         await close()
+
     return app
 
 
@@ -1190,7 +1154,9 @@ def _install_workspace_routes(
     @app.websocket("/ws/session")
     async def websocket_session(websocket: WebSocket) -> None:
         auth_token = typing.cast(str, app.state.workspace_auth_token)
-        if not _auth_cookie_matches(auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)):
+        if not _auth_cookie_matches(
+            auth_token, websocket.cookies.get(AUTH_COOKIE_NAME)
+        ):
             await websocket.close(code=1008)
             return
         await _websocket_session_handler(manager, websocket)
@@ -1223,11 +1189,11 @@ def _websocket_backend_hint_response() -> JSONResponse:
     )
 
 
-def _sessions_response(manager: 'WorkspaceSessionManager') -> JSONResponse:
+def _sessions_response(manager: "WorkspaceSessionManager") -> JSONResponse:
     return JSONResponse({"sessions": manager.list_sessions()})
 
 
-async def _new_session_response(manager: 'WorkspaceSessionManager') -> JSONResponse:
+async def _new_session_response(manager: "WorkspaceSessionManager") -> JSONResponse:
     session_id = await manager.create_session()
     return JSONResponse(
         {
@@ -1240,7 +1206,7 @@ async def _new_session_response(manager: 'WorkspaceSessionManager') -> JSONRespo
 
 
 async def _delete_session_response(
-    manager: 'WorkspaceSessionManager',
+    manager: "WorkspaceSessionManager",
     session_id: str,
 ) -> JSONResponse:
     try:
@@ -1253,7 +1219,7 @@ async def _delete_session_response(
 
 
 def _session_response(
-    manager: 'WorkspaceSessionManager',
+    manager: "WorkspaceSessionManager",
     session_id: "typing.Union[str, None]" = None,
 ) -> JSONResponse:
     try:
@@ -1271,7 +1237,7 @@ def _session_response(
 
 
 async def _message_response(
-    manager: 'WorkspaceSessionManager',
+    manager: "WorkspaceSessionManager",
     payload: "typing.Dict[str, object]",
 ) -> JSONResponse:
     session_id = str(payload.get("session_id") or "")
@@ -1279,7 +1245,13 @@ async def _message_response(
         link = manager.get(session_id or None)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
-    result = await link.submit(str(payload.get("prompt") or ""))
+    if "request_id" in payload:
+        result = await link.answer_input(payload["request_id"], payload.get("answer"))
+    else:
+        result = await link.submit(
+            str(payload.get("prompt") or ""),
+            sender=str(payload.get("sender") or "web"),
+        )
     if isinstance(result, dict):
         result.setdefault("sessions", manager.list_sessions())
     status = 200 if result.get("ok") else 400
@@ -1287,7 +1259,7 @@ async def _message_response(
 
 
 async def _websocket_session_handler(
-    manager: 'WorkspaceSessionManager',
+    manager: "WorkspaceSessionManager",
     websocket: WebSocket,
 ) -> None:
     await websocket.accept()
@@ -1308,7 +1280,7 @@ async def _websocket_session_handler(
                 await websocket.send_json({"type": "error", "error": "invalid json"})
                 continue
             action = str(payload.get("type") or payload.get("action") or "")
-            if action == "send":
+            if action in {"send", "answer"}:
                 target_session_id = str(payload.get("session_id") or session_id or "")
                 try:
                     target_link = manager.get(target_session_id or None)
@@ -1317,10 +1289,16 @@ async def _websocket_session_handler(
                         {"type": "error", "error": "session not found"}
                     )
                     continue
-                result = await target_link.submit(
-                    str(payload.get("prompt") or ""),
-                    sender=str(payload.get("sender") or "web"),
-                )
+                if action == "answer":
+                    result = await target_link.answer_input(
+                        payload.get("request_id"),
+                        payload.get("answer"),
+                    )
+                else:
+                    result = await target_link.submit(
+                        str(payload.get("prompt") or ""),
+                        sender=str(payload.get("sender") or "web"),
+                    )
                 await websocket.send_json({"type": "send_result", "result": result})
             elif action == "ping":
                 await websocket.send_json({"type": "pong"})
@@ -1364,6 +1342,57 @@ def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]"
     )
 
 
+def _event_data(event: "Event") -> "typing.Dict[str, object]":
+    payload = {
+        item.name: getattr(event, item.name)
+        for item in fields(event)
+        if item.name not in {"turn_id", "submission_id"}
+    }
+    turn_id = ""
+    if isinstance(event, TurnEvent):
+        turn_id = event.turn_id
+        if event.submission_id is not None:
+            payload.update(submission_id=event.submission_id, turn_id=event.turn_id)
+    elif isinstance(
+        event, (CommandCompletedEvent, CommandFailedEvent, InputQueuedEvent)
+    ):
+        turn_id = event.submission_id
+        if isinstance(event, InputQueuedEvent):
+            payload["submission_id"] = event.submission_id
+    if isinstance(event, TurnStartedEvent):
+        payload["user_text"] = "\n".join(event.user_texts)
+    if isinstance(event, (ToolStartedEvent, ToolCompletedEvent)):
+        payload.update(tool_name=event.call.name, call_id=event.call.call_id)
+        if isinstance(event, ToolCompletedEvent):
+            payload["is_error"] = event.result.is_error
+    if isinstance(event, ToolCalledEvent):
+        payload = {name: value for name, value in payload.items() if value is not None}
+    if isinstance(
+        event,
+        (
+            CompactStartedEvent,
+            CompactCompletedEvent,
+            CompactFailedEvent,
+            AutoCompactStartedEvent,
+            AutoCompactCompletedEvent,
+            AutoCompactFailedEvent,
+        ),
+    ):
+        for name in ("total_tokens", "token_limit"):
+            if payload[name] is None:
+                del payload[name]
+        if payload.get("pruned_tool_results") == 0:
+            del payload["pruned_tool_results"]
+    if isinstance(event, (CompactCompletedEvent, AutoCompactCompletedEvent)):
+        payload["summary"] = event.summary
+    if isinstance(event, TerminalEvent) and event.background_work_count is None:
+        del payload["background_work_count"]
+    if isinstance(event, InputRequestedEvent):
+        payload["kind"] = payload.pop("request_kind")
+        payload = {name: value for name, value in payload.items() if value is not None}
+    return {"kind": event.kind, "turn_id": turn_id, "payload": _json_safe(payload)}
+
+
 def _json_safe(value: object) -> "JSONValue":
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -1371,6 +1400,8 @@ def _json_safe(value: object) -> "JSONValue":
         return [_json_safe(item) for item in value]
     if isinstance(value, dict):
         return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, InputRequestedEvent):
+        return _event_data(value)["payload"]
     if is_dataclass(value):
         return _json_safe(asdict(value))
     try:
@@ -1419,10 +1450,9 @@ def _board_asset_response(
     try:
         board_directory = board_path.parent.resolve()
         resolved_asset = (board_directory / asset_path).resolve()
-        within_board_directory = (
-            os.path.commonpath([str(board_directory), str(resolved_asset)])
-            == str(board_directory)
-        )
+        within_board_directory = os.path.commonpath(
+            [str(board_directory), str(resolved_asset)]
+        ) == str(board_directory)
     except (OSError, RuntimeError, ValueError):
         within_board_directory = False
 
@@ -1444,9 +1474,9 @@ def _board_asset_response(
 
 
 def _workspace_entry_or_404(
-    registry: 'WorkspaceRegistry',
+    registry: "WorkspaceRegistry",
     workspace_id: str,
-) -> 'WorkspaceEntry':
+) -> "WorkspaceEntry":
     try:
         return registry.get(workspace_id)
     except (KeyError, ValueError):
@@ -1460,10 +1490,7 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
     configure_loguru()
 
     definitions = load_workspace_definitions(args.workspace_config)
-    entries = [
-        _build_workspace_entry(definition, args)
-        for definition in definitions
-    ]
+    entries = [_build_workspace_entry(definition, args) for definition in definitions]
     registry = WorkspaceRegistry(
         entries,
         config_path=args.workspace_config,
@@ -1495,10 +1522,10 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
 
 
 def _build_workspace_entry(
-    definition: 'WorkspaceDefinition',
+    definition: "WorkspaceDefinition",
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
-) -> 'WorkspaceEntry':
+) -> "WorkspaceEntry":
     def build_session() -> "WorkspaceInteractiveSession":
         model = build_model(
             config_path=args.config,
@@ -1513,7 +1540,6 @@ def _build_workspace_entry(
             config_path=args.config,
             profile=args.profile,
             system_prompt=args.system_prompt,
-            session_mode="tui",
             extra_contextual_user_messages=(
                 [_board_context_text(definition.board_path, definition.work_dir)]
                 if definition.board_path is not None
@@ -1523,12 +1549,14 @@ def _build_workspace_entry(
             toolset=args.toolset,
         )
         return WorkspaceInteractiveSession(
-            build_cli_queue(agent),
+            build_runtime(agent),
             config_path=args.config,
         )
 
     def session_factory() -> "ThreadedWorkspaceInteractiveSession":
-        return ThreadedWorkspaceInteractiveSession(build_session, asyncio.get_running_loop())
+        return ThreadedWorkspaceInteractiveSession(
+            build_session, asyncio.get_running_loop()
+        )
 
     return WorkspaceEntry(
         definition=definition,
@@ -1578,12 +1606,9 @@ def _render_workspace_shell(
     board_label = str(board_path) if board_path is not None else "No board"
     cwd_label = str(work_dir or Path.cwd())
     page_title = str(title or "pycodex workspace")
-    template = (Path(__file__).with_name("workspace.html")).read_text(
-        encoding="utf-8"
-    )
+    template = (Path(__file__).with_name("workspace.html")).read_text(encoding="utf-8")
     return (
-        template
-        .replace("__WORKSPACE_TITLE__", html.escape(page_title))
+        template.replace("__WORKSPACE_TITLE__", html.escape(page_title))
         .replace("__BOARD_LABEL__", html.escape(board_label))
         .replace("__CWD_LABEL__", html.escape(cwd_label))
     )

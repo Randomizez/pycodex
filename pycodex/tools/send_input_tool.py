@@ -9,11 +9,12 @@ Expected behavior:
 - Return the submission id for the queued input.
 """
 
+import typing
+
 from ..protocol import JSONDict, JSONValue
 from ..runtime_services import SubAgentManager
 from .agent_tool_schemas import COLLAB_INPUT_ITEMS_SCHEMA
 from .base_tool import BaseTool, ToolContext
-import typing
 
 SEND_INPUT_OUTPUT_SCHEMA = {
     "type": "object",
@@ -59,10 +60,10 @@ class SendInputTool(BaseTool):
     output_schema = SEND_INPUT_OUTPUT_SCHEMA
     supports_parallel = False
 
-    def __init__(self, subagent_manager: 'SubAgentManager') -> 'None':
+    def __init__(self, subagent_manager: "SubAgentManager") -> "None":
         self._subagent_manager = subagent_manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONDict') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
         agent_id = str(args.get("id", "")).strip()
         if not agent_id:
@@ -84,10 +85,10 @@ class SendInputTool(BaseTool):
 
     def _compose_prompt(
         self,
-        message: 'typing.Union[str, None]',
-        items: 'typing.Union[typing.List[typing.Dict[str, object]], None]',
-    ) -> 'str':
-        parts: 'typing.List[str]' = []
+        message: "typing.Union[str, None]",
+        items: "typing.Union[typing.List[typing.Dict[str, object]], None]",
+    ) -> "str":
+        parts: "typing.List[str]" = []
         if message:
             parts.append(message.strip())
         for item in items or []:
@@ -100,7 +101,9 @@ class SendInputTool(BaseTool):
                 parts.append(str(item))
         return "\n\n".join(part for part in parts if part)
 
-    def _optional_string(self, args: 'JSONDict', key: 'str') -> 'typing.Union[str, None]':
+    def _optional_string(
+        self, args: "JSONDict", key: "str"
+    ) -> "typing.Union[str, None]":
         value = args.get(key)
         if value in (None, ""):
             return None

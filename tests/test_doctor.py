@@ -1,15 +1,16 @@
-
 import threading
 
 import pytest
 
-from pycodex.compat import ThreadingHTTPServer
 from pycodex.cli import main
+from pycodex.compat import ThreadingHTTPServer
 from pycodex.doctor import collect_doctor_report
 from tests.fake_responses_server import CaptureStore, build_handler
 
 
-def _write_config(config_path, base_url: 'str', env_key: 'str' = "DOCTOR_KEY") -> 'None':
+def _write_config(
+    config_path, base_url: "str", env_key: "str" = "DOCTOR_KEY"
+) -> "None":
     config_path.write_text(
         "\n".join(
             [
@@ -18,8 +19,8 @@ def _write_config(config_path, base_url: 'str', env_key: 'str' = "DOCTOR_KEY") -
                 'model_reasoning_summary = "auto"',
                 'model_reasoning_effort = "medium"',
                 'model_verbosity = "medium"',
-                '',
-                '[model_providers.neo]',
+                "",
+                "[model_providers.neo]",
                 f'base_url = "{base_url}"',
                 f'env_key = "{env_key}"',
                 'wire_api = "responses"',
@@ -32,7 +33,7 @@ def _write_config(config_path, base_url: 'str', env_key: 'str' = "DOCTOR_KEY") -
 async def test_collect_doctor_report_succeeds_with_live_check(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     capture_store = CaptureStore(tmp_path / "capture")
     httpd = ThreadingHTTPServer(
         ("127.0.0.1", 0),
@@ -78,7 +79,7 @@ async def test_collect_doctor_report_succeeds_with_live_check(
 async def test_collect_doctor_report_fails_on_transport_error(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     config_path = tmp_path / "config.toml"
     _write_config(config_path, "http://127.0.0.1:9/v1")
     monkeypatch.setenv("DOCTOR_KEY", "dummy-key")
@@ -99,7 +100,7 @@ async def test_collect_doctor_report_fails_on_transport_error(
 async def test_collect_doctor_report_skips_direct_transport_when_proxy_env_present(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     config_path = tmp_path / "config.toml"
     _write_config(config_path, "https://example.com/v1")
     monkeypatch.setenv("DOCTOR_KEY", "dummy-key")
@@ -125,7 +126,7 @@ async def test_collect_doctor_report_skips_direct_transport_when_proxy_env_prese
 async def test_collect_doctor_report_redacts_proxy_credentials(
     tmp_path,
     monkeypatch,
-) -> 'None':
+) -> "None":
     config_path = tmp_path / "config.toml"
     _write_config(config_path, "https://example.com/v1")
     monkeypatch.setenv("DOCTOR_KEY", "dummy-key")
@@ -143,8 +144,8 @@ async def test_collect_doctor_report_redacts_proxy_credentials(
     assert "https=http://127.0.0.1:3128" in proxy_check.detail
 
 
-def test_main_dispatches_doctor_subcommand(monkeypatch: 'pytest.MonkeyPatch') -> 'None':
-    async def fake_run_doctor_cli(args) -> 'int':
+def test_main_dispatches_doctor_subcommand(monkeypatch: "pytest.MonkeyPatch") -> "None":
+    async def fake_run_doctor_cli(args) -> "int":
         assert args.skip_live is True
         return 7
 

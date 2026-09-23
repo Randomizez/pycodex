@@ -11,13 +11,13 @@ It lives under `tests/` because it is test/support tooling, not runtime code.
 
 import argparse
 import json
+import typing
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin, urlparse
-import urllib.error
-import urllib.request
-import typing
 
 from pycodex.compat import ThreadingHTTPServer
 
@@ -28,7 +28,7 @@ DEFAULT_RESPONSE_TEXT = "OK"
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 120.0
 
 
-def build_parser() -> 'argparse.ArgumentParser':
+def build_parser() -> "argparse.ArgumentParser":
     parser = argparse.ArgumentParser(
         prog="python -m tests.fake_responses_server",
         description=(
@@ -72,16 +72,16 @@ def build_parser() -> 'argparse.ArgumentParser':
 
 
 class CaptureStore:
-    def __init__(self, root: 'Path') -> 'None':
+    def __init__(self, root: "Path") -> "None":
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._counter_path = self._root / "counter.txt"
 
     @property
-    def root(self) -> 'Path':
+    def root(self) -> "Path":
         return self._root
 
-    def next_request_id(self) -> 'int':
+    def next_request_id(self) -> "int":
         if self._counter_path.exists():
             value = int(self._counter_path.read_text()) + 1
         else:
@@ -91,15 +91,15 @@ class CaptureStore:
 
     def write_capture(
         self,
-        request_id: 'int',
-        method: 'str',
-        path: 'str',
-        headers: 'typing.Dict[str, str]',
-        body: 'object',
-        response_status: 'int',
-        response_headers: 'typing.Dict[str, str]',
-        response_body: 'object',
-    ) -> 'None':
+        request_id: "int",
+        method: "str",
+        path: "str",
+        headers: "typing.Dict[str, str]",
+        body: "object",
+        response_status: "int",
+        response_headers: "typing.Dict[str, str]",
+        response_body: "object",
+    ) -> "None":
         parsed = urlparse(path)
         safe_name = parsed.path.strip("/").replace("/", "_") or "root"
         filename = self._root / f"{request_id:03d}_{method}_{safe_name}.json"
@@ -122,7 +122,9 @@ class CaptureStore:
         )
 
 
-def _decode_body(body_bytes: 'bytes', content_type: 'typing.Union[str, None]' = None) -> 'object':
+def _decode_body(
+    body_bytes: "bytes", content_type: "typing.Union[str, None]" = None
+) -> "object":
     text = body_bytes.decode("utf-8", errors="replace")
     if content_type and "application/json" in content_type.lower():
         try:
@@ -136,11 +138,11 @@ def _decode_body(body_bytes: 'bytes', content_type: 'typing.Union[str, None]' = 
 
 
 def _write_response(
-    handler: 'BaseHTTPRequestHandler',
-    status: 'int',
-    headers: 'typing.Dict[str, str]',
-    body_bytes: 'bytes',
-) -> 'None':
+    handler: "BaseHTTPRequestHandler",
+    status: "int",
+    headers: "typing.Dict[str, str]",
+    body_bytes: "bytes",
+) -> "None":
     handler.send_response(status)
     for key, value in headers.items():
         lowered = key.lower()
@@ -152,8 +154,8 @@ def _write_response(
     handler.wfile.write(body_bytes)
 
 
-def _request_headers_for_proxy(headers) -> 'typing.Dict[str, str]':
-    forwarded: 'typing.Dict[str, str]' = {}
+def _request_headers_for_proxy(headers) -> "typing.Dict[str, str]":
+    forwarded: "typing.Dict[str, str]" = {}
     for key, value in headers.items():
         lowered = key.lower()
         if lowered in {"host", "content-length", "connection"}:
@@ -162,7 +164,7 @@ def _request_headers_for_proxy(headers) -> 'typing.Dict[str, str]':
     return forwarded
 
 
-def _build_upstream_url(upstream_base_url: 'str', request_path: 'str') -> 'str':
+def _build_upstream_url(upstream_base_url: "str", request_path: "str") -> "str":
     parsed_base = urlparse(upstream_base_url)
     base_origin = f"{parsed_base.scheme}://{parsed_base.netloc}"
     base_path = parsed_base.path.rstrip("/")
@@ -183,18 +185,18 @@ def _build_upstream_url(upstream_base_url: 'str', request_path: 'str') -> 'str':
 
 
 def build_fake_handler(
-    capture_store: 'CaptureStore',
-    model_id: 'str',
-    response_text: 'str',
+    capture_store: "CaptureStore",
+    model_id: "str",
+    response_text: "str",
 ):
     class Handler(BaseHTTPRequestHandler):
         server_version = "PromptCapture/0.1"
 
-        def log_message(self, format: 'str', *args) -> 'None':
+        def log_message(self, format: "str", *args) -> "None":
             del format, args
             return
 
-        def do_GET(self) -> 'None':
+        def do_GET(self) -> "None":
             request_id = capture_store.next_request_id()
             parsed = urlparse(self.path)
             if parsed.path.endswith("/models") or parsed.path == "/models":
@@ -232,10 +234,12 @@ def build_fake_handler(
             )
             _write_response(self, 200, response_headers, body_bytes)
 
-        def do_POST(self) -> 'None':
+        def do_POST(self) -> "None":
             length = int(self.headers.get("Content-Length", "0"))
             request_body_bytes = self.rfile.read(length)
-            decoded_request_body = _decode_body(request_body_bytes, self.headers.get("Content-Type"))
+            decoded_request_body = _decode_body(
+                request_body_bytes, self.headers.get("Content-Type")
+            )
             request_id = capture_store.next_request_id()
             parsed = urlparse(self.path)
 
@@ -246,7 +250,7 @@ def build_fake_handler(
                         f'data: {json.dumps({"type": "response.created", "response": {"id": "resp_mock", "object": "response", "status": "in_progress", "model": model_id}}, ensure_ascii=False)}\n\n',
                         "event: response.output_item.done\n"
                         f'data: {json.dumps({"type": "response.output_item.done", "item": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": response_text}]}}, ensure_ascii=False)}\n\n',
-                        'event: response.completed\n'
+                        "event: response.completed\n"
                         'data: {"type":"response.completed","response":{"id":"resp_mock","output":[]}}\n\n',
                     ]
                 )
@@ -287,31 +291,35 @@ def build_fake_handler(
 
 
 def build_proxy_handler(
-    capture_store: 'CaptureStore',
-    upstream_base_url: 'str',
-    timeout_seconds: 'float',
+    capture_store: "CaptureStore",
+    upstream_base_url: "str",
+    timeout_seconds: "float",
 ):
     class Handler(BaseHTTPRequestHandler):
         server_version = "PromptProxy/0.1"
 
-        def log_message(self, format: 'str', *args) -> 'None':
+        def log_message(self, format: "str", *args) -> "None":
             del format, args
             return
 
-        def do_GET(self) -> 'None':
+        def do_GET(self) -> "None":
             self._forward()
 
-        def do_POST(self) -> 'None':
+        def do_POST(self) -> "None":
             self._forward()
 
-        def _forward(self) -> 'None':
+        def _forward(self) -> "None":
             request_id = capture_store.next_request_id()
             length = int(self.headers.get("Content-Length", "0"))
             request_body_bytes = self.rfile.read(length) if length else b""
-            decoded_request_body = _decode_body(
-                request_body_bytes,
-                self.headers.get("Content-Type"),
-            ) if request_body_bytes else None
+            decoded_request_body = (
+                _decode_body(
+                    request_body_bytes,
+                    self.headers.get("Content-Type"),
+                )
+                if request_body_bytes
+                else None
+            )
 
             target_url = _build_upstream_url(upstream_base_url, self.path)
 
@@ -324,7 +332,9 @@ def build_proxy_handler(
             )
 
             try:
-                with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+                with urllib.request.urlopen(
+                    request, timeout=timeout_seconds
+                ) as response:
                     response_status = getattr(response, "status", 200)
                     response_headers = dict(response.headers.items())
                     response_body_bytes = response.read()
@@ -347,22 +357,24 @@ def build_proxy_handler(
                 response_headers,
                 decoded_response_body,
             )
-            _write_response(self, response_status, response_headers, response_body_bytes)
+            _write_response(
+                self, response_status, response_headers, response_body_bytes
+            )
 
     return Handler
 
 
 def build_handler(
-    capture_store: 'CaptureStore',
-    model_id: 'str',
-    response_text: 'str',
+    capture_store: "CaptureStore",
+    model_id: "str",
+    response_text: "str",
 ):
     """Backward-compatible alias used by existing tests."""
 
     return build_fake_handler(capture_store, model_id, response_text)
 
 
-def main() -> 'None':
+def main() -> "None":
     args = build_parser().parse_args()
     capture_store = CaptureStore(Path(args.root))
     if args.proxy_base_url:

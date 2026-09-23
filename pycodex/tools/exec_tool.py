@@ -40,8 +40,8 @@ class ExecTool(BaseTool):
         "- Accepts raw JavaScript source text, not JSON, quoted strings, or "
         "markdown code fences.\n"
         "- You may optionally start the tool input with a first-line pragma "
-        "like `// @exec: {\"yield_time_ms\": 10000, "
-        "\"max_output_tokens\": 1000}`.\n"
+        'like `// @exec: {"yield_time_ms": 10000, '
+        '"max_output_tokens": 1000}`.\n'
         "- `yield_time_ms` asks `exec` to yield early if the script is still "
         "running. Defaults to 10000 ms.\n"
         "- `max_output_tokens` sets the token budget for direct `exec` results. "
@@ -55,8 +55,8 @@ class ExecTool(BaseTool):
     }
     supports_parallel = False
 
-    def __init__(self, manager: 'CodeModeManager') -> 'None':
+    def __init__(self, manager: "CodeModeManager") -> "None":
         self._manager = manager
 
-    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         return await self._manager.exec(str(args), context)

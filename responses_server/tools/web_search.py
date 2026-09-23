@@ -1,10 +1,9 @@
-
-from copy import deepcopy
 import json
+import typing
+from copy import deepcopy
 
 from pycodex.protocol import JSONValue
 from pycodex.tools.base_tool import BaseTool, ToolContext
-import typing
 
 
 class WebSearchTool(BaseTool):
@@ -29,10 +28,10 @@ class WebSearchTool(BaseTool):
     }
     supports_parallel = False
 
-    async def run(self, context: 'ToolContext', args: 'JSONValue') -> 'JSONValue':
+    async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         del context
         query, queries = extract_queries(args)
-        output_payload: 'typing.Dict[str, object]' = {
+        output_payload: "typing.Dict[str, object]" = {
             "results": [],
             "mock": True,
         }
@@ -43,7 +42,7 @@ class WebSearchTool(BaseTool):
         return output_payload
 
 
-def build_tool_definition(tool: 'WebSearchTool') -> 'typing.Dict[str, object]':
+def build_tool_definition(tool: "WebSearchTool") -> "typing.Dict[str, object]":
     return {
         "type": "function",
         "name": tool.name,
@@ -57,13 +56,13 @@ def build_tool_definition(tool: 'WebSearchTool') -> 'typing.Dict[str, object]':
 
 
 def partition_tool_calls(
-    tool: 'WebSearchTool',
-    tool_calls: 'typing.Dict[int, typing.Dict[str, object]]',
-    outcomming_request: 'typing.Dict[str, object]',
-) -> 'typing.Tuple[typing.List[typing.Dict[str, object]], typing.Dict[int, typing.Dict[str, object]]]':
+    tool: "WebSearchTool",
+    tool_calls: "typing.Dict[int, typing.Dict[str, object]]",
+    outcomming_request: "typing.Dict[str, object]",
+) -> "typing.Tuple[typing.List[typing.Dict[str, object]], typing.Dict[int, typing.Dict[str, object]]]":
     mock_tool_names = _collect_mock_tool_names(tool, outcomming_request)
-    mock_calls: 'typing.List[typing.Dict[str, object]]' = []
-    ordinary_tool_calls: 'typing.Dict[int, typing.Dict[str, object]]' = {}
+    mock_calls: "typing.List[typing.Dict[str, object]]" = []
+    ordinary_tool_calls: "typing.Dict[int, typing.Dict[str, object]]" = {}
     for index in sorted(tool_calls):
         tool_call = tool_calls[index]
         function = tool_call.get("function") or {}
@@ -78,9 +77,9 @@ def partition_tool_calls(
 
 
 def hydrate_tool_call_names(
-    tool_calls: 'typing.Dict[int, typing.Dict[str, object]]',
-    outcomming_request: 'typing.Dict[str, object]',
-) -> 'None':
+    tool_calls: "typing.Dict[int, typing.Dict[str, object]]",
+    outcomming_request: "typing.Dict[str, object]",
+) -> "None":
     raw_tools = outcomming_request.get("tools") or []
     if not isinstance(raw_tools, list):
         return
@@ -104,15 +103,15 @@ def hydrate_tool_call_names(
 
 
 def build_output_items(
-    mock_search_calls: 'typing.List[typing.Dict[str, object]]',
-) -> 'typing.List[typing.Dict[str, object]]':
-    items: 'typing.List[typing.Dict[str, object]]' = []
+    mock_search_calls: "typing.List[typing.Dict[str, object]]",
+) -> "typing.List[typing.Dict[str, object]]":
+    items: "typing.List[typing.Dict[str, object]]" = []
     for tool_call in mock_search_calls:
         function = tool_call.get("function") or {}
         if not isinstance(function, dict):
             continue
         query, queries = extract_queries(function.get("arguments"))
-        action: 'typing.Dict[str, object]' = {"type": "search"}
+        action: "typing.Dict[str, object]" = {"type": "search"}
         if query:
             action["query"] = query
         if queries:
@@ -128,17 +127,17 @@ def build_output_items(
 
 
 def build_followup_request(
-    tool: 'WebSearchTool',
-    outcomming_request: 'typing.Dict[str, object]',
-    mock_search_calls: 'typing.List[typing.Dict[str, object]]',
-    reasoning_text: 'typing.Union[str, None]' = None,
-) -> 'typing.Dict[str, object]':
+    tool: "WebSearchTool",
+    outcomming_request: "typing.Dict[str, object]",
+    mock_search_calls: "typing.List[typing.Dict[str, object]]",
+    reasoning_text: "typing.Union[str, None]" = None,
+) -> "typing.Dict[str, object]":
     followup_request = deepcopy(outcomming_request)
     messages = followup_request.get("messages") or []
     if not isinstance(messages, list):
         raise ValueError("outcomming request messages must be a list")
 
-    assistant_tool_calls: 'typing.List[typing.Dict[str, object]]' = []
+    assistant_tool_calls: "typing.List[typing.Dict[str, object]]" = []
     for tool_call in mock_search_calls:
         function = tool_call.get("function") or {}
         if not isinstance(function, dict):
@@ -154,7 +153,7 @@ def build_followup_request(
             }
         )
     if assistant_tool_calls:
-        assistant_message: 'typing.Dict[str, object]' = {
+        assistant_message: "typing.Dict[str, object]" = {
             "role": "assistant",
             "tool_calls": assistant_tool_calls,
         }
@@ -163,7 +162,9 @@ def build_followup_request(
         messages.append(assistant_message)
 
     for tool_call in mock_search_calls:
-        tool_output = _build_mock_output((tool_call.get("function") or {}).get("arguments"))
+        tool_output = _build_mock_output(
+            (tool_call.get("function") or {}).get("arguments")
+        )
         messages.append(
             {
                 "role": "tool",
@@ -187,7 +188,9 @@ def build_followup_request(
     return followup_request
 
 
-def extract_queries(raw_arguments: 'JSONValue') -> 'typing.Tuple[str, typing.List[str]]':
+def extract_queries(
+    raw_arguments: "JSONValue",
+) -> "typing.Tuple[str, typing.List[str]]":
     if isinstance(raw_arguments, dict):
         parsed = raw_arguments
     else:
@@ -211,7 +214,7 @@ def extract_queries(raw_arguments: 'JSONValue') -> 'typing.Tuple[str, typing.Lis
 
     query = str(parsed.get("query", "")).strip()
     queries_value = parsed.get("queries") or []
-    queries: 'typing.List[str]' = []
+    queries: "typing.List[str]" = []
     if isinstance(queries_value, list):
         for value in queries_value:
             normalized = str(value).strip()
@@ -224,7 +227,7 @@ def extract_queries(raw_arguments: 'JSONValue') -> 'typing.Tuple[str, typing.Lis
     return query, queries
 
 
-def is_mock_tool(tool: 'WebSearchTool', raw_tool: 'object') -> 'bool':
+def is_mock_tool(tool: "WebSearchTool", raw_tool: "object") -> "bool":
     if not isinstance(raw_tool, dict) or raw_tool.get("type") != "function":
         return False
     function = raw_tool.get("function") or {}
@@ -237,10 +240,10 @@ def is_mock_tool(tool: 'WebSearchTool', raw_tool: 'object') -> 'bool':
 
 
 def _collect_mock_tool_names(
-    tool: 'WebSearchTool',
-    outcomming_request: 'typing.Dict[str, object]',
-) -> 'typing.Set[str]':
-    names: 'typing.Set[str]' = set()
+    tool: "WebSearchTool",
+    outcomming_request: "typing.Dict[str, object]",
+) -> "typing.Set[str]":
+    names: "typing.Set[str]" = set()
     raw_tools = outcomming_request.get("tools") or []
     if not isinstance(raw_tools, list):
         return names
@@ -250,9 +253,9 @@ def _collect_mock_tool_names(
     return names
 
 
-def _build_mock_output(raw_arguments: 'JSONValue') -> 'typing.Dict[str, object]':
+def _build_mock_output(raw_arguments: "JSONValue") -> "typing.Dict[str, object]":
     query, queries = extract_queries(raw_arguments)
-    output_payload: 'typing.Dict[str, object]' = {
+    output_payload: "typing.Dict[str, object]" = {
         "results": [],
         "mock": True,
     }
