@@ -23,6 +23,7 @@ from pycodex.events import (
     AutoCompactCompletedEvent,
     CommandCompletedEvent,
     InputRequestedEvent,
+    InputResolvedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     TokenCountEvent,
@@ -143,14 +144,19 @@ def test_typed_event_wire_preserves_existing_fields():
         "error": "failed",
         "error_type": "ValueError",
     }
-    request = InputRequestedEvent(
-        "request", "questions", False, question={"id": "choice"}
-    )
+    question = {
+        "id": "choice",
+        "header": "Choice",
+        "question": "Choose a path",
+        "options": [{"label": "Alpha", "description": "Path A"}],
+    }
+    request = InputRequestedEvent("request", "questions", False, question=question)
     request_data = {
         "request_id": "request",
         "kind": "questions",
         "other": False,
-        "question": {"id": "choice"},
+        "question": question,
+        "text": request.visualize(),
     }
     assert _event_data(request)["payload"] == request_data
     assert _event_data(SessionStateEvent("attach", {"input_request": request}))[
@@ -541,6 +547,54 @@ def test_web_view_projects_context_tool_and_stream_events():
         event.get("kind") == "assistant_delta"
         for event in subscriber.get_nowait()["events"]
     )
+    view.close()
+
+
+@pytest.mark.parametrize("request_kind", ["questions", "permissions"])
+def test_input_request_does_not_leave_a_control_turn_after_stream_resumes(request_kind):
+    view = WebSessionView()
+    view.handle_event(TurnStartedEvent("turn", ("hello",)))
+    view.handle_event(AssistantDeltaEvent("Before asking", "turn"))
+    tool_name = (
+        "request_user_input" if request_kind == "questions" else "request_permissions"
+    )
+    call = ToolCall("call", tool_name, {})
+    view.handle_event(ToolStartedEvent("turn", call))
+    request = InputRequestedEvent(
+        "request",
+        request_kind,
+        False,
+        question={
+            "id": "choice",
+            "header": "Choice",
+            "question": "Choose a path",
+            "options": [{"label": "Alpha", "description": "Path A"}],
+        },
+        permissions={"reason": "Run the task", "permissions": {}},
+    )
+    view.handle_event(request)
+
+    pending = view.snapshot()
+    assert pending["input_request"]["text"] == request.visualize()
+    assert len(pending["turns"]) == 1
+    assert pending["turns"][0]["thinking"] == "Before asking"
+    assert (
+        view.subscribe().get_nowait()["snapshot"]["input_request"]
+        == pending["input_request"]
+    )
+
+    view.handle_event(InputResolvedEvent("request"))
+    view.handle_event(
+        ToolCompletedEvent("turn", call, ToolResult("call", tool_name, ""))
+    )
+    view.handle_event(AssistantDeltaEvent("Continuing", "turn"))
+    view.handle_event(AssistantDeltaEvent(" now", "turn"))
+
+    resumed = view.snapshot()
+    assert resumed["input_request"] is None
+    assert len(resumed["turns"]) == 1
+    assert resumed["turns"][-1]["kind"] == "assistant"
+    assert resumed["turns"][-1]["thinking"] == "Continuing now"
     view.close()
 
 

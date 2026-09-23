@@ -244,6 +244,9 @@ Current behavior:
   `--password <value>` enables a password-only login page for workspace pages,
   APIs, and websocket connections. After login, the browser returns to the
   requested workspace path with its query parameters.
+  Questions and permission requests appear below the conversation only while
+  waiting for input; they disappear when answered, cancelled, or timed out,
+  leaving the continuing assistant output at the bottom.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;

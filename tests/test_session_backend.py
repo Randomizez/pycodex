@@ -618,6 +618,8 @@ def test_web_transports_deliver_structured_answers(threaded, transport):
                 break
             time.sleep(0.01)
         assert state["input_request"] is not None
+        assert "Choose a path" in state["input_request"]["text"]
+        assert len(state["turns"]) == 1
         answer = {
             "request_id": state["input_request"]["request_id"],
             "answer": {
@@ -642,6 +644,14 @@ def test_web_transports_deliver_structured_answers(threaded, transport):
         stale = browser.post("/api/session/message", json=answer)
         assert stale.status_code == 400
         assert "no longer pending" in stale.json()["error"]
+        for attempt in range(100):
+            state = browser.get("/api/session").json()["snapshot"]
+            if state["turns"][-1]["status"] == "completed":
+                break
+            time.sleep(0.01)
+        assert state["input_request"] is None
+        assert len(state["turns"]) == 1
+        assert state["turns"][-1]["response"] == "answered"
     assert client.call_count == 2
 
 

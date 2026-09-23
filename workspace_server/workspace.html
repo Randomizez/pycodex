@@ -1285,7 +1285,7 @@
 
     function messageSignature(snapshot) {
       const turns = (snapshot && snapshot.turns) || [];
-      return JSON.stringify(
+      return JSON.stringify([
         turns.map((item) => [
           item.submission_id || "",
           item.turn_id || "",
@@ -1296,7 +1296,8 @@
           item.error || "",
           item.kind || "",
         ]),
-      );
+        snapshot.input_request || null,
+      ]);
     }
 
     async function pollSession() {
@@ -1391,6 +1392,9 @@
         const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
         if (turns.length) {
           turns.forEach((turn) => renderTurn(turn, shouldStick));
+        }
+        if (state.inputRequest) {
+          addEntry("input requested", state.inputRequest.text, "control", shouldStick);
         }
         setSpinner(snapshot.spinner || "");
         updateContextMeter(snapshot);

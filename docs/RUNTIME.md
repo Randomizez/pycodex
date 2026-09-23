@@ -309,9 +309,11 @@ do not finish or restart the enclosing turn.
 Commands, session state and provider-specific data keep their existing nested
 data structures; this is not a second business-data schema framework.
 Only the Web transport converts events to `kind/turn_id/payload` dictionaries,
-including derived fields and the original question/permission JSON shape.
-The browser protocol stays unchanged; Python observers and custom model clients
-must use the concrete event classes instead of the removed generic interfaces.
+including derived fields, event-rendered prompt text and the original
+question/permission JSON shape. The workspace renders the pending input request
+below the conversation and removes it on resolution; it is not a conversation
+turn. Python observers and custom model clients must use the concrete event
+classes instead of the removed generic interfaces.
 
 Agent and submission event callbacks are observers. A callback exception is
 reported through the owning asyncio loop's exception handler; it does not change

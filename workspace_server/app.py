@@ -370,7 +370,6 @@ class WebSessionView:
             return
         if isinstance(event, InputRequestedEvent):
             self._input_request = event
-            self.write_line(event.visualize())
             return
         if isinstance(event, InputResolvedEvent):
             self._input_request = None
@@ -1404,6 +1403,7 @@ def _event_data(event: "Event") -> "typing.Dict[str, object]":
         del payload["background_work_count"]
     if isinstance(event, InputRequestedEvent):
         payload["kind"] = payload.pop("request_kind")
+        payload["text"] = event.visualize()
         payload = {name: value for name, value in payload.items() if value is not None}
     return {"kind": event.kind, "turn_id": turn_id, "payload": _json_safe(payload)}
 
