@@ -428,10 +428,14 @@ def test_compact_progress_and_failures():
                 "kind": "history",
                 "state": {
                     "title": "demo",
-                    "history": [("问", "答\nnext"), ("pending", None)],
+                    "history": [
+                        ("", "continued"),
+                        ("问", "答\nnext"),
+                        ("pending", None),
+                    ],
                 },
             },
-            "Session: demo\n[1]U> 问\n[1]A> 答\nnext\n[2]U> pending",
+            "Session: demo\n[1]A> continued\n[2]U> 问\n[2]A> 答\nnext\n[3]U> pending",
         ),
         ({"kind": "compact_empty"}, "Nothing to compact."),
         ({"kind": "forked", "session_id": "fork"}, "Forked session: fork"),

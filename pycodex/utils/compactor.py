@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from ..protocol import (
     AssistantMessage,
+    ContextMessage,
     ConversationItem,
     ModelResponse,
     ToolCall,
@@ -156,7 +157,7 @@ def prune_oldest_tool_response(
 def build_compacted_history(
     summary_text: "str",
 ) -> "typing.Tuple[ConversationItem, ...]":
-    return (UserMessage(text=summary_text or _build_summary_message(None)),)
+    return (ContextMessage(text=summary_text or _build_summary_message(None)),)
 
 
 def _last_assistant_message(

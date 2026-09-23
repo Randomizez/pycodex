@@ -803,14 +803,48 @@ async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tm
     ] == [item.serialize() for item in initial_history]
     agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
-    agent.resume(source.session_file_path)
+    resumed = agent.resume(source.session_file_path)
 
     assert agent.session_id == source.session_id
     assert agent.history == source.history
     assert len(agent.history) == 1
+    assert resumed["turns"] == ()
     assert "checkpoint summary" in agent.history[0].text
     assert str(source.session_file_path) in agent.history[0].text
     assert source.session_file_path.read_bytes() == original_bytes
+
+
+@pytest.mark.asyncio
+async def test_fork_after_compact_keeps_summary_context_on_resume():
+    model = ScriptedModelClient(
+        [
+            ModelResponse([AssistantMessage("summary")]),
+            ModelResponse([AssistantMessage("continued answer")]),
+            ModelResponse([AssistantMessage("forked answer")]),
+        ]
+    )
+    source = Agent(
+        model,
+        ToolRegistry(),
+        ContextConfig(),
+        initial_history=(UserMessage("old prompt"), AssistantMessage("old answer")),
+    )
+    await source.compact()
+    await source.run_turn([])
+    source.fork()
+    await source.run_turn(["new prompt"])
+    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+
+    resumed = agent.resume(source.session_file_path)
+
+    assert agent.history == source.history
+    assert resumed["turns"] == (
+        ("", "continued answer"),
+        ("new prompt", "forked answer"),
+    )
+    assert source.history[0].serialize() in [
+        item.serialize() for item in model.prompts[-1].input
+    ]
 
 
 def test_resume_accepts_multiline_records_and_incomplete_tail(tmp_path):

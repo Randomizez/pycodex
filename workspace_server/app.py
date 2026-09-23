@@ -14,6 +14,7 @@ except ImportError:  # pragma: no cover - Python 3.6 compatibility
     asynccontextmanager = None
 import typing
 from pathlib import Path
+from urllib.parse import urlencode
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import (
@@ -964,14 +965,19 @@ def _install_auth(app: FastAPI, password: "typing.Union[str, None]") -> str:
                 {"ok": False, "error": "authentication required"},
                 status_code=401,
             )
-        return RedirectResponse(url="/login", status_code=303)
+        target = path + ("?" + request.url.query if request.url.query else "")
+        return RedirectResponse(
+            url="/login?" + urlencode({"next": target}), status_code=303
+        )
 
     @app.get("/login")
     async def login_page() -> HTMLResponse:
         return _html_response(_render_login_shell())
 
     @app.post("/login")
-    async def login(payload: "typing.Dict[str, object]") -> JSONResponse:
+    async def login(
+        request: Request, payload: "typing.Dict[str, object]"
+    ) -> JSONResponse:
         if not secrets.compare_digest(
             str(payload.get("password") or ""), password_text
         ):
@@ -979,7 +985,15 @@ def _install_auth(app: FastAPI, password: "typing.Union[str, None]") -> str:
                 {"ok": False, "error": "invalid password"},
                 status_code=401,
             )
-        response = JSONResponse({"ok": True})
+        target = request.query_params.get("next", "/")
+        if (
+            not target.startswith("/")
+            or target.startswith("//")
+            or "\\" in target
+            or any(ord(char) < 32 for char in target)
+        ):
+            target = "/"
+        response = JSONResponse({"ok": True, "redirect": target})
         response.set_cookie(
             AUTH_COOKIE_NAME,
             token,
@@ -1057,13 +1071,14 @@ def _render_login_shell() -> str:
     form.addEventListener("submit", async function(event) {
       event.preventDefault();
       statusEl.textContent = "";
-      const response = await fetch("login", {
+      const response = await fetch(window.location.pathname + window.location.search, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({password: passwordInput.value}),
       });
       if (response.ok) {
-        window.location.href = "/";
+        const result = await response.json();
+        window.location.href = result.redirect;
         return;
       }
       statusEl.textContent = "Invalid password";

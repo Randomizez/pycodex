@@ -147,14 +147,15 @@ class AssistantMessage:
     frozen=True,
 )
 class ContextMessage:
-    """何时：ContextManager 为单轮模型请求注入额外上下文时构造。
-    发送方：ContextManager。
+    """何时：注入额外上下文或用 compact 摘要替换历史时构造。
+    发送方：ContextManager 或 compactor。
     接收方：ModelClient。
     """
 
     text: "typing.Union[str, None]" = None
     role: 'Literal["user", "developer"]' = "user"
     content_items: "typing.Union[typing.Tuple[JSONDict, ...], None]" = None
+    id: "typing.Union[str, None]" = None
 
     def serialize(self) -> "JSONDict":
         if self.content_items is not None:
@@ -163,11 +164,14 @@ class ContextMessage:
             if self.text is None:
                 raise ValueError("ContextMessage requires `text` or `content_items`")
             content = [{"type": "input_text", "text": self.text}]
-        return {
+        payload = {
             "type": "message",
             "role": self.role,
             "content": content,
         }
+        if self.id is not None:
+            payload["id"] = self.id
+        return payload
 
 
 @dataclass(

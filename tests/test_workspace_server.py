@@ -292,21 +292,44 @@ def test_password_protects_http_and_websocket(tmp_path, multi):
         app = create_app(make_session, board, password="test-password")
         prefix = ""
     with TestClient(app) as browser:
+        target = prefix + "/?session=saved&view=chat"
+        response = browser.get(target)
+        assert response.status_code == 200
+        assert len(response.history) == 1
+        assert response.history[0].status_code == 303
+        login_url = response.history[0].headers["location"]
         assert browser.get(prefix + "/api/session").status_code == 401
-        assert browser.post("/login", json={"password": "wrong"}).status_code == 401
+        assert browser.post(login_url, json={"password": "wrong"}).status_code == 401
         with pytest.raises(WebSocketDisconnect):
             with browser.websocket_connect(prefix + "/ws/session"):
                 pass
-        assert (
-            browser.post("/login", json={"password": "test-password"}).status_code
-            == 200
-        )
+        response = browser.post(login_url, json={"password": "test-password"})
+        assert response.status_code == 200
+        assert response.json() == {"ok": True, "redirect": target}
+        assert browser.get(response.json()["redirect"]).status_code == 200
         assert browser.get(prefix + "/board").status_code == 200
         assert browser.get(prefix + "/api/session").status_code == 200
         with browser.websocket_connect(prefix + "/ws/session") as websocket:
             assert websocket.receive_json()["type"] == "hello"
             websocket.send_json({"type": "ping"})
             assert websocket.receive_json()["type"] == "pong"
+
+
+@pytest.mark.parametrize(
+    "target",
+    [None, "https://example.com", "//example.com", "/\\example.com", "/\t/example.com"],
+)
+def test_login_redirect_stays_on_server(target):
+    with TestClient(
+        create_app(make_session, None, password="test-password")
+    ) as browser:
+        response = browser.post(
+            "/login",
+            params={} if target is None else {"next": target},
+            json={"password": "test-password"},
+        )
+        assert response.status_code == 200
+        assert response.json()["redirect"] == "/"
 
 
 def test_workspace_registry_crud_and_duplicate_board(tmp_path):
@@ -443,6 +466,43 @@ def test_sessions_persist_explicit_titles_and_restore_history(tmp_path):
             == 200
         )
         assert len(browser.get("/api/session").json()["snapshot"]["turns"]) == 1
+
+
+def test_workspace_resume_hides_compact_handoff_and_keeps_real_reply(tmp_path):
+    model = ScriptedModelClient(
+        [
+            ModelResponse([AssistantMessage("old answer")]),
+            ModelResponse([AssistantMessage("handoff summary")]),
+            ModelResponse([AssistantMessage("continued answer")]),
+        ]
+    )
+    source = Agent(model, ToolRegistry(), ContextConfig())
+    source.ask("original prompt")
+    asyncio.run(source.compact())
+    asyncio.run(source.run_turn([]))
+    source.shutdown()
+
+    with TestClient(create_app(make_session, None)) as browser:
+        response = browser.post("/api/session/message", json={"prompt": "/resume 1"})
+        assert response.status_code == 200
+        restored = browser.get("/api/session").json()["snapshot"]
+        assert restored["title"] == "original prompt"
+        assert [(turn["prompt"], turn["response"]) for turn in restored["turns"]] == [
+            ("", "continued answer")
+        ]
+        assert (
+            browser.post(
+                "/api/session/message", json={"prompt": "next prompt"}
+            ).status_code
+            == 200
+        )
+        state = wait_snapshot(
+            browser, lambda item: item["turns"][-1]["response"] == "done"
+        )
+        assert [(turn["prompt"], turn["response"]) for turn in state["turns"]] == [
+            ("", "continued answer"),
+            ("next prompt", "done"),
+        ]
 
 
 def test_session_list_uses_lightweight_summary(monkeypatch):

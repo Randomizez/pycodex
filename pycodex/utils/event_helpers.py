@@ -52,7 +52,8 @@ def format_command_result(result: "typing.Dict[str, object]") -> "str":
             return "\n".join(lines + ["No history yet."])
         lines.append("Session: " + (state["title"] or "untitled"))
         for index, (prompt, response) in enumerate(state["history"], 1):
-            lines.append("[{0}]U> {1}".format(index, prompt))
+            if prompt:
+                lines.append("[{0}]U> {1}".format(index, prompt))
             if response:
                 lines.append("[{0}]A> {1}".format(index, response))
         return "\n".join(lines)

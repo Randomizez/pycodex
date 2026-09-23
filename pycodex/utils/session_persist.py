@@ -9,12 +9,14 @@ from pathlib import Path
 
 from ..protocol import (
     AssistantMessage,
+    ContextMessage,
     ConversationItem,
     ReasoningItem,
     ToolCall,
     ToolResult,
     UserMessage,
 )
+from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
 from .get_env import get_package_version
 
@@ -96,7 +98,13 @@ class SessionRolloutRecorder:
     def _history_records(
         items: "typing.Iterable[ConversationItem]",
     ) -> "typing.Iterable[typing.Tuple[str, typing.Dict[str, object]]]":
+        history = []
         for item in items:
+            history.append(item)
+            if isinstance(item, ContextMessage) and item.role == "user":
+                # Preserve a fork's compact summary as context when replayed.
+                yield "compacted", _compacted_payload(history)
+                continue
             serialized = item.serialize()
             if isinstance(serialized, dict):
                 yield "response_item", serialized
@@ -114,13 +122,8 @@ class SessionRolloutRecorder:
         history: "typing.Iterable[ConversationItem]",
         initial_history: "typing.Iterable[ConversationItem]" = (),
     ) -> "None":
-        serialized_items = []
-        for item in history:
-            serialized = item.serialize()
-            if isinstance(serialized, dict):
-                serialized_items.append(serialized)
         self._append_records(
-            [("compacted", {"replacement_history": serialized_items})],
+            [("compacted", _compacted_payload(history))],
             initial_history,
         )
 
@@ -247,8 +250,12 @@ def load_resumed_session_path(
         if item_type == "compacted" and isinstance(payload, dict):
             replacement_history = payload.get("replacement_history")
             if isinstance(replacement_history, list):
-                history = _deserialize_compacted_history(replacement_history)
-                saw_user_turn = any(isinstance(item, UserMessage) for item in history)
+                history = _deserialize_compacted_history(
+                    replacement_history, payload.get("message")
+                )
+                saw_user_turn = any(
+                    isinstance(item, (UserMessage, ContextMessage)) for item in history
+                )
                 tool_names_by_call_id = {
                     item.call_id: item.name
                     for item in history
@@ -284,7 +291,8 @@ def load_resumed_session_path(
         raise ValueError(f"No resumable history found in {rollout_path}")
 
     turns = conversation_history_to_turns(history)
-    title = thread_name or (shorten_title(turns[0][0]) if turns else thread_id)
+    first_prompt = next((prompt for prompt, _ in turns if prompt), "")
+    title = thread_name or shorten_title(first_prompt) or thread_id
     return {
         "session_id": session_id,
         "thread_id": thread_id,
@@ -303,15 +311,15 @@ def conversation_history_to_turns(
     current_assistant_text = ""
     for item in history:
         if isinstance(item, UserMessage):
-            if current_user_text is not None:
-                turns.append((current_user_text, current_assistant_text))
+            if current_user_text is not None or current_assistant_text:
+                turns.append((current_user_text or "", current_assistant_text))
             current_user_text = item.text
             current_assistant_text = ""
             continue
-        if isinstance(item, AssistantMessage) and current_user_text is not None:
+        if isinstance(item, AssistantMessage):
             current_assistant_text = item.text
-    if current_user_text is not None:
-        turns.append((current_user_text, current_assistant_text))
+    if current_user_text is not None or current_assistant_text:
+        turns.append((current_user_text or "", current_assistant_text))
     return tuple(turns)
 
 
@@ -481,8 +489,22 @@ def _extract_response_message_text(payload: "typing.Dict[str, object]") -> "str"
     return "".join(text_parts)
 
 
+def _compacted_payload(
+    history: "typing.Iterable[ConversationItem]",
+) -> "typing.Dict[str, object]":
+    payload: "typing.Dict[str, object]" = {"replacement_history": []}
+    for item in history:
+        serialized = item.serialize()
+        if isinstance(serialized, dict):
+            payload["replacement_history"].append(serialized)
+        if isinstance(item, ContextMessage) and item.role == "user":
+            payload["message"] = item.text
+    return payload
+
+
 def _deserialize_compacted_history(
     replacement_history: "typing.Iterable[object]",
+    summary_message: "typing.Union[str, None]" = None,
 ) -> "typing.List[ConversationItem]":
     history: "typing.List[ConversationItem]" = []
     tool_names_by_call_id: "typing.Dict[str, str]" = {}
@@ -495,6 +517,14 @@ def _deserialize_compacted_history(
             tool_names_by_call_id,
             include_user_messages=True,
         )
+    for index in range(len(history) - 1, -1, -1):
+        item = history[index]
+        if isinstance(item, UserMessage) and (
+            item.text == summary_message
+            or (summary_message is None and item.text.startswith(SUMMARY_PREFIX + "\n"))
+        ):
+            history[index] = ContextMessage(text=item.text, id=item.id)
+            break
     return history
 
 

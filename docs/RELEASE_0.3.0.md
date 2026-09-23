@@ -20,6 +20,9 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
   graceful shutdown. Closing drains accepted work rather than cancelling turns.
 - Allocate stable session identities at construction, create rollout files
   lazily, and keep resume/fork state and recording ownership inside the Agent.
+- Keep compact handoffs in model context while hiding them from frontend
+  conversation blocks; preserve subsequent replies through resume and fork.
+- Return password login to the requested workspace path and query parameters.
 
 ## Context and protocol
 

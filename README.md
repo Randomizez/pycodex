@@ -197,7 +197,9 @@ Current behavior:
   Codex rollout from `CODEX_HOME/sessions`
 - `/compact` synthesizes a local handoff summary, replaces the in-memory
   conversation history with the compacted view, and appends a compacted-history
-  entry to the rollout so later `/resume` sees the same state
+  entry to the rollout so later `/resume` sees the same state. The handoff remains
+  model context, but is omitted from frontend conversation blocks and `/history`;
+  real replies after compaction remain visible, including after resume or fork.
 - `/fork` allocates a new Agent/provider session id and lazy rollout while
   preserving current history and the workspace tab; the original rollout stays intact
 - `model_auto_compact_token_limit = <tokens>` in `config.toml` enables the same
@@ -240,7 +242,8 @@ Current behavior:
   Assistant Markdown supports KaTeX formulas with `$...$`, `$$...$$`,
   `\(...\)`, and `\[...\]` delimiters.
   `--password <value>` enables a password-only login page for workspace pages,
-  APIs, and websocket connections.
+  APIs, and websocket connections. After login, the browser returns to the
+  requested workspace path with its query parameters.
 - steer is enabled by default in interactive mode: normal input goes into the
   runtime steer path, the current request stops at the next safe boundary, and
   later steer text is appended to the next model request's `input` in order;

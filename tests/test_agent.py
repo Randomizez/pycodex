@@ -22,6 +22,7 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.events import AssistantDeltaEvent, StreamErrorEvent, TokenCountEvent
+from pycodex.protocol import ContextMessage
 from pycodex.tools import (
     ClockManager,
     ClockTool,
@@ -30,7 +31,7 @@ from pycodex.tools import (
     WaitAgentTool,
 )
 from pycodex.tools.base_tool import StructuredToolOutput
-from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, compact
+from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
 from tests.fakes import ScriptedModelClient
 
 
@@ -158,13 +159,17 @@ def _model_context(model: "str") -> "ContextConfig":
 
 def _conversation_items(
     prompt,
-) -> "typing.List[typing.Union[UserMessage, AssistantMessage, ReasoningItem, ToolCall, ToolResult]]":
+) -> "typing.List[typing.Union[UserMessage, AssistantMessage, ContextMessage, ReasoningItem, ToolCall, ToolResult]]":
     return [
         item
         for item in prompt.input
         if isinstance(
             item,
             (UserMessage, AssistantMessage, ReasoningItem, ToolCall, ToolResult),
+        )
+        or (
+            isinstance(item, ContextMessage)
+            and (item.text or "").startswith(SUMMARY_PREFIX + "\n")
         )
     ]
 
@@ -389,7 +394,7 @@ async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit() -
 
     second_prompt_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in second_prompt_items] == [
-        "UserMessage",
+        "ContextMessage",
         "UserMessage",
     ]
     assert (
@@ -458,7 +463,7 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
 
     follow_up_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in follow_up_items] == [
-        "UserMessage",
+        "ContextMessage",
     ]
     assert (
         follow_up_items[0]
@@ -529,7 +534,7 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
     assert "turn_failed" not in [event.kind for event in events]
     follow_up_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in follow_up_items] == [
-        "UserMessage",
+        "ContextMessage",
     ]
     assert (
         follow_up_items[0]
@@ -1642,7 +1647,7 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> "Non
 
     retry_prompt_items = _conversation_items(model.prompts[2])
     assert [type(item).__name__ for item in retry_prompt_items] == [
-        "UserMessage",
+        "ContextMessage",
     ]
     assert (
         retry_prompt_items[0]
