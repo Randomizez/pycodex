@@ -27,7 +27,6 @@ class PycodexCard:
         domain: str = FEISHU_DOMAIN,
         verification_token: "typing.Union[str, None]" = None,
         encrypt_key: "typing.Union[str, None]" = None,
-        refresh_token: "typing.Union[str, None]" = None,
         session: "typing.Union[requests.Session, None]" = None,
     ) -> None:
         self.app_id = app_id
@@ -36,7 +35,6 @@ class PycodexCard:
         self.domain = domain
         self.verification_token = verification_token
         self.encrypt_key = encrypt_key
-        self.refresh_token = refresh_token
         self.session = session or requests.Session()
         self.message_id = None
         self.callback_token = None
@@ -66,8 +64,6 @@ class PycodexCard:
                 "LARK_VERIFICATION_TOKEN",
             ),
             encrypt_key=_env("FEISHU_ENCRYPT_KEY", "LARK_ENCRYPT_KEY"),
-            refresh_token=_read_refresh_token()
-            or os.environ.get("FEISHU_REFRESH_TOKEN"),
         )
 
     def configured(self) -> bool:
@@ -379,10 +375,9 @@ class PycodexCard:
             )
 
     def user_access_token(self) -> "typing.Union[str, None]":
-        refresh_token = _read_refresh_token() or self.refresh_token
+        refresh_token = _read_refresh_token()
         if not refresh_token:
             return None
-        self.refresh_token = refresh_token
         now = time.time()
         if self._user_access_token and now < self._user_token_expires_at:
             return self._user_access_token
@@ -402,14 +397,12 @@ class PycodexCard:
         token = payload.get("access_token")
         if not token:
             raise RuntimeError("user access_token missing from Feishu response")
+        refresh_token = payload.get("refresh_token")
+        if refresh_token:
+            _write_refresh_token(str(refresh_token))
         self._user_access_token = str(token)
         expires_in = payload.get("expires_in") or 0
         self._user_token_expires_at = time.time() + max(60, int(expires_in) - 120)
-        refresh_token = payload.get("refresh_token")
-        if refresh_token:
-            self.refresh_token = str(refresh_token)
-            os.environ["FEISHU_REFRESH_TOKEN"] = self.refresh_token
-            _write_refresh_token(self.refresh_token)
         return self._user_access_token
 
     def tenant_access_token(self) -> str:
@@ -605,11 +598,10 @@ def _read_refresh_token() -> "typing.Union[str, None]":
 def _write_refresh_token(value: str) -> None:
     path = _refresh_token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("{0}\n".format(value), encoding="utf-8")
-    try:
+    descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
         path.chmod(0o600)
-    except OSError:
-        pass
+        stream.write("{0}\n".format(value))
 
 
 def _api_base_to_domain(api_base: str) -> str:

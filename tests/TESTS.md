@@ -91,6 +91,13 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - 覆盖快照恢复不重复 active turn、重试移除 partial、fatal 保留 partial、
   问答输入提示和关闭/detach；保留 Markdown 降级及请求传输回归。
 - 运行时隔离 HOME，避免测试读取真实飞书 refresh token。
+- refresh token 只从专用文件读取和轮换，旧环境变量不生效；覆盖多个实例及
+  已缓存 access token 的实例在过期后接力、写入失败不缓存新 access token。
+
+### `tests/test_feishu_oauth.py`
+
+- 首次授权只写 `~/.codex/.feishu_refresh_token`，权限为 `0600`，不创建或
+  更新 `.env`，不打印凭证；脚本从 `.env` 读取应用配置并写入共享 token 文件。
 
 ### `tests/test_session_backend.py`
 

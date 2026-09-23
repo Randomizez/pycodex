@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -387,35 +388,46 @@ def test_resolve_name_without_default_email_domain_does_not_guess(monkeypatch) -
     assert lookups == []
 
 
-def test_feishu_card_from_env_reads_refresh_token_for_user_auth(
-    tmp_path, monkeypatch
-) -> None:
+def test_feishu_card_ignores_refresh_token_environment(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "refresh-token")
 
     card = PycodexCard.from_env()
+    session = _FakeSession([])
+    card.session = session
 
-    assert card.refresh_token == "refresh-token"
+    assert card.user_access_token() is None
+    assert session.posts == []
 
 
 def test_feishu_card_from_env_reads_fixed_refresh_token_store(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
+    monkeypatch.setenv("FEISHU_APP_ID", "app")
+    monkeypatch.setenv("FEISHU_APP_SECRET", "secret")
+    monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "stale-refresh")
     token_path = tmp_path / ".codex" / ".feishu_refresh_token"
     token_path.parent.mkdir()
     token_path.write_text("file-refresh\n")
 
     card = PycodexCard.from_env()
+    card.session = _FakeSession(
+        [],
+        post_responses=[{"code": 0, "access_token": "user-token", "expires_in": 7200}],
+    )
 
-    assert card.refresh_token == "file-refresh"
+    assert card.user_access_token() == "user-token"
+    assert card.session.posts[0]["json"]["refresh_token"] == "file-refresh"
 
 
 def test_feishu_card_can_exchange_refresh_token_for_user_token(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("refresh-token\n", encoding="utf-8")
     session = _FakeSession(
         [{"code": 0, "data": {"message_id": "om_test"}}],
         post_responses=[
@@ -430,7 +442,6 @@ def test_feishu_card_can_exchange_refresh_token_for_user_token(
     card = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="refresh-token",
         session=session,
     )
 
@@ -446,17 +457,20 @@ def test_feishu_card_can_exchange_refresh_token_for_user_token(
     assert session.requests[0]["headers"] == {
         "Authorization": "Bearer user-token",
     }
-    assert card.refresh_token == "next-refresh-token"
+    assert token_path.read_text(encoding="utf-8") == "next-refresh-token\n"
 
 
 def test_feishu_card_persists_rotated_refresh_token_to_store(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("FEISHU_REFRESH_TOKEN", raising=False)
+    monkeypatch.setenv("FEISHU_REFRESH_TOKEN", "stale-refresh")
     token_path = tmp_path / ".codex" / ".feishu_refresh_token"
     token_path.parent.mkdir()
     token_path.write_text("old-refresh\n")
+    dotenv_path = token_path.parent / ".env"
+    dotenv_content = "FEISHU_REFRESH_TOKEN=stale-refresh\nKEEP=value\n"
+    dotenv_path.write_text(dotenv_content, encoding="utf-8")
     session = _FakeSession(
         [],
         post_responses=[
@@ -471,14 +485,15 @@ def test_feishu_card_persists_rotated_refresh_token_to_store(
     card = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="stale-refresh",
         session=session,
     )
 
     assert card.user_access_token() == "user-token"
 
     assert token_path.read_text() == "next-refresh-token\n"
-    assert card.refresh_token == "next-refresh-token"
+    assert token_path.stat().st_mode & 0o777 == 0o600
+    assert dotenv_path.read_text(encoding="utf-8") == dotenv_content
+    assert os.environ["FEISHU_REFRESH_TOKEN"] == "stale-refresh"
     assert session.posts[0]["json"]["refresh_token"] == "old-refresh"
 
 
@@ -497,7 +512,13 @@ def test_feishu_card_rereads_refresh_token_store_for_each_exchange(
                 "access_token": "first-user-token",
                 "expires_in": 7200,
                 "refresh_token": "first-refresh-token",
-            }
+            },
+            {
+                "code": 0,
+                "access_token": "third-user-token",
+                "expires_in": 7200,
+                "refresh_token": "third-refresh-token",
+            },
         ],
     )
     second_session = _FakeSession(
@@ -514,13 +535,11 @@ def test_feishu_card_rereads_refresh_token_store_for_each_exchange(
     first = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="old-refresh",
         session=first_session,
     )
     second = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="old-refresh",
         session=second_session,
     )
 
@@ -531,8 +550,50 @@ def test_feishu_card_rereads_refresh_token_store_for_each_exchange(
     assert second_session.posts[0]["json"]["refresh_token"] == "first-refresh-token"
     assert token_path.read_text() == "second-refresh-token\n"
 
+    first._user_token_expires_at = 0
+    assert first.user_access_token() == "third-user-token"
+    assert first_session.posts[1]["json"]["refresh_token"] == "second-refresh-token"
+    assert token_path.read_text() == "third-refresh-token\n"
 
-def test_feishu_card_user_lookup_uses_tenant_token_with_refresh_token() -> None:
+
+def test_feishu_card_refresh_store_failure_does_not_cache_access_token(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("old-refresh\n", encoding="utf-8")
+    session = _FakeSession(
+        [],
+        post_responses=[
+            {
+                "code": 0,
+                "access_token": "user-token",
+                "expires_in": 7200,
+                "refresh_token": "next-refresh-token",
+            }
+        ],
+    )
+    card = PycodexCard(app_id="app", app_secret="secret", session=session)
+
+    def fail_write(value):
+        raise OSError("token store unavailable")
+
+    monkeypatch.setattr("pycodex.feishu_card._write_refresh_token", fail_write)
+    with pytest.raises(OSError, match="token store unavailable"):
+        card.user_access_token()
+
+    assert card._user_access_token is None
+    assert card._user_token_expires_at == 0
+
+
+def test_feishu_card_user_lookup_uses_tenant_token_with_refresh_token(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    token_path = tmp_path / ".codex" / ".feishu_refresh_token"
+    token_path.parent.mkdir()
+    token_path.write_text("refresh-token\n", encoding="utf-8")
     session = _FakeSession(
         [
             {
@@ -550,7 +611,6 @@ def test_feishu_card_user_lookup_uses_tenant_token_with_refresh_token() -> None:
     card = PycodexCard(
         app_id="app",
         app_secret="secret",
-        refresh_token="refresh-token",
         session=session,
     )
 
