@@ -962,7 +962,8 @@ def test_responses_model_client_builds_codex_headers_and_stable_session_id(
     assert headers["x-codex-beta-features"] == "guardian_approval"
     assert headers["x-codex-turn-metadata"] == '{"turn_id":"turn_123","sandbox":"none"}'
     assert re.match(
-        r"^codex_exec/.+ \(.+; .+\) .+ \(codex-exec; .+\)$", headers["user-agent"]
+        r"^codex_exec/0\.153\.4 \(.+; .+\) .+ \(codex-exec; 0\.153\.4\)$",
+        headers["user-agent"],
     )
     assert "accept-encoding" not in headers
     assert "connection" not in headers
@@ -1098,7 +1099,14 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
     assert "connection" not in headers
 
 
-def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> "None":
+def test_client_and_rollout_use_pinned_codex_version_without_probe(
+    monkeypatch, tmp_path
+) -> "None":
+    def reject_subprocess(*args, **kwargs):
+        raise AssertionError("version metadata must not launch a subprocess")
+
+    monkeypatch.setenv("TERM_PROGRAM", "")
+    monkeypatch.setattr(get_env.subprocess, "run", reject_subprocess)
     provider = ResponsesProviderConfig(
         model="demo-model",
         provider_name="demo",
@@ -1112,31 +1120,17 @@ def test_responses_model_client_builds_tui_user_agent(monkeypatch) -> "None":
 
     assert headers["originator"] == "codex-tui"
     assert re.match(
-        r"^codex-tui/.+ \(.+; .+\) .+ \(codex-tui; .+\)$", headers["user-agent"]
+        r"^codex-tui/0\.153\.4 \(.+; .+\) .+ \(codex-tui; 0\.153\.4\)$",
+        headers["user-agent"],
     )
-
-
-def test_get_package_version_reads_distribution_name(monkeypatch) -> "None":
-    def fake_version(name: "str") -> "str":
-        if name == "python-codex":
-            return "0.1.3"
-        raise get_env.importlib_metadata.PackageNotFoundError
-
-    monkeypatch.setattr(get_env, "_detect_upstream_codex_version", lambda: None)
-    monkeypatch.setattr(get_env.importlib_metadata, "version", fake_version)
-
-    assert get_env.get_package_version() == "0.1.3"
-
-
-def test_get_package_version_falls_back_to_local_pyproject(monkeypatch) -> "None":
-    def fake_missing_version(_name: "str") -> "str":
-        raise get_env.importlib_metadata.PackageNotFoundError
-
-    monkeypatch.setattr(get_env, "_detect_upstream_codex_version", lambda: None)
-    monkeypatch.setattr(get_env.importlib_metadata, "version", fake_missing_version)
-    monkeypatch.setattr(get_env, "_read_local_package_version", lambda: "0.1.3")
-
-    assert get_env.get_package_version() == "0.1.3"
+    recorder = SessionRolloutRecorder.create(
+        tmp_path, client._session_id, tmp_path, "codex-tui", "demo", "Be concise."
+    )
+    recorder.append_history_items([UserMessage("hi")])
+    metadata = json.loads(
+        recorder.rollout_path.read_text(encoding="utf-8").splitlines()[0]
+    )
+    assert metadata["payload"]["cli_version"] == "0.153.4"
 
 
 def test_responses_model_client_serializes_prompt_turn_metadata(monkeypatch) -> "None":

@@ -1,12 +1,9 @@
 import os
 import platform
-import re
 import subprocess
 import typing
 from datetime import datetime
 from pathlib import Path
-
-from ..compat import importlib_metadata
 
 
 def get_shell_name() -> "str":
@@ -84,18 +81,8 @@ def build_user_agent(originator: "str") -> "str":
 
 
 def get_package_version() -> "str":
-    detected = _detect_upstream_codex_version()
-    if detected is not None:
-        return detected
-    for distribution_name in ("python-codex", "pycodex"):
-        try:
-            return importlib_metadata.version(distribution_name)
-        except importlib_metadata.PackageNotFoundError:
-            continue
-    local_version = _read_local_package_version()
-    if local_version is not None:
-        return local_version
-    return "0.1.0"
+    """Return the upstream alignment version recorded in docs/ALIGNMENT.md."""
+    return "0.153.4"
 
 
 def get_os_info() -> "typing.Tuple[str, str]":
@@ -193,20 +180,6 @@ def _normalize_os_version(version: "str") -> "str":
     return version
 
 
-def _read_local_package_version() -> "typing.Union[str, None]":
-    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    if not pyproject_path.is_file():
-        return None
-    match = re.search(
-        r'^\s*version\s*=\s*"([^"]+)"\s*$',
-        pyproject_path.read_text(encoding="utf-8"),
-        flags=re.MULTILINE,
-    )
-    if match is None:
-        return None
-    return match.group(1).strip() or None
-
-
 def _tmux_display_message(fmt: "str") -> "typing.Union[str, None]":
     try:
         output = subprocess.run(
@@ -227,21 +200,3 @@ def _sanitize_header_token(value: "str") -> "str":
         character if (character.isalnum() or character in {"-", "_", ".", "/"}) else "_"
         for character in value
     )
-
-
-def _detect_upstream_codex_version() -> "typing.Union[str, None]":
-    try:
-        output = subprocess.run(
-            ["codex", "--version"],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-        )
-    except (OSError, subprocess.CalledProcessError):
-        return None
-
-    match = re.search(r"\b(\d+\.\d+\.\d+)\b", output.stdout)
-    if match is None:
-        return None
-    return match.group(1)

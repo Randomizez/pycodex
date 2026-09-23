@@ -56,6 +56,11 @@ It does not use the older local source checkout or claim to track upstream HEAD.
 The public documentation endpoint returned HTTP 403; the executable captures and
 matching source are the evidence for this checkpoint.
 
+Runtime `User-Agent` versions and rollout `cli_version` are pinned to `0.153.4`
+by `pycodex/utils/get_env.py:get_package_version()`. Session creation performs
+no version probing or package-version lookup. Update this value when advancing
+the alignment baseline.
+
 `tests/compare_context_requests.py` sends both the real Codex CLI and the
 production pycodex runtime to isolated localhost SSE fixtures. No account,
 credentials, real model calls, or user's config are needed.

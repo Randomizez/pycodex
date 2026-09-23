@@ -112,6 +112,8 @@ Current progress is easiest to read in layers:
     still differ;
   - the default CLI keeps the `codex-tui` client identity, but intentionally
     omits collaboration-mode developer instructions;
+  - `User-Agent` and rollout `cli_version` use the fixed upstream alignment
+    version `0.153.4`; session creation does not run `codex --version`;
   - `tests/compare_context_requests.py` keeps raw differences separate from
     shared-context exclusions; older interactive captures are not a fresh
     certification of 0.153.4 interactive behavior.
