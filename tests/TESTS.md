@@ -13,6 +13,9 @@
   `https://archive.debian.org/debian` 的 `bullseye main` 归档安装。
   不使用镜像内旧的 security / updates 源，也不假定 `bullseye-security`
   归档存在。这个冻结环境仅用于旧版本兼容性测试，不提供持续的安全更新。
+- 该容器安装的是 Node 12。workspace 脚本测试由 fixture 显式提供 `fetch`、
+  `AbortController` 等浏览器接口，并验证切换标签页时取消旧轮询；
+  模拟请求仍可回传迟到结果，以覆盖取消后成功/失败回调的视图隔离。
 - 归档源使用 `check-valid-until=no` 允许读取已过有效期的固定索引，
   但继续校验仓库签名；`APT::Update::Error-Mode=any` 保证索引更新失败时
   立即停止，不会继续拿旧索引安装已经不存在的包。

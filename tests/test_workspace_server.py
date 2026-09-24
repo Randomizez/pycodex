@@ -121,6 +121,11 @@ def test_closing_active_tab_restores_visited_tab(late_poll):
         fragments.append(source[source.index(start) : source.index(end)])
     script = r"""
 const assert = require("assert").strict;
+// Browser APIs belong to this harness; Node 12 has no global AbortController.
+class AbortController {
+  constructor() { this.signal = {aborted: false}; }
+  abort() { this.signal.aborted = true; }
+}
 const log = {textContent: "", scrollTop: 0, scrollHeight: 1000, clientHeight: 100};
 const prompt = {value: ""};
 const relativeUrl = path => path;
@@ -150,15 +155,18 @@ function response(id) {
 }
 let delayOldPoll = false;
 let finishOldPoll;
+let delayedSignal;
 const fetch = async (path, options = {}) => {
   if (options.method === "DELETE") {
     serverTabs = [tabs[0]];
     return {ok: true, json: async () => ({ok: true, sessions: serverTabs.slice()})};
   }
+  assert.equal(options.signal.aborted, false);
   const id = path.endsWith("=b") ? "b" : "a";
   const reply = response(id);
   if (delayOldPoll && id === "b") {
     // Deliver a late response even if the browser has already aborted it.
+    delayedSignal = options.signal;
     return new Promise((resolve, reject) => {
       finishOldPoll = () => {
         if (process.argv[2] === "error") reject(new Error("old tab is gone"));
@@ -187,6 +195,7 @@ const fetch = async (path, options = {}) => {
   assert.equal(log.scrollTop, 123);
   assert.equal(sessionState.has("b"), false);
   if (oldPoll) {
+    assert.equal(delayedSignal.aborted, true);
     finishOldPoll();
     await oldPoll;
   }
