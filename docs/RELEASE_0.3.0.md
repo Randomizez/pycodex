@@ -1,6 +1,6 @@
 # 0.3.0 release notes
 
-Release preparation dated 2026-09-23. This document does not indicate that
+Release preparation dated 2026-09-24. This document does not indicate that
 0.3.0 has been pushed, tagged, or published.
 
 Both distributions use version **0.3.0**. `python-codex` owns the implementation
@@ -22,6 +22,11 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
   lazily, and keep resume/fork state and recording ownership inside the Agent.
 - Keep compact handoffs in model context while hiding them from frontend
   conversation blocks; preserve subsequent replies through resume and fork.
+- Restore later saved history and completed sibling tools when a rollout
+  contains unfinished tool calls; omit only the unmatched calls.
+- Render Mermaid diagrams in workspace replies, with an expanded view and
+  access to the original source.
+- Treat cooperative interruption of exec/clock wake-up turns as normal steering.
 - Return password login to the requested workspace path and query parameters.
 
 ## Context and protocol
@@ -29,6 +34,8 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
 - Refresh shared model prompts against Codex CLI 0.153.4 and its matching source.
 - Resolve model metadata by longest slug prefix without changing the wire model
   name, including suffixed deployment names.
+- Refresh the local model catalog, adding `step-5-preview` and removing older
+  GPT-5 entries through `gpt-5.5`.
 - Align developer-section order, skill root aliases, YAML invocation policy,
   model-specific skill guidance and filesystem context.
 - Preserve assistant IDs/phases/text parts, raw tool arguments, tool metadata
@@ -56,7 +63,8 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
   Use `runtime.resume(path)` or `agent.resume(path)` for an existing rollout;
   a constructor path is only for a new file.
 - Collaboration-mode configuration, prompts and tool gating are removed.
-  Registered handlers now control interactive questions independently of mode.
+  The general runtime question/permission service remains available, while
+  `request_user_input` retains its default unavailable response.
 
 See `RUNTIME.md` and the README API examples for the full contracts.
 PyYAML is now a runtime dependency for skill metadata; both Python 3.6 CI jobs

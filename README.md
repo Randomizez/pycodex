@@ -199,7 +199,9 @@ Current behavior:
 - `/resume` with no argument lists the currently resumable sessions by their
   first user-message preview; `/resume 1` resumes the first listed session
 - `/resume <number>` replaces the in-memory history with the selected recorded
-  Codex rollout from `CODEX_HOME/sessions`
+  Codex rollout from `CODEX_HOME/sessions`. Tool calls without recorded results
+  are omitted during restore; later saved messages and completed tools remain
+  available, and the source file is left intact.
 - `/compact` synthesizes a local handoff summary, replaces the in-memory
   conversation history with the compacted view, and appends a compacted-history
   entry to the rollout so later `/resume` sees the same state. The handoff remains

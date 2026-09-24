@@ -82,6 +82,13 @@ commands and lets close wait for accepted command work.
 
 Web command output preserves the event's plain text, including resume-list
 numbering and line breaks.
+Assistant replies render fenced `mermaid` blocks as diagrams. The browser loads
+the renderer on demand, uses strict mode and sanitizes the generated SVG.
+Diagrams fit the chat column; `Expand` opens a larger view with an `Actual size`
+option for scrolling through wide diagrams. The original code remains available
+under `Diagram source`. Loading or syntax errors leave the source visible.
+A render that finishes after its conversation view has been replaced is discarded;
+completed diagrams keep the view at the bottom only if it is already there.
 
 Closing the active workspace tab uses the same browser transition as selecting
 another tab: reset that tab's render signature, restore its draft and scroll
@@ -553,6 +560,12 @@ Constructing an Agent and immediately calling `resume(path)` leaves the original
 new-session path uncreated.
 The loader still accepts multiline JSON objects and tolerates incomplete tails;
 resume does not truncate or repair source files.
+Tool calls without matching recorded results are omitted from restored history.
+An interrupted call may precede later saved turns in the same append-only file,
+so restoration retains all other items, including completed sibling tools,
+assistant/reasoning items and subsequent user turns. Repeated resume and append
+operations therefore retain later history even while the incomplete call remains
+in the source file.
 
 Without a path, `resume()` re-enables the same in-memory Agent and rebinds tool
 callbacks without reading or writing a file or changing history, session

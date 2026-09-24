@@ -286,7 +286,7 @@ def load_resumed_session_path(
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
 
-    history = _trim_incomplete_tool_call_tail(history)
+    history = _drop_unmatched_tool_calls(history)
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
 
@@ -323,30 +323,19 @@ def conversation_history_to_turns(
     return tuple(turns)
 
 
-def _trim_incomplete_tool_call_tail(
+def _drop_unmatched_tool_calls(
     history: "typing.List[ConversationItem]",
 ) -> "typing.List[ConversationItem]":
-    pending_call_ids: "typing.Set[str]" = set()
-    call_indexes: "typing.Dict[str, int]" = {}
-
-    for index, item in enumerate(history):
-        if isinstance(item, ToolCall):
-            pending_call_ids.add(item.call_id)
-            call_indexes[item.call_id] = index
-            continue
-        if isinstance(item, ToolResult):
-            pending_call_ids.discard(item.call_id)
-
-    if not pending_call_ids:
-        return history
-
-    trim_start = min(call_indexes[call_id] for call_id in pending_call_ids)
-    while trim_start > 0 and isinstance(
-        history[trim_start - 1],
-        (AssistantMessage, ReasoningItem, ToolCall),
-    ):
-        trim_start -= 1
-    return history[:trim_start]
+    completed_call_ids = {
+        item.call_id for item in history if isinstance(item, ToolResult)
+    }
+    # An interrupted call can precede later saved turns in an append-only rollout.
+    # Omit only calls without results; subsequent history is still resumable.
+    return [
+        item
+        for item in history
+        if not isinstance(item, ToolCall) or item.call_id in completed_call_ids
+    ]
 
 
 def _latest_thread_names_by_id(codex_home: "Path") -> "typing.Dict[str, str]":

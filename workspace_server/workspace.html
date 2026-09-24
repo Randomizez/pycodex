@@ -588,6 +588,87 @@
     .markdown .katex-display:last-child {
       margin-bottom: 0;
     }
+    .markdown .mermaid-figure {
+      margin: 0 0 var(--space-4);
+    }
+    .markdown .mermaid-diagram {
+      overflow-x: auto;
+      padding: 8px 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .markdown .mermaid-diagram svg {
+      display: block;
+      height: auto;
+    }
+    .markdown .mermaid-source {
+      flex: 1;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .markdown .mermaid-source summary {
+      width: fit-content;
+      cursor: pointer;
+    }
+    .markdown .mermaid-source pre {
+      margin-top: 8px;
+    }
+    .mermaid-controls,
+    .mermaid-viewer-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+    }
+    .mermaid-controls button,
+    .mermaid-viewer button {
+      flex: 0 0 auto;
+      padding: 1px 5px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .mermaid-controls button:hover,
+    .mermaid-viewer button:hover {
+      background: var(--accent-soft);
+      color: var(--ink);
+    }
+    .mermaid-viewer {
+      width: min(1400px, calc(100vw - 32px));
+      max-height: calc(100dvh - 32px);
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      background: var(--panel);
+      color: var(--ink);
+    }
+    .mermaid-viewer::backdrop {
+      background: rgba(23, 38, 48, 0.35);
+    }
+    .mermaid-viewer-header {
+      margin-bottom: 12px;
+    }
+    .mermaid-viewer-header strong {
+      flex: 1;
+      font-size: 14px;
+    }
+    .mermaid-viewer-content {
+      max-height: calc(100dvh - 110px);
+      overflow: auto;
+    }
+    .mermaid-viewer-content img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: auto;
+    }
+    .mermaid-viewer-content.actual-size img {
+      max-width: none;
+    }
     .composer {
       position: relative;
       min-width: 0;
@@ -986,6 +1067,40 @@
     ];
     const mathTokenPrefix = "\uE000math";
     const mathTokenSuffix = "\uE001";
+    const renderMermaidSvg = (() => {
+      let rendererPromise = null;
+      let diagramId = 0;
+      return async (source, figure) => {
+        if (!rendererPromise) {
+          rendererPromise = import(
+            "https://cdn.jsdelivr.net/npm/mermaid@11.12.0/dist/mermaid.esm.min.mjs"
+          ).then(({default: renderer}) => {
+            renderer.initialize({
+              startOnLoad: false,
+              securityLevel: "strict",
+              suppressErrorRendering: true,
+              htmlLabels: false,
+              flowchart: {htmlLabels: false},
+              theme: "neutral",
+              fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            });
+            return renderer;
+          });
+        }
+        const renderer = await rendererPromise;
+        if (!figure.isConnected) return null;
+        const measure = document.createElement("div");
+        measure.style.cssText =
+          "position:fixed;left:0;top:0;visibility:hidden;pointer-events:none";
+        document.body.appendChild(measure);
+        try {
+          diagramId += 1;
+          return await renderer.render("workspace-diagram-" + diagramId, source, measure);
+        } finally {
+          measure.remove();
+        }
+      };
+    })();
 
     function relativeUrl(path) {
       return new URL(path, window.location.href).toString();
@@ -1010,9 +1125,9 @@
       entry.className = "entry " + (cls || role);
       const body = document.createElement("div");
       body.className = "text markdown";
-      renderMarkdownInto(body, text || "");
       entry.appendChild(body);
       log.appendChild(entry);
+      renderMarkdownInto(body, text || "");
       if (stickToBottom) scrollToBottom();
       return body;
     }
@@ -1033,6 +1148,102 @@
         anchor.target = "_blank";
         anchor.rel = "noopener noreferrer";
       });
+      renderMermaidInto(root);
+    }
+
+    async function renderMermaidInto(root) {
+      for (const code of root.querySelectorAll("pre > code.language-mermaid")) {
+        if (!code.isConnected) return;
+        const source = code.textContent;
+        const pre = code.parentElement;
+        const figure = document.createElement("figure");
+        figure.className = "mermaid-figure";
+        const diagram = document.createElement("div");
+        diagram.className = "mermaid-diagram";
+        diagram.textContent = "Rendering diagram…";
+        const details = document.createElement("details");
+        details.className = "mermaid-source";
+        details.open = true;
+        const summary = document.createElement("summary");
+        summary.textContent = "Diagram source";
+        details.appendChild(summary);
+        pre.replaceWith(figure);
+        details.appendChild(pre);
+        const controls = document.createElement("div");
+        controls.className = "mermaid-controls";
+        controls.appendChild(details);
+        figure.append(diagram, controls);
+        try {
+          const result = await renderMermaidSvg(source, figure);
+          if (!result || !figure.isConnected) return;
+          const stickToBottom = isNearBottom();
+          diagram.innerHTML = window.DOMPurify.sanitize(result.svg, {
+            USE_PROFILES: {svg: true, svgFilters: true},
+          });
+          const svg = diagram.querySelector("svg");
+          svg.style.width = svg.viewBox.baseVal.width + "px";
+          svg.style.maxWidth = "100%";
+          const expand = document.createElement("button");
+          expand.type = "button";
+          expand.textContent = "Expand";
+          expand.addEventListener("click", () => showMermaidDiagram(svg));
+          controls.appendChild(expand);
+          details.open = false;
+          if (stickToBottom) scrollToBottom();
+        } catch (error) {
+          if (!figure.isConnected) return;
+          diagram.textContent = "Diagram could not be rendered. Source is shown below.";
+          details.open = true;
+          console.warn("Mermaid diagram rendering failed", error);
+        }
+      }
+    }
+
+    function showMermaidDiagram(svg) {
+      const copy = svg.cloneNode(true);
+      copy.style.removeProperty("width");
+      copy.style.removeProperty("max-width");
+      copy.setAttribute("width", svg.viewBox.baseVal.width);
+      copy.setAttribute("height", svg.viewBox.baseVal.height);
+      const imageUrl = URL.createObjectURL(new Blob(
+        [new XMLSerializer().serializeToString(copy)],
+        {type: "image/svg+xml"},
+      ));
+      const dialog = document.createElement("dialog");
+      dialog.className = "mermaid-viewer";
+      dialog.setAttribute("aria-label", "Expanded diagram");
+      const header = document.createElement("div");
+      header.className = "mermaid-viewer-header";
+      const title = document.createElement("strong");
+      title.textContent = "Diagram";
+      const zoom = document.createElement("button");
+      zoom.type = "button";
+      zoom.textContent = "Actual size";
+      const close = document.createElement("button");
+      close.type = "button";
+      close.textContent = "Close";
+      const content = document.createElement("div");
+      content.className = "mermaid-viewer-content";
+      const image = document.createElement("img");
+      image.src = imageUrl;
+      image.alt = "Diagram";
+      content.appendChild(image);
+      header.append(title, zoom, close);
+      dialog.append(header, content);
+      zoom.addEventListener("click", () => {
+        const actualSize = content.classList.toggle("actual-size");
+        zoom.textContent = actualSize ? "Fit width" : "Actual size";
+      });
+      close.addEventListener("click", () => dialog.close());
+      dialog.addEventListener("click", event => {
+        if (event.target === dialog) dialog.close();
+      });
+      dialog.addEventListener("close", () => {
+        URL.revokeObjectURL(imageUrl);
+        dialog.remove();
+      }, {once: true});
+      document.body.appendChild(dialog);
+      dialog.showModal();
     }
 
     function isEscapedAt(source, index) {

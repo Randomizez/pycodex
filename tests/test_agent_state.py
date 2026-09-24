@@ -13,6 +13,7 @@ from pycodex import (
     ContextLengthExceeded,
     ContextManager,
     ModelResponse,
+    ReasoningItem,
     ToolCall,
     ToolRegistry,
     ToolResult,
@@ -881,6 +882,68 @@ def test_resume_accepts_multiline_records_and_incomplete_tail(tmp_path):
     assert agent.session_id == "saved-session"
     assert agent.history == (UserMessage("hello"), AssistantMessage("saved answer"))
     assert path.read_bytes() == original_bytes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tool_type", ["function", "custom"])
+async def test_resume_preserves_later_history_after_unfinished_tools(
+    tmp_path, tool_type
+):
+    arguments = {} if tool_type == "function" else "input"
+    completed_call = ToolCall("completed", "echo", arguments, tool_type=tool_type)
+    completed_result = ToolResult(
+        "completed", "echo", "saved result", tool_type=tool_type
+    )
+    expected = [
+        UserMessage("first prompt"),
+        AssistantMessage("before tools"),
+        ReasoningItem({"type": "reasoning", "summary": []}),
+        completed_call,
+        completed_result,
+        AssistantMessage("completed sibling"),
+        UserMessage("continue"),
+        UserMessage("latest prompt"),
+        AssistantMessage("latest answer"),
+    ]
+    source = Agent(
+        ScriptedModelClient([]),
+        ToolRegistry(),
+        ContextConfig(),
+        session_file_path=tmp_path / "interrupted.jsonl",
+    )
+    source._append_history(
+        expected[:4]
+        + [ToolCall("missing-middle", "echo", arguments, tool_type=tool_type)]
+        + expected[4:7]
+        + [ToolCall("missing-again", "echo", arguments, tool_type=tool_type)]
+        + expected[7:]
+        + [ToolCall("missing-tail", "echo", arguments, tool_type=tool_type)]
+    )
+    original_bytes = source.session_file_path.read_bytes()
+    client = ScriptedModelClient([ModelResponse([AssistantMessage("new answer")])])
+    agent = Agent(client, ToolRegistry(), ContextConfig())
+
+    agent.resume(source.session_file_path)
+
+    assert [item.serialize() for item in agent.history] == [
+        item.serialize() for item in expected
+    ]
+    assert source.session_file_path.read_bytes() == original_bytes
+    await agent.run_turn(["after restart"])
+    assert [
+        item.serialize()
+        for item in client.prompts[0].input
+        if isinstance(item, (ToolCall, ToolResult))
+    ] == [completed_call.serialize(), completed_result.serialize()]
+
+    restored = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    restored.resume(source.session_file_path)
+    assert restored.history == agent.history
+    assert restored.history[-2:] == (
+        UserMessage("after restart"),
+        AssistantMessage("new answer"),
+    )
+    assert source.session_file_path.read_bytes().startswith(original_bytes)
 
 
 @pytest.mark.parametrize("persisted", [False, True])

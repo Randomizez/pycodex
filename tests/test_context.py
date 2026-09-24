@@ -46,12 +46,12 @@ def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> "Non
 
 def test_context_manager_resolves_model_instructions_from_models_json() -> "None":
     manager = ContextManager(
-        config=ContextConfig(model="gpt-5.4", personality="pragmatic")
+        config=ContextConfig(model="step-5-preview", personality="pragmatic")
     )
 
     instructions = manager.resolve_base_instructions()
 
-    assert instructions.startswith("You are Codex, a coding agent based on GPT-5.")
+    assert instructions.startswith("You are Codex, a coding agent based on Step-5 Preview.")
     assert "You are a deeply pragmatic, effective software engineer." in instructions
     assert "Always use apply_patch for manual code edits." in instructions
 

@@ -73,6 +73,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   截断、clock 和自然关闭等独立风险回归保留。
 - `test_agent_state.py` 验证 `replace_history` 已移除，fork/resume 装配 recorder
   失败不改变原会话；延迟写入、恢复续写和无参 resume 的状态保留继续覆盖。
+- 恢复时跳过未配对的 function/custom tool call，保留完整兄弟工具及后续对话；
+  验证续写后再次恢复仍保留新历史，原文件前缀不被改写。
 - 小测试文件并入所属组件：终端 API 兼容检查并入 `test_cli.py`，
   provider 迟到回调检查并入 `test_model.py`。
 - 事件字段/冻结约束、纯文本和有状态展示在 `test_events.py` 验证，身份补全不修改原事件由
