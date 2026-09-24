@@ -13,6 +13,7 @@ Expected behavior:
 import asyncio
 import json
 import math
+import threading
 import typing
 import uuid
 from dataclasses import dataclass, field
@@ -69,7 +70,7 @@ class CodeModeManager:
         self._runtime_script = Path(__file__).with_name("exec_runtime.js")
         self._stored_values: "typing.Dict[str, JSONValue]" = {}
         self._cells: "typing.Dict[str, ExecCell]" = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def exec(
         self, source: "str", context: "ToolContext"
@@ -210,7 +211,7 @@ class CodeModeManager:
                 cell.error_text = self._coerce_optional_text(message.get("error_text"))
                 stored_values = message.get("stored_values")
                 if isinstance(stored_values, dict):
-                    async with self._lock:
+                    with self._lock:
                         self._stored_values = stored_values
                 cell.done_event.set()
                 cell.output_event.set()

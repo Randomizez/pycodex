@@ -254,9 +254,14 @@ class WorkspaceSessionManager:
         self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
         self._tab_states: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._saved_session_ids: "typing.Set[str]" = set()
-        self._lock = asyncio.Lock()
+        self._lock = None
         self._state_store = WorkspaceStateStore(board_path)
         self._persist_callback = persist_callback
+
+    def _get_lock(self):
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def set_persist_callback(
         self,
@@ -301,7 +306,7 @@ class WorkspaceSessionManager:
         rollout_path: str = "",
         fork: bool = False,
     ) -> str:
-        async with self._lock:
+        async with self._get_lock():
             session_id = uuid7_string()
             session = self._session_factory()
             await session.start()
@@ -331,7 +336,7 @@ class WorkspaceSessionManager:
             return session_id
 
     async def close_session(self, session_id: str) -> None:
-        async with self._lock:
+        async with self._get_lock():
             if len(self._session_order) <= 1:
                 raise ValueError("cannot close the last session")
             session = self._sessions.pop(session_id, None)

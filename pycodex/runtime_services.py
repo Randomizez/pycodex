@@ -221,9 +221,14 @@ class SubAgentManager:
     def __init__(self) -> "None":
         self._runtime_builder: "typing.Union[AgentRuntimeBuilder, None]" = None
         self._agents: "typing.Dict[str, ManagedAgent]" = {}
-        self._condition = asyncio.Condition()
+        self._condition = None
         self._available_nicknames: "typing.List[str]" = []
         self._nickname_random = random.Random()
+
+    def _get_condition(self):
+        if self._condition is None:
+            self._condition = asyncio.Condition()
+        return self._condition
 
     def set_runtime_builder(
         self, builder: "typing.Union[AgentRuntimeBuilder, None]"
@@ -257,7 +262,7 @@ class SubAgentManager:
             nickname=nickname,
         )
         runtime.event_handler = lambda event: self._handle_agent_event(managed, event)
-        async with self._condition:
+        async with self._get_condition():
             self._agents[agent_id] = managed
             self._condition.notify_all()
 
@@ -287,7 +292,7 @@ class SubAgentManager:
             queue="steer" if interrupt else "enqueue",
         )
         future.add_done_callback(self._submission_finished)
-        async with self._condition:
+        async with self._get_condition():
             self._condition.notify_all()
         return {"submission_id": submission_id}
 
@@ -299,7 +304,7 @@ class SubAgentManager:
             managed.runtime.resume()
             managed.last_status = "pending_init"
             await managed.runtime.start()
-        async with self._condition:
+        async with self._get_condition():
             self._condition.notify_all()
         return {"status": self._status_payload(managed)}
 
@@ -309,7 +314,7 @@ class SubAgentManager:
             return {"previous_status": "not_found"}
         previous_status = self._status_payload(managed)
         await managed.runtime.close()
-        async with self._condition:
+        async with self._get_condition():
             self._condition.notify_all()
         return {"previous_status": previous_status}
 
@@ -345,7 +350,7 @@ class SubAgentManager:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_seconds
 
-        async with self._condition:
+        async with self._get_condition():
             while True:
                 snapshot = {
                     agent_id: self._status_payload(self._agents.get(agent_id))
@@ -385,7 +390,7 @@ class SubAgentManager:
         asyncio.create_task(self._notify_waiters())
 
     async def _notify_waiters(self) -> "None":
-        async with self._condition:
+        async with self._get_condition():
             self._condition.notify_all()
 
     def _compose_prompt(

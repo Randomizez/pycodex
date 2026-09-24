@@ -25,6 +25,17 @@ caller's config. Context managers are never implicitly supplied or shared betwee
 Agents. Standalone callers use `ContextManager(config)` and load configuration
 through `ContextConfig.from_codex_config`.
 
+Agent, runtime, tool-manager and workspace-manager construction does not require
+a current event loop. Async locks and conditions are created when their async
+operations first use them; the runtime queue event belongs to its worker.
+Each Agent turn or manual compaction creates its own completion event and releases
+it when the operation ends. This supports constructing objects after
+`asyncio.run()` has closed a loop, or before the eventual execution loop starts,
+including on Python 3.8. Running workers and active resources still belong to
+their execution loop; Web subscription queues are created in the consuming
+loop when `subscribe()` is called. The exec managers use ordinary locks only around
+synchronous data updates, with no `await` inside those sections.
+
 There is no collaboration-mode state or prompt injection. CLI and workspace use
 the same context-building path. `request_user_input` retains its declaration but
 always returns `request_user_input is unavailable in Default mode`; registered

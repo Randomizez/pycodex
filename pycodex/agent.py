@@ -105,8 +105,7 @@ class Agent:
         self._history: "typing.List[ConversationItem]" = list(initial_history)
         self._configure_recording(session_id or uuid7_string(), session_file_path)
         self._last_total_usage_tokens: "typing.Union[int, None]" = None
-        self._idle = asyncio.Event()
-        self._idle.set()
+        self._idle: "typing.Union[asyncio.Event, None]" = None
         self.is_shutdown = False
         self.accepts_input = True
         self._stop_requested = False
@@ -131,7 +130,7 @@ class Agent:
 
     @property
     def is_running(self) -> "bool":
-        return not self._idle.is_set()
+        return self._idle is not None
 
     async def wait_until_idle(self) -> "None":
         while self.is_running:
@@ -226,7 +225,7 @@ class Agent:
             raise RuntimeError("agent is shutdown")
         if self.is_running:
             raise RuntimeError("cannot compact while agent is running")
-        self._idle.clear()
+        self._idle = asyncio.Event()
         try:
             return await self._compact_history(
                 uuid7_string(),
@@ -237,6 +236,7 @@ class Agent:
             )
         finally:
             self._idle.set()
+            self._idle = None
 
     async def run_turn(
         self, texts: "typing.List[str]", turn_id: "typing.Union[str, None]" = None
@@ -246,7 +246,7 @@ class Agent:
         if self.is_running:
             raise RuntimeError("agent already has an active turn")
         self._stop_requested = False
-        self._idle.clear()
+        self._idle = asyncio.Event()
         turn = _TurnState(turn_id or uuid7_string())
         try:
             self._emit(TurnStartedEvent(turn.turn_id, tuple(texts)))
@@ -319,6 +319,7 @@ class Agent:
         finally:
             self._stop_requested = False
             self._idle.set()
+            self._idle = None
 
     async def _sample(self, turn: "_TurnState") -> "ModelResponse":
         for attempt in range(2):

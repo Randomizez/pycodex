@@ -14,6 +14,7 @@ Expected behavior:
 import asyncio
 import os
 import shlex
+import threading
 import typing
 import uuid
 from dataclasses import dataclass, field
@@ -126,7 +127,7 @@ class UnifiedExecManager:
         self._default_cwd = Path(cwd or Path.cwd()).resolve()
         self._next_session_id = DEFAULT_SESSION_ID_START
         self._sessions: "typing.Dict[int, UnifiedExecSession]" = {}
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
         self._notify_hook: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]" = (None)
 
     def set_notify_hook(
@@ -181,7 +182,7 @@ class UnifiedExecManager:
         )
         session.reader_task = asyncio.create_task(self._pump_output(session))
 
-        async with self._lock:
+        with self._lock:
             self._sessions[session_id] = session
 
         output = await self._wait_and_snapshot(
@@ -223,7 +224,7 @@ class UnifiedExecManager:
         )
 
     async def _allocate_session_id(self) -> "int":
-        async with self._lock:
+        with self._lock:
             session_id = self._next_session_id
             self._next_session_id += 1
             return session_id
@@ -231,7 +232,7 @@ class UnifiedExecManager:
     async def _get_session(
         self, session_id: "int"
     ) -> "typing.Union[UnifiedExecSession, None]":
-        async with self._lock:
+        with self._lock:
             return self._sessions.get(session_id)
 
     async def _wait_and_snapshot(
@@ -298,7 +299,7 @@ class UnifiedExecManager:
         return "\n".join(lines)
 
     async def _close_session(self, session_id: "int") -> "None":
-        async with self._lock:
+        with self._lock:
             session = self._sessions.pop(session_id, None)
         if session is None:
             return
@@ -350,7 +351,7 @@ class UnifiedExecManager:
         if session is None:
             return
         await session.process.wait()
-        async with self._lock:
+        with self._lock:
             if self._sessions.get(session_id) is not session:
                 return
         callback = self._notify_hook

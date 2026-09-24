@@ -75,7 +75,7 @@ class AgentRuntime:
         self.agent = agent
         self._enqueue_queue: "deque[_QueuedSubmission]" = deque()
         self._steer_queue: "deque[_QueuedSubmission]" = deque()
-        self._queue_event = asyncio.Event()
+        self._queue_event = None
         self._current_submission: "typing.Union[_QueuedSubmission, None]" = None
         self.event_handler = BASE_EVENT_HANDLER
         self.agent.event_handler = self._handle_agent_event
@@ -87,7 +87,7 @@ class AgentRuntime:
         self._frontends = {}
         self._close_handlers = []
         self._worker = None
-        self._command_lock = asyncio.Lock()
+        self._command_lock = None
         self._input_request = None
         self._background_work_count = 0
         self._active_turn = None
@@ -205,6 +205,15 @@ class AgentRuntime:
             self._worker = asyncio.create_task(self._run_forever())
         return self
 
+    def _get_command_lock(self):
+        if self._command_lock is None:
+            self._command_lock = asyncio.Lock()
+        return self._command_lock
+
+    def _wake_worker(self):
+        if self._queue_event is not None:
+            self._queue_event.set()
+
     async def close(self):
         if self._worker is None:
             self._worker = asyncio.create_task(self._run_forever())
@@ -213,7 +222,7 @@ class AgentRuntime:
             self.publish_state("admission")
             if self._input_request is not None:
                 self._finish_input_request(None)
-            self._queue_event.set()
+            self._wake_worker()
         await asyncio.shield(self._worker)
 
     async def submit_input(self, text, sender="user"):
@@ -244,7 +253,7 @@ class AgentRuntime:
             if command in {"/exit", "/quit"}:
                 result = await self._execute_command(command[1:], argument.strip())
             else:
-                async with self._command_lock:
+                async with self._get_command_lock():
                     if not self.agent.accepts_input:
                         raise RuntimeError("agent is shutting down")
                     result = await self._execute_command(command[1:], argument.strip())
@@ -486,10 +495,11 @@ class AgentRuntime:
         )
         target = self._steer_queue if queue == "steer" else self._enqueue_queue
         target.append(queued)
-        asyncio.get_running_loop().call_soon(self._queue_event.set)
+        asyncio.get_running_loop().call_soon(self._wake_worker)
         return submission_id, future
 
     async def _run_forever(self) -> "None":
+        self._queue_event = asyncio.Event()
         while True:
             queued = await self._next_submission()
             if queued is None:
@@ -508,7 +518,7 @@ class AgentRuntime:
             finally:
                 self._current_submission = None
         try:
-            async with self._command_lock:
+            async with self._get_command_lock():
                 await self._close_resources()
         finally:
             self.agent.shutdown()

@@ -879,7 +879,7 @@ def test_session_list_uses_lightweight_summary(monkeypatch):
         assert response.json()["sessions"][0]["turn_count"] == 0
 
 
-def test_web_view_projects_context_tool_and_stream_events():
+async def test_web_view_projects_context_tool_and_stream_events():
     view = WebSessionView()
     runtime = AgentRuntime(
         Agent(
@@ -904,10 +904,8 @@ def test_web_view_projects_context_tool_and_stream_events():
     view.load_session_history("restored", (("old", "answer"),))
     assert len(view.snapshot()["turns"]) == 1
     subscriber = view.subscribe()
-    assert not any(
-        event.get("kind") == "assistant_delta"
-        for event in subscriber.get_nowait()["events"]
-    )
+    hello = await subscriber.get()
+    assert not any(event.get("kind") == "assistant_delta" for event in hello["events"])
     view.close()
 
 
