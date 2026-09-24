@@ -19,6 +19,8 @@ from pycodex.bootstrap import get_tools
 from pycodex.events import TokenCountEvent
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.runtime_services import AgentRuntimeEnvironment, SubAgentManager
+from pycodex.tools import ClockManager, ClockTool, ExecCommandTool, UnifiedExecManager
+from pycodex.tools.unified_exec_manager import UnifiedExecSession
 from tests.fakes import ScriptedModelClient
 
 
@@ -400,6 +402,106 @@ async def test_runtime_stops_direct_invoke_then_owns_steer_execution(failed):
         await queue.close()
         if steered is not None:
             await asyncio.gather(steered, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["exec", "clock"])
+@pytest.mark.parametrize("failed", [False, True])
+async def test_background_notification_steer_reports_only_failures(
+    tmp_path, source, failed
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    error = ValueError("background model failed")
+    events = []
+    errors = []
+    tools = ToolRegistry()
+    if source == "exec":
+        class CompletedProcess:
+            returncode = 0
+
+            async def wait(self):
+                return self.returncode
+
+        manager = UnifiedExecManager(tmp_path)
+        manager._sessions[1000] = UnifiedExecSession(
+            1000, CompletedProcess(), 0.0, "completed command", False
+        )
+        tools.register(ExecCommandTool(manager))
+        notification = manager._notify_when_session_completes(1000)
+        tag = "exec_command_completed"
+    else:
+        manager = ClockManager(seconds_per_minute=0.001)
+        manager.set_period(1)
+        tools.register(ClockTool(manager))
+        notification = manager._wait_and_notify(manager._generation, 1)
+        tag = "clock_tick"
+
+    async def respond(prompt, call_count):
+        if call_count == 1:
+            started.set()
+            await release.wait()
+            if failed:
+                raise error
+            return ModelResponse([AssistantMessage("background answer")])
+        return ModelResponse([AssistantMessage("steer answer")])
+
+    model = ScriptedModelClient(response_factory=respond)
+    agent = Agent(model, tools, ContextConfig())
+    runtime = AgentRuntime(agent)
+    runtime.event_handler = events.append
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, context: errors.append(context))
+    notification_task = asyncio.create_task(notification)
+    steered = None
+    try:
+        await asyncio.wait_for(started.wait(), 1)
+        _submission_id, steered = await runtime.enqueue_user_turn(
+            "user steer", queue="steer"
+        )
+        assert not notification_task.done()
+        release.set()
+        await asyncio.wait_for(notification_task, 1)
+        assert not steered.done()
+        assert not agent.is_running
+        assert model.call_count == 1
+        assert agent.history[0].text.startswith("<" + tag + ">\n")
+        if source == "clock":
+            assert manager._timer_task is None
+        assert [
+            event.kind
+            for event in events
+            if event.kind in ("turn_completed", "turn_interrupted", "turn_failed")
+        ] == ["turn_failed" if failed else "turn_interrupted"]
+        if failed:
+            assert len(errors) == 1
+            assert errors[0]["exception"] is error
+            assert errors[0]["message"] == (
+                "Exec completion notification failed"
+                if source == "exec"
+                else "Clock notification failed"
+            )
+        else:
+            assert errors == []
+            assert agent.history[-1] == AssistantMessage("background answer")
+
+        await runtime.start()
+        assert (await asyncio.wait_for(steered, 1)).output_text == "steer answer"
+        await runtime.close()
+        assert model.call_count == 2
+        assert model.prompts[-1].input[-1] == UserMessage("user steer")
+        assert agent.history[-2:] == (
+            UserMessage("user steer"),
+            AssistantMessage("steer answer"),
+        )
+    finally:
+        release.set()
+        await asyncio.gather(notification_task, return_exceptions=True)
+        await runtime.close()
+        if steered is not None:
+            await asyncio.gather(steered, return_exceptions=True)
+        loop.set_exception_handler(previous_handler)
 
 
 @pytest.mark.asyncio

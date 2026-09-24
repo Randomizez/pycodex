@@ -261,7 +261,11 @@ but the Agent itself simply executes in its caller's coroutine. Queue submission
 await `run_turn` directly. `maybe_invoke` returns `False` while busy or closed;
 otherwise it formats the notification, awaits `run_turn`, and returns `True`.
 Failures propagate to the invoking caller; exec/clock notification sources
-report their own failures. Background events are not queued or cached.
+report their own failures. When steer ends a notification turn with
+`TurnInterrupted`, those sources treat it as a normal interruption and do not
+report a notification failure. Runtime still owns the pending user input, and
+the clock waits for the next successful reply before arming again.
+Background events are not queued or cached.
 
 One idle event is cleared on entry and set in `finally`, covering pre-turn
 compaction, sampling, tool execution and manual compaction. `is_running` derives

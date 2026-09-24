@@ -345,6 +345,8 @@ class UnifiedExecManager:
         session.output_event.set()
 
     async def _notify_when_session_completes(self, session_id: "int") -> "None":
+        from ..agent import TurnInterrupted
+
         if self._notify_hook is None:
             return
         session = await self._get_session(session_id)
@@ -366,6 +368,9 @@ class UnifiedExecManager:
                     "command": session.command_display,
                 }
             )
+        except TurnInterrupted:
+            # A steer ended the notification turn at a safe boundary.
+            return
         except asyncio.CancelledError:
             raise
         except Exception as exc:

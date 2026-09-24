@@ -108,6 +108,8 @@ class ClockManager:
             task.cancel()
 
     async def _wait_and_notify(self, generation: "int", period_m: "float") -> "None":
+        from ..agent import TurnInterrupted
+
         try:
             await asyncio.sleep(period_m * self._seconds_per_minute)
         except asyncio.CancelledError:
@@ -127,6 +129,9 @@ class ClockManager:
                     "current_time": _current_time(),
                 }
             )
+        except TurnInterrupted:
+            # The next successful reply will arm the clock after a steer.
+            return
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -55,6 +55,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   `test_agent_state.py`、`test_runtime_state.py` 和 `test_agent.py` 覆盖。
 - pre-turn、mid-turn 和 overflow compact 中收到停止请求时，不再发后续采样，
   不增加未发出请求的 iteration；溢出恢复只重试一次，不重跑已完成工具。
+- `test_runtime_state.py` 覆盖 exec/clock 唤醒后的 steer：正常中断不报通知失败，
+  真实模型异常仍上报，待处理用户输入由 Runtime worker 继续执行。
 - `test_cli.py` 保留入口、装配、portable round-trip、steer/queue 反馈和流式展示；
   验证普通/JSON 回执不创建额外任务，移除逐个 argparse 字段、
   相同 buffer 状态和重复恢复流程的微测试。
