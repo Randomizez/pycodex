@@ -146,6 +146,7 @@ def _normalized_headers(headers: "typing.Dict[str, str]") -> "typing.Dict[str, s
     return {key.lower(): value for key, value in headers.items()}
 
 
+@pytest.mark.asyncio
 async def test_cancelled_provider_stream_cannot_deliver_late_events():
     loop = asyncio.get_running_loop()
     started = asyncio.Event()

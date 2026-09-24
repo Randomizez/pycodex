@@ -361,10 +361,21 @@ class SubAgentManager:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
                     return {"status": {}, "timed_out": True}
+                waiter = asyncio.create_task(self._condition.wait())
                 try:
-                    await asyncio.wait_for(self._condition.wait(), timeout=remaining)
-                except asyncio.TimeoutError:
-                    return {"status": {}, "timed_out": True}
+                    done, _pending = await asyncio.wait({waiter}, timeout=remaining)
+                    if not done:
+                        return {"status": {}, "timed_out": True}
+                    await waiter
+                finally:
+                    if not waiter.done():
+                        waiter.cancel()
+                        # Condition.wait() must reacquire the lock before we leave
+                        # the context. Python 3.6 wait_for() does not await that.
+                        try:
+                            await waiter
+                        except asyncio.CancelledError:
+                            pass
 
     def _submission_finished(self, future: "asyncio.Future") -> "None":
         if not future.cancelled():

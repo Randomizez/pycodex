@@ -3,6 +3,8 @@ import sys
 import threading
 import types
 
+import pytest
+
 from pycodex.events import TurnCompletedEvent, TurnStartedEvent
 import pycodex.feishu_link as feishu_link
 from pycodex.feishu_card import PycodexCard
@@ -89,6 +91,7 @@ async def _forever():
         await asyncio.sleep(3600)
 
 
+@pytest.mark.asyncio
 async def test_history_navigation_updates_card_without_submitting_model_input():
     card = PycodexCard()
     for index in range(3):

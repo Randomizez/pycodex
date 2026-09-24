@@ -36,6 +36,15 @@ their execution loop; Web subscription queues are created in the consuming
 loop when `subscribe()` is called. The exec managers use ordinary locks only around
 synchronous data updates, with no `await` inside those sections.
 
+Sub-agent status waits finish cancelling their condition waiter before leaving
+the condition lock on timeout or caller cancellation. Python 3.6's
+`asyncio.wait_for()` returns before that cleanup completes, so this path uses
+`asyncio.wait()` with explicit waiter cleanup to keep later notifications usable.
+Only the status waiter is cancelled; child turns continue running.
+The Python 3.6 asyncio compatibility layer also supplies `all_tasks()` with the
+same unfinished-task filtering used by modern Python, including during workspace
+thread cleanup.
+
 There is no collaboration-mode state or prompt injection. CLI and workspace use
 the same context-building path. `request_user_input` retains its declaration but
 always returns `request_user_input is unavailable in Default mode`; registered
@@ -200,15 +209,17 @@ Cleanup visits every child and connection handler even if one fails; the first
 error is propagated and additional errors are reported through the event loop.
 The interactive prompt treats Ctrl+C as end-of-input, just like Ctrl+D on an empty
 prompt, and follows the same `runtime.close()` path as `/exit`. The prompt toolkit
-uses `interrupt_exception=EOFError` so a background input task cannot leak
-`KeyboardInterrupt` into the event-loop runner. One Ctrl+C initiates normal exit;
+`c-c` and `<sigint>` bindings exit with `EOFError`, including on version 3.0.36
+which has no `interrupt_exception` constructor parameter, so an input task cannot
+leak `KeyboardInterrupt` into the event-loop runner. One Ctrl+C initiates normal exit;
 the admission event renders a `[closing]` notice while accepted work and cleanup
 finish. It does not interrupt model/tool calls or bypass their completion.
 While closing, another Ctrl+C immediately terminates the CLI process with status
 130. This also works after `/exit`, `/quit` or Ctrl+D starts closing. The CLI
-installs a SIGINT handler for its interactive session, which prompt_toolkit
-restores when the input prompt ends; it therefore does not depend on an inherited
-handler that may ignore SIGINT. Normal completion and cleanup errors restore the
+installs a SIGINT handler for its interactive session and reinstalls it after
+input and at the close boundary because older prompt_toolkit versions reset it.
+It therefore does not depend on an inherited handler that may ignore SIGINT.
+Normal completion and cleanup errors restore the
 original handler. Forced exit happens at the process boundary, without cancelling
 the turn or re-entering asyncio shutdown waits. It skips remaining cleanup and
 does not guarantee termination of external tool processes. Runtime close itself

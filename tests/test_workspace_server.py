@@ -293,6 +293,7 @@ def test_typed_event_wire_preserves_existing_fields():
     }
 
 
+@pytest.mark.asyncio
 async def test_history_command_publishes_one_control_turn():
     view = WebSessionView()
     history = tuple(
@@ -749,6 +750,7 @@ def test_workspace_fork_saves_new_target_after_compact_or_failure(tmp_path, next
         )
 
 
+@pytest.mark.asyncio
 async def test_workspace_close_persists_fork_after_draining_turn(tmp_path):
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -783,6 +785,7 @@ async def test_workspace_close_persists_fork_after_draining_turn(tmp_path):
     ]
 
 
+@pytest.mark.asyncio
 async def test_workspace_missing_restore_path_still_fails_and_closes_session(tmp_path):
     session = make_session()
     board = tmp_path / "board.html"
@@ -879,6 +882,7 @@ def test_session_list_uses_lightweight_summary(monkeypatch):
         assert response.json()["sessions"][0]["turn_count"] == 0
 
 
+@pytest.mark.asyncio
 async def test_web_view_projects_context_tool_and_stream_events():
     view = WebSessionView()
     runtime = AgentRuntime(
@@ -977,6 +981,7 @@ def test_web_context_usage_clears_after_compaction(completed):
     assert view.snapshot()["usage_tokens"] is None
 
 
+@pytest.mark.asyncio
 async def test_workspace_displays_steer_and_enqueue_in_execution_order():
     started = [asyncio.Event() for _ in range(3)]
     release = [asyncio.Event() for _ in range(3)]
@@ -1034,6 +1039,7 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
         await session.close()
 
 
+@pytest.mark.asyncio
 async def test_tool_failure_remains_a_tool_result():
     class FailingTool(BaseTool):
         name = "fail"
@@ -1106,6 +1112,7 @@ def test_threaded_sessions_do_not_block_other_sessions():
 
 
 @pytest.mark.parametrize("failure", ["start", "close"])
+@pytest.mark.asyncio
 async def test_threaded_session_releases_resources_on_lifecycle_failure(failure):
     cleanup_calls = []
 
@@ -1149,6 +1156,7 @@ async def test_threaded_session_releases_resources_on_lifecycle_failure(failure)
         await session.close()
 
 
+@pytest.mark.asyncio
 async def test_threaded_close_drains_active_turn_when_caller_is_cancelled():
     started = threading.Event()
     release = threading.Event()

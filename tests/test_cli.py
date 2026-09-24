@@ -161,6 +161,7 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
         build_model(str(config_path), use_chat_completion=True, use_messages=True)
 
 
+@pytest.mark.asyncio
 async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_path):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
     agent = build_agent(
@@ -200,6 +201,7 @@ async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.asyncio
 async def test_cli_one_shot_uses_backend_and_tui_context(
     config_path, monkeypatch, capsys, json_mode
 ):
@@ -217,6 +219,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
     assert "<environment_context>" in repr(client.prompts[0].input)
 
 
+@pytest.mark.asyncio
 async def test_cli_exit_code_and_command_dispatch(config_path, monkeypatch, capsys):
     client = ScriptedModelClient([])
     monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: client)
@@ -229,6 +232,7 @@ async def test_cli_exit_code_and_command_dispatch(config_path, monkeypatch, caps
     assert "scripted model ran out of responses" in capsys.readouterr().err
 
 
+@pytest.mark.asyncio
 async def test_cli_portable_roundtrip_and_utf8_locale(tmp_path, monkeypatch, capsys):
     home = tmp_path / "home"
     home.mkdir()
@@ -285,6 +289,7 @@ async def test_cli_portable_roundtrip_and_utf8_locale(tmp_path, monkeypatch, cap
 
 
 @pytest.mark.parametrize("queued", [False, True])
+@pytest.mark.asyncio
 async def test_cli_steer_and_queue_feedback(queued):
     started = asyncio.Event()
     release = asyncio.Event()
@@ -320,6 +325,7 @@ async def test_cli_steer_and_queue_feedback(queued):
 
 
 @pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.asyncio
 async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, json_mode):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
     queue = AgentRuntime(Agent(client, ToolRegistry(), ContextConfig()))
@@ -344,6 +350,7 @@ async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, jso
     assert not tasks
 
 
+@pytest.mark.asyncio
 async def test_cli_detaches_view_when_close_fails():
     closed = []
 
@@ -599,11 +606,25 @@ def test_cli_executes_event_presentation_without_type_dispatch():
         view.close()
 
 
-async def test_cli_background_rate_limits_do_not_pause_for_enter(monkeypatch):
-    from prompt_toolkit.application import create_app_session
+@pytest.fixture
+def prompt_pipe(monkeypatch):
+    from prompt_toolkit import PromptSession
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
 
+    # Pass transport directly: Python 3.6 callbacks do not inherit app sessions.
+    with create_pipe_input() as pipe:
+        monkeypatch.setattr(
+            "pycodex.cli.PromptSession",
+            lambda **kwargs: PromptSession(input=pipe, output=DummyOutput(), **kwargs),
+        )
+        yield pipe
+
+
+@pytest.mark.asyncio
+async def test_cli_background_rate_limits_do_not_pause_for_enter(
+    monkeypatch, prompt_pipe
+):
     from pycodex.cli import Prompter
     from pycodex.model import ResponsesApiError
 
@@ -619,54 +640,52 @@ async def test_cli_background_rate_limits_do_not_pause_for_enter(monkeypatch):
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    prompter = Prompter()
+    prompt_task = None
     try:
-        with create_pipe_input() as pipe:
-            with create_app_session(input=pipe, output=DummyOutput()):
-                prompter = Prompter()
-                prompt_task = None
-                try:
-                    assert await prompter.poll_input() is None
-                    prompt_task = prompter._prompt_task
-                    for source in ("Clock", "Exec completion"):
-                        loop.call_exception_handler(
-                            {
-                                "message": source + " notification failed",
-                                "exception": ResponsesApiError(
-                                    "responses request failed with status 429: "
-                                    "rate_limit_exceeded"
-                                ),
-                            }
-                        )
+        assert await prompter.poll_input() is None
+        prompt_task = prompter._prompt_task
+        for source in ("Clock", "Exec completion"):
+            loop.call_exception_handler(
+                {
+                    "message": source + " notification failed",
+                    "exception": ResponsesApiError(
+                        "responses request failed with status 429: "
+                        "rate_limit_exceeded"
+                    ),
+                }
+            )
 
-                    async def wait_for_reports():
-                        while len(reported) + len(pauses) < 2:
-                            await asyncio.sleep(0.01)
+        async def wait_for_reports():
+            while len(reported) + len(pauses) < 2:
+                await asyncio.sleep(0.01)
 
-                    await asyncio.wait_for(wait_for_reports(), 2)
-                    pipe.send_text("continue\n")
+        await asyncio.wait_for(wait_for_reports(), 2)
+        prompt_pipe.send_text("continue\n")
 
-                    async def read_input():
-                        while True:
-                            text = await prompter.poll_input()
-                            if text is not None:
-                                return text
+        async def read_input():
+            while True:
+                text = await prompter.poll_input()
+                if text is not None:
+                    return text
 
-                    assert await asyncio.wait_for(read_input(), 2) == "continue"
-                    assert pauses == []
-                    assert [context["message"] for context in reported] == [
-                        "Clock notification failed",
-                        "Exec completion notification failed",
-                    ]
-                    assert all(
-                        isinstance(context["exception"], ResponsesApiError)
-                        for context in reported
-                    )
-                finally:
-                    prompter.close()
-                    if prompt_task is not None:
-                        await asyncio.gather(prompt_task, return_exceptions=True)
+        assert await asyncio.wait_for(read_input(), 2) == "continue"
+        assert pauses == []
+        assert [context["message"] for context in reported] == [
+            "Clock notification failed",
+            "Exec completion notification failed",
+        ]
+        assert all(
+            isinstance(context["exception"], ResponsesApiError)
+            for context in reported
+        )
     finally:
-        loop.set_exception_handler(previous_handler)
+        try:
+            prompter.close()
+            if prompt_task is not None:
+                await asyncio.gather(prompt_task, return_exceptions=True)
+        finally:
+            loop.set_exception_handler(previous_handler)
 
 
 def test_cli_context_and_tool_progress():
@@ -697,7 +716,7 @@ def test_prompt_options_match_installed_terminal_api(monkeypatch, with_frame):
         self,
         erase_when_done=False,
         enable_system_prompt=False,
-        interrupt_exception=KeyboardInterrupt,
+        key_bindings=None,
     ):
         pass
 
@@ -705,7 +724,7 @@ def test_prompt_options_match_installed_terminal_api(monkeypatch, with_frame):
         self,
         erase_when_done=False,
         enable_system_prompt=False,
-        interrupt_exception=KeyboardInterrupt,
+        key_bindings=None,
         show_frame=False,
     ):
         pass
@@ -717,8 +736,9 @@ def test_prompt_options_match_installed_terminal_api(monkeypatch, with_frame):
     expected = {
         "erase_when_done": True,
         "enable_system_prompt": True,
-        "interrupt_exception": EOFError,
     }
     if with_frame:
         expected["show_frame"] = True
-    assert prompt_session_kwargs() == expected
+    kwargs = prompt_session_kwargs()
+    kwargs.pop("key_bindings")
+    assert kwargs == expected

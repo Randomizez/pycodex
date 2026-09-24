@@ -4,6 +4,10 @@
 
 ## CI 环境
 
+- Python 3.6 兼容性需要用真实解释器运行；现代 Python 下的语法检查不覆盖旧
+  asyncio 和依赖库的执行行为。异步测试显式标记 `pytest.mark.asyncio`，
+  避免 pytest-asyncio 0.16 在没有 auto mode 时跳过这些用例。
+  workspace 线程清理还覆盖兼容层的 `asyncio.all_tasks()`，确保启动/关闭失败后仍关闭事件循环。
 - `test.yml` 和 `publish.yml` 的 Python 3.6 job 使用
   `python:3.6.15-slim-bullseye`，系统依赖仅从
   `https://archive.debian.org/debian` 的 `bullseye main` 归档安装。
@@ -57,6 +61,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不增加未发出请求的 iteration；溢出恢复只重试一次，不重跑已完成工具。
 - `test_runtime_state.py` 覆盖 exec/clock 唤醒后的 steer：正常中断不报通知失败，
   真实模型异常仍上报，待处理用户输入由 Runtime worker 继续执行。
+- 子 Agent 状态等待超时后仍能收到后续完成通知；Python 3.6 下也必须等
+  condition waiter 取消并重新获得锁后再离开临界区，不能留下卡死的通知等待。
 - `test_cli.py` 保留入口、装配、portable round-trip、steer/queue 反馈和流式展示；
   验证普通/JSON 回执不创建额外任务，移除逐个 argparse 字段、
   相同 buffer 状态和重复恢复流程的微测试。
@@ -220,6 +226,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   清理失败也解除视图订阅；终端库参数兼容也在本文件中验证。
 - 子进程内使用真实 prompt_toolkit 输入验证单次 Ctrl+C、Ctrl+D 和 POSIX SIGINT：
   空闲时正常退出，有 active/queued 请求时先排空再清理一次，不取消请求或泄漏输入任务异常。
+  覆盖 3.0.36 的按键绑定接口及其退出输入后重置 SIGINT 的行为。
+  pipe-input fixture 显式传入输入/输出，避免依赖 Python 3.6 回调不支持的 app-session 继承。
   `[closing]` 提示及不提前 flush partial 输出的规则由 `test_events.py` 覆盖。
 
 ### `tests/fake_responses_server.py`

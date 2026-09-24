@@ -39,6 +39,17 @@ def patch_asyncio():
     if not hasattr(asyncio, "current_task"):
         asyncio.current_task = asyncio.Task.current_task
 
+    if not hasattr(asyncio, "all_tasks"):
+
+        def all_tasks(loop=None):
+            if loop is None:
+                loop = asyncio.get_running_loop()
+            return {
+                task for task in asyncio.Task.all_tasks(loop=loop) if not task.done()
+            }
+
+        asyncio.all_tasks = all_tasks
+
     if not hasattr(asyncio, "create_task"):
         asyncio.create_task = asyncio.ensure_future
 
@@ -62,11 +73,7 @@ def patch_asyncio():
                 asyncio.set_event_loop(loop)
                 return loop.run_until_complete(main)
             finally:
-                all_tasks = getattr(asyncio.Task, "all_tasks", None)
-                if all_tasks is not None:
-                    pending = all_tasks(loop=loop)
-                else:
-                    pending = asyncio.all_tasks(loop)
+                pending = asyncio.all_tasks(loop)
                 for task in pending:
                     task.cancel()
                 if pending:

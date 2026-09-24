@@ -27,6 +27,9 @@ and console scripts; `pycodex-ws` remains a thin metapackage depending on
 - Render Mermaid diagrams in workspace replies, with an expanded view and
   access to the original source.
 - Treat cooperative interruption of exec/clock wake-up turns as normal steering.
+- Support prompt_toolkit 3.0.36 on Python 3.6 for normal Ctrl+C exit and forced
+  exit while closing; keep sub-agent status notifications working after timeout.
+- Close workspace event loops after startup or cleanup failures on Python 3.6.
 - Return password login to the requested workspace path and query parameters.
 
 ## Context and protocol

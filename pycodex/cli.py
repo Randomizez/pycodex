@@ -12,6 +12,9 @@ import typing
 from contextlib import contextmanager
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.enums import DEFAULT_BUFFER
+from prompt_toolkit.filters import has_focus
+from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from .bootstrap import build_agent, build_model, build_runtime, configure_loguru
@@ -183,7 +186,7 @@ async def run_cli(args):
 @contextmanager
 def _cli_sigint_handler(runtime):
     if threading.current_thread() is not threading.main_thread():
-        yield
+        yield lambda: None
         return
 
     def handle_sigint(signum, frame):
@@ -192,9 +195,13 @@ def _cli_sigint_handler(runtime):
             os._exit(130)
         signal.default_int_handler(signum, frame)
 
-    previous_handler = signal.signal(signal.SIGINT, handle_sigint)
+    def install_handler():
+        signal.signal(signal.SIGINT, handle_sigint)
+
+    previous_handler = signal.getsignal(signal.SIGINT)
+    install_handler()
     try:
-        yield
+        yield install_handler
     finally:
         signal.signal(signal.SIGINT, previous_handler)
 
@@ -210,7 +217,7 @@ async def run_interactive_session(runtime, json_mode, config_path=None, view=Non
             render_result("turn", future.result(), True, view.write_line)
 
     view.display.start(runtime.commands())
-    with _cli_sigint_handler(runtime):
+    with _cli_sigint_handler(runtime) as install_sigint_handler:
         try:
             while not view.display.closed:
                 try:
@@ -220,6 +227,7 @@ async def run_interactive_session(runtime, json_mode, config_path=None, view=Non
                 if raw_line is None:
                     await asyncio.sleep(0.05)
                     continue
+                install_sigint_handler()
                 try:
                     receipt = await runtime.submit_input(raw_line, sender="cli")
                 except Exception as exc:
@@ -228,6 +236,8 @@ async def run_interactive_session(runtime, json_mode, config_path=None, view=Non
                 if json_mode and receipt.kind == "turn":
                     receipt.future.add_done_callback(show_result)
         finally:
+            # Older prompt_toolkit versions reset SIGINT when the prompt exits.
+            install_sigint_handler()
             try:
                 await runtime.close()
             finally:
@@ -287,10 +297,17 @@ class Prompter:
 
 
 def prompt_session_kwargs() -> "typing.Dict[str, object]":
+    key_bindings = KeyBindings()
+
+    @key_bindings.add("c-c", filter=has_focus(DEFAULT_BUFFER))
+    @key_bindings.add("<sigint>")
+    def exit_prompt(event):
+        event.app.exit(exception=EOFError, style="class:aborting")
+
     kwargs = {
         "erase_when_done": True,
         "enable_system_prompt": True,
-        "interrupt_exception": EOFError,
+        "key_bindings": key_bindings,
     }
     try:
         parameters = inspect.signature(PromptSession.__init__).parameters

@@ -125,6 +125,7 @@ async def run_frontend(frontend, queue, inputs):
 
 
 @pytest.mark.parametrize("frontend", ["cli", "web", "feishu"])
+@pytest.mark.asyncio
 async def test_frontends_share_all_session_commands(frontend):
     session_id = uuid7_string()
     source = Agent(
@@ -191,6 +192,7 @@ async def test_frontends_share_all_session_commands(frontend):
     ]
 
 
+@pytest.mark.asyncio
 async def test_state_changes_reach_every_frontend_and_detach_is_not_close():
     queue = make_queue()
     web = await WorkspaceInteractiveSession(queue).start()
@@ -222,6 +224,7 @@ async def test_state_changes_reach_every_frontend_and_detach_is_not_close():
 
 
 @pytest.mark.parametrize("frontend", ["cli", "web", "feishu"])
+@pytest.mark.asyncio
 async def test_question_answers_use_same_backend_interpretation(frontend):
     queue = make_queue()
     ready = asyncio.Event()
@@ -247,6 +250,7 @@ async def test_question_answers_use_same_backend_interpretation(frontend):
 
 
 @pytest.mark.parametrize("frontend", ["cli", "web", "feishu"])
+@pytest.mark.asyncio
 async def test_request_user_input_stays_unavailable_with_frontend(frontend):
     from pycodex.tools import RequestUserInputTool
 
@@ -280,6 +284,7 @@ async def test_request_user_input_stays_unavailable_with_frontend(frontend):
         ("n", "turn", False),
     ],
 )
+@pytest.mark.asyncio
 async def test_permissions_share_admission_and_explicit_scope(answer, scope, granted):
     queue = make_queue()
     observer = queue.attach(lambda event: None)
@@ -298,6 +303,7 @@ async def test_permissions_share_admission_and_explicit_scope(answer, scope, gra
 @pytest.mark.parametrize(
     "resolution", ["empty", "detach", "timeout", "structured", "close"]
 )
+@pytest.mark.asyncio
 async def test_pending_question_has_bounded_resolution(resolution):
     queue = make_queue()
     events = []
@@ -331,6 +337,7 @@ async def test_pending_question_has_bounded_resolution(resolution):
     assert await manager.request(question_payload()) is None
 
 
+@pytest.mark.asyncio
 async def test_busy_feishu_input_steers_and_queue_remains_ordered():
     started = asyncio.Event()
     release = asyncio.Event()
@@ -382,6 +389,7 @@ async def test_busy_feishu_input_steers_and_queue_remains_ordered():
 
 
 @pytest.mark.parametrize("continue_after_fork", [False, True])
+@pytest.mark.asyncio
 async def test_fork_owns_identity_and_lazy_recorder(continue_after_fork):
     client = ControlClient(
         [
@@ -426,6 +434,7 @@ async def test_fork_owns_identity_and_lazy_recorder(continue_after_fork):
 
 
 @pytest.mark.parametrize("started,cleanup_fails", [(False, False), (True, True)])
+@pytest.mark.asyncio
 async def test_start_close_are_idempotent_and_errors_do_not_hang_shutdown(
     started, cleanup_fails
 ):
@@ -493,6 +502,7 @@ async def test_start_close_are_idempotent_and_errors_do_not_hang_shutdown(
 
 
 @pytest.mark.parametrize("cancel_caller", [False, True])
+@pytest.mark.asyncio
 async def test_close_waits_for_accepted_command_then_releases_connection(
     monkeypatch, cancel_caller
 ):
@@ -558,6 +568,7 @@ def test_web_import_does_not_load_cli_frontend():
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
+@pytest.mark.asyncio
 async def test_late_frontends_restore_active_stream_and_follow_completion():
     started = asyncio.Event()
     release = asyncio.Event()

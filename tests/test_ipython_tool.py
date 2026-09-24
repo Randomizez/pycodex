@@ -1,6 +1,8 @@
 import sys
 import types
 
+import pytest
+
 from pycodex.events import AssistantDeltaEvent, ToolCompletedEvent, ToolStartedEvent
 from pycodex.protocol import ToolCall, ToolResult
 from pycodex.tools.ipython_tool import IPythonTool, attach_ipython_event_printer
@@ -34,6 +36,7 @@ def test_ipython_event_printer_prints_completed_tool_events(capsys) -> "None":
     assert capsys.readouterr().out == "[exec_command] pwd -> /data/pycodex\n"
 
 
+@pytest.mark.asyncio
 async def test_ipython_tool_prints_io_without_storing_history(monkeypatch) -> "None":
     displayed = []
 
