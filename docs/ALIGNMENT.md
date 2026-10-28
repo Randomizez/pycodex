@@ -329,7 +329,8 @@ schema 一致的工具有：
 - `request_user_input`：`pycodex` 按 upstream source main 建模，带
   `autoResolutionMs`；installed `codex-cli 0.138.0` 的 live capture 仍未带该字段。
 - `clock`：pycodex 特有的 per-Agent/session 周期唤醒扩展，不属于 upstream
-  schema 对齐集合。
+  schema 对齐集合。已保存的会话恢复周期设置，重启后从完整周期重新计时；
+  `null` 取消持久保存，停机期间漏掉的 tick 不补发。
 - `spawn_agent` / `send_input` / `resume_agent` / `wait_agent` /
   `close_agent`：upstream 当前首轮 request 不再平铺暴露这些工具，而是暴露
   `tool_search`，并由 deferred discovery 加载 Multi-agent tools。`pycodex` 仍在首轮

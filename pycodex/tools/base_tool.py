@@ -104,6 +104,15 @@ class BaseTool(ABC):
     def shutdown(self) -> "None":
         pass
 
+    def session_state(self) -> "typing.Union[JSONDict, None]":
+        return None
+
+    def restore_session_state(self, state: "typing.Union[JSONDict, None]") -> "None":
+        pass
+
+    def start_background_work(self) -> "None":
+        pass
+
     def background_work_count(self, after_reply: "bool") -> "int":
         return 0
 

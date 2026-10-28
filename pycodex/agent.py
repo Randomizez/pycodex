@@ -39,6 +39,7 @@ from .model import (
 from .protocol import (
     AssistantMessage,
     ConversationItem,
+    JSONDict,
     ModelResponse,
     ReasoningItem,
     ToolCall,
@@ -179,6 +180,17 @@ class Agent:
         self.accepts_input = True
         for tool in self.tool_registry.tools():
             tool.bind_agent(self)
+            if resumed is not None:
+                tool.restore_session_state(resumed["tool_states"].get(tool.name))
+        if resumed is not None:
+            self._rollout_recorder.tool_states = dict(resumed["tool_states"])
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                pass
+            else:
+                for tool in self.tool_registry.tools():
+                    tool.start_background_work()
         return resumed
 
     def ask(self, text: "str") -> "TurnResult":
@@ -219,11 +231,24 @@ class Agent:
                 ),
                 self.context_manager.resolve_base_instructions(),
                 session_file_path,
+                tool_states=self.tool_states(),
             )
         if hasattr(self.model_client, "_session_id"):
             self.model_client._session_id = session_id
         self.session_id = session_id
         self._rollout_recorder = recorder
+
+    def tool_states(self) -> "typing.Dict[str, JSONDict]":
+        states = {}
+        for tool in self.tool_registry.tools():
+            state = tool.session_state()
+            if state is not None:
+                states[tool.name] = state
+        return states
+
+    def persist_tool_state(self, name: "str", state: "JSONDict") -> "None":
+        if self._rollout_recorder is not None:
+            self._rollout_recorder.append_tool_state(name, state, self._history)
 
     async def compact(
         self,
@@ -576,6 +601,7 @@ class Agent:
                 turn_id,
             )
             if recorder is not None:
+                recorder.tool_states = self.tool_states()
                 recorder.append_compacted_history(compact_result.history, self._history)
             self._history = list(compact_result.history)
             self._last_total_usage_tokens = None

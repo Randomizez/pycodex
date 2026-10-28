@@ -210,6 +210,7 @@ class WebSessionView:
         self._stream_id = uuid7_string()
         self._sequence = 0
         self._runtime_state = None
+        self._tool_states: "typing.Dict[str, object]" = {}
         self._turns: "typing.List[typing.Dict[str, object]]" = []
         self._turns_by_submission_id: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._turns_by_turn_id: "typing.Dict[str, typing.Dict[str, object]]" = {}
@@ -388,6 +389,7 @@ class WebSessionView:
                 ],
                 "accepts_input": self._accepts_input,
                 "title": self._title,
+                "tool_states": _json_safe(self._tool_states),
                 **self._context_usage(),
                 "turns": [_public_turn(turn) for turn in self._turns[-80:]],
             }
@@ -409,6 +411,7 @@ class WebSessionView:
     def _apply_runtime_event(self, event: "Event") -> None:
         if isinstance(event, SessionStateEvent):
             state = event.state
+            self._tool_states = state.get("tool_states", {})
             self._model = state["model"]
             self._cwd = state["cwd"]
             self._rollout_path = state["rollout_path"]
@@ -446,6 +449,10 @@ class WebSessionView:
                 self.set_session_title(state["title"])
             else:
                 self._set_title(state["title"])
+            if event.reason in {"attach", "history"} and state["active_turn"] is None:
+                self._set_spinner_status(
+                    IDLE_SLEEPING_STATUS if state.get("background_work_count", 0) else ""
+                )
             return
         if isinstance(event, CommandCompletedEvent):
             if event.result["kind"] in {"title_changed", "resumed", "compacted"}:

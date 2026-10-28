@@ -1326,6 +1326,19 @@ count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
 loop.
 
+Recorded sessions persist each tool's session state separately from model
+conversation items. `clock` saves its enabled state and period before changing
+the timer. Resume restores that period and starts a fresh full countdown;
+missed ticks during downtime are not replayed. Turn/compact starts still pause
+the clock, and successful completion rearms it. Runtime shutdown stops the
+in-memory timer without saving a user cancellation. An explicit `clock(null)`
+is saved and stays disabled after resume. Compaction checkpoints and fork
+metadata retain the latest state.
+
+Older rollouts recover the last successful clock result, including results
+before a compaction checkpoint; failed or unfinished tool calls are ignored.
+Unrecorded Agents and subagents keep clock state only in memory.
+
 Host session workers, notification watchers, timer cancellation and I/O cleanup
 still use asyncio where appropriate. Those resource mechanisms are not per-turn
 Task ownership or user-requested turn cancellation.

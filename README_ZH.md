@@ -168,3 +168,7 @@ uv run --dev pytest
 - [Portable 配置契约](docs/PORTABLE.md)
 
 发布记录和实现细节放在 `docs/`。
+
+保存的会话会记住 `clock` 周期，服务重启或 `/resume` 后自动恢复并重新计时，
+让周期任务能继续运行。`clock(null)` 的取消状态同样保存；停机期间错过的
+定时触发不会集中补发。

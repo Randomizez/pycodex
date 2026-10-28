@@ -79,8 +79,8 @@ class ClockManager:
         )
 
     def set_period(self, value: "object") -> "JSONDict":
-        self._cancel_pending()
         if value is None:
+            self._cancel_pending()
             self._period_m = None
             self._state_changed()
             return self.snapshot()
@@ -89,6 +89,7 @@ class ClockManager:
         period_m = float(value)
         if not math.isfinite(period_m) or period_m <= 0:
             raise ValueError("period_m must be a positive finite number or null")
+        self._cancel_pending()
         self._period_m = period_m
         self._state_changed()
         return self.snapshot()
@@ -213,9 +214,23 @@ class ClockTool(BaseTool):
 
     def __init__(self, manager: "ClockManager") -> "None":
         self._manager = manager
+        self._agent = None
+        self._restored = False
 
     def bind_agent(self, agent) -> "None":
+        self._agent = agent
         self._manager.set_notify_hook(agent.maybe_invoke)
+
+    def session_state(self) -> "JSONDict":
+        return self._manager.snapshot()
+
+    def restore_session_state(self, state) -> "None":
+        self._manager.set_period(None if state is None else state["period_m"])
+        self._restored = self._manager.enabled
+
+    def start_background_work(self) -> "None":
+        if self._restored and self._manager._timer_task is None:
+            self._manager.arm_after_reply()
 
     def handle_agent_event(self, event: "Event") -> "None":
         if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
@@ -226,6 +241,8 @@ class ClockTool(BaseTool):
     def shutdown(self) -> "None":
         self._manager.cancel()
         self._manager.set_notify_hook(None)
+        self._agent = None
+        self._restored = False
 
     def background_work_count(self, after_reply: "bool") -> "int":
         return int(self._manager.enabled if after_reply else self._manager.armed)
@@ -240,4 +257,10 @@ class ClockTool(BaseTool):
         del context
         if not isinstance(args, dict) or "period_m" not in args:
             raise ValueError("clock requires period_m")
+        # Validate and persist before changing the active timer.
+        candidate = ClockManager()
+        state = candidate.set_period(args["period_m"])
+        if self._agent is not None:
+            self._agent.persist_tool_state(self.name, state)
+        self._restored = False
         return self._manager.set_period(args["period_m"])

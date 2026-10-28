@@ -94,6 +94,10 @@ env -u VIRTUAL_ENV uv run --dev pytest packages/pycodex-ws/tests/test_feishu_car
 
 ## 自动化测试
 
+`test_clock_persistence.py` 和 workspace 的 `test_clock_restore.py` 验证
+clock 跨重启恢复、取消、旧 rollout、压缩与分叉、写失败、同步恢复、
+活动轮次暂停及网页 idle 状态。恢复后无需输入即可触发 `<clock_tick>`。
+
 ### HTTP 框架依赖
 
 - `packages/pycodex-ws/tests/test_workspace_sharing.py` 覆盖管理员/访问者登录、

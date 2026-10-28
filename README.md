@@ -229,3 +229,9 @@ The workspace message box supports Up/Down input history. Up recalls earlier
 human inputs in the current conversation; Down returns to the unsent draft.
 Automatic wake-up messages are excluded, and arrows retain normal cursor
 movement inside multiline drafts.
+
+## Persistent clocks
+
+Recorded sessions remember their `clock` period across service restarts and
+`/resume`. An enabled clock resumes with a fresh full countdown, so periodic
+work can continue overnight. `clock(null)` stays disabled after restart.

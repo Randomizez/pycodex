@@ -1,4 +1,5 @@
 import json
+import math
 import mmap
 import os
 import re
@@ -47,6 +48,7 @@ class SessionRolloutRecorder:
     def __init__(self, rollout_path: "Path") -> "None":
         self.rollout_path = rollout_path
         self._session_meta: "typing.Union[typing.Dict[str, object], None]" = None
+        self.tool_states = {}
 
     @classmethod
     def create(
@@ -58,6 +60,7 @@ class SessionRolloutRecorder:
         model_provider: "typing.Union[str, None]",
         base_instructions: "str",
         session_file_path: "typing.Union[str, Path, None]" = None,
+        tool_states: "typing.Union[typing.Dict[str, object], None]" = None,
     ) -> "SessionRolloutRecorder":
         path = (
             Path(session_file_path)
@@ -78,7 +81,9 @@ class SessionRolloutRecorder:
             "source": "cli",
             "model_provider": model_provider,
             "base_instructions": {"text": base_instructions},
+            "tool_states": tool_states or {},
         }
+        recorder.tool_states = dict(tool_states or {})
         return recorder
 
     @classmethod
@@ -95,8 +100,8 @@ class SessionRolloutRecorder:
     ) -> "None":
         self._append_records(self._history_records(items), initial_history)
 
-    @staticmethod
     def _history_records(
+        self,
         items: "typing.Iterable[ConversationItem]",
     ) -> "typing.Iterable[typing.Tuple[str, typing.Dict[str, object]]]":
         history = []
@@ -104,7 +109,9 @@ class SessionRolloutRecorder:
             history.append(item)
             if isinstance(item, ContextMessage) and item.role == "user":
                 # Preserve a fork's compact summary as context when replayed.
-                yield "compacted", _compacted_payload(history)
+                payload = _compacted_payload(history)
+                payload["tool_states"] = self.tool_states
+                yield "compacted", payload
                 continue
             serialized = item.serialize()
             if isinstance(serialized, dict):
@@ -123,10 +130,18 @@ class SessionRolloutRecorder:
         history: "typing.Iterable[ConversationItem]",
         initial_history: "typing.Iterable[ConversationItem]" = (),
     ) -> "None":
+        payload = _compacted_payload(history)
+        payload["tool_states"] = self.tool_states
         self._append_records(
-            [("compacted", _compacted_payload(history))],
+            [("compacted", payload)],
             initial_history,
         )
+
+    def append_tool_state(self, name, state, initial_history=()) -> "None":
+        self._append_records(
+            [("tool_state", {"name": name, "state": state})], initial_history
+        )
+        self.tool_states[name] = state
 
     def _append_records(
         self,
@@ -234,6 +249,8 @@ def load_resumed_session_path(
     history: "typing.List[ConversationItem]" = []
     saw_user_turn = False
     tool_names_by_call_id: "typing.Dict[str, str]" = {}
+    tool_states = {}
+    has_tool_states = False
 
     # A rollout is append-only, and a compacted entry replaces everything
     # before it for the next request.  Large tool outputs before the latest
@@ -247,6 +264,9 @@ def load_resumed_session_path(
         metadata = first_entry.get("payload")
         if first_entry.get("type") == "session_meta" and isinstance(metadata, dict):
             session_id = str(metadata.get("id", "")).strip() or session_id
+            if isinstance(metadata.get("tool_states"), dict):
+                tool_states.update(metadata["tool_states"])
+                has_tool_states = True
 
     for entry in _iter_rollout_entries(rollout_path, entry_start_offset):
         item_type = str(entry.get("type", "")).strip()
@@ -254,9 +274,21 @@ def load_resumed_session_path(
 
         if item_type == "session_meta" and isinstance(payload, dict):
             session_id = str(payload.get("id", "")).strip() or session_id
+            if isinstance(payload.get("tool_states"), dict):
+                tool_states.update(payload["tool_states"])
+                has_tool_states = True
+            continue
+
+        if item_type == "tool_state" and isinstance(payload, dict):
+            if isinstance(payload.get("name"), str) and isinstance(payload.get("state"), dict):
+                tool_states[payload["name"]] = payload["state"]
+                has_tool_states = True
             continue
 
         if item_type == "compacted" and isinstance(payload, dict):
+            if isinstance(payload.get("tool_states"), dict):
+                tool_states.update(payload["tool_states"])
+                has_tool_states = True
             replacement_history = payload.get("replacement_history")
             if isinstance(replacement_history, list):
                 history = _deserialize_compacted_history(
@@ -295,6 +327,9 @@ def load_resumed_session_path(
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
 
+    if not has_tool_states:
+        tool_states = _legacy_tool_states(rollout_path)
+
     history = _drop_unmatched_tool_calls(history)
     if not history:
         raise ValueError(f"No resumable history found in {rollout_path}")
@@ -309,7 +344,36 @@ def load_resumed_session_path(
         "history": tuple(history),
         "turns": tuple(turns),
         "rollout_path": rollout_path,
+        "tool_states": tool_states,
     }
+
+def _legacy_tool_states(rollout_path):
+    """Recover successful clock changes from older, possibly compacted rollouts."""
+    states = {}
+    pending_clock_calls = set()
+    for entry in _iter_rollout_entries(rollout_path):
+        payload = entry.get("payload")
+        if entry.get("type") != "response_item" or not isinstance(payload, dict):
+            continue
+        call_id = payload.get("call_id")
+        if payload.get("type") == "function_call" and payload.get("name") == "clock":
+            pending_clock_calls.add(call_id)
+        elif payload.get("type") == "function_call_output" and call_id in pending_clock_calls:
+            pending_clock_calls.discard(call_id)
+            output = payload.get("output")
+            try:
+                state = json.loads(output) if isinstance(output, str) else output
+                period = state["period_m"]
+                enabled = state["enabled"]
+            except (ValueError, TypeError, KeyError):
+                continue
+            valid_period = (
+                isinstance(period, (int, float)) and not isinstance(period, bool)
+                and math.isfinite(period) and period > 0
+            )
+            if (enabled is True and valid_period) or (enabled is False and period is None):
+                states["clock"] = {"enabled": enabled, "period_m": period}
+    return states
 
 
 def conversation_history_to_turns(
