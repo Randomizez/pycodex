@@ -733,9 +733,10 @@ class ResponsesModelClient:
             "include": ["reasoning.encrypted_content"],
             "prompt_cache_key": self._session_id,
         }
+        prefix_namespace = uuid.uuid5(uuid.NAMESPACE_OID, self._session_id)
+        prefix: "typing.List[typing.Dict[str, object]]" = []
         if use_responses_lite:
-            prefix_namespace = uuid.uuid5(uuid.NAMESPACE_OID, self._session_id)
-            prefix: "typing.List[typing.Dict[str, object]]" = [
+            prefix.append(
                 {
                     "type": "additional_tools",
                     "id": "at_"
@@ -750,25 +751,24 @@ class ResponsesModelClient:
                     "role": "developer",
                     "tools": tools,
                 }
-            ]
-            if prompt.base_instructions:
-                prefix.append(
-                    {
-                        "type": "message",
-                        "id": "msg_"
-                        + str(uuid.uuid5(prefix_namespace, prompt.base_instructions)),
-                        "role": "developer",
-                        "content": [
-                            {
-                                "type": "input_text",
-                                "text": prompt.base_instructions,
-                            }
-                        ],
-                    }
-                )
-            payload["input"] = prefix + input_items
-        else:
-            payload["instructions"] = prompt.base_instructions or ""
+            )
+        if prompt.base_instructions:
+            prefix.append(
+                {
+                    "type": "message",
+                    "id": "msg_"
+                    + str(uuid.uuid5(prefix_namespace, prompt.base_instructions)),
+                    "role": "developer",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": prompt.base_instructions,
+                        }
+                    ],
+                }
+            )
+        payload["input"] = prefix + input_items
+        if not use_responses_lite:
             payload["tools"] = tools
 
         if prompt.tools or use_responses_lite:
