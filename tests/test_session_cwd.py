@@ -35,7 +35,7 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         assert (await read.future)["cwd"] == str(tmp_path)
         change = await runtime.submit_input("/cd other project")
         assert (await change.future) == {"kind": "cwd", "cwd": str(destination)}
-        assert runtime.agent.context_manager._config.cwd == destination
+        assert runtime.agent.context_manager.config.cwd == destination
         assert runtime.agent.context_manager._workspace_metadata_turn_id is None
         for events in observers:
             assert events[-2].state["cwd"] == str(destination)

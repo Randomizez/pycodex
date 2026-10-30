@@ -30,6 +30,9 @@
   切换、turn cancellation 或固定 iteration cap。
 - `agent_id` 和 canonical `agent_path` 标识 Agent；resume 改变的是 rollout
   `session_id`。`ContextManager.agent_path` 由 Manager 在注册时设置。
+- Agent 通过 `Prompt.session_id` 传入请求身份，普通采样及所有压缩路径一致；
+  retry/fallback 继续使用同一身份。Context 的冻结配置通过 `config` 公开，
+  模型和 cwd 的运行时修改仍走维护缓存的操作接口。
 
 `x-codex-turn-metadata.workspaces` 按逻辑 turn 区分：首个 turn 的
 steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 session

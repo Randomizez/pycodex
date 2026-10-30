@@ -4,7 +4,7 @@ from typing import Awaitable, Callable, Iterable
 
 from pycodex import Agent, AgentRuntime, AgentsManager, ContextConfig
 from pycodex.events import AssistantDeltaEvent, ModelEvent, ToolCalledEvent
-from pycodex.model import NOOP_MODEL_STREAM_EVENT_HANDLER
+from pycodex.model import NOOP_MODEL_STREAM_EVENT_HANDLER, ModelRecordingMetadata
 from pycodex.protocol import AssistantMessage, ModelResponse, Prompt, ToolCall
 from pycodex.tools import get_tools
 from pycodex.utils import uuid7_string
@@ -31,6 +31,7 @@ class ScriptedModelClient:
         self.model = model
         self.reasoning_effort = None
         self.endpoint = "in-process"
+        self.recording_metadata = ModelRecordingMetadata("pycodex", None)
         self.prompts: "typing.List[Prompt]" = []
         self.call_count = 0
 
@@ -86,7 +87,7 @@ def make_agent(model_client, tool_registry, context_config, session_id=None, **o
 
 def make_runtime(agent):
     """Register a test Agent with custom tools in its own coordination tree."""
-    manager = AgentsManager(agent.model_client, agent.context_manager._config)
+    manager = AgentsManager(agent.model_client, agent.context_manager.config)
     runtime = AgentRuntime(agent, manager)
     manager._runtimes[agent.agent_id] = runtime
     agent.context_manager.agent_path = agent.agent_path

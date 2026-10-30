@@ -27,7 +27,7 @@ from .utils import uuid7_string
 from .utils.session_persist import rollout_path_for_session
 
 if TYPE_CHECKING:
-    from .model import ModelClient
+    from .model import ModelControl
     from .runtime import AgentRuntime
 
 
@@ -36,7 +36,7 @@ class AgentsManager:
 
     def __init__(
         self,
-        model_client: "ModelClient",
+        model_client: "ModelControl",
         context_config: "ContextConfig",
         toolset: "typing.Union[typing.Iterable[str], None]" = None,
         tools_factory=get_tools,
@@ -75,7 +75,7 @@ class AgentsManager:
                 openai_subagent="collab_spawn",
             )
             context_config = replace(
-                parent_agent.context_manager._config,
+                parent_agent.context_manager.config,
                 cwd=parent_agent.context_manager.cwd,
                 base_instructions=parent_agent.context_manager.resolve_base_instructions(),
             )

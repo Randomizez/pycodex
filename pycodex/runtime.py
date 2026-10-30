@@ -123,7 +123,7 @@ def _parse_input(text):
 
 
 class AgentRuntime:
-    """Frontend-independent session input, scheduling, state and events."""
+    """Session input and scheduling for an Agent whose client implements ModelControl."""
 
     def __init__(self, agent: "Agent", agents_manager: "AgentsManager") -> "None":
         self.agent = agent
@@ -136,7 +136,7 @@ class AgentRuntime:
         self.event_handler = BASE_EVENT_HANDLER
         self.agent.event_handler = self._handle_agent_event
         self.codex_home = (
-            agent.context_manager._config.codex_home or resolve_codex_home()
+            agent.context_manager.config.codex_home or resolve_codex_home()
         )
         self.title = ""
         self.command_handlers = {}
@@ -237,7 +237,7 @@ class AgentRuntime:
             "recorded_rollout_path": str(recorded_path) if recorded_path is not None else None,
             "model": "{0}:{1}".format(
                 self.agent.model_name,
-                getattr(self.agent.model_client, "reasoning_effort", None) or "default",
+                self.agent.model_client.reasoning_effort or "default",
             ),
             "history": conversation_history_to_turns(self.agent.history),
             "active_turn": (

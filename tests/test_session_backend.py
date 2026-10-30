@@ -412,7 +412,8 @@ async def test_removed_fork_command_preserves_identity_history_and_recording():
     assert "fork" not in queue.commands()
     assert queue.agent.session_id == old_id
     assert queue.agent.agent_id == agent_id
-    assert client._session_id == queue.agent.session_id
+    assert client._session_id == "provider-created-id"
+    assert client.prompts[-1].session_id == queue.agent.session_id
     assert queue.agent.history == old_history
     assert queue.agent._last_total_usage_tokens == 123
     assert queue.agent.session_file_path == old_path

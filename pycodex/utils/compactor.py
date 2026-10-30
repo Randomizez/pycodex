@@ -74,6 +74,7 @@ async def compact_history(
     prune_tool_results_on_context_error: "bool" = False,
     session_file: "typing.Union[str, None]" = None,
     turn_id: "typing.Union[str, None]" = None,
+    session_id: "typing.Union[str, None]" = None,
 ) -> "typing.Union[CompactResult, None]":
     from ..model import ContextLengthExceeded, ResponsesIncompleteError
 
@@ -93,6 +94,7 @@ async def compact_history(
             turn_id=turn_id,
             reasoning_effort=model_client.reasoning_effort,
             capture_context=False,
+            session_id=session_id,
         )
         try:
             response = await model_client.complete(

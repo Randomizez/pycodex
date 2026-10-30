@@ -226,6 +226,8 @@ owns their callbacks, restart, background state and cleanup. Tools provide their
 model-callable behavior. Pass `tools_factory(manager, environment, toolset)` to
 `AgentsManager` to construct custom tools for both root and child Agents; see the
 [resource contract](docs/RUNTIME.md#tools).
+Model clients expose explicit recording metadata; Agent supplies each request's
+session identity through `Prompt`, including compaction and resumed sessions.
 See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
 the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
 

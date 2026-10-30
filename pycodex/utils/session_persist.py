@@ -19,6 +19,7 @@ from ..protocol import (
     ToolCall,
     ToolResult,
     UserMessage,
+    qualified_tool_name,
 )
 from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
@@ -47,6 +48,10 @@ def resolve_codex_home(
 
 
 class SessionRolloutRecorder:
+    @property
+    def recorded_path(self):
+        return self.rollout_path if self._session_meta is None else None
+
     def __init__(self, rollout_path: "Path") -> "None":
         self.rollout_path = rollout_path
         self._session_meta: "typing.Union[typing.Dict[str, object], None]" = None
@@ -671,8 +676,7 @@ def _append_deserialized_response_item(
         if not call_id or not name:
             return
         namespace = payload.get("namespace")
-        if namespace not in (None, "", "functions"):
-            name = f"{namespace}.{name}"
+        name = qualified_tool_name(name, namespace)
         history.append(
             ToolCall(
                 call_id=call_id,
@@ -693,8 +697,7 @@ def _append_deserialized_response_item(
         if not call_id or not name:
             return
         namespace = payload.get("namespace")
-        if namespace not in (None, "", "functions"):
-            name = f"{namespace}.{name}"
+        name = qualified_tool_name(name, namespace)
         history.append(
             ToolCall(
                 call_id=call_id,

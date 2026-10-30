@@ -193,7 +193,7 @@ class ContextManager:
         self._base_instructions_override = _normalize_text(
             config.base_instructions_override
         )
-        self._config = config
+        self.config = config
         self._include_permissions_instructions = config.include_permissions_instructions
         self._include_skills_instructions = config.include_skills_instructions
         self._network_access = config.network_access
@@ -228,7 +228,7 @@ class ContextManager:
             and self._workspace_metadata_cache is not None
         ):
             metadata.update(self._workspace_metadata_cache)
-        metadata["sandbox"] = get_sandbox_tag(self._config.sandbox_mode)
+        metadata["sandbox"] = get_sandbox_tag(self.config.sandbox_mode)
         return metadata
 
     def build_prompt(
@@ -239,6 +239,7 @@ class ContextManager:
         turn_id: "typing.Union[str, None]" = None,
         reasoning_effort: "typing.Union[str, None]" = None,
         capture_context: "bool" = True,
+        session_id: "typing.Union[str, None]" = None,
     ) -> "Prompt":
         turn_metadata = self.get_turn_metadata(turn_id) if turn_id is not None else None
         multi_agent = self._build_multi_agent_context(tools, reasoning_effort)
@@ -286,6 +287,7 @@ class ContextManager:
             base_instructions=base_instructions,
             turn_id=turn_id,
             turn_metadata=turn_metadata,
+            session_id=session_id,
         )
 
     def _build_initial_context(self, multi_agent):
@@ -333,8 +335,8 @@ class ContextManager:
             multi_agent=multi_agent,
         )
         self._base_instructions_override = context.base_instructions
-        self._config = replace(
-            self._config, base_instructions_override=context.base_instructions,
+        self.config = replace(
+            self.config, base_instructions_override=context.base_instructions,
         )
         self._fork_local_context = self._build_initial_context(multi_agent)
         self._last_context = None
@@ -366,10 +368,10 @@ class ContextManager:
     def resolve_base_instructions(self) -> "str":
         if self._base_instructions_override is not None:
             return self._base_instructions_override
-        if self._config.base_instructions is not None:
-            return self._config.base_instructions
-        if self._config.model_instructions_file is not None:
-            return self._config.model_instructions_file.read_text(
+        if self.config.base_instructions is not None:
+            return self.config.base_instructions
+        if self.config.model_instructions_file is not None:
+            return self.config.model_instructions_file.read_text(
                 encoding="utf-8",
                 errors="replace",
             ).strip()
@@ -379,14 +381,14 @@ class ContextManager:
         return self._default_base_instructions
 
     def resolve_code_mode_only(self) -> "bool":
-        if self._config.code_mode_only is not None:
-            return self._config.code_mode_only
-        metadata = model_metadata(self._config.model)
+        if self.config.code_mode_only is not None:
+            return self.config.code_mode_only
+        metadata = model_metadata(self.config.model)
         return metadata is not None and metadata.get("tool_mode") == "code_mode_only"
 
     def resolve_model_max_context_window(self) -> "typing.Union[int, None]":
-        metadata = model_metadata(self._config.model)
-        context_window = self._config.model_context_window
+        metadata = model_metadata(self.config.model)
+        context_window = self.config.model_context_window
         if context_window is None and metadata is not None:
             context_window = _normalize_int(metadata.get("context_window"))
         return context_window
@@ -395,7 +397,7 @@ class ContextManager:
         context_window = self.resolve_model_max_context_window()
         if context_window is None:
             return None
-        metadata = model_metadata(self._config.model)
+        metadata = model_metadata(self.config.model)
         effective_percent = None
         if metadata is not None:
             effective_percent = _normalize_int(
@@ -406,7 +408,7 @@ class ContextManager:
         return context_window * max(effective_percent, 0) // 100
 
     def set_model(self, model: "str") -> "None":
-        self._config = replace(self._config, model=model)
+        self.config = replace(self.config, model=model)
 
     def set_cwd(self, cwd: "typing.Union[str, Path]") -> "None":
         path = Path(cwd).expanduser()
@@ -414,15 +416,15 @@ class ContextManager:
         if not path.is_dir():
             raise NotADirectoryError(str(path))
         self.cwd = path
-        self._config = replace(self._config, cwd=path)
+        self.config = replace(self.config, cwd=path)
         self._workspace_metadata_turn_id = None
         self._workspace_metadata_cache = None
 
     def resolve_auto_compact_token_limit(self) -> "typing.Union[int, None]":
-        if self._config.model_auto_compact_token_limit is not None:
-            return self._config.model_auto_compact_token_limit
+        if self.config.model_auto_compact_token_limit is not None:
+            return self.config.model_auto_compact_token_limit
 
-        model_slug = self._config.model
+        model_slug = self.config.model
         if model_slug is None:
             return None
         metadata = model_metadata(model_slug)
@@ -431,7 +433,7 @@ class ContextManager:
         return _normalize_int(metadata.get("auto_compact_token_limit"))
 
     def _resolve_model_instructions(self) -> "typing.Union[str, None]":
-        model_slug = self._config.model
+        model_slug = self.config.model
         if model_slug is None:
             return None
         metadata = model_metadata(model_slug)
@@ -445,7 +447,7 @@ class ContextManager:
             if isinstance(template, str):
                 personality_message = _resolve_personality_message(
                     variables,
-                    self._config.personality,
+                    self.config.personality,
                 )
                 return template.replace(PERSONALITY_PLACEHOLDER, personality_message)
 
@@ -456,8 +458,8 @@ class ContextManager:
 
     def _build_developer_message(self) -> "typing.Union[ContextMessage, None]":
         sections: "typing.List[str]" = []
-        if self._config.developer_instructions is not None:
-            sections.append(self._config.developer_instructions)
+        if self.config.developer_instructions is not None:
+            sections.append(self.config.developer_instructions)
         if self._include_skills_instructions:
             skills = self._build_skills_instructions()
             if skills is not None:
@@ -481,7 +483,7 @@ class ContextManager:
         )
 
     def _model_message(self, *keys):
-        metadata = model_metadata(self._config.model)
+        metadata = model_metadata(self.config.model)
         value = metadata.get("model_messages") if metadata is not None else None
         for key in keys:
             if value is None:
@@ -502,8 +504,8 @@ class ContextManager:
         root = self.agent_path == "/root"
         role = "root" if root else "subagent"
         configured = (
-            self._config.multi_agent_root_instructions
-            if root else self._config.multi_agent_subagent_instructions
+            self.config.multi_agent_root_instructions
+            if root else self.config.multi_agent_subagent_instructions
         )
         if configured is not None:
             role_text = configured
@@ -524,7 +526,7 @@ class ContextManager:
                     "up to {limit} agents can be active at once, including you."
                 ).format(
                     base=base, shared=defaults["shared"], wait=wait_guidance,
-                    limit=self._config.multi_agent_max_concurrency,
+                    limit=self.config.multi_agent_max_concurrency,
                 )
                 spawn = next(
                     (tool for tool in tools if tool.name == "spawn_agent"), None,
@@ -539,7 +541,7 @@ class ContextManager:
             ContextMessage(role="developer", text=role_text) if role_text else None
         )
 
-        hint = self._config.multi_agent_hint
+        hint = self.config.multi_agent_hint
         if hint is None:
             hint = self._model_message("multi_agent", "mode", "hint_text")
         if hint is None:
@@ -556,8 +558,8 @@ class ContextManager:
         return role_message, mode_message
 
     def _build_permissions_instructions(self) -> "typing.Union[str, None]":
-        sandbox_mode = self._config.sandbox_mode or "danger-full-access"
-        approval_policy = self._config.approval_policy or "never"
+        sandbox_mode = self.config.sandbox_mode or "danger-full-access"
+        approval_policy = self.config.approval_policy or "never"
         sandbox_prompt_name = sandbox_mode.replace("-", "_")
         sandbox_prompt_path = (
             PERMISSIONS_SANDBOX_PROMPTS_PATH / f"{sandbox_prompt_name}.md"
@@ -609,7 +611,7 @@ class ContextManager:
                 skill.path_to_skill_md.relative_to(skill.root).as_posix(),
             )
             lines.append(f"- {skill.name}: {skill.description} (file: {path_str})")
-        metadata = model_metadata(self._config.model)
+        metadata = model_metadata(self.config.model)
         if metadata is None or metadata.get("include_skills_usage_instructions", True):
             lines.append("### How to use skills")
             lines.extend(SKILLS_GUIDANCE.splitlines())
@@ -617,7 +619,7 @@ class ContextManager:
         return f"{SKILLS_OPEN_TAG}\n{body}\n{SKILLS_CLOSE_TAG}"
 
     def _discover_skills(self) -> "typing.List[SkillDescriptor]":
-        codex_home = self._config.codex_home
+        codex_home = self.config.codex_home
         if codex_home is None:
             return []
 
@@ -667,10 +669,10 @@ class ContextManager:
 
     def _merged_user_instructions(self) -> "typing.Union[str, None]":
         parts: "typing.List[str]" = []
-        if self._config.user_instructions is not None:
-            parts.append(self._config.user_instructions)
-        if self._config.codex_home_instructions is not None:
-            parts.append(self._config.codex_home_instructions)
+        if self.config.user_instructions is not None:
+            parts.append(self.config.user_instructions)
+        if self.config.codex_home_instructions is not None:
+            parts.append(self.config.codex_home_instructions)
 
         project_doc = self._read_project_docs()
         if project_doc is not None:
@@ -683,7 +685,7 @@ class ContextManager:
 
     def _read_project_docs(self) -> "typing.Union[str, None]":
         docs: "typing.List[str]" = []
-        remaining = self._config.project_doc_max_bytes
+        remaining = self.config.project_doc_max_bytes
         for path in self._discover_project_doc_paths():
             text = path.read_text(encoding="utf-8", errors="replace")
             if not text.strip():
@@ -744,7 +746,7 @@ class ContextManager:
             f"  <current_date>{self._current_date}</current_date>",
             f"  <timezone>{self._timezone_name}</timezone>",
         ]
-        sandbox_mode = self._config.sandbox_mode or "danger-full-access"
+        sandbox_mode = self.config.sandbox_mode or "danger-full-access"
         if sandbox_mode == "danger-full-access":
             permissions = (
                 '<permission_profile type="disabled"><file_system type="unrestricted" />'

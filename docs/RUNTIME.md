@@ -76,6 +76,8 @@ as well as configuration-file values. The Agent constructs its own
 caller's config. Context managers are never implicitly supplied or shared between
 Agents. Standalone callers use `ContextManager(config)` and load configuration
 through `ContextConfig.from_codex_config`.
+`ContextManager.config` exposes the frozen configuration for child construction;
+model and cwd changes still use the context operations that maintain its caches.
 
 Agent, runtime, tool-manager and workspace-manager construction does not require
 a current event loop. Async locks and conditions are created when their async
@@ -1611,15 +1613,25 @@ Construction and first-write requirements are in
 [Recording lifecycle](#recording-lifecycle); they also apply to child context
 inheritance and resume.
 
-`ModelClient` requires `model`, `reasoning_effort`, async `complete`, and
+`ModelClient` requires `model`, `reasoning_effort`, `recording_metadata`, async `complete`, and
 `with_overrides` for child construction. `Agent.model_name` reads `client.model`
 directly; test clients must supply the properties used by their integration.
+Recording metadata is `ModelRecordingMetadata(originator, provider_name)`;
+Agent does not inspect provider internals. Recorder's `recorded_path` reports
+whether its lazy initial write has completed.
 There is no missing-property fallback or second
 model-name field. `ModelResponse` checks its item
 types at construction instead of allowing the loop to silently discard invalid
-internal values. Clients used for interactive model controls additionally expose
-`ModelControl`. Switching through `Agent.set_model` updates both the client and
+internal values. Runtime/Manager clients implement `ModelControl`, which extends
+`ModelClient` with writable model/effort, endpoint and model listing.
+Switching through `Agent.set_model` updates both the client and
 context; `ResponsesModelClient.model` uses the same provider config as metadata.
+
+Agent passes `Prompt.session_id` explicitly for sampling and all compaction
+requests. Headers, cache keys, stable prefix IDs and request diagnostics use that
+identity through retry, fallback and resume. An omitted Prompt session ID uses
+the client's constructor default for standalone requests; Agent never rewrites
+that client field. Tool serialization and response-item decoding use pure codecs.
 
 The CLI startup header reads the client's model, effective reasoning effort and
 display-safe `endpoint` directly. `endpoint` is the active API base URL with

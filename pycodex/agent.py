@@ -30,7 +30,6 @@ from .events import (
     TurnStartedEvent,
 )
 from .model import (
-    DEFAULT_ORIGINATOR,
     ContextLengthExceeded,
     ModelClient,
     ModelControl,
@@ -136,9 +135,7 @@ class Agent:
     @property
     def recorded_session_file_path(self) -> "typing.Union[Path, None]":
         recorder = self._rollout_recorder
-        if recorder is None or recorder._session_meta is not None:
-            return None
-        return recorder.rollout_path
+        return recorder.recorded_path if recorder is not None else None
 
     @property
     def is_running(self) -> "bool":
@@ -228,18 +225,14 @@ class Agent:
             self.tool_registry.runtime_environment.validate_state(environment_state)
         else:
             recorder = SessionRolloutRecorder.create(
-                self.context_manager._config.codex_home or resolve_codex_home(),
+                self.context_manager.config.codex_home or resolve_codex_home(),
                 session_id,
                 self.context_manager.cwd,
-                getattr(self.model_client, "_originator", DEFAULT_ORIGINATOR),
-                getattr(
-                    getattr(self.model_client, "_config", None), "provider_name", None
-                ),
+                self.model_client.recording_metadata.originator,
+                self.model_client.recording_metadata.provider_name,
                 self.context_manager.resolve_base_instructions(),
                 session_file_path,
             )
-        if hasattr(self.model_client, "_session_id"):
-            self.model_client._session_id = session_id
         self.session_id = session_id
         self._rollout_recorder = recorder
         if resume:
@@ -520,6 +513,7 @@ class Agent:
             self._parallel_tool_calls,
             turn_id=turn_id,
             reasoning_effort=self.model_client.reasoning_effort,
+            session_id=self.session_id,
         )
         self._emit(
             ModelCalledEvent(turn_id, iteration, len(prompt.input), len(prompt.tools))
@@ -592,6 +586,7 @@ class Agent:
                 prune_tool_results_on_context_error,
                 str(recorder.rollout_path) if recorder is not None else None,
                 turn_id,
+                self.session_id,
             )
             if recorder is not None:
                 recorder.append_compacted_history(compact_result.history, self._history)

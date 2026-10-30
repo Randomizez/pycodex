@@ -405,6 +405,7 @@ class Prompt:
     base_instructions: "typing.Union[str, None]" = None
     turn_id: "typing.Union[str, None]" = None
     turn_metadata: "typing.Union[JSONDict, None]" = None
+    session_id: "typing.Union[str, None]" = None
 
 
 @dataclass(

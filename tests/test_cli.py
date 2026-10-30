@@ -147,7 +147,7 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     assert client._config.base_url == server.base_url
     assert client.endpoint == server.base_url
     assert client._config.responses_lite_override is False
-    assert client._originator == "codex-tui"
+    assert client.recording_metadata.originator == "codex-tui"
     assert client._config.api_key_env == "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
     if mode == "vllm":
         assert probes == ["http://127.0.0.1:18000/v1"]

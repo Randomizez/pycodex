@@ -424,8 +424,8 @@ def test_agent_builds_independent_contexts_from_explicit_config(tmp_path):
     assert first.context_manager is not second.context_manager
     assert first.context_manager.cwd == tmp_path
     assert first.context_manager.resolve_base_instructions() == "session rules"
-    assert first.context_manager._config.model == "first"
-    assert second.context_manager._config.model == "second"
+    assert first.context_manager.config.model == "first"
+    assert second.context_manager.config.model == "second"
     assert config.model == "config-model"
     prompt = first.context_manager.build_prompt([], [], True)
     assert any("workspace context" in str(item.content_items) for item in prompt.input)
@@ -635,7 +635,7 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
     path = agent.session_file_path
     session_id = agent.session_id
     assert UUID(agent.session_id).version == 7
-    assert client._session_id == agent.session_id
+    assert client._session_id == "provider-created-id"
     assert home / "sessions" in path.parents
     assert not path.exists()
     assert not path.parent.exists()
@@ -647,6 +647,7 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
     first_bytes = path.read_bytes()
     await agent.run_turn(["second prompt"])
 
+    assert all(prompt.session_id == session_id for prompt in client.prompts)
     assert agent.session_id == session_id
     assert agent.session_file_path == path
     assert path.read_bytes().startswith(first_bytes)
@@ -976,7 +977,7 @@ def test_resume_without_path_keeps_existing_session_and_history(tmp_path, persis
     assert agent.accepts_input
     assert not agent.is_shutdown
     assert agent.session_id == session_id
-    assert client._session_id == session_id
+    assert client._session_id == "provider-created-id"
     assert agent.session_file_path == path
     assert agent.history == history
     assert agent._rollout_recorder is recorder
@@ -1026,10 +1027,11 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
     assert agent._last_total_usage_tokens is None
     assert source.session_file_path.read_bytes() == restored_bytes
     if session_aware:
-        assert client._session_id == "restored-session"
+        assert client._session_id == "original-session"
     else:
         assert not hasattr(client, "_session_id")
     result = await agent.run_turn(["continue"])
+    assert client.prompts[-1].session_id == "restored-session"
     assert result.output_text == "continued"
     assert not original_path.exists()
     assert source.session_file_path.read_bytes().startswith(restored_bytes)
@@ -1324,8 +1326,8 @@ def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
     assert first.context_manager is not second.context_manager
     assert first.context_manager._extra_contextual_user_messages == ("shared board",)
     assert second.context_manager._extra_contextual_user_messages == ("shared board",)
-    assert first.context_manager._config.model == first.model_name == "step-3.6"
-    assert second.context_manager._config.model == second.model_name == "gpt-5.6"
+    assert first.context_manager.config.model == first.model_name == "step-3.6"
+    assert second.context_manager.config.model == second.model_name == "gpt-5.6"
     assert first.context_manager.cwd == tmp_path
     assert second.context_manager.cwd == child_dir
     first.set_cwd(child_dir)
