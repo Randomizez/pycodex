@@ -1,8 +1,7 @@
-import atexit
 import os
 import sys
 import typing
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .model import (
@@ -12,8 +11,21 @@ from .model import (
 )
 from .utils import get_debug_dir, load_codex_dotenv
 
+if typing.TYPE_CHECKING:
+    from responses_server import ManagedResponseServer
+
 LOCAL_RESPONSES_SERVER_API_KEY_ENV = "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
 CLI_ORIGINATOR = "codex-tui"
+
+
+@dataclass(frozen=True)
+class ModelBootstrapResult:
+    client: "ResponsesModelClient"
+    owned_server: "typing.Union[ManagedResponseServer, None]" = None
+
+    def close(self) -> "None":
+        if self.owned_server is not None:
+            self.owned_server.stop()
 
 
 def launch_chat_completion_compat_server(*args, **kwargs):
@@ -84,7 +96,7 @@ def build_model(
     use_chat_completion: "typing.Union[bool, None]" = None,
     use_messages: "bool" = False,
     use_default_profile: "bool" = True,
-):
+) -> "ModelBootstrapResult":
     load_codex_dotenv(config_path)
     provider_config = ResponsesProviderConfig.from_codex_config(
         config_path,
@@ -112,6 +124,7 @@ def build_model(
                 timeout_seconds,
             ),
         )
+    managed_server = None
     url, key_env = provider_config.base_url, provider_config.api_key_env
     if managed_responses_base_url is not None:
         url, key_env = (
@@ -132,7 +145,6 @@ def build_model(
                 model_provider=provider_config.provider_name,
                 outcomming_api=("messages" if use_messages else "chat_completions"),
             )
-        atexit.register(managed_server.stop)
         url, key_env = (
             managed_server.base_url,
             LOCAL_RESPONSES_SERVER_API_KEY_ENV,
@@ -149,8 +161,12 @@ def build_model(
             else provider_config.responses_lite_override
         ),
     )
-    return ResponsesModelClient(
-        provider_config,
-        timeout_seconds,
-        originator=CLI_ORIGINATOR,
-    )
+    try:
+        client = ResponsesModelClient(
+            provider_config, timeout_seconds, originator=CLI_ORIGINATOR,
+        )
+    except BaseException:
+        if managed_server is not None:
+            managed_server.stop()
+        raise
+    return ModelBootstrapResult(client, managed_server)

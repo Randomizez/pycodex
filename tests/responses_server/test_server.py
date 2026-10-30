@@ -11,7 +11,8 @@ import pytest
 import requests
 from starlette.testclient import TestClient
 
-from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
+from responses_server import CompatServerConfig, ManagedResponseServer
+from responses_server.request_translation import build_outcomming_request
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
@@ -500,7 +501,6 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
 
 
 def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> "None":
-    router = StreamRouter(CompatServerConfig(model_provider="vllm"))
     base_request = {
         "model": "gpt-5.4",
         "input": [
@@ -516,12 +516,12 @@ def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> "Non
     for effort in ("none", "low", "medium", "high"):
         request = dict(base_request)
         request["reasoning"] = {"effort": effort}
-        outgoing = router.build_outcomming_request(request)
+        outgoing = build_outcomming_request(request)
         assert outgoing["chat_template_kwargs"] == {
             "reasoning_effort": effort,
         }
 
-    without_reasoning = router.build_outcomming_request(base_request)
+    without_reasoning = build_outcomming_request(base_request)
     assert "chat_template_kwargs" not in without_reasoning
 
 
@@ -2705,7 +2705,7 @@ def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
         raise TimeoutError("read operation timed out")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_timeout,
     )
     app = ManagedResponseServer.build_app(
@@ -2748,7 +2748,7 @@ def test_responses_server_turns_initial_downstream_disconnect_into_response_fail
     monkeypatch.setenv("PYCODEX_DUMP", str(tmp_path / "trajectory"))
     clock = [100.0]
     monkeypatch.setattr(
-        "responses_server.stream_router.time",
+        "responses_server.transport.time",
         SimpleNamespace(monotonic=lambda: clock[0]),
     )
 
@@ -2757,7 +2757,7 @@ def test_responses_server_turns_initial_downstream_disconnect_into_response_fail
         raise error_class("connection closed before response")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_disconnect,
     )
     app = ManagedResponseServer.build_app(
@@ -2798,7 +2798,7 @@ def test_responses_server_includes_stream_failure_timing(
 ) -> "None":
     clock = [100.0]
     monkeypatch.setattr(
-        "responses_server.stream_router.time",
+        "responses_server.transport.time",
         SimpleNamespace(monotonic=lambda: clock[0]),
     )
 
@@ -2835,7 +2835,7 @@ def test_responses_server_includes_stream_failure_timing(
         return StreamResponse()
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen", open_response
+        "responses_server.transport.urllib.request.urlopen", open_response
     )
     app = ManagedResponseServer.build_app(
         CompatServerConfig(
@@ -2873,7 +2873,7 @@ def test_responses_server_includes_downstream_http_error_status(monkeypatch) -> 
         )
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen", open_response
+        "responses_server.transport.urllib.request.urlopen", open_response
     )
     app = ManagedResponseServer.build_app(
         CompatServerConfig(outcomming_base_url="https://example.invalid/v1")
@@ -2898,7 +2898,7 @@ def test_responses_server_turns_initial_models_disconnect_into_bad_gateway(
         raise http.client.RemoteDisconnected("connection closed before response")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_disconnect,
     )
     app = ManagedResponseServer.build_app(

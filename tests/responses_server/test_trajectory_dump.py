@@ -4,7 +4,7 @@ import urllib.error
 import pytest
 
 from responses_server.trajectory_dump import TrajectoryDumpWriter
-from responses_server.stream_router import OutcommingChatError
+from responses_server.transport import OutcommingChatError
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "tool_calls", "length"])

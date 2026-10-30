@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import asyncio
 import gzip
 import hashlib
@@ -2419,7 +2420,7 @@ def _build_workspace_entry(
     profiles = list_codex_profiles(args.config)
 
     def build_session(profile) -> "WorkspaceInteractiveSession":
-        model = build_model(
+        bootstrap = build_model(
             config_path=args.config,
             profile=profile,
             timeout_seconds=args.timeout_seconds,
@@ -2428,6 +2429,8 @@ def _build_workspace_entry(
             use_messages=args.use_messages,
             use_default_profile=False,
         )
+        if bootstrap.owned_server is not None:
+            atexit.register(bootstrap.owned_server.stop)
         context_config = replace(
             ContextConfig.from_codex_config(
                 args.config, profile, use_default_profile=False,
@@ -2441,7 +2444,7 @@ def _build_workspace_entry(
             cwd=definition.work_dir,
         )
         runtime = AgentsManager(
-            model, context_config, args.toolset,
+            bootstrap.client, context_config, args.toolset,
         ).create_root_runtime()
         register_feishu_commands(runtime)
         return WorkspaceInteractiveSession(

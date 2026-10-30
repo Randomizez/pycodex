@@ -182,14 +182,19 @@ workspace backend, including on Remote SSH hosts.
 Use the standard model and tool setup from Python:
 
 ```python
+import atexit
+
 from pycodex import AgentsManager, ContextConfig
 from pycodex.bootstrap import build_model
 from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.utils.async_bridge import run_async
 
 async def main():
+    bootstrap = build_model()
+    if bootstrap.owned_server is not None:
+        atexit.register(bootstrap.owned_server.stop)
     runtime = AgentsManager(
-        build_model(), ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
+        bootstrap.client, ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
     ).create_root_runtime()
     await runtime.start()
     try:
@@ -200,6 +205,10 @@ async def main():
 
 run_async(main())
 ```
+
+`build_model` returns `ModelBootstrapResult(client, owned_server)`. The caller owns
+any locally started compatibility server; `close()` stops only that server.
+CLI and workspace entry points retain process-exit cleanup for these services.
 
 For custom integrations, `Agent` requires a model client, `ToolRegistry`,
 `ContextConfig` and `session_id`. `await agent.run_turn([...])` runs an asynchronous

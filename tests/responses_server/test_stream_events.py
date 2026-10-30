@@ -6,7 +6,8 @@ from starlette.testclient import TestClient
 
 from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
 from responses_server.session_store import StoredResponse
-from responses_server.stream_router import OutcommingChatError, ToolNameMap
+from responses_server.request_translation import ToolNameMap, build_outcomming_request
+from responses_server.transport import OutcommingChatError
 from tests.responses_server.fake_chat_completions_server import (
     CaptureStore,
     build_messages_server,
@@ -16,13 +17,12 @@ from tests.responses_server.fake_chat_completions_server import (
 )
 
 
-class ScriptedRouter(StreamRouter):
+class ScriptedTransport:
     def __init__(self, streams):
-        super().__init__(CompatServerConfig())
         self.streams = iter(streams)
         self.requests = []
 
-    def open_outcomming_stream(self, request):
+    def open_stream(self, request):
         self.requests.append(deepcopy(request))
         return iter(next(self.streams))
 
@@ -40,12 +40,12 @@ def _call(index, name, arguments):
     }
 
 
-def _stream(router, tools=None):
+def _stream(transport, tools=None):
     names = ToolNameMap()
-    request = router.build_outcomming_request({
+    request = build_outcomming_request({
         "model": "test", "input": [], "tools": tools or [],
     }, names)
-    return router.route_stream(StoredResponse("resp_test", None, "test", 0), request, names)
+    return StreamRouter(transport).route_stream(StoredResponse("resp_test", None, "test", 0), request, names)
 
 
 def _check_lifecycle(events, allow_abandoned=False):
@@ -114,7 +114,7 @@ def _check_lifecycle(events, allow_abandoned=False):
 
 
 def test_stream_preserves_segments_and_namespaced_tool_lifecycles():
-    router = ScriptedRouter([[
+    transport = ScriptedTransport([[
         _chunk(reasoning="First ", reasoning_content="First "),
         _chunk(reasoning_content="thought", content="First answer"),
         _chunk(reasoning="Second thought"),
@@ -132,7 +132,7 @@ def test_stream_preserves_segments_and_namespaced_tool_lifecycles():
             {"type": "custom", "name": "apply_patch"},
         ]},
     ]
-    events = [payload for _, payload in _stream(router, tools)]
+    events = [payload for _, payload in _stream(transport, tools)]
     items = _check_lifecycle(events)
     assert [item["type"] for item in items] == [
         "reasoning", "message", "reasoning", "message", "function_call", "custom_tool_call",
@@ -156,9 +156,9 @@ def test_deltas_arrive_before_reading_the_rest_of_the_backend_stream():
         consumed.append("read third chunk")
         yield _chunk(content="!")
 
-    router = ScriptedRouter([chunks()])
+    transport = ScriptedTransport([chunks()])
     events = []
-    for _, event in _stream(router):
+    for _, event in _stream(transport):
         events.append(event)
         if event["type"] == "response.reasoning_text.delta":
             assert consumed == []
@@ -168,45 +168,45 @@ def test_deltas_arrive_before_reading_the_rest_of_the_backend_stream():
 
 
 def test_mock_search_followup_finishes_old_items_before_new_deltas():
-    router = ScriptedRouter([
+    transport = ScriptedTransport([
         [
             _chunk(reasoning="Need search", content="Searching"),
             _chunk(tool_calls=[_call(0, "web_search", '{"query":"example"}')]),
         ],
         [_chunk(reasoning="Found it", content="Answer")],
     ])
-    events = [payload for _, payload in _stream(router, [{"type": "web_search"}])]
+    events = [payload for _, payload in _stream(transport, [{"type": "web_search"}])]
     items = _check_lifecycle(events)
     assert [item["type"] for item in items] == [
         "reasoning", "message", "web_search_call", "reasoning", "message",
     ]
-    assert len(router.requests) == 2
-    assert router.requests[1]["messages"][-1]["role"] == "tool"
+    assert len(transport.requests) == 2
+    assert transport.requests[1]["messages"][-1]["role"] == "tool"
 
 
 @pytest.mark.parametrize("retry_reasoning", ["", "successful thought"])
 def test_reasoning_retry_discards_unfinished_item_and_uses_fresh_identity(retry_reasoning):
-    router = ScriptedRouter([
+    transport = ScriptedTransport([
         [_chunk(reasoning="discard this")],
         [_chunk(reasoning=retry_reasoning, content="answer")],
     ])
-    events = [payload for _, payload in _stream(router)]
+    events = [payload for _, payload in _stream(transport)]
     items = _check_lifecycle(events, allow_abandoned=True)
     abandoned = next(event["item"] for event in events if event["type"] == "response.output_item.added")
     assert abandoned["id"] not in [item["id"] for item in items]
     assert all("discard this" not in json.dumps(item) for item in items)
-    assert len(router.requests) == 2
-    assert router.requests[0] == router.requests[1]
+    assert len(transport.requests) == 2
+    assert transport.requests[0] == transport.requests[1]
 
 
 def test_invalid_parallel_call_never_finishes_any_tool():
-    router = ScriptedRouter([[
+    transport = ScriptedTransport([[
         _chunk(reasoning="thinking", content="calling tools"),
         _chunk(tool_calls=[_call(0, "one", "{}"), _call(1, "two", '{"invalid":')]),
     ]])
     events = []
     with pytest.raises(OutcommingChatError, match="invalid JSON"):
-        for _, event in _stream(router):
+        for _, event in _stream(transport):
             events.append(event)
     assert not any(
         event.get("item", {}).get("type") == "function_call" for event in events

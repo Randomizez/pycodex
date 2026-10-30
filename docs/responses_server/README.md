@@ -127,12 +127,17 @@ compat 生成的 function-call output item 显式带
 当前职责拆分：
 
 - `responses_server/app.py`：Starlette app 和 CLI 入口
-- `responses_server/server.py`：`ResponseServer`，负责持有 `SessionStore` 和 `StreamRouter`
-- `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming request 和流路由；对 `model_provider = "vllm"` 额外适配 chat-level reasoning
+- `responses_server/server.py`：HTTP app 的业务入口 `ResponseServer`；`prepare_response` 校验并翻译一次，`start_response_stream` 执行已准备的请求
+- `responses_server/request_translation.py`：纯请求翻译函数和单次请求的 `ToolNameMap`；现有所有 provider 均保留 reasoning 和 stream usage
+- `responses_server/transport.py`：`OutcommingTransport`，负责下游 HTTP、SSE、messages 边界适配和连接诊断
+- `responses_server/stream_router.py`：`StreamRouter(transport)`，负责流编排、reasoning-only 重试和 mock tool follow-up
 - `responses_server/stream_events.py`：单次响应的条目 ID、增量、完成事件及最终 output
 - `responses_server/payload_processors.py`：按 `CompatServerConfig.model_provider` 选择 provider-specific payload `post_process`
 - `responses_server/tools/`：provider 侧工具适配层；当前放 mock `web_search` 和 custom-tool function wrapper
-- `responses_server/session_store.py`：最小隐藏状态存储
+- `responses_server/session_store.py`：响应元数据存储，继续保留已分配的响应和 `get_response` 检索
+
+准备阶段不创建响应记录，也不启动下游请求；不支持的特性仍在 SSE 开始前
+返回 HTTP 501。provider post-process、dump 设置和响应 ID 分配在执行阶段发生。
 
 ## 运行方式
 

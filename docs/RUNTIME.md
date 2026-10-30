@@ -126,7 +126,13 @@ CLI / Web / Feishu -> AgentRuntime -> Agent
 VS Code -> workspace_server HTTP -> AgentRuntime
 ```
 
-`pycodex.bootstrap` builds the model client. `pycodex.tools.get_tools` constructs
+`pycodex.bootstrap.build_model` returns `ModelBootstrapResult(client, owned_server)`.
+Callers pass `client` to the runtime tree and own the optional server handle;
+`close()` stops only a server created by that build, never an external endpoint.
+CLI and workspace entry points register the owned server's stop at process exit,
+preserving its lifetime across runtime closure. A failed client construction
+releases a server whose ownership could not be returned.
+`pycodex.tools.get_tools` constructs
 a registry with an explicit manager and per-Agent environment.
 `AgentsManager(model_client, context_config, toolset)` constructs and registers
 the root through `create_root_runtime()` and all descendants through the same

@@ -19,7 +19,7 @@ from pycodex import (
     ToolRegistry,
     ToolResult,
 )
-from pycodex.bootstrap import build_model
+from pycodex.bootstrap import ModelBootstrapResult, build_model
 from pycodex.multi_agents import AgentsManager
 from pycodex.cli import (
     CliSessionView,
@@ -143,7 +143,8 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
         options["vllm_endpoint"] = "http://127.0.0.1:18000"
     else:
         options["managed_responses_base_url"] = server.base_url
-    client = build_model(str(config_path), timeout_seconds=17, **options)
+    bootstrap = build_model(str(config_path), timeout_seconds=17, **options)
+    client = bootstrap.client
     assert client._config.base_url == server.base_url
     assert client.endpoint == server.base_url
     assert client._config.responses_lite_override is False
@@ -206,7 +207,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
     config_path, monkeypatch, capsys, json_mode
 ):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: client)
+    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(
         ["--config", str(config_path)] + (["--json"] if json_mode else []) + ["hello"],
     )
@@ -222,7 +223,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
 @pytest.mark.asyncio
 async def test_cli_exit_code_and_command_dispatch(config_path, monkeypatch, capsys):
     client = ScriptedModelClient([])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: client)
+    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(["--config", str(config_path), "/help"])
     assert await run_cli(args) == 0
     assert "/resume" in capsys.readouterr().out
@@ -411,7 +412,7 @@ def test_cli_input_exit_stops_turn_and_discards_queue_without_cancelling_calls(t
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
         from pycodex import (
-            Agent, AgentRuntime, AssistantMessage, BaseTool, ContextConfig,
+            Agent, AgentRuntime, AssistantMessage, ClockManager, ContextConfig,
             ModelResponse, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
@@ -425,16 +426,10 @@ def test_cli_input_exit_stops_turn_and_discards_queue_without_cancelling_calls(t
             release = asyncio.Event()
             cleaned = []
 
-            class CleanupTool(BaseTool):
-                name = "cleanup"
-                description = "Records final cleanup."
-                exec_only = False
-
-                async def run(self, context, args):
-                    return None
-
+            class CleanupResource(ClockManager):
                 def shutdown(self):
                     cleaned.append(True)
+                    super().shutdown()
 
             async def respond(prompt, call_count):
                 started.set()
@@ -443,7 +438,7 @@ def test_cli_input_exit_stops_turn_and_discards_queue_without_cancelling_calls(t
                 return ModelResponse([AssistantMessage("finished")])
 
             tools = ToolRegistry()
-            tools.register(CleanupTool())
+            tools.runtime_environment.register_resource("cleanup", CleanupResource())
             client = ScriptedModelClient(response_factory=respond)
             runtime = make_runtime(make_agent(client, tools, ContextConfig()))
             view = CliSessionView()

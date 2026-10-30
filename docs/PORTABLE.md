@@ -24,6 +24,10 @@ pycodex --put @127.0.0.1:5577
 
 ## Transfer contract
 
+Wire constants, Base58 encoding and content object IDs live in
+`pycodex.portable.protocol`, shared by client and server. The server does not
+import the client's private implementation.
+
 | 请求 | 行为 |
 | --- | --- |
 | `GET /healthz` | 上传前检查服务可达，成功后才扫描和压缩目录 |

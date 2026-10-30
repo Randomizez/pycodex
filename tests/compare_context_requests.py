@@ -1,6 +1,7 @@
 """Compare real Codex requests with the production pycodex runtime, offline."""
 
 import argparse
+import atexit
 import asyncio
 import json
 import os
@@ -186,7 +187,10 @@ def run_codex(workspace, capture_root, environment, timeout, resume, codex_binar
 async def run_pycodex(config, workspace, resume):
     def new_runtime():
         context = replace(ContextConfig.from_codex_config(config), cwd=workspace)
-        return AgentsManager(build_model(str(config)), context).create_root_runtime()
+        bootstrap = build_model(str(config))
+        if bootstrap.owned_server is not None:
+            atexit.register(bootstrap.owned_server.stop)
+        return AgentsManager(bootstrap.client, context).create_root_runtime()
 
     runtime = new_runtime()
     await runtime.start(str(config))

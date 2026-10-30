@@ -13,6 +13,7 @@ from PIL import Image
 from starlette.testclient import TestClient
 
 import workspace_server.app as workspace_app
+from pycodex.bootstrap import ModelBootstrapResult
 from pycodex import AssistantMessage, ModelResponse
 from tests.fakes import ScriptedModelClient, make_tools
 from test_workspace_server import make_session, wait_snapshot
@@ -960,7 +961,7 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
     (target / "A.py").write_text("source body\n", encoding="utf-8")
     reply = "[Source](A.py:1)"
     model = ScriptedModelClient([ModelResponse([AssistantMessage(reply)])])
-    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: model)
+    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: ModelBootstrapResult(model))
     args = build_parser().parse_args(["--config", str(config), "--toolset"] + toolset)
     entry = _build_workspace_entry(
         WorkspaceDefinition("first", tmp_path / "board", tmp_path), args

@@ -16,8 +16,9 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
 from .config import CompatServerConfig
-from .server import ResponseServer
-from .stream_router import OutcommingChatError, UnsupportedIncommingFeature
+from .request_translation import UnsupportedIncommingFeature
+from .server import PreparedResponse, ResponseServer
+from .transport import OutcommingChatError
 
 
 def _run_uvicorn_server(server) -> "None":
@@ -40,12 +41,12 @@ def _format_sse_event(
 
 def _stream_events(
     response_server: "ResponseServer",
-    request_body: "typing.Dict[str, object]",
+    prepared: "PreparedResponse",
     request_headers: "typing.Dict[str, str]",
 ) -> "Iterator[bytes]":
     try:
         event_iter = response_server.start_response_stream(
-            request_body, request_headers
+            prepared, request_headers
         )
         for event_name, payload in event_iter:
             yield _format_sse_event(event_name, payload)
@@ -159,7 +160,7 @@ class ManagedResponseServer:
                 str(key).lower(): str(value) for key, value in request.headers.items()
             }
             try:
-                response_server.stream_router.validate_incomming_request(request_body)
+                prepared = response_server.prepare_response(request_body)
             except UnsupportedIncommingFeature as exc:
                 return JSONResponse(
                     {"error": {"message": str(exc)}},
@@ -167,7 +168,7 @@ class ManagedResponseServer:
                 )
 
             return StreamingResponse(
-                _stream_events(response_server, request_body, request_headers),
+                _stream_events(response_server, prepared, request_headers),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",

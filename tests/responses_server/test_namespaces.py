@@ -4,7 +4,8 @@ import json
 import pytest
 from starlette.testclient import TestClient
 
-from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
+from responses_server import CompatServerConfig, ManagedResponseServer
+from responses_server.request_translation import build_outcomming_request
 from responses_server.tools.custom_adapter import APPLY_PATCH_CHAT_DESCRIPTION
 from tests.responses_server.fake_chat_completions_server import (
     CaptureStore,
@@ -287,6 +288,6 @@ def test_namespace_definition_groups_merge_without_mutating_request():
         _namespace("a", [_function("two")]),
     ]}
     original = copy.deepcopy(request)
-    outgoing = StreamRouter(CompatServerConfig()).build_outcomming_request(request)
+    outgoing = build_outcomming_request(request)
     assert [tool["name"] for tool in outgoing["tools"]] == ["a__one", "a__two"]
     assert request == original

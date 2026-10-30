@@ -15,7 +15,7 @@ from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect, WebSocketState
-from pycodex.portable.client import _base58_encode
+from pycodex.portable.protocol import base58_encode
 from pycodex.utils.session_persist import resolve_codex_home
 from workspace_server.app import (
     _auth_cookie_matches,
@@ -52,7 +52,7 @@ def load_registration_key(path):
     except FileExistsError:
         value = path.read_bytes().strip()
     else:
-        value = _base58_encode(os.urandom(16)).encode("ascii")
+        value = base58_encode(os.urandom(16)).encode("ascii")
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(value + b"\n")
     if not re.fullmatch(b"[1-9A-HJ-NP-Za-km-z]{1,22}", value):
@@ -162,7 +162,7 @@ class Router:
         self.api_url = normalize_api_url(api_url) if api_url is not None else None
         self.api_port = api_port
         self.registration_key = (
-            _base58_encode(os.urandom(16))
+            base58_encode(os.urandom(16))
             if registration_key is None
             else registration_key
         )

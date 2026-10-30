@@ -14,17 +14,20 @@ import requests
 
 from ..utils.crypto import aes_gcm_decrypt, aes_gcm_encrypt
 from ..utils.codex_config import list_codex_profiles, read_codex_config
+from .protocol import (
+    DEFAULT_STORAGE_SERVER,
+    ENCRYPTED_BUNDLE_MAGIC,
+    HEALTHCHECK_PATH,
+    NONCE_LENGTH,
+    STORAGE_API_PREFIX,
+    base58_encode,
+    call_id_from_payload,
+)
 
-DEFAULT_STORAGE_SERVER = "127.0.0.1:5577"
 STORAGE_SERVER_ENV = "PYCODEX_STORAGE_SERVER"
 STORAGE_ROOT_ENV = "PYCODEX_STORAGE_ROOT"
 STORAGE_CACHE_DIRNAME = ".pycodex-storage"
 DEFAULT_ENTRY_CONFIG = "config.toml"
-STORAGE_API_PREFIX = "/v1/storage"
-HEALTHCHECK_PATH = "/healthz"
-ENCRYPTED_BUNDLE_MAGIC = b"PCX1"
-NONCE_LENGTH = 12
-TOKEN_BASE58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 ALLOWED_TOP_LEVEL_FILES = (
     DEFAULT_ENTRY_CONFIG,
     ".env",
@@ -53,10 +56,10 @@ def upload_codex_home(
     emit(f"[put] checking server: {server_address}")
     _check_storage_server(server_address, base_url)
     bundle_bytes = _build_bundle_bytes(resolved_source_dir, emit)
-    secret = _base58_encode(os.urandom(16))
+    secret = base58_encode(os.urandom(16))
     encrypted_bundle = _encrypt_bundle(bundle_bytes, secret)
     sha256 = hashlib.sha256(encrypted_bundle).hexdigest()
-    call_id = _call_id_from_payload(encrypted_bundle)
+    call_id = call_id_from_payload(encrypted_bundle)
     call_spec = f"{secret}-{call_id}@{server_address}"
     emit(f"[put] bundle: {len(bundle_bytes)} bytes plaintext, sha256={sha256}")
     emit(f"[put] uploading ciphertext to {server_address}")
@@ -265,23 +268,6 @@ def _decrypt_bundle(payload: "bytes", secret: "str") -> "bytes":
 
 def _encryption_key(secret: "str") -> "bytes":
     return hashlib.sha256(secret.encode("utf-8")).digest()
-
-
-def _call_id_from_payload(payload: "bytes") -> "str":
-    return _base58_encode(hashlib.sha256(payload).digest()[:8])
-
-
-def _base58_encode(payload: "bytes") -> "str":
-    number = int.from_bytes(payload, "big")
-    if number == 0:
-        return TOKEN_BASE58_ALPHABET[0]
-    encoded: "typing.List[str]" = []
-    while number:
-        number, remainder = divmod(number, 58)
-        encoded.append(TOKEN_BASE58_ALPHABET[remainder])
-    encoded.reverse()
-    prefix = TOKEN_BASE58_ALPHABET[0] * (len(payload) - len(payload.lstrip(b"\x00")))
-    return prefix + "".join(encoded)
 
 
 def _parse_put_spec(

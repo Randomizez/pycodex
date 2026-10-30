@@ -1,4 +1,5 @@
 import argparse
+import atexit
 import asyncio
 import inspect
 import os
@@ -144,7 +145,7 @@ async def run_cli(args):
             phase("bootstrap_called_home:done")
             os.environ["CODEX_HOME"] = str(config_path.parent)
         phase("build_model:start")
-        model = build_model(
+        bootstrap = build_model(
             config_path=str(config_path),
             profile=args.profile,
             timeout_seconds=args.timeout_seconds,
@@ -152,13 +153,15 @@ async def run_cli(args):
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
         )
+        if bootstrap.owned_server is not None:
+            atexit.register(bootstrap.owned_server.stop)
         phase("build_model:done")
         phase("create_root_runtime:start")
         context_config = replace(
             ContextConfig.from_codex_config(config_path, args.profile),
             base_instructions_override=args.system_prompt,
         )
-        runtime = AgentsManager(model, context_config).create_root_runtime()
+        runtime = AgentsManager(bootstrap.client, context_config).create_root_runtime()
         phase("create_root_runtime:done")
         if should_run_interactive(args.prompt, sys.stdin.isatty()):
             return await run_interactive_session(runtime, args.json, str(config_path))

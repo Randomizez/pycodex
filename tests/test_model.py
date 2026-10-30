@@ -2032,7 +2032,7 @@ async def test_responses_model_client_receives_long_compat_reasoning_without_idl
 async def test_responses_model_client_retries_initial_compat_backend_disconnect(
     tmp_path, monkeypatch
 ) -> "None":
-    import responses_server.stream_router as stream_router
+    import responses_server.transport as transport
     from responses_server import CompatServerConfig, ManagedResponseServer
     from tests.responses_server.fake_chat_completions_server import (
         CaptureStore as ChatCaptureStore,
@@ -2051,7 +2051,7 @@ async def test_responses_model_client_retries_initial_compat_backend_disconnect(
         )
     )
     compat_server.start()
-    urlopen = stream_router.urllib.request.urlopen
+    urlopen = transport.urllib.request.urlopen
     requests_seen = []
 
     def open_response(request, **kwargs):
@@ -2062,7 +2062,7 @@ async def test_responses_model_client_retries_initial_compat_backend_disconnect(
             )
         return urlopen(request, **kwargs)
 
-    monkeypatch.setattr(stream_router.urllib.request, "urlopen", open_response)
+    monkeypatch.setattr(transport.urllib.request, "urlopen", open_response)
     client = ResponsesModelClient(
         ResponsesProviderConfig(
             model="demo-model",
