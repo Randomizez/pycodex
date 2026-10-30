@@ -130,7 +130,7 @@ def colorize_tool_message(
         color = "\x1b[36m"
     elif tool_name == "exec_command" and "session_id=" in message:
         color = "\x1b[2m"
-    elif tool_name == "exec_command" and not message.startswith("["):
+    elif tool_name in {"exec_command", "exec"} and not message.startswith("["):
         color = ""
     elif tool_name in {"exec_command", "shell", "shell_command", "exec"}:
         color = "\x1b[33m"

@@ -15,7 +15,7 @@ import json
 import traceback
 import typing
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ..events import Event
@@ -44,6 +44,7 @@ class ToolContext:
     cwd: "Path"
     agent_id: "typing.Union[str, None]" = None
     encrypted_messages: "bool" = True
+    call_id: "typing.Union[str, None]" = None
 
     def resolve_path(self, path=None) -> "Path":
         return (self.cwd / Path("." if path is None else path).expanduser()).resolve()
@@ -64,6 +65,9 @@ class StructuredToolOutput:
 class BaseTool(ABC):
     name: "str"
     description: "str"
+    namespace: "typing.Union[str, None]" = None
+    namespace_description: "str" = ""
+    exec_only: "bool" = True
     input_schema: "typing.Union[JSONDict, None]" = None
     tool_type: "str" = "function"
     format: "typing.Union[JSONDict, None]" = None
@@ -81,6 +85,8 @@ class BaseTool(ABC):
             options=self.options,
             output_schema=self.output_schema,
             supports_parallel=self.supports_parallel,
+            namespace=self.namespace,
+            namespace_description=self.namespace_description,
         )
 
     def serialize(self) -> "JSONDict":
@@ -124,10 +130,27 @@ class ToolRegistry:
         self.runtime_environment = runtime_environment or AgentRuntimeEnvironment()
 
     def register(self, tool: "BaseTool") -> "None":
-        self._tools[tool.name] = tool
+        if "." in tool.name:
+            raise ValueError("tool names must not contain '.'")
+        name = (
+            tool.name if tool.namespace in (None, "", "functions")
+            else f"{tool.namespace}.{tool.name}"
+        )
+        self._tools[name] = tool
 
-    def model_visible_specs(self) -> "typing.List[ToolSpec]":
-        return [tool.spec() for tool in self._tools.values()]
+    def model_visible_specs(self, code_mode_only: "bool" = False) -> "typing.List[ToolSpec]":
+        if not code_mode_only:
+            return [
+                tool.spec() for name, tool in self._tools.items()
+                if name not in ("exec", "wait")
+            ]
+        direct_tools = {
+            name: tool for name, tool in self._tools.items() if not tool.exec_only
+        }
+        if len(direct_tools) != len(self._tools):
+            if not {"exec", "wait"}.issubset(direct_tools):
+                raise ValueError("CodeModeOnly requires registered exec and wait tools")
+        return [tool.spec() for tool in direct_tools.values()]
 
     def supports_parallel(self, tool_name: "str") -> "bool":
         tool = self._tools.get(tool_name)
@@ -145,7 +168,10 @@ class ToolRegistry:
             )
 
         try:
-            output = await tool.run(context, call.arguments)
+            output = await tool.run(
+                replace(context, call_id=call.call_id),
+                call.arguments,
+            )
             if isinstance(output, StructuredToolOutput):
                 return ToolResult(
                     call_id=call.call_id,

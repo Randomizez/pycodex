@@ -670,6 +670,9 @@ def _append_deserialized_response_item(
         name = str(payload.get("name", "")).strip()
         if not call_id or not name:
             return
+        namespace = payload.get("namespace")
+        if namespace not in (None, "", "functions"):
+            name = f"{namespace}.{name}"
         history.append(
             ToolCall(
                 call_id=call_id,
@@ -677,7 +680,7 @@ def _append_deserialized_response_item(
                 arguments=arguments,
                 id=payload.get("id"),
                 raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
-                namespace=payload.get("namespace"),
+                namespace=namespace,
                 encrypted_function_args=deepcopy(payload.get("encrypted_function_args")),
             )
         )
@@ -689,6 +692,9 @@ def _append_deserialized_response_item(
         name = str(payload.get("name", "")).strip()
         if not call_id or not name:
             return
+        namespace = payload.get("namespace")
+        if namespace not in (None, "", "functions"):
+            name = f"{namespace}.{name}"
         history.append(
             ToolCall(
                 call_id=call_id,
@@ -696,7 +702,7 @@ def _append_deserialized_response_item(
                 arguments=str(payload.get("input", "")),
                 tool_type="custom",
                 id=payload.get("id"),
-                namespace=payload.get("namespace"),
+                namespace=namespace,
                 status=payload.get("status"),
             )
         )

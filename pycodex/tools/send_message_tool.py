@@ -5,6 +5,9 @@ from .base_tool import BaseTool
 
 class SendMessageTool(BaseTool):
     name = "send_message"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         "Send a message to an existing agent. The message will be delivered "
         "promptly. Does not trigger a new turn."

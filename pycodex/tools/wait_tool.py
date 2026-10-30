@@ -9,7 +9,7 @@ Expected behavior:
 - Return only the new output since the previous `exec` / `wait` snapshot.
 """
 
-import typing
+import math
 
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
@@ -18,6 +18,7 @@ from .code_mode_manager import DEFAULT_WAIT_YIELD_TIME_MS, CodeModeManager
 
 class WaitTool(BaseTool):
     name = "wait"
+    exec_only = False
     description = (
         "Waits on a yielded `exec` cell and returns new output or completion.\n"
         "- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n"
@@ -43,11 +44,11 @@ class WaitTool(BaseTool):
                 "description": "Identifier of the running exec cell.",
             },
             "yield_time_ms": {
-                "type": "integer",
+                "type": "number",
                 "description": "Wait before yielding more output. Defaults to 10000 ms.",
             },
             "max_tokens": {
-                "type": "integer",
+                "type": "number",
                 "description": "Output token budget for this wait call. Defaults to 10000 tokens.",
             },
             "terminate": {
@@ -65,18 +66,28 @@ class WaitTool(BaseTool):
 
     async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         del context
-        cell_id = str(args.get("cell_id", "")).strip()
-        if not cell_id:
-            return "Error: `cell_id` is required."
+        cell_id = args["cell_id"]
+        if not isinstance(cell_id, str) or not cell_id:
+            raise ValueError("cell_id must be a non-empty string")
+        terminate = args.get("terminate", False)
+        if not isinstance(terminate, bool):
+            raise ValueError("terminate must be a boolean")
         return await self._manager.wait(
             cell_id=cell_id,
-            yield_time_ms=int(args.get("yield_time_ms", DEFAULT_WAIT_YIELD_TIME_MS)),
-            max_tokens=self._optional_int(args, "max_tokens"),
-            terminate=bool(args.get("terminate", False)),
+            yield_time_ms=self._integer(
+                args.get("yield_time_ms", DEFAULT_WAIT_YIELD_TIME_MS), "yield_time_ms",
+            ),
+            max_tokens=(
+                self._integer(args["max_tokens"], "max_tokens")
+                if "max_tokens" in args else None
+            ),
+            terminate=terminate,
         )
 
-    def _optional_int(self, args: "JSONDict", key: "str") -> "typing.Union[int, None]":
-        value = args.get(key)
-        if value in (None, ""):
-            return None
+    def _integer(self, value, name):
+        if (
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or int(value) != value or value < 0
+        ):
+            raise ValueError(name + " must be a non-negative integer")
         return int(value)

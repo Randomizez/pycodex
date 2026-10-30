@@ -81,7 +81,7 @@ class AgentsManager:
         return Agent(
             model_client,
             get_tools(
-                self, runtime_environment, exec_mode=True, toolset=toolset,
+                self, runtime_environment, toolset=toolset,
             ),
             context_config,
             initial_history=tuple(initial_history),
@@ -268,7 +268,9 @@ class AgentsManager:
             if fork_turns == "all":
                 fork_context = parent.agent.context_manager.snapshot_for_fork(
                     history,
-                    parent.agent.tool_registry.model_visible_specs(),
+                    parent.agent.tool_registry.model_visible_specs(
+                        parent.agent.context_manager.resolve_code_mode_only(),
+                    ),
                     parent.agent.model_client.reasoning_effort,
                 )
             runtime = self._create_runtime(
@@ -278,7 +280,9 @@ class AgentsManager:
             if fork_context is not None:
                 runtime.agent.context_manager.inherit_fork_context(
                     fork_context,
-                    runtime.agent.tool_registry.model_visible_specs(),
+                    runtime.agent.tool_registry.model_visible_specs(
+                        runtime.agent.context_manager.resolve_code_mode_only(),
+                    ),
                     runtime.agent.model_client.reasoning_effort,
                 )
             self._notify_parents(runtime.agent.agent_id)

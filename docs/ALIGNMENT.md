@@ -169,6 +169,17 @@ feature flags default off.
 
 ### Intentional local differences
 
+Python code-mode execution is a local choice. `exec` runs Python with top-level
+`await` in the host process, with a fresh namespace and task ownership per cell.
+There is no interpreter startup per call. Modules and process state are shared,
+and termination is cooperative; bare relative paths use the host cwd while the
+explicit `cwd` Path and nested tools use the cell's workspace.
+Upstream source `f2ac9983552d187aa1c9a53c4707cf3b2c4afde6` (2026-10-30) instead
+reuses a code-mode host process and creates a V8 isolate and thread per cell,
+with isolate-level termination. The source baseline `9cc14e79` uses the same
+core design. Python namespace separation does not reproduce that isolation.
+See [Python exec cells](RUNTIME.md#python-exec-cells) for the local contract.
+
 Spawn/fork model overrides, the `spawn_agent`, `exec_command` and
 `request_user_input` declaration differences above, and model-catalog coverage
 are retained choices. They do not create alignment requirements to add sandbox

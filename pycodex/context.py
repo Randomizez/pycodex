@@ -86,8 +86,11 @@ class ContextConfig:
     multi_agent_root_instructions: "typing.Union[str, None]" = None
     multi_agent_subagent_instructions: "typing.Union[str, None]" = None
     multi_agent_hint: "typing.Union[str, None]" = None
+    code_mode_only: "typing.Union[bool, None]" = None
 
     def __post_init__(self):
+        if self.code_mode_only is not None and not isinstance(self.code_mode_only, bool):
+            raise ValueError("code_mode_only must be a boolean")
         if (
             type(self.multi_agent_max_concurrency) is not int
             or self.multi_agent_max_concurrency < 1
@@ -155,6 +158,7 @@ class ContextConfig:
             multi_agent_root_instructions=multi_agent.get("root_agent_usage_hint_text"),
             multi_agent_subagent_instructions=multi_agent.get("subagent_usage_hint_text"),
             multi_agent_hint=multi_agent.get("multi_agent_mode_hint_text"),
+            code_mode_only=selected.get("code_mode_only"),
         )
 
 
@@ -373,6 +377,12 @@ class ContextManager:
         if resolved is not None:
             return resolved
         return self._default_base_instructions
+
+    def resolve_code_mode_only(self) -> "bool":
+        if self._config.code_mode_only is not None:
+            return self._config.code_mode_only
+        metadata = model_metadata(self._config.model)
+        return metadata is not None and metadata.get("tool_mode") == "code_mode_only"
 
     def resolve_model_max_context_window(self) -> "typing.Union[int, None]":
         metadata = model_metadata(self._config.model)

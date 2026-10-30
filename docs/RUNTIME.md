@@ -80,8 +80,9 @@ it when the operation ends. This supports constructing objects after
 `asyncio.run()` has closed a loop, or before the eventual execution loop starts,
 including on Python 3.8. Running workers and active resources still belong to
 their execution loop; Web subscription queues are created in the consuming
-loop when `subscribe()` is called. The exec managers use ordinary locks only around
-synchronous data updates, with no `await` inside those sections.
+loop when `subscribe()` is called. Unified exec uses ordinary locks only around
+synchronous data updates, with no `await` inside those sections. Code-mode cells
+and their task ownership belong to the event loop that executes them.
 
 Mailbox waits finish cancelling their event waiter on timeout or caller
 cancellation. Python 3.6's
@@ -1405,8 +1406,9 @@ semantics rather than combining different tools' contracts.
 Ordinary function tools and freeform/custom tools such as `apply_patch` share
 the protocol; tool results can carry structured `input_image` content items.
 `web_search` is a provider-native Responses declaration, not a local registry
-execution. `exec` / `wait` run JavaScript in a Node subprocess with `text`,
-`image`, `store`, `load`, `exit`, `notify`, `yield_control` and `tools.<name>(...)`.
+execution. `exec` / `wait` run Python in the host process with top-level `await`,
+`text`, `print`, `image`, `audio`, `generated_image`, `store`, `load`, `exit`,
+`notify`, `yield_control` and `tools.<name>(...)`.
 MultiAgentV2 tools share the tree's in-process `AgentsManager`. Spawn takes
 `task_name`, `message` and optional `fork_turns`, `model`, `reasoning_effort`;
 it returns the canonical `task_name`. Relative targets are resolved below the
@@ -1497,7 +1499,49 @@ unbinds callbacks while retaining the configured period for restoration.
 The aggregate background count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
 loop. Running code-mode `exec` cells also report background work; a completed
-cell closes its Node input stream so its process can exit.
+cell finishes after its Python tasks are cleaned up and issued host tools settle.
+
+### Python exec cells
+
+`CodeModeManager` owns each cell's execution task, output events and lifecycle.
+`ExecRuntime` compiles the source into an async function with a fresh namespace
+and runs it on the host event loop. There is no interpreter subprocess, worker
+protocol or per-cell PID. A yielded cell can keep running alongside later cells
+and other Agents. `wait` returns only new output and closes completed cells.
+`notify` sends an additional output through the attached Runtime with the
+original exec call ID.
+
+Plain `print()` in cell code writes to its own output buffer through the cell's
+builtins mapping. `sys.stdout` is never redirected; imported modules' prints,
+explicit writes to stdout/stderr and explicit `print(file=...)` use their usual
+streams. Each cell exposes `cwd` as its captured workspace `Path`; use
+`(cwd / "file").read_text()` for direct file access. Nested tools receive that
+same directory in `ToolContext`. Python's process cwd is not changed: bare
+relative paths resolve against the host cwd.
+
+A task factory shared by active cells on the event loop records descendants
+created through asyncio from owned cell tasks, including `create_task`,
+`ensure_future`, `gather` and `loop.create_task`. It preserves the preceding
+factory and restores it after the last active cell finishes. `set_timeout`
+callbacks run as owned tasks and their timer handles belong to that cell.
+Cleanup cancels and awaits only that cell's Python tasks and timers. Direct
+`asyncio.Task(...)` construction, unmanaged loop callbacks, threads and
+executors require explicit cleanup by the script.
+
+Nested tools execute through the registry in separate host tasks. These tasks
+and their descendants are excluded from cell cancellation. Cell completion,
+`wait(terminate=True)` and manager close wait for already issued tool calls.
+Cancelling an exec/wait observer does not cancel the cell. Shutdown requests
+stop; async close waits for cleanup. Restart retires old cells and gives the new
+session a fresh store; retired cells cannot publish output or mutate that store.
+
+`store/load` share JSON-serializable values across cells of one manager, with
+copy semantics; ordinary variables and definitions remain cell-local. Imported
+modules, environment variables and other process state are shared with the host.
+This is intentionally not V8-style isolation. Stop is cooperative cancellation:
+blocking I/O and non-yielding CPU loops block the event loop and cannot be
+independently terminated. Use async operations for orchestration and
+`tools.exec_command` for blocking work.
 
 Host session workers, notification watchers, timer cancellation and I/O cleanup
 still use asyncio where appropriate. Those resource mechanisms are not per-turn

@@ -30,9 +30,10 @@ from .events import (
     TurnStartedEvent,
 )
 from .model import ModelControl
-from .protocol import AgentMessage, TurnResult, UserMessage
+from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
 from .utils import uuid7_string
 from .utils.event_helpers import shorten_title
+from .utils.truncation import truncate_tool_result_for_history
 from .utils.session_persist import (
     conversation_history_to_turns,
     list_resumable_sessions,
@@ -83,7 +84,7 @@ class AgentRuntime:
         self.agent = agent
         self.agents_manager = agents_manager
         self._enqueue_queue: "deque[_QueuedSubmission]" = deque()
-        self._steer_queue: "deque[typing.Union[UserMessage, AgentMessage]]" = deque()
+        self._steer_queue: "deque[typing.Union[UserMessage, AgentMessage, ToolResult]]" = deque()
         self._triggered_submission: "typing.Union[_QueuedSubmission, None]" = None
         self._queue_event = None
         self._current_submission: "typing.Union[_QueuedSubmission, None]" = None
@@ -141,6 +142,13 @@ class AgentRuntime:
 
     def add_close_handler(self, handler):
         self._close_handlers.append(handler)
+
+    def receive_tool_output(self, result: "ToolResult"):
+        if not self.accepts_input:
+            return
+        self.message(truncate_tool_result_for_history(result))
+        if not self.is_busy and self.accepts_input:
+            self.trigger()
 
     def commands(self):
         return (
@@ -736,7 +744,7 @@ class AgentRuntime:
         self.publish_update("queue")
         self._wake_worker()
 
-    def message(self, text: "typing.Union[str, AgentMessage]") -> "None":
+    def message(self, text: "typing.Union[str, AgentMessage, ToolResult]") -> "None":
         """Deliver input to an open runtime's mailbox."""
         if not self.accepts_input:
             raise RuntimeError("agent is shutting down")

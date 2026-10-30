@@ -44,7 +44,6 @@ if typing.TYPE_CHECKING:
 def get_tools(
     agents_manager: "AgentsManager",
     runtime_environment: "typing.Union[AgentRuntimeEnvironment, None]" = None,
-    exec_mode: "bool" = False,
     toolset: "typing.Union[typing.Iterable[str], None]" = None,
 ):
     runtime_environment = runtime_environment or create_agent_runtime_environment()
@@ -54,12 +53,7 @@ def get_tools(
     clock_manager = runtime_environment.clock_manager
     exec_tool = ExecTool(code_mode_manager)
     wait_tool = WaitTool(code_mode_manager)
-    web_search_tool = WebSearchTool()
-    update_plan_tool = UpdatePlanTool(runtime_environment.plan_store)
     request_user_input_tool = RequestUserInputTool()
-    request_permissions_tool = RequestPermissionsTool(
-        runtime_environment.request_permissions_manager
-    )
     agent_tools = (
         SpawnAgentTool(agents_manager),
         SendMessageTool(agents_manager),
@@ -69,36 +63,26 @@ def get_tools(
         ListAgentsTool(agents_manager),
     )
     apply_patch_tool = ApplyPatchTool()
-    shell_tool = ShellTool()
-    shell_command_tool = ShellCommandTool()
     exec_command_tool = ExecCommandTool(unified_exec_manager)
     write_stdin_tool = WriteStdinTool(unified_exec_manager)
     clock_tool = ClockTool(clock_manager)
-    grep_files_tool = GrepFilesTool()
-    read_file_tool = ReadFileTool()
-    list_dir_tool = ListDirTool()
     view_image_tool = ViewImageTool()
     tools = (
-        shell_tool,
-        shell_command_tool,
+        exec_tool,
+        wait_tool,
         exec_command_tool,
         write_stdin_tool,
         clock_tool,
-        exec_tool,
-        wait_tool,
-        web_search_tool,
-        update_plan_tool,
         request_user_input_tool,
-        request_permissions_tool,
-    ) + agent_tools + (
         apply_patch_tool,
-        grep_files_tool,
-        read_file_tool,
-        list_dir_tool,
         view_image_tool,
-    )
+    ) + agent_tools
     if toolset is not None:
         available_tools = {tool.name: tool for tool in tools}
+        available_tools.update({
+            f"{tool.namespace}.{tool.name}": tool for tool in tools
+            if tool.namespace not in (None, "", "functions")
+        })
         toolset = tuple(toolset)
         unknown_tools = set(toolset) - set(available_tools)
         if unknown_tools:
@@ -106,17 +90,10 @@ def get_tools(
                 "unknown toolset entries: {0}".format(", ".join(sorted(unknown_tools)))
             )
         tools = tuple(available_tools[name] for name in toolset)
-    elif exec_mode:
-        tools = (
-            exec_command_tool,
-            write_stdin_tool,
-            clock_tool,
-            update_plan_tool,
-            request_user_input_tool,
-            apply_patch_tool,
-            web_search_tool,
-            view_image_tool,
-        ) + agent_tools
+    if tools:
+        tools = (exec_tool, wait_tool) + tuple(
+            tool for tool in tools if tool not in (exec_tool, wait_tool)
+        )
     for tool in tools:
         registry.register(tool)
     return registry

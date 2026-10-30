@@ -150,7 +150,7 @@ class Agent:
             self._follow_up_requested = True
 
     def receive_messages(
-        self, messages: "typing.Tuple[typing.Union[UserMessage, AgentMessage], ...]",
+        self, messages: "typing.Tuple[typing.Union[UserMessage, AgentMessage, ToolResult], ...]",
     ) -> "None":
         """Commit messages delivered at a sampling input boundary."""
         self._append_history(messages)
@@ -505,7 +505,9 @@ class Agent:
     ) -> "ModelResponse":
         prompt = self.context_manager.build_prompt(
             self._history,
-            self.tool_registry.model_visible_specs(),
+            self.tool_registry.model_visible_specs(
+                self.context_manager.resolve_code_mode_only(),
+            ),
             self._parallel_tool_calls,
             turn_id=turn_id,
             reasoning_effort=self.model_client.reasoning_effort,

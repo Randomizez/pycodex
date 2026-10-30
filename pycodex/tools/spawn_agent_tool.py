@@ -5,6 +5,9 @@ from .base_tool import BaseTool
 
 class SpawnAgentTool(BaseTool):
     name = "spawn_agent"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         'Spawns an agent to work on the specified task. If your current task is '
         '`/root/task1` and you spawn_agent with task_name "task_3" the agent will '
@@ -14,13 +17,11 @@ class SpawnAgentTool(BaseTool):
         'would only be able to communicate with this agent via its canonical '
         'name `/root/task1/task_3`.\n'
         'The spawned agent will have the same tools as you and the ability to '
-        'spawn its own subagents.\n'
-        'Spawned agents inherit your current model by default. Do not set the '
-        '`model` field unless the user explicitly asks for a different model.\n'
+        'spawn its own subagents.\n\n'
         'It will be able to send you and other running agents messages, and its '
         'final answer will be provided to you when it finishes.\n'
         'The new agent\'s canonical task name will be provided to it along with '
-        'the message.\n'
+        'the message.\n\n'
         'Note that passing `fork_turns="none"` will not pass any surrounding '
         'context to the spawned subagent, which may cause the agent to lack the '
         'context it needs to complete its task, whereas `fork_turns="all"` will '

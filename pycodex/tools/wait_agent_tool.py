@@ -5,6 +5,9 @@ from .base_tool import BaseTool
 
 class WaitAgentTool(BaseTool):
     name = "wait_agent"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         "Wait for a mailbox update from any live agent, including queued messages "
         "and final-status notifications. The wait also ends early when new user "

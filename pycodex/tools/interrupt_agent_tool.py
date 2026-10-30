@@ -6,6 +6,9 @@ from .base_tool import BaseTool
 
 class InterruptAgentTool(BaseTool):
     name = "interrupt_agent"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         "Interrupt an agent's current turn, if any, and return its previous "
         "status. The agent remains available for messages and follow-up tasks."

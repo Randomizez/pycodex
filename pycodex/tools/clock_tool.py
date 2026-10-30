@@ -37,6 +37,7 @@ CLOCK_STATE_OUTPUT_SCHEMA = {
 
 
 class ClockTool(BaseTool):
+    exec_only = False
     name = "clock"
     description = (
         "Set a periodic clock in minutes, or cancel it with null. After each "

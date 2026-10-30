@@ -365,7 +365,7 @@ async def test_capacity_preserves_running_code_mode_cell(tmp_path):
         result = await registry.execute(
             ToolCall(
                 "exec", "exec",
-                '// @exec: {"yield_time_ms": 1}\ntext(await tools.held({}));',
+                '# @exec: {"yield_time_ms": 1}\ntext(await tools.held({}))',
                 tool_type="custom",
             ), context,
         )
@@ -378,7 +378,7 @@ async def test_capacity_preserves_running_code_mode_cell(tmp_path):
             await spawn(root, "blocked")
         assert child.accepts_input
         release.set()
-        await asyncio.wait_for(cell.reader_task, 2)
+        await asyncio.wait_for(cell.task, 2)
         assert tool.background_work_count(True) == 0
         await spawn(root, "replacement")
         assert child.agent.is_shutdown
@@ -386,7 +386,6 @@ async def test_capacity_preserves_running_code_mode_cell(tmp_path):
         release.set()
         try:
             if cell is not None:
-                cell.process.stdin.close()
-                await asyncio.wait_for(cell.reader_task, 2)
+                await asyncio.wait_for(cell.task, 2)
         finally:
             await root.close()

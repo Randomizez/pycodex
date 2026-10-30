@@ -20,6 +20,12 @@ requirement to mirror every OpenAI model-catalog entry.
 The workspace package installs the matching core version. Python imports use
 `pycodex`; the commands are `pycodex` and `pycodex-ws`.
 
+The `exec` tool runs Python with top-level `await` in the host process. Each cell
+has its own namespace, output and tracked asyncio tasks; imports and process
+state are shared. Stopping is cooperative, so run blocking work through
+`tools.exec_command`. Direct file access can use the cell's `cwd` Path.
+See [exec lifecycle and limits](docs/RUNTIME.md#python-exec-cells).
+
 ## Install and run
 
 Install the core CLI:

@@ -17,6 +17,11 @@ pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 的 Agent 主
 workspace 包会安装匹配版本的 core。Python 导入路径为 `pycodex`，
 命令为 `pycodex` 和 `pycodex-ws`。
 
+`exec` 工具在宿主进程内执行支持顶层 `await` 的 Python。每个 cell 独立维护
+namespace、输出和 asyncio 任务记录，导入模块和进程状态共享。停止采用协作式
+取消；阻塞操作通过 `tools.exec_command` 运行，直接访问文件时可使用 cell 的
+`cwd` Path。详见 [exec 生命周期与限制](docs/RUNTIME.md#python-exec-cells)。
+
 ## 安装与启动
 
 安装核心 CLI：

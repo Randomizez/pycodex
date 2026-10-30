@@ -5,6 +5,9 @@ from .base_tool import BaseTool
 
 class FollowupTaskTool(BaseTool):
     name = "followup_task"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         "Send a follow-up task to an existing non-root target agent and trigger "
         "a turn if it is idle. If the target is already running, deliver the task "

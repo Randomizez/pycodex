@@ -35,6 +35,7 @@ from .protocol import (
     Prompt,
     ReasoningItem,
     ToolCall,
+    ToolSpec,
 )
 from .utils import build_user_agent, uuid7_string
 
@@ -337,6 +338,22 @@ def _strip_image_detail_from_content_items(items: "typing.Iterable[object]") -> 
     for item in items:
         if isinstance(item, dict) and item.get("type") == "input_image":
             item.pop("detail", None)
+
+
+def _filter_audio_inputs(items, metadata):
+    if metadata is None or "audio" in metadata.get("input_modalities", ()):
+        return
+    for item in items:
+        for key in ("content", "output"):
+            content = item.get(key)
+            if not isinstance(content, list):
+                continue
+            for index, part in enumerate(content):
+                if part.get("type") == "input_audio":
+                    content[index] = {
+                        "type": "input_text",
+                        "text": "audio content omitted because you do not support audio input",
+                    }
 
 
 class ResponsesApiError(RuntimeError):
@@ -721,13 +738,68 @@ class ResponsesModelClient:
                 diagnostics.first_data_seconds, "completed" if completed else "failed",
             ))
 
+    def _serialize_tools(
+        self, tools: "typing.Iterable[ToolSpec]", use_responses_lite: "bool",
+    ) -> "typing.List[JSONDict]":
+        declarations = []
+        namespaces = {}
+        for tool in tools:
+            declaration = tool.serialize()
+            if not tool.namespace:
+                declarations.append(declaration)
+                continue
+            if tool.tool_type not in ("function", "custom"):
+                raise ValueError("tool namespaces only contain function/custom tools")
+            if tool.namespace not in namespaces:
+                namespace = {
+                    "type": "namespace",
+                    "name": tool.namespace,
+                    "description": tool.namespace_description,
+                    "tools": [],
+                }
+                namespaces[tool.namespace] = namespace
+                declarations.append(namespace)
+            namespace = namespaces[tool.namespace]
+            if not namespace["description"].strip():
+                namespace["description"] = tool.namespace_description
+            namespace["tools"].append(declaration)
+        for namespace in namespaces.values():
+            namespace["tools"].sort(key=lambda tool: tool["name"])
+        if not use_responses_lite:
+            return declarations
+
+        functions = {
+            "type": "namespace", "name": "functions", "description": "", "tools": [],
+        }
+        functions_index = None
+        payload = []
+        for declaration in declarations:
+            if declaration["type"] in ("function", "custom"):
+                functions["tools"].append(declaration)
+            elif (
+                declaration["type"] == "namespace"
+                and declaration["name"] == "functions"
+            ):
+                functions["tools"].extend(declaration["tools"])
+                if declaration["description"].strip():
+                    functions["description"] = declaration["description"]
+            else:
+                payload.append(declaration)
+                continue
+            if functions_index is None:
+                functions_index = len(payload)
+        if functions["tools"]:
+            payload.insert(functions_index, functions)
+        return payload
+
     def _build_payload(self, prompt: "Prompt") -> "typing.Dict[str, object]":
         use_responses_lite = self._config.use_responses_lite()
         input_items = [item.serialize() for item in prompt.input]
+        _filter_audio_inputs(input_items, model_metadata(self.model))
         if use_responses_lite:
             _strip_image_details(input_items)
 
-        tools = [tool.serialize() for tool in prompt.tools]
+        tools = self._serialize_tools(prompt.tools, use_responses_lite)
         payload: "typing.Dict[str, object]" = {
             "model": self.model,
             "input": input_items,
@@ -1021,6 +1093,14 @@ class ResponsesModelClient:
         if item_type == "message" and item.get("role") == "assistant":
             return AssistantMessage.from_response_item(item)
 
+        if item_type in ("function_call", "custom_tool_call"):
+            name = str(item["name"])
+            if "." in name:
+                raise ResponsesApiError("tool call names must not contain '.'")
+            namespace = item.get("namespace")
+            if namespace not in (None, "", "functions"):
+                name = f"{namespace}.{name}"
+
         if item_type == "function_call":
             raw_arguments = item["arguments"]
             arguments = json.loads(raw_arguments)
@@ -1030,7 +1110,7 @@ class ResponsesModelClient:
                 )
             return ToolCall(
                 call_id=str(item["call_id"]),
-                name=str(item["name"]),
+                name=name,
                 arguments=arguments,
                 id=item.get("id"),
                 raw_arguments=raw_arguments,
@@ -1041,7 +1121,7 @@ class ResponsesModelClient:
         if item_type == "custom_tool_call":
             return ToolCall(
                 call_id=str(item["call_id"]),
-                name=str(item["name"]),
+                name=name,
                 arguments=str(item.get("input", "")),
                 tool_type="custom",
                 id=item.get("id"),

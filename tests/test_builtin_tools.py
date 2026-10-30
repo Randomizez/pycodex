@@ -778,7 +778,7 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
 
 
 @pytest.mark.asyncio
-async def test_exec_tool_runs_javascript_and_returns_completed_status(
+async def test_exec_tool_runs_python_and_returns_completed_status(
     tmp_path,
 ) -> "None":
     registry = make_registry()
@@ -805,10 +805,10 @@ async def test_exec_tool_can_yield_and_wait_for_remaining_output(tmp_path) -> "N
             call_id="call_exec_2",
             name="exec",
             arguments=(
-                '// @exec: {"yield_time_ms": 10}\n'
-                "text('start');\n"
-                "await new Promise((resolve) => setTimeout(resolve, 50));\n"
-                "text('finish');"
+                '# @exec: {"yield_time_ms": 10}\n'
+                "text('start')\n"
+                "await asyncio.sleep(0.05)\n"
+                "text('finish')"
             ),
             tool_type="custom",
         ),

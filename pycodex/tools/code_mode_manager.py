@@ -1,53 +1,46 @@
-"""Shared runtime for Codex `exec` / `wait` tools.
-
-Original Codex mapping:
-- Corresponds to the code-mode runtime behind Codex `exec` and `wait`.
-
-Expected behavior:
-- Run raw JavaScript source in a background cell.
-- Let JavaScript call nested local tools through a `tools` object.
-- Support yielding/running cells and later polling or terminating them via
-  `wait`.
-"""
+"""Host for Python exec cells and their nested tool calls."""
 
 import asyncio
 import json
+import keyword
 import math
-import threading
+import traceback
 import typing
 import uuid
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 
 from loguru import logger
 
-from ..utils.compat import is_ascii, stream_writer_is_closing
-from ..protocol import JSONDict, JSONValue, ToolCall
+from ..utils.compat import is_ascii
+from ..protocol import JSONDict, JSONValue, ToolCall, ToolResult
 from ..utils.truncation import DEFAULT_MAX_OUTPUT_TOKENS
 from .base_tool import StructuredToolOutput, ToolContext, ToolRegistry
+from .exec_runtime import ExecRuntime
+from .python_tool_schema import python_tool_declaration
 
+DEFAULT_EXEC_YIELD_TIME_MS = 30_000
 DEFAULT_WAIT_YIELD_TIME_MS = 10_000
 CHARS_PER_TOKEN = 4
-EXEC_PRAGMA_PREFIX = "// @exec:"
+EXEC_PRAGMA_PREFIX = "# @exec:"
 WAIT_COMPLETION_GRACE_SECONDS = 0.02
 
 
 @dataclass
 class ExecCell:
     cell_id: "str"
-    process: "asyncio.subprocess.Process"
     started_at: "float"
+    call_id: "typing.Union[str, None]"
+    cwd: "str"
+    generation: "int"
+    runtime: "typing.Union[ExecRuntime, None]" = None
+    task: "typing.Union[asyncio.Task, None]" = None
     output_items: "typing.List[JSONDict]" = field(default_factory=list)
     delivered_count: "int" = 0
-    reader_task: "typing.Union[asyncio.Task, None]" = None
-    stderr_task: "typing.Union[asyncio.Task, None]" = None
     yield_event: "asyncio.Event" = field(default_factory=asyncio.Event)
     output_event: "asyncio.Event" = field(default_factory=asyncio.Event)
     done_event: "asyncio.Event" = field(default_factory=asyncio.Event)
-    completed: "bool" = False
     terminated: "bool" = False
     error_text: "typing.Union[str, None]" = None
-    stderr_chunks: "typing.List[str]" = field(default_factory=list)
 
 
 @dataclass(
@@ -55,17 +48,75 @@ class ExecCell:
 )
 class ParsedExecSource:
     code: "str"
-    yield_time_ms: "typing.Union[int, None]"
+    yield_time_ms: "int"
     max_output_tokens: "typing.Union[int, None]"
 
 
 class CodeModeManager:
     def __init__(self, registry: "ToolRegistry") -> "None":
         self._registry = registry
-        self._runtime_script = Path(__file__).with_name("exec_runtime.js")
         self._stored_values: "typing.Dict[str, JSONValue]" = {}
         self._cells: "typing.Dict[str, ExecCell]" = {}
-        self._lock = threading.Lock()
+        self._retired_cells: "typing.List[ExecCell]" = []
+        self._generation = 0
+        self._output_handler = None
+        self._state_listener = None
+        self._closed = False
+
+    def set_output_handler(self, handler):
+        self._output_handler = handler
+
+    def restart(self):
+        self._generation += 1
+        for cell in self._cells.values():
+            self._stop_cell(cell)
+            self._retired_cells.append(cell)
+        self._cells.clear()
+        self._stored_values = {}
+        self._closed = False
+
+    def set_state_listener(self, listener):
+        self._state_listener = listener
+
+    def _state_changed(self):
+        if self._state_listener is not None:
+            self._state_listener()
+
+    def snapshot(self):
+        return [
+            {
+                "cell_id": cell.cell_id,
+                "cwd": cell.cwd,
+                "running": not cell.done_event.is_set(),
+            }
+            for cell in self._cells.values()
+        ]
+
+    def shutdown(self):
+        self._closed = True
+        self._output_handler = None
+        self._state_listener = None
+        for cell in tuple(self._cells.values()) + tuple(self._retired_cells):
+            self._stop_cell(cell)
+
+    async def close(self):
+        self._closed = True
+        cells = tuple(self._cells.values()) + tuple(self._retired_cells)
+        if cells:
+            await asyncio.gather(*(self._terminate_cell(cell) for cell in cells))
+        self._cells.clear()
+        self._retired_cells.clear()
+        self._stored_values.clear()
+        self._state_changed()
+
+    def _stop_cell(self, cell):
+        if not cell.done_event.is_set():
+            cell.terminated = True
+            cell.runtime.request_stop()
+
+    async def _terminate_cell(self, cell):
+        self._stop_cell(cell)
+        await asyncio.shield(cell.task)
 
     def running_cell_count(self) -> "int":
         return sum(not cell.done_event.is_set() for cell in self._cells.values())
@@ -73,6 +124,8 @@ class CodeModeManager:
     async def exec(
         self, source: "str", context: "ToolContext"
     ) -> "typing.Union[StructuredToolOutput, str]":
+        if self._closed:
+            raise RuntimeError("exec runtime is closed")
         try:
             parsed = self._parse_exec_source(source)
         except ValueError as exc:
@@ -93,235 +146,146 @@ class CodeModeManager:
         if cell is None:
             return f"Error: unknown exec cell `{cell_id}`."
 
-        if terminate and cell.process.returncode is None:
-            cell.terminated = True
-            cell.process.terminate()
-            try:
-                await asyncio.wait_for(cell.process.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                cell.process.kill()
-                await cell.process.wait()
+        if terminate:
+            await self._terminate_cell(cell)
 
         await self._wait_for_wait(cell, yield_time_ms)
         return await self._snapshot_cell(cell, max_tokens)
 
-    def enabled_tools(self) -> "typing.List[typing.Dict[str, str]]":
-        enabled: "typing.List[typing.Dict[str, str]]" = []
-        for tool in self._registry.tools():
-            if tool.name in {"exec", "wait"}:
+    def enabled_tools(self) -> "typing.List[JSONDict]":
+        enabled = []
+        identifiers = set()
+        for tool_name in self._registry.names():
+            tool = self._registry.get_tool(tool_name)
+            if not tool.exec_only and tool.namespace != "collaboration":
                 continue
             if tool.tool_type not in {"function", "custom"}:
                 continue
+            namespace = "collaboration" if tool.namespace == "collaboration" else "tools"
+            name = tool.name
+            if tool.namespace not in (None, "", "functions", "collaboration"):
+                separator = (
+                    "" if tool.namespace.endswith("_") or name.startswith("_")
+                    else "__"
+                )
+                name = tool.namespace + separator + name
+            python_name = self._normalize_identifier(name)
+            identifier = namespace + "." + python_name
+            if identifier in identifiers:
+                raise ValueError("duplicate exec tool identifier: " + identifier)
+            identifiers.add(identifier)
             enabled.append(
                 {
-                    "tool_name": tool.name,
-                    "js_name": self._normalize_identifier(tool.name),
+                    "tool_name": tool_name,
+                    "namespace": namespace,
+                    "name": python_name,
                     "description": tool.description,
                     "tool_type": tool.tool_type,
+                    "parameters": tool.input_schema,
+                    "output_schema": tool.output_schema,
+                    "format": tool.format,
                 }
             )
-        enabled.sort(key=lambda item: item["tool_name"])
+        enabled.sort(key=lambda item: (item["namespace"], item["name"]))
         return enabled
 
+    def describe_tools(self):
+        sections = []
+        for tool in self.enabled_tools():
+            sections.append(
+                "\n\n### `" + tool["namespace"] + "." + tool["name"] + "`\n"
+                + tool["description"]
+                + "\n\nexec tool declaration:\n```python\n"
+                + python_tool_declaration(tool) + "\n```"
+            )
+        return "".join(sections)
+
     async def _start_cell(self, code: "str", context: "ToolContext") -> "ExecCell":
+        tools = self.enabled_tools()
         cell_id = uuid.uuid4().hex[:10]
-        process = await asyncio.create_subprocess_exec(
-            "node",
-            str(self._runtime_script),
-            cwd=str(context.cwd),
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         cell = ExecCell(
             cell_id=cell_id,
-            process=process,
             started_at=asyncio.get_running_loop().time(),
+            call_id=context.call_id,
+            cwd=str(context.cwd),
+            generation=self._generation,
+        )
+        cell.runtime = ExecRuntime(
+            code, tools, self._stored_values, context.cwd,
+            lambda message: self._receive(cell, message),
+            lambda spec, request_id, args: self._invoke_tool(
+                cell, context, spec, request_id, args,
+            ),
         )
         self._cells[cell_id] = cell
-        cell.reader_task = asyncio.create_task(self._read_stdout(cell, context))
-        cell.stderr_task = asyncio.create_task(self._read_stderr(cell))
-        await self._send_message(
-            cell,
-            {
-                "type": "init",
-                "cell_id": cell_id,
-                "source": code,
-                "stored_values": self._stored_values,
-                "tools": self.enabled_tools(),
-            },
-        )
+        cell.task = asyncio.create_task(self._run_cell(cell))
+        self._state_changed()
         logger.debug("exec start cell_id={} cwd={}", cell_id, context.cwd)
         return cell
 
-    async def _read_stdout(self, cell: "ExecCell", context: "ToolContext") -> "None":
-        stream = cell.process.stdout
-        if stream is None:
-            cell.error_text = "missing stdout pipe"
-            cell.done_event.set()
-            return
-
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            try:
-                message = json.loads(line.decode("utf-8", errors="replace"))
-            except json.JSONDecodeError:
-                cell.output_items.append(
-                    {
-                        "type": "input_text",
-                        "text": line.decode("utf-8", errors="replace").rstrip("\n"),
-                    }
-                )
-                cell.output_event.set()
-                continue
-
-            msg_type = message.get("type")
-            if msg_type == "output_text":
-                cell.output_items.append(
-                    {
-                        "type": "input_text",
-                        "text": str(message.get("text", "")),
-                    }
-                )
-                cell.output_event.set()
-                continue
-            if msg_type == "output_image":
-                image_item: "JSONDict" = {
-                    "type": "input_image",
-                    "image_url": str(message.get("image_url", "")),
-                }
-                detail = message.get("detail")
-                if detail is not None:
-                    image_item["detail"] = detail
-                cell.output_items.append(image_item)
-                cell.output_event.set()
-                continue
-            if msg_type == "yield":
-                cell.yield_event.set()
-                continue
-            if msg_type == "tool_call":
-                await self._handle_nested_tool_call(cell, context, message)
-                continue
-            if msg_type == "result":
-                cell.completed = True
-                cell.error_text = self._coerce_optional_text(message.get("error_text"))
-                stored_values = message.get("stored_values")
-                if isinstance(stored_values, dict):
-                    with self._lock:
-                        self._stored_values = stored_values
-                cell.process.stdin.close()
-                cell.done_event.set()
-                cell.output_event.set()
-                continue
-
-        await cell.process.wait()
-        if cell.stderr_task is not None:
-            await cell.stderr_task
-        if not cell.done_event.is_set():
-            stderr_text = "".join(cell.stderr_chunks).strip()
-            if stderr_text:
-                cell.error_text = stderr_text
-            elif cell.process.returncode not in (0, None):
-                cell.error_text = f"process exited with code {cell.process.returncode}"
+    async def _run_cell(self, cell):
+        try:
+            cell.error_text = await cell.runtime.run()
+        except Exception:
+            cell.error_text = traceback.format_exc()
+        finally:
             cell.done_event.set()
             cell.output_event.set()
+            self._state_changed()
 
-    async def _read_stderr(self, cell: "ExecCell") -> "None":
-        stream = cell.process.stderr
-        if stream is None:
+    def _receive(self, cell, message):
+        if cell.generation != self._generation:
             return
-        while True:
-            chunk = await stream.read(4096)
-            if not chunk:
-                break
-            cell.stderr_chunks.append(chunk.decode("utf-8", errors="replace"))
+        msg_type = message["type"]
+        if msg_type == "content":
+            cell.output_items.append(message["item"])
+            cell.output_event.set()
+        elif msg_type == "yield":
+            cell.yield_event.set()
+        elif msg_type == "notify":
+            if self._output_handler is None or cell.call_id is None:
+                raise RuntimeError("notify requires an attached Runtime")
+            self._output_handler(ToolResult(
+                call_id=cell.call_id, name="exec",
+                output=message["text"], tool_type="custom",
+            ))
+            cell.yield_event.set()
+        else:
+            raise ValueError("unknown exec cell message: " + msg_type)
 
-    async def _handle_nested_tool_call(
-        self,
-        cell: "ExecCell",
-        context: "ToolContext",
-        message: "JSONDict",
-    ) -> "None":
-        tool_name = str(message.get("tool_name", ""))
-        request_id = str(message.get("id", ""))
-        tool = self._registry.get_tool(tool_name)
-        if tool is None:
-            await self._send_message(
-                cell,
-                {
-                    "type": "tool_result",
-                    "id": request_id,
-                    "ok": False,
-                    "error": f"unknown tool: {tool_name}",
-                },
-            )
-            return
-        if tool.tool_type not in {"function", "custom"}:
-            await self._send_message(
-                cell,
-                {
-                    "type": "tool_result",
-                    "id": request_id,
-                    "ok": False,
-                    "error": f"tool `{tool_name}` is not available inside exec",
-                },
-            )
-            return
-
+    async def _invoke_tool(self, cell, context, spec, request_id, arguments):
         result = await self._registry.execute(
             ToolCall(
                 call_id=f"{cell.cell_id}_{request_id}",
-                name=tool_name,
-                arguments=message.get("arguments"),
-                tool_type=tool.tool_type,
+                name=spec["tool_name"],
+                arguments=arguments,
+                tool_type=spec["tool_type"],
+                namespace=self._registry.get_tool(spec["tool_name"]).namespace,
             ),
             replace(context, encrypted_messages=False),
         )
         if result.is_error:
-            payload = {
-                "type": "tool_result",
-                "id": request_id,
-                "ok": False,
-                "error": result.output_text(),
-            }
-        else:
-            payload = {
-                "type": "tool_result",
-                "id": request_id,
-                "ok": True,
-                "result": result.output,
-            }
-        await self._send_message(cell, payload)
-
-    async def _send_message(self, cell: "ExecCell", payload: "JSONDict") -> "None":
-        stdin = cell.process.stdin
-        if stdin is None or stream_writer_is_closing(stdin):
-            return
-        stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
-        await stdin.drain()
+            raise RuntimeError(result.output_text())
+        return result.output
 
     async def _wait_for_exec(
-        self, cell: "ExecCell", yield_time_ms: "typing.Union[int, None]"
+        self, cell: "ExecCell", yield_time_ms: "int"
     ) -> "None":
         done_task = asyncio.create_task(cell.done_event.wait())
         yield_task = asyncio.create_task(cell.yield_event.wait())
         tasks = {done_task, yield_task}
         try:
-            if yield_time_ms is None:
-                await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-            else:
-                await asyncio.wait_for(
-                    asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED),
-                    timeout=max(yield_time_ms, 1) / 1000.0,
-                )
+            await asyncio.wait_for(
+                asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED),
+                timeout=max(yield_time_ms, 1) / 1000.0,
+            )
         except asyncio.TimeoutError:
             return
         finally:
             for task in tasks:
                 if not task.done():
                     task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
         cell.yield_event.clear()
 
     async def _wait_for_wait(self, cell: "ExecCell", yield_time_ms: "int") -> "None":
@@ -361,6 +325,7 @@ class CodeModeManager:
                 for task in tasks:
                     if not task.done():
                         task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         cell.output_event.clear()
         cell.yield_event.clear()
@@ -385,16 +350,15 @@ class CodeModeManager:
             for task in tasks:
                 if not task.done():
                     task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _snapshot_cell(
         self,
         cell: "ExecCell",
         max_tokens: "typing.Union[int, None]",
     ) -> "StructuredToolOutput":
-        if (
-            cell.done_event.is_set() or cell.process.returncode is not None
-        ) and cell.reader_task is not None:
-            await cell.reader_task
+        if cell.done_event.is_set():
+            await cell.task
 
         wall_time = asyncio.get_running_loop().time() - cell.started_at
         new_items = list(cell.output_items[cell.delivered_count :])
@@ -428,9 +392,11 @@ class CodeModeManager:
 
         if cell.done_event.is_set():
             self._cells.pop(cell.cell_id, None)
+            self._state_changed()
 
         return StructuredToolOutput(
-            output=output_text, content_items=tuple(content_items)
+            output=output_text, content_items=tuple(content_items),
+            success=not bool(cell.error_text),
         )
 
     def _truncate_content_items(
@@ -449,7 +415,7 @@ class CodeModeManager:
             text = str(item.get("text", ""))
             remaining = max_chars - total_chars
             if remaining <= 0:
-                break
+                continue
             if len(text) > remaining:
                 truncated.append(
                     {
@@ -458,32 +424,32 @@ class CodeModeManager:
                     }
                 )
                 total_chars = max_chars
-                break
+                continue
             truncated.append(item)
             total_chars += len(text)
         return truncated
 
     def _status_text(self, cell: "ExecCell") -> "str":
-        if cell.terminated:
-            return "Script terminated"
         if not cell.done_event.is_set():
             return f"Script running with cell ID {cell.cell_id}"
+        if cell.terminated:
+            return "Script terminated"
         if cell.error_text:
             return "Script failed"
         return "Script completed"
 
     def _parse_exec_source(self, input_text: "str") -> "ParsedExecSource":
         if not input_text.strip():
-            raise ValueError("exec expects raw JavaScript source text (non-empty).")
+            raise ValueError("exec expects non-empty Python source text")
         code = input_text
-        yield_time_ms = None
+        yield_time_ms = DEFAULT_EXEC_YIELD_TIME_MS
         max_output_tokens = None
         lines = input_text.split("\n", 1)
         first_line = lines[0].lstrip()
         if first_line.startswith(EXEC_PRAGMA_PREFIX):
             if len(lines) == 1 or not lines[1].strip():
                 raise ValueError(
-                    "exec pragma must be followed by JavaScript source on subsequent lines"
+                    "exec pragma must be followed by Python source on subsequent lines"
                 )
             pragma_text = first_line[len(EXEC_PRAGMA_PREFIX) :].strip()
             try:
@@ -500,9 +466,15 @@ class CodeModeManager:
             for key in value:
                 if key not in {"yield_time_ms", "max_output_tokens"}:
                     raise ValueError(f"unsupported exec pragma field `{key}`")
-            if value.get("yield_time_ms") is not None:
+            for key, number in value.items():
+                if (
+                    isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(number) or int(number) != number or number < 0
+                ):
+                    raise ValueError("exec pragma field " + key + " must be a non-negative integer")
+            if "yield_time_ms" in value:
                 yield_time_ms = int(value["yield_time_ms"])
-            if value.get("max_output_tokens") is not None:
+            if "max_output_tokens" in value:
                 max_output_tokens = int(value["max_output_tokens"])
             code = lines[1]
         return ParsedExecSource(
@@ -516,7 +488,6 @@ class CodeModeManager:
         for index, char in enumerate(tool_name):
             is_valid = (
                 char == "_"
-                or char == "$"
                 or (
                     is_ascii(char) and char.isalnum() and (index != 0 or char.isalpha())
                 )
@@ -525,9 +496,5 @@ class CodeModeManager:
                 identifier.append(char)
             else:
                 identifier.append("_")
-        return "".join(identifier) or "_"
-
-    def _coerce_optional_text(self, value: "JSONValue") -> "typing.Union[str, None]":
-        if value in (None, ""):
-            return None
-        return str(value)
+        name = "".join(identifier) or "_"
+        return name + "_" if keyword.iskeyword(name) else name

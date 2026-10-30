@@ -1,6 +1,5 @@
 import json
 import typing
-from copy import deepcopy
 
 
 class CustomToolAdapterError(ValueError):
@@ -153,38 +152,36 @@ def build_output_item(
     name = str(function.get("name", "")).strip()
     if not name:
         raise CustomToolAdapterError("outcomming custom tool call is missing `name`")
+    try:
+        input_text = extract_input_text(function.get("arguments"))
+    except CustomToolAdapterError as exc:
+        raise CustomToolAdapterError(
+            f"outcomming custom tool call arguments for {name!r}: {exc}"
+        ) from exc
     return {
         "type": "custom_tool_call",
         "call_id": str(tool_call.get("id", "")).strip() or f"call_{index}",
         "name": name,
-        "input": extract_input_text(function.get("arguments")),
+        "input": input_text,
     }
 
 
 def extract_input_text(raw_arguments: "object") -> "str":
-    if isinstance(raw_arguments, dict):
-        parsed = deepcopy(raw_arguments)
-    else:
-        parsed = None
-
-    raw_text = raw_arguments if isinstance(raw_arguments, str) else None
-    if parsed is None and raw_text is not None:
+    parsed = raw_arguments
+    if isinstance(raw_arguments, str):
         try:
-            parsed = json.loads(raw_text or "{}")
-        except json.JSONDecodeError:
-            return raw_text
-
-    if isinstance(parsed, dict) and "input" in parsed:
-        value = parsed.get("input")
-        if isinstance(value, str):
-            return value
-        return json.dumps(value, ensure_ascii=False)
-
-    if raw_text is not None:
-        return raw_text
-    if parsed is not None:
-        return json.dumps(parsed, ensure_ascii=False)
-    return str(raw_arguments or "")
+            parsed = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise CustomToolAdapterError(
+                "expected JSON arguments containing an `input` string: " + str(exc)
+            ) from exc
+    if not isinstance(parsed, dict) or set(parsed) != {"input"}:
+        raise CustomToolAdapterError(
+            "expected a JSON object containing only the `input` string field"
+        )
+    if not isinstance(parsed["input"], str):
+        raise CustomToolAdapterError("`input` must be a string")
+    return parsed["input"]
 
 
 def _build_description(raw_tool: "typing.Dict[str, object]") -> "str":
@@ -193,11 +190,14 @@ def _build_description(raw_tool: "typing.Dict[str, object]") -> "str":
         return APPLY_PATCH_CHAT_DESCRIPTION
 
     description = str(raw_tool.get("description", "") or "").strip()
-    parts = [description] if description else []
-    parts.append(
-        "Chat-completions compatibility: provide the raw tool payload in the "
-        "`input` string field."
-    )
+    parts = [
+        'Call this function with JSON arguments {"input": "<raw tool input>"}. '
+        "The `input` field is required and must be a string. "
+        "The raw-input instructions below describe the contents of that string; "
+        "the function call arguments must still be valid JSON."
+    ]
+    if description:
+        parts.append(description)
 
     raw_format = raw_tool.get("format")
     if isinstance(raw_format, dict):

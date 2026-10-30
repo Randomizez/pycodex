@@ -6,6 +6,9 @@ from .base_tool import BaseTool
 
 class ListAgentsTool(BaseTool):
     name = "list_agents"
+    namespace = "collaboration"
+    namespace_description = "Tools for spawning and managing sub-agents."
+    exec_only = False
     description = (
         "List live agents in the current root thread tree. Optionally filter "
         "by task-path prefix."

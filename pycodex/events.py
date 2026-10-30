@@ -407,7 +407,9 @@ class ToolCompletedEvent(TurnEvent):
         output = self.result.output
         call_summary = ""
         result_summary = None
-        if name == "exec_command":
+        if name == "exec" and isinstance(self.call.arguments, str):
+            call_summary = self.call.arguments
+        elif name == "exec_command":
             command = arguments.get("cmd")
             if command not in (None, ""):
                 command = str(command)

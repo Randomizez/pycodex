@@ -42,6 +42,8 @@ class ToolSpec:
     options: "typing.Union[JSONDict, None]" = None
     output_schema: "typing.Union[JSONDict, None]" = None
     supports_parallel: "bool" = True
+    namespace: "typing.Union[str, None]" = None
+    namespace_description: "str" = ""
 
     def serialize(self) -> "JSONDict":
         if self.tool_type == "web_search":
@@ -240,17 +242,24 @@ class ToolCall:
     encrypted_function_args: "typing.Union[typing.List[str], None]" = None
 
     def serialize(self) -> "JSONDict":
+        name = self.name
+        namespace = self.namespace
+        if "." in name:
+            inferred_namespace, name = name.rsplit(".", 1)
+            if namespace is not None and namespace != inferred_namespace:
+                raise ValueError("tool call namespace does not match its name")
+            namespace = inferred_namespace
         if self.tool_type == "custom":
             payload = {
                 "type": "custom_tool_call",
-                "name": self.name,
+                "name": name,
                 "input": str(self.arguments),
                 "call_id": self.call_id,
             }
         else:
             payload = {
                 "type": "function_call",
-                "name": self.name,
+                "name": name,
                 "arguments": (
                     self.raw_arguments
                     if self.raw_arguments is not None
@@ -264,8 +273,8 @@ class ToolCall:
             }
         if self.id is not None:
             payload["id"] = self.id
-        if self.namespace is not None:
-            payload["namespace"] = self.namespace
+        if namespace is not None:
+            payload["namespace"] = namespace
         if self.tool_type == "function" and self.encrypted_function_args is not None:
             payload["encrypted_function_args"] = deepcopy(self.encrypted_function_args)
         if self.tool_type == "custom" and self.status is not None:
@@ -336,7 +345,7 @@ class ToolResult:
     def serialize(self) -> "JSONDict":
         payload_output: "JSONValue"
         if self.content_items is not None:
-            payload_output = list(self.content_items)
+            payload_output = deepcopy(list(self.content_items))
         elif isinstance(self.output, str):
             payload_output = self.output
         else:
@@ -359,7 +368,7 @@ class ToolResult:
         if self.id is not None:
             payload["id"] = self.id
         if self.tool_type == "custom" and self.name is not None:
-            payload["name"] = self.name
+            payload["name"] = self.name.rsplit(".", 1)[-1]
         return payload
 
 

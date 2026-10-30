@@ -448,6 +448,16 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `test_runtime_submission_loop_processes_turn_and_shutdown`
   - 预期：队列通过 `start()` / `close()` 处理用户提交并自然关闭，不另建 worker。
 
+### `tests/test_code_mode.py`
+
+- 验证 exec 与宿主 PID 相同、不启动子进程，并使用显式 `cwd` 访问工作区文件。
+- 并发 cell 的普通 `print()`、namespace 和会话 store 独立，不重定向宿主 stdout。
+- 清理仅取消当前 cell 的 asyncio 任务；保留其他 cell、宿主任务及工具拥有的后台任务，
+  并恢复事件循环原有 task factory。
+- 正常完成、terminate、shutdown 和 close 均等待已发工具调用完成；取消观察者不取消 cell。
+- 覆盖并发工具调用、工具错误、语法和运行错误、timer/exit/notify、媒体输出、
+  多行字符串，以及 restart 后旧 cell 不污染新会话。
+
 ### `tests/test_builtin_tools.py`
 
 覆盖当前已接入的本地工具实现：
@@ -461,7 +471,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `write_stdin`
   - 预期：能复用已有 session，向 stdin 写入并拿到后续输出。
 - `exec`
-  - 预期：能运行 raw JavaScript；支持返回 completed 或 running cell 状态。
+  - 预期：在宿主进程中运行 raw Python；支持返回 completed 或 running cell 状态。
 - `wait`
   - 预期：能等待 `exec` cell 的后续输出或完成态。
 - `web_search`

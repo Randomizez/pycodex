@@ -11,9 +11,6 @@ Expected behavior:
 from ..protocol import JSONDict, JSONValue
 from .base_tool import BaseTool, ToolContext
 
-MIN_AUTO_RESOLUTION_MS = 60_000
-MAX_AUTO_RESOLUTION_MS = 240_000
-
 REQUEST_USER_INPUT_QUESTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -35,7 +32,7 @@ REQUEST_USER_INPUT_QUESTION_SCHEMA = {
                 "Provide 2-3 mutually exclusive choices. Put the recommended option "
                 'first and suffix its label with "(Recommended)". Do not include '
                 'an "Other" option in this list; the client will add a free-form '
-                "Other option automatically."
+                '"Other" option automatically.'
             ),
             "items": {
                 "type": "object",
@@ -60,14 +57,11 @@ REQUEST_USER_INPUT_QUESTION_SCHEMA = {
 
 
 class RequestUserInputTool(BaseTool):
+    exec_only = False
     name = "request_user_input"
     description = (
         "Request user input for one to three short questions and wait for the "
-        f"response. Set autoResolutionMs, from {MIN_AUTO_RESOLUTION_MS} to "
-        f"{MAX_AUTO_RESOLUTION_MS} milliseconds, only when the question is "
-        "useful but non-blocking and continuing with best judgment is "
-        "acceptable if the user does not answer; omit it when explicit user "
-        "input is required. This tool is unavailable in Default mode."
+        "response. This tool is only available in Plan mode."
     )
     input_schema = {
         "type": "object",
@@ -76,20 +70,6 @@ class RequestUserInputTool(BaseTool):
                 "type": "array",
                 "description": "Questions to show the user. Prefer 1 and do not exceed 3",
                 "items": REQUEST_USER_INPUT_QUESTION_SCHEMA,
-            },
-            "autoResolutionMs": {
-                "type": "number",
-                "description": (
-                    "Optional auto-resolution window in milliseconds, from "
-                    f"{MIN_AUTO_RESOLUTION_MS} to {MAX_AUTO_RESOLUTION_MS}. "
-                    "Include this only when the question is useful but "
-                    "non-blocking and continuing with best judgment is "
-                    "acceptable if the user does not answer; omit it when "
-                    "explicit user input is required before continuing. Use "
-                    f"{MIN_AUTO_RESOLUTION_MS} for lightly helpful context and "
-                    f"up to {MAX_AUTO_RESOLUTION_MS} when the answer would "
-                    "materially unblock better work."
-                ),
             },
         },
         "required": ["questions"],
