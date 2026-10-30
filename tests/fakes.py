@@ -93,10 +93,10 @@ def make_runtime(agent):
     return runtime
 
 
-def make_tools(runtime_environment=None, exec_mode=False, toolset=None):
+def make_tools(runtime_environment=None, toolset=None):
     """Build a real registry for isolated tool and schema tests."""
     manager = AgentsManager(ScriptedModelClient([]), ContextConfig())
-    return get_tools(manager, runtime_environment, exec_mode, toolset)
+    return get_tools(manager, runtime_environment, toolset)
 
 
 async def wait_for_runtime_idle(runtime):

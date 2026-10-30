@@ -113,7 +113,7 @@ def test_sync_construction_uses_the_execution_loop(tmp_path, construction_loop):
                     await wait_for_runtime_idle(child)
                     assert child.agent_status == {"completed": "child done"}
                     assert "not running" in await exec_manager.write_stdin(999)
-                    assert code_manager.enabled_tools() == []
+                    assert tools.exec_tools() == []
                 finally:
                     release_child.set()
                     await runtime.close()

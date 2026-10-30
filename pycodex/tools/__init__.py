@@ -6,6 +6,7 @@ implementations that back `pycodex`.
 
 import typing
 
+from ..protocol import qualified_tool_name
 from .apply_patch_tool import ApplyPatchTool
 from .base_tool import BaseTool, Registry, ToolContext, ToolRegistry
 from .clock_manager import ClockManager
@@ -46,7 +47,7 @@ def get_tools(
     agents_manager: "AgentsManager",
     runtime_environment: "typing.Union[AgentRuntimeEnvironment, None]" = None,
     toolset: "typing.Union[typing.Iterable[str], None]" = None,
-):
+) -> "ToolRegistry":
     runtime_environment = runtime_environment or create_agent_runtime_environment()
     registry = Registry(runtime_environment)
     code_mode_manager = CodeModeManager(registry)
@@ -84,11 +85,10 @@ def get_tools(
         view_image_tool,
     ) + goal_tools + agent_tools
     if toolset is not None:
-        available_tools = {tool.name: tool for tool in tools}
-        available_tools.update({
-            f"{tool.namespace}.{tool.name}": tool for tool in tools
-            if tool.namespace not in (None, "", "functions")
-        })
+        available_tools = {
+            name: tool for tool in tools
+            for name in (tool.name, qualified_tool_name(tool.name, tool.namespace))
+        }
         toolset = tuple(toolset)
         unknown_tools = set(toolset) - set(available_tools)
         if unknown_tools:

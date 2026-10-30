@@ -39,6 +39,7 @@ class AgentsManager:
         model_client: "ModelClient",
         context_config: "ContextConfig",
         toolset: "typing.Union[typing.Iterable[str], None]" = None,
+        tools_factory=get_tools,
     ) -> "None":
         self._runtimes: "OrderedDict[str, AgentRuntime]" = OrderedDict()
         self._closing_children = {}
@@ -46,6 +47,7 @@ class AgentsManager:
         self._root_model_client = model_client
         self._context_config = context_config
         self._root_toolset = None if toolset is None else tuple(toolset)
+        self._tools_factory = tools_factory
 
     def build_agent(
         self,
@@ -81,9 +83,7 @@ class AgentsManager:
             session_file_path = None
         return Agent(
             model_client,
-            get_tools(
-                self, runtime_environment, toolset=toolset,
-            ),
+            self._tools_factory(self, runtime_environment, toolset),
             context_config,
             initial_history=tuple(initial_history),
             session_file_path=session_file_path,

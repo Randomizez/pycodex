@@ -26,9 +26,11 @@ from ..protocol import (
     ToolResult,
     ToolSpec,
     UserMessage,
+    qualified_tool_name,
 )
 from ..utils import get_debug_dir
 from .runtime_services import AgentRuntimeEnvironment
+from .python_tool_schema import python_tool_identifier
 
 
 @dataclass(
@@ -111,11 +113,7 @@ class ToolRegistry:
     def register(self, tool: "BaseTool") -> "None":
         if "." in tool.name:
             raise ValueError("tool names must not contain '.'")
-        name = (
-            tool.name if tool.namespace in (None, "", "functions")
-            else f"{tool.namespace}.{tool.name}"
-        )
-        self._tools[name] = tool
+        self._tools[qualified_tool_name(tool.name, tool.namespace)] = tool
 
     def model_visible_specs(self, code_mode_only: "bool" = False) -> "typing.List[ToolSpec]":
         if not code_mode_only:
@@ -130,6 +128,27 @@ class ToolRegistry:
             if not {"exec", "wait"}.issubset(direct_tools):
                 raise ValueError("CodeModeOnly requires registered exec and wait tools")
         return [tool.spec() for tool in direct_tools.values()]
+
+    def exec_tools(self) -> "typing.List[JSONDict]":
+        enabled = []
+        identifiers = set()
+        for tool_name, tool in self._tools.items():
+            if not tool.exec_only and tool.namespace != "collaboration":
+                continue
+            if tool.tool_type not in {"function", "custom"}:
+                continue
+            namespace, name = python_tool_identifier(tool.name, tool.namespace)
+            identifier = namespace + "." + name
+            if identifier in identifiers:
+                raise ValueError("duplicate exec tool identifier: " + identifier)
+            identifiers.add(identifier)
+            enabled.append({
+                "tool_name": tool_name, "namespace": namespace, "name": name,
+                "description": tool.description, "tool_type": tool.tool_type,
+                "parameters": tool.input_schema, "output_schema": tool.output_schema,
+                "format": tool.format,
+            })
+        return sorted(enabled, key=lambda item: (item["namespace"], item["name"]))
 
     def supports_parallel(self, tool_name: "str") -> "bool":
         tool = self._tools.get(tool_name)
@@ -152,21 +171,19 @@ class ToolRegistry:
                 replace(context, call_id=call.call_id),
                 call.arguments,
             )
+            metadata = {}
             if isinstance(output, StructuredToolOutput):
-                return ToolResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    output=output.output,
-                    content_items=output.content_items,
-                    success=output.success,
+                metadata = dict(
+                    content_items=output.content_items, success=output.success,
                     is_error=output.success is False,
-                    tool_type=call.tool_type,
                 )
+                output = output.output
             return ToolResult(
                 call_id=call.call_id,
                 name=call.name,
                 output=output,
                 tool_type=call.tool_type,
+                **metadata,
             )
         except asyncio.CancelledError:
             raise

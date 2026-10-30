@@ -1400,15 +1400,22 @@ restore loose name/description/handler registration, prompt-level
 Function-tool `output_schema` remains local metadata and is omitted on the wire,
 matching upstream's skipped field.
 
-`get_tools(agents_manager, runtime_environment=None, exec_mode=False, toolset=None)`
-exposes the following available tools; the interactive exec-mode
-toolset selects a subset:
+`AgentsManager(..., tools_factory=get_tools)` uses the same
+`factory(manager, environment, toolset) -> ToolRegistry` for root and child
+construction. A custom factory reconstructs the requested selection using new
+instances and registers any shared managers with that node's environment.
+Direct `registry.register(tool)` only changes that node; inherited tools must be
+constructible by the shared factory. Child selection is the parent's registered
+tool names, including custom namespaces.
+
+`get_tools(agents_manager, runtime_environment=None, toolset=None)` constructs
+the default tools below. A nonempty selection includes `exec` and `wait`:
 
 ```text
-shell shell_command exec_command write_stdin clock exec wait web_search
-update_plan request_user_input request_permissions spawn_agent send_message
-followup_task wait_agent interrupt_agent list_agents apply_patch grep_files read_file list_dir
-view_image
+exec wait exec_command write_stdin clock request_user_input apply_patch view_image
+create_goal get_goal update_goal
+collaboration.spawn_agent collaboration.send_message collaboration.followup_task
+collaboration.wait_agent collaboration.interrupt_agent collaboration.list_agents
 ```
 
 Except for the documented `clock` extension, each supported tool corresponds
@@ -1454,6 +1461,9 @@ Unified exec has two separate output bounds: an omitted `max_output_tokens`
 still applies the default `10_000`-token response limit, and unread process
 output retains a bounded `1 MiB` head/tail buffer between polls.
 
+The registry owns the registered catalog, model visibility and `exec_tools()`
+metadata. Namespace qualification and Python identifiers have shared pure rules;
+duplicate Python identifiers fail when the cell catalog is built.
 Tools implement async `BaseTool.run`. The registry converts execution failures
 to `ToolResult` errors. Existing explicitly parallel tool batches remain parallel:
 the Agent waits for every operation in a batch before advancing or propagating
@@ -1470,6 +1480,10 @@ Tools may provide `follow_up_messages(output)`. These hooks receive untruncated
 outputs after all tool results have been committed, so a notification cannot
 split an outstanding call/result group.
 This local hook does not change tool request schemas or result serialization.
+Top-level and nested cell calls both use `ToolRegistry.execute`, including error
+conversion and accounting. Nested calls return their output to the cell without
+adding follow-up messages; outer Agent batches still own history and follow-up
+delivery.
 
 `AgentsManager` delivers child completion and failure as a native `AgentMessage`
 with message type `FINAL_ANSWER`; interruption only updates status. Each terminal

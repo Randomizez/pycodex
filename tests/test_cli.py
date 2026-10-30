@@ -193,7 +193,7 @@ async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_
     assert make_tools(toolset=[]).names() == ()
     with pytest.raises(ValueError, match="unknown toolset"):
         make_tools(toolset=["missing"])
-    defaults = make_tools(exec_mode=True)
+    defaults = make_tools()
     assert "clock" in defaults.names()
     assert "shell" not in defaults.names()
     for spec in defaults.model_visible_specs():

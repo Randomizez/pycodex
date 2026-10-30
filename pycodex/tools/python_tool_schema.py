@@ -3,6 +3,24 @@
 import inspect
 import keyword
 
+from ..utils.compat import is_ascii
+
+
+def python_tool_identifier(name, namespace):
+    if namespace not in (None, "", "functions", "collaboration"):
+        separator = "" if namespace.endswith("_") or name.startswith("_") else "__"
+        name = namespace + separator + name
+    identifier = []
+    for index, char in enumerate(name):
+        valid = char == "_" or (
+            is_ascii(char) and char.isalnum() and (index != 0 or char.isalpha())
+        )
+        identifier.append(char if valid else "_")
+    name = "".join(identifier) or "_"
+    if keyword.iskeyword(name):
+        name += "_"
+    return "collaboration" if namespace == "collaboration" else "tools", name
+
 
 def python_tool_signature(tool):
     parameters = []

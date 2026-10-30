@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-import keyword
 import math
 import traceback
 import typing
@@ -11,7 +10,6 @@ from dataclasses import dataclass, field, replace
 
 from loguru import logger
 
-from ..utils.compat import is_ascii
 from ..protocol import JSONDict, JSONValue, ToolCall, ToolResult
 from ..utils.truncation import DEFAULT_MAX_OUTPUT_TOKENS
 from .base_tool import StructuredToolOutput, ToolContext, ToolRegistry
@@ -153,46 +151,9 @@ class CodeModeManager:
         await self._wait_for_wait(cell, yield_time_ms)
         return await self._snapshot_cell(cell, max_tokens)
 
-    def enabled_tools(self) -> "typing.List[JSONDict]":
-        enabled = []
-        identifiers = set()
-        for tool_name in self._registry.names():
-            tool = self._registry.get_tool(tool_name)
-            if not tool.exec_only and tool.namespace != "collaboration":
-                continue
-            if tool.tool_type not in {"function", "custom"}:
-                continue
-            namespace = "collaboration" if tool.namespace == "collaboration" else "tools"
-            name = tool.name
-            if tool.namespace not in (None, "", "functions", "collaboration"):
-                separator = (
-                    "" if tool.namespace.endswith("_") or name.startswith("_")
-                    else "__"
-                )
-                name = tool.namespace + separator + name
-            python_name = self._normalize_identifier(name)
-            identifier = namespace + "." + python_name
-            if identifier in identifiers:
-                raise ValueError("duplicate exec tool identifier: " + identifier)
-            identifiers.add(identifier)
-            enabled.append(
-                {
-                    "tool_name": tool_name,
-                    "namespace": namespace,
-                    "name": python_name,
-                    "description": tool.description,
-                    "tool_type": tool.tool_type,
-                    "parameters": tool.input_schema,
-                    "output_schema": tool.output_schema,
-                    "format": tool.format,
-                }
-            )
-        enabled.sort(key=lambda item: (item["namespace"], item["name"]))
-        return enabled
-
     def describe_tools(self):
         sections = []
-        for tool in self.enabled_tools():
+        for tool in self._registry.exec_tools():
             sections.append(
                 "\n\n### `" + tool["namespace"] + "." + tool["name"] + "`\n"
                 + tool["description"]
@@ -202,7 +163,7 @@ class CodeModeManager:
         return "".join(sections)
 
     async def _start_cell(self, code: "str", context: "ToolContext") -> "ExecCell":
-        tools = self.enabled_tools()
+        tools = self._registry.exec_tools()
         cell_id = uuid.uuid4().hex[:10]
         cell = ExecCell(
             cell_id=cell_id,
@@ -483,19 +444,3 @@ class CodeModeManager:
             yield_time_ms=yield_time_ms,
             max_output_tokens=max_output_tokens,
         )
-
-    def _normalize_identifier(self, tool_name: "str") -> "str":
-        identifier = []
-        for index, char in enumerate(tool_name):
-            is_valid = (
-                char == "_"
-                or (
-                    is_ascii(char) and char.isalnum() and (index != 0 or char.isalpha())
-                )
-            )
-            if is_valid:
-                identifier.append(char)
-            else:
-                identifier.append("_")
-        name = "".join(identifier) or "_"
-        return name + "_" if keyword.iskeyword(name) else name

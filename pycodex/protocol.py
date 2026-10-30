@@ -25,6 +25,10 @@ JSONValue: "TypeAlias" = Any
 JSONDict: "TypeAlias" = typing.Dict[str, Any]
 
 
+def qualified_tool_name(name, namespace):
+    return name if namespace in (None, "", "functions") else f"{namespace}.{name}"
+
+
 @dataclass(
     frozen=True,
 )
