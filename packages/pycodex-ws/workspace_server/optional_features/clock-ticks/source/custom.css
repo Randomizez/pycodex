@@ -1,0 +1,67 @@
+/* Keep the source prompt intact for the host renderer and restore it on undo. */
+.log > .entry.user[data-clock-tick] {
+  align-self: stretch;
+  max-width: none;
+  padding: 4px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted, #60727d);
+}
+.entry.user[data-clock-tick] > .text { display: none; }
+.clock-tick-divider { width: 100%; }
+.clock-tick-divider > summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 28px;
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.5;
+}
+.clock-tick-divider > summary::-webkit-details-marker { display: none; }
+.clock-tick-divider > summary::before,
+.clock-tick-divider > summary::after {
+  content: "";
+  flex: 1;
+  min-width: 10px;
+  border-top: 1px solid var(--line, #cbd8df);
+  opacity: .65;
+}
+.clock-tick-label { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+.clock-tick-label svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.clock-tick-label time { font-variant-numeric: tabular-nums; }
+.clock-tick-divider > summary:hover { color: var(--ink, #172630); }
+.clock-tick-divider > summary:focus-visible {
+  outline: 2px solid var(--accent, #087f9a);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+.clock-tick-info {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 12px;
+  width: min(100%, 350px);
+  margin: 8px auto 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line, #cbd8df);
+  border-radius: 8px;
+  background: var(--panel, #f8fbfd);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.clock-tick-info dt, .clock-tick-info dd { margin: 0; }
+.clock-tick-info dd { text-align: right; overflow-wrap: anywhere; }
+@media (max-width: 600px) {
+  .clock-tick-divider > summary { min-height: 32px; gap: 9px; }
+}

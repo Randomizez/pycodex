@@ -11,6 +11,7 @@ space. Request failures remain visible; reasoning records need readable text.
 
 | ID | Feature | Summary | Validation |
 | --- | --- | --- | --- |
+| clock-ticks | [Clock tick dividers](clock-ticks/README.md) | Quiet timestamped dividers for periodic wake-ups, with expandable trigger details. | Chromium history/live updates, preserved source, session switching, keyboard/mobile and cleanup; synthetic preview |
 | consecutive-tool-groups | [Consecutive tool groups](consecutive-tool-groups/README.md) | One expandable conversation row for a run of tool calls, with running/failure counts. | Chromium fixtures, live updates, refresh, keyboard/mobile and cleanup; adapter supplied by the frontend |
 | exec-status | [Exec status](exec-status/README.md) | Running and exited command sessions above the composer. | Chromium fixtures, lifecycle, desktop/mobile; live processes not tested |
 | reasoning-display | [Recorded reasoning](reasoning-display/README.md) | Readable recorded reasoning summaries and text. | Chromium fixtures, opaque filtering, desktop/mobile; live model not tested |
