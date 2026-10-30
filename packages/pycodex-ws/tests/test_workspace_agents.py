@@ -27,6 +27,51 @@ async def eventually(predicate):
 
 
 @pytest.mark.asyncio
+async def test_capacity_removes_agent_view_and_closes_subscriptions(tmp_path):
+    manager = AgentsManager(
+        ScriptedModelClient([ModelResponse([AssistantMessage("retained result")])]),
+        ContextConfig(cwd=tmp_path, codex_home=tmp_path, multi_agent_max_concurrency=2),
+        toolset=(),
+    )
+    root = manager.create_root_runtime()
+    session = await WorkspaceInteractiveSession(root).start()
+    try:
+        async def spawn(name):
+            path = await manager.spawn_agent(
+                root.agent.agent_id, name, "task", fork_turns="none",
+            )
+            runtime = manager.get_runtime(manager._resolve_agent_id(root.agent.agent_id, path))
+            await wait_for_runtime_idle(runtime)
+            return runtime
+
+        first = await spawn("first")
+        first_view = await session.event_view(first.agent.agent_id)
+        subscriber = first_view.subscribe()
+        assert (await subscriber.get())["type"] == "hello"
+        second = await spawn("second")
+        for _ in range(2):
+            rows = (await session.api_query("agents", {}))["agents"]
+            assert [(row["agent_path"], row["status"]) for row in rows] == [
+                ("/root/second", {"completed": "retained result"}),
+            ]
+            assert rows[0]["last_message"] == "retained result"
+        for resource in ("state", "models", "history", "agents", "background-work"):
+            with pytest.raises(KeyError):
+                await session.api_query(resource, {"agent_id": first.agent.agent_id})
+        with pytest.raises(KeyError):
+            await session.event_view(first.agent.agent_id)
+        assert set(session._child_views) == {second.agent.agent_id}
+        assert not first._frontends
+        assert not first_view._subscribers
+        while await asyncio.wait_for(subscriber.get(), 2) is not None:
+            pass
+        assert first.agent.model_client.call_count == 1
+        assert first.agent.is_shutdown and first._worker.done()
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_agent_tree_tracks_descendants_and_assistant_text_without_interactive_access(tmp_path, monkeypatch):
     clients = []
     tools = {}
@@ -126,9 +171,14 @@ async def test_agent_tree_tracks_descendants_and_assistant_text_without_interact
         await wait_for_runtime_idle(interrupted)
         assert interrupted.agent_status == "interrupted"
         await child.close()
-        closed = (await session.api_query("agents", {"agent_id": child.agent.agent_id}))["root"]
-        assert closed["status"] == "shutdown"
-        assert closed["last_message"] == "Result 1"
+        for removed in (child, grandchild):
+            with pytest.raises(KeyError):
+                await session.api_query("agents", {"agent_id": removed.agent.agent_id})
+            assert removed.agent.agent_id not in session._child_views
+            assert not removed._frontends
+        assert [
+            row["agent_path"] for row in (await session.api_query("agents", {}))["agents"]
+        ] == ["/root/failed", "/root/interrupted"]
     finally:
         for release in tools.values():
             release.set()
@@ -141,20 +191,22 @@ async def test_agent_tree_tracks_descendants_and_assistant_text_without_interact
 
 
 @pytest.mark.parametrize("threaded", [False, True])
-def test_http_agent_tree_reads_do_not_create_turns(tmp_path, threaded):
+def test_http_agent_tree_reads_and_capacity_removal(tmp_path, threaded):
     sessions = []
 
     def build():
         manager = AgentsManager(
             ScriptedModelClient(response_factory=lambda prompt, count: ModelResponse([
                 AssistantMessage("Offline final"),
-            ])), context(tmp_path), toolset=(),
+            ])),
+            ContextConfig(cwd=tmp_path, codex_home=tmp_path, multi_agent_max_concurrency=2),
+            toolset=(),
         )
         session = WorkspaceInteractiveSession(manager.create_root_runtime())
 
         async def spawn(argument):
             await manager.spawn_agent(
-                session.runtime.agent.agent_id, "child", "task", fork_turns="none",
+                session.runtime.agent.agent_id, argument, "task", fork_turns="none",
             )
             return {"kind": "fixture"}
 
@@ -178,16 +230,35 @@ def test_http_agent_tree_reads_do_not_create_turns(tmp_path, threaded):
             assert client.get(base + "/agents").json() == initial
         assert sessions[0].runtime.agent.history == ()
         assert sessions[0].runtime.agent.model_client.call_count == 0
-        assert client.post(base + "/commands", json={"command": "fixture_spawn"}).status_code == 202
-        deadline = time.monotonic() + 3
-        while True:
-            payload = client.get(base + "/agents").json()
-            if payload["agents"] and isinstance(payload["agents"][0]["status"], dict):
-                break
-            assert time.monotonic() < deadline
-            time.sleep(0.005)
-        assert payload["agents"][0]["last_message"] == "Offline final"
-        assert payload["agents"][0]["parent_agent_id"] == payload["root"]["agent_id"]
+        child_ids = []
+        for name in ("child", "replacement"):
+            assert client.post(
+                base + "/commands", json={"command": "fixture_spawn", "argument": name},
+            ).status_code == 202
+            deadline = time.monotonic() + 3
+            while True:
+                payload = client.get(base + "/agents").json()
+                rows = payload["agents"]
+                if (
+                    len(rows) == 1
+                    and rows[0]["agent_path"] == "/root/" + name
+                    and isinstance(rows[0]["status"], dict)
+                ):
+                    break
+                assert time.monotonic() < deadline
+                time.sleep(0.005)
+            assert rows[0]["last_message"] == "Offline final"
+            assert rows[0]["parent_agent_id"] == payload["root"]["agent_id"]
+            child_ids.append(rows[0]["agent_id"])
+        for resource in ("state", "models", "history", "agents", "background-work"):
+            assert client.get(
+                base + "/" + resource, params={"agent_id": child_ids[0]},
+            ).status_code == 404
+        assert client.post(
+            base + "/commands", params={"agent_id": child_ids[0]},
+            json={"command": "help"},
+        ).status_code == 404
+        assert set(sessions[0]._child_views) == {child_ids[1]}
     assert sessions[0].runtime.agent.is_shutdown
 
 

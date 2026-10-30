@@ -747,9 +747,16 @@ class WorkspaceInteractiveSession:
             isinstance(event, RuntimeUpdatedEvent) and event.reason == "agents"
             or isinstance(event, SessionStateEvent) and event.reason == "attach"
         ):
-            for agent in runtime.agents_manager.list_agents(
+            agents = runtime.agents_manager.list_agents(
                 runtime.agent.agent_id, runtime.agent.agent_path,
-            ):
+            )
+            agent_ids = {agent["agent_id"] for agent in agents}
+            for agent_id in tuple(self._child_views):
+                if agent_id not in agent_ids:
+                    child, frontend_id, child_view = self._child_views.pop(agent_id)
+                    child.detach(frontend_id)
+                    child_view.close()
+            for agent in agents:
                 self._observe_runtime(runtime.agents_manager.get_runtime(agent["agent_id"]))
         view.handle_event(event, runtime.state_snapshot())
         if (

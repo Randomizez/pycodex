@@ -194,6 +194,11 @@ standard construction path.
 The current prototype uses MultiAgentV2 tools: `spawn_agent`, `send_message`,
 `followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`. Child context
 inheritance uses `fork_turns`; the session `/fork` command has been removed.
+`features.multi_agent_v2.max_concurrent_threads_per_session` sets the total
+capacity, defaulting to 16 including the root. When full, spawn closes the least
+recently used idle leaf with no pending or background work, or reports a capacity
+error. Closed children are removed from the Agent tree and Workspace views;
+their task names can be reused.
 See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
 the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
 

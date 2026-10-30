@@ -190,9 +190,12 @@ SKILL frontmatter 和 `agents/openai.yaml` 使用安全 YAML 解析；
   bundled 默认值。最终用 `<multi_agent_mode>` 包裹。显式空字符串省略该项。
 - `features.multi_agent_v2` 表支持 `root_agent_usage_hint_text`、
   `subagent_usage_hint_text`、`multi_agent_mode_hint_text` 和
-  `max_concurrent_threads_per_session`。并发提示默认总数为 4；
+  `max_concurrent_threads_per_session`。默认总容量为 16，包含根 Agent；
   旧 `agents.max_concurrent_threads_per_session` 按子节点数量加 1。
-  当前这些配置影响提示内容；Manager 不按该数字限制执行。
+  同一数字同时用于提示和 Manager 的创建容量检查。满额时按最近使用顺序
+  关闭没有存活子节点、待处理输入、命令或后台任务的空闲子 Agent；
+  没有可回收节点则明确报容量不足。关闭后的子节点从 Manager、`list_agents`
+  和 Workspace 树中注销，释放任务路径；同名重建会获得新 ID，不自动重载。
 
 ## 子 Agent 的 fork context
 

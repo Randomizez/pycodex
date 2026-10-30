@@ -82,7 +82,7 @@ class ContextConfig:
     network_access: "str" = "enabled"
     extra_contextual_user_messages: "typing.Tuple[str, ...]" = ()
     cwd: "typing.Union[str, Path, None]" = None
-    multi_agent_max_concurrency: "int" = 4
+    multi_agent_max_concurrency: "int" = 16
     multi_agent_root_instructions: "typing.Union[str, None]" = None
     multi_agent_subagent_instructions: "typing.Union[str, None]" = None
     multi_agent_hint: "typing.Union[str, None]" = None
@@ -131,7 +131,7 @@ class ContextConfig:
             raise ValueError("agents.max_concurrent_threads_per_session must be an integer")
         max_concurrency = multi_agent.get("max_concurrent_threads_per_session")
         if max_concurrency is None:
-            max_concurrency = 4 if max_children is None else max_children + 1
+            max_concurrency = 16 if max_children is None else max_children + 1
 
         return cls(
             base_instructions=_normalize_text(selected.get("base_instructions")),

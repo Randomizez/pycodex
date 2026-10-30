@@ -117,7 +117,11 @@ descendant tree. Each row includes `agent_id`, `parent_agent_id`, canonical
 `last_message` is the latest assistant text, including accumulated stream deltas;
 tool progress and errors do not replace it. Polling does not start turns,
 change history or grant interactive permissions to descendants.
-IDs remain fixed across resume. Add `?agent_id=...` to state,
+Closing a child, including capacity reclamation, unregisters it after cleanup.
+Its row and cached view are removed, and its subscriptions are closed. Requests
+using the old Agent ID return 404. Reusing its task name creates a new Agent ID;
+messages already delivered to the parent remain in that conversation.
+Registered IDs remain fixed across resume. Add `?agent_id=...` to state,
 models, history, agents, background-work or commands to target an owned child.
 
 The built-in context popover uses these rows to render the tree beneath

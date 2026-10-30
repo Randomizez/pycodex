@@ -27,7 +27,7 @@ from pycodex.utils.session_persist import (
     list_resumable_sessions,
     rollout_path_for_session,
 )
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, wait_for_runtime_idle
 
 
 @pytest.mark.asyncio
@@ -1374,7 +1374,7 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
             history=parent.history,
         )
         runtime = manager.get_runtime(manager._resolve_agent_id(parent.agent_id, path))
-        await runtime.close()
+        await wait_for_runtime_idle(runtime)
         assert runtime._last_agent_status == {"completed": "answer"}
         child = runtime.agent
         expected_history = parent.history if fork_turns == "all" else ()
@@ -1389,7 +1389,6 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
         await child.compact()
         assert "Current session file:" not in child.history[0].text
         compacted_history = child.history
-        await runtime.start()
         await manager.send_message(
             parent.agent_id, path, "continue", trigger_turn=True,
         )

@@ -283,6 +283,7 @@ class AgentRuntime:
         self.publish_state("cwd")
 
     def resume(self, path=None, title=""):
+        self.agents_manager.get_runtime(self.agent.agent_id)
         self.require_idle("resume")
         resumed = self.agent.resume(path)
         for tool in self.agent.tool_registry.tools():
@@ -615,6 +616,21 @@ class AgentRuntime:
         status = self._last_agent_status
         return dict(status) if isinstance(status, dict) else status
 
+    def can_close_for_capacity(self):
+        """Only reclaim a finished runtime with no accepted or background work."""
+        return (
+            self.accepts_input
+            and not self.is_busy
+            and self._last_agent_status != "pending_init"
+            and not self._active_commands
+            and self._input_request is None
+            and not self._steer_queue
+            and not any(
+                tool.background_work_count(True)
+                for tool in self.agent.tool_registry.tools()
+            )
+        )
+
     async def submit_user_turn(self, text: "str") -> "TurnResult":
         _submission_id, future = self.enqueue(text)
         return await future
@@ -672,9 +688,15 @@ class AgentRuntime:
         future.add_done_callback(self._observe_completion)
         queued.futures.append(future)
         # Publish after the input layer attaches display text and turn identity.
-        loop.call_soon(self.publish_update, "queue")
-        loop.call_soon(self._wake_worker)
+        loop.call_soon(self._notify_queue_change)
         return queued.submission_id, future
+
+    def _notify_queue_change(self):
+        # The worker can drain and unregister before this notification runs.
+        if self.agent.is_shutdown:
+            return
+        self.publish_update("queue")
+        self._wake_worker()
 
     def message(self, text: "typing.Union[str, AgentMessage]") -> "None":
         """Deliver accepted input to steer, including completion notices during close."""
@@ -739,8 +761,11 @@ class AgentRuntime:
             async with self._get_command_lock():
                 await self._close_resources()
         finally:
-            self.agent.shutdown()
-            self._publish(SessionClosedEvent())
+            try:
+                self.agent.shutdown()
+            finally:
+                self._publish(SessionClosedEvent())
+                self.agents_manager.unregister_runtime(self.agent.agent_id)
 
     async def _close_resources(self):
         errors = []

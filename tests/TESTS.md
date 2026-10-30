@@ -257,7 +257,11 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 
 - `test_multi_agents.py`：命名任务树、完成/失败通知恰好一次、同文不同事件、
   idle mailbox、活跃父 turn 的消息接入、状态快照隔离、后台唤醒、
-  等待超时清理、父树关闭排空及清理失败。
+  等待超时清理、父树关闭排空、子节点并行关闭及清理失败、
+  立即关闭后的过期队列通知。
+- `test_agent_capacity.py`：含根的容量上限、最近使用顺序、关闭注销与任务名复用、
+  排队/邮箱/命令/clock/exec 工作保护、调用者与存活子树保护、
+  并发创建的容量预留，以及回收与父关闭/资源清理及工具关闭失败的交互。
 - `test_runtime_state.py`：独立 enqueue、合并 trigger、只投递消息、
   用户 steer 的回执与逻辑 turn ID、停止唤醒 wait、compaction 边界、
   exec/clock 唤醒归属和关闭后的拒绝接纳。
@@ -269,7 +273,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - `tests/responses_server/test_server.py`：chat/messages 转换明文 AgentMessage，
   明确输出 `encrypted_function_args: []`，密文在下游请求前被拒绝。
 - workspace 的 `test_workspace_agents.py`：普通与独立线程的 Agent 树 API、
-  流式 assistant 正文、工具/错误状态期间的消息保留、观察已有子节点及订阅清理。
+  流式 assistant 正文、工具/错误状态期间的消息保留、观察已有子节点及订阅清理，
+  容量关闭与递归关闭后移除节点和缓存、结束订阅，旧 Agent ID 查询返回 404。
 - core/workspace session 测试：`/fork` 拒绝且不改历史、身份或录制路径，
   普通 resume/重启继续工作，旧 pending-fork 状态明确报错且保留原文件。
 

@@ -606,6 +606,8 @@ lock. Cross-thread callers must
 schedule operations on that loop rather than mutate the queue directly.
 Worker notification is scheduled after enqueue returns, allowing cross-thread
 submission receipts to be delivered before model execution can block that loop.
+Deferred queue notifications stop once the Agent is shut down, so a worker that
+drains immediately cannot publish updates after its child Runtime is unregistered.
 
 `runtime.is_busy` includes pending submissions, direct Agent work and closing
 resource cleanup. Destructive
@@ -621,7 +623,13 @@ calls `Agent.shutdown()`. Tool shutdown hooks run once at that final boundary,
 after accepted work can no longer rearm them. Completion comes from the worker,
 not a separate shutdown future. Direct `Agent.shutdown()` disables background
 hooks and rejects new calls without interrupting an active call.
-`runtime.resume()` without a path explicitly reopens it and rebinds tools.
+Direct children close concurrently, each draining its own accepted work and
+closing its descendants. All child closes finish before cleanup errors are
+reported; this removes serial child-cleanup waits without cancelling turns.
+A closed child Runtime is unregistered after publishing `SessionClosedEvent`,
+including when resource cleanup or tool shutdown reports an error. Its task path
+is released. The root stays registered for the session lifecycle;
+`runtime.resume()` without a path reopens a registered Runtime and rebinds tools.
 Runtime and workspace close wait
 for accepted work to finish. There is no close timeout that cancels a turn:
 if a request never finishes, close keeps waiting.
@@ -1363,6 +1371,29 @@ caller, and canonical paths or Agent IDs address nodes elsewhere in the tree.
 Children inherit their parent's visible toolset, model and current directory.
 Each owns a new tool environment and model client.
 
+`ContextConfig.multi_agent_max_concurrency` limits open Agents across the whole
+tree, including the root. The default is 16; the corresponding TOML setting is
+`features.multi_agent_v2.max_concurrent_threads_per_session`. Spawn serializes
+capacity checks, reclamation and registration so parallel calls cannot claim the
+same slot. Closing Agents keep their slot until cleanup finishes.
+
+At capacity, spawn closes the least recently used eligible child before creating
+the new one. Creation, message delivery and turn/compaction/command starts update
+recency. A candidate must have completed, failed or been interrupted, with no
+running/queued work, mailbox messages, commands, input request or background tool
+work. Enabled clocks and running `exec` cells also prevent reclamation. The root,
+the caller and nodes with live descendants are excluded: normal close is
+recursive, so capacity reclamation only closes leaves. If no child qualifies,
+spawn fails with a capacity error and leaves existing work running. Cleanup
+errors propagate before a replacement is created.
+
+Capacity reclamation permanently closes and unregisters the child. The node is
+removed from the tree and `list_agents`; Workspace detaches its observer, drops
+its child view and closes subscriptions. Old Agent IDs are no longer queryable,
+and reusing the task name creates a new Agent with a new ID. Messages already
+delivered to the parent remain in its conversation. There is no automatic
+reopening or idle-timeout reclamation.
+
 Unified exec has two separate output bounds: an omitted `max_output_tokens`
 still applies the default `10_000`-token response limit, and unread process
 output retains a bounded `1 MiB` head/tail buffer between polls.
@@ -1395,8 +1426,8 @@ recipient keeps it until execution is triggered.
 non-root recipient; it does not stop active execution. `interrupt_agent` requests
 a cooperative stop and returns `previous_status`, leaving the Agent available.
 It rejects the root and self-targets. `list_agents` reports live task paths and
-statuses, optionally filtered by a path prefix. Closed nodes remain registered
-for workspace observation but are omitted from this tool's live list.
+statuses, optionally filtered by a path prefix. Closed children are unregistered
+and disappear from both this list and Workspace observation.
 
 `wait_agent` takes only optional integer `timeout_ms` and returns
 `{message, timed_out}` without consuming message content. It wakes on mailbox
@@ -1420,7 +1451,8 @@ timer expires. Starting a turn cancels the pending countdown; a successful
 reply rearms it. `clock(null)` and shutdown cancel it. The aggregate background
 count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
-loop.
+loop. Running code-mode `exec` cells also report background work; a completed
+cell closes its Node input stream so its process can exit.
 
 Host session workers, notification watchers, timer cancellation and I/O cleanup
 still use asyncio where appropriate. Those resource mechanisms are not per-turn

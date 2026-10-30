@@ -165,6 +165,10 @@ run_async(main())
 当前原型使用 MultiAgentV2 工具：`spawn_agent`、`send_message`、
 `followup_task`、`wait_agent`、`interrupt_agent` 和 `list_agents`。
 子 Agent 通过 `fork_turns` 继承上下文；会话 `/fork` 命令已移除。
+`features.multi_agent_v2.max_concurrent_threads_per_session` 设置总容量，
+默认 16（包含根 Agent）。满额时关闭最久未使用且没有待处理或后台工作的
+空闲叶子节点；没有可回收节点则报容量不足。已关闭子节点从 Agent 树、
+Workspace 和 `list_agents` 中移除，原任务名可重新使用。
 详见[运行时契约](docs/RUNTIME.md)、[上下文装配](docs/CONTEXT.md)和
 [新版对齐基线与剩余差异](docs/ALIGNMENT.md)。
 

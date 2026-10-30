@@ -25,6 +25,7 @@ The implementation now uses these contracts:
 | Input | `enqueue` schedules an independent turn; `message` queues accepted input; `trigger` requests execution; `stop_asap` requests a cooperative stop. Frontends still enter through `submit_input`. |
 | Agent messages | `NEW_TASK`, `MESSAGE`, and automatic `FINAL_ANSWER` deliveries use native `agent_message` input items. Message receipt alone does not start an idle recipient. |
 | Wait | Waits for mailbox activity or steered input, without consuming or returning message content. It no longer takes agent IDs or returns a status map. |
+| Capacity | The default total is 16 including the root. Spawn enforces the configured limit and closes eligible idle leaves in least-recently-used order. Closed children are removed from the tree and Workspace views, releasing their task names. |
 | Forked context | `fork_turns="all"` is the default. Fixed context and real history retain their ordering; child identity and task are appended after the inherited prefix. `"none"` starts fresh history. |
 | Persistence | Root recording remains lazy; child agents stay in memory. Session `/fork`, `Agent.fork`, `AgentRuntime.fork`, and pending Workspace fork restoration are removed. |
 | Workspace | Context details show `To compact: N/limit` and the root/descendant tree. `last_message` is the latest assistant text, including streaming text; tool and error status do not replace it. |
@@ -65,6 +66,10 @@ local base prompt retains a Planning section and skills usage guidance absent
 from that release fixture. These are recorded differences, not passing parity
 checks; the command exits `1` when it writes such a report.
 
+These captures predate the local default-capacity increase to 16 and
+capacity-triggered closing. Those behaviors are covered by local regression
+tests, not by the saved HTTP comparisons.
+
 Capture artifacts are local audit evidence, not required package resources.
 When repeating a comparison, record the executable version and source commit,
 use isolated HOME/CODEX_HOME and fixed SSE fixtures, retain the unmodified
@@ -92,7 +97,7 @@ loading only; it does not update the HTTP or tool-schema baselines above.
 | --- | --- |
 | Tool exposure | Tools remain flat and use local class schemas. Upstream tool namespaces, deferred discovery, model-specific schema overrides, and CodeModeOnly selection are not reproduced. |
 | Fork overrides | The prompt describes upstream restrictions on full-history model/effort overrides; the local manager currently accepts explicit overrides. Model availability, MultiAgentV2 support, and supported effort are not validated against the provider catalog. |
-| Capacity | `multi_agent_max_concurrency` controls prompt text. It is not an execution limit, residency pool, or idle-agent eviction mechanism. |
+| Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
 | Optional MultiAgentV2 settings | Role configurations, nicknames, configurable wait/schema exposure, and `wake_on_agent_messages` are not implemented. |
 | Shared budget | Usage and compaction are per Agent; there is no tree-wide token budget or budget-triggered shutdown. |
 | Wire metadata | Client metadata, some user/result IDs, headers, and User-Agent version still differ. Preserving provider fields does not imply all locally generated IDs match. |

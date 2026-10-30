@@ -131,7 +131,7 @@ def test_role_default_and_mode_blocks_remain_separate(tmp_path, monkeypatch, eff
         {"type": "input_text", "text": "<collaboration_mode>Default instructions</collaboration_mode>"},
     ]
     assert developer[1]["content"][0]["text"].startswith("<multi_agent_role>Root instructions")
-    assert "4 available concurrency slots" in developer[1]["content"][0]["text"]
+    assert "16 available concurrency slots" in developer[1]["content"][0]["text"]
     assert developer[2]["content"] == [
         {"type": "input_text", "text": "<multi_agent_mode>" + mode + "</multi_agent_mode>"}
     ]
@@ -148,6 +148,9 @@ def test_role_default_and_mode_blocks_remain_separate(tmp_path, monkeypatch, eff
 
 def test_multi_agent_config_prefers_feature_settings_and_validates_values(tmp_path):
     path = tmp_path / "config.toml"
+    path.write_text("", encoding="utf-8")
+    assert ContextConfig().multi_agent_max_concurrency == 16
+    assert ContextConfig.from_codex_config(path).multi_agent_max_concurrency == 16
     path.write_text(
         "[agents]\nmax_concurrent_threads_per_session = 2\n"
         "[features.multi_agent_v2]\n"

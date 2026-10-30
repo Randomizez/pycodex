@@ -282,9 +282,57 @@ async def test_parent_close_drains_active_and_queued_child_work(tmp_path, start_
 
 
 @pytest.mark.asyncio
+async def test_immediate_child_close_finishes_before_deferred_queue_notifications(tmp_path):
+    root = make_tree(tmp_path, ScriptedModelClient([ModelResponse([AssistantMessage("done")])]))
+    reported = []
+    events = []
+    loop = asyncio.get_running_loop()
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda loop, context: reported.append(context["exception"]))
+    try:
+        child = await spawn(root)
+        child.attach(events.append, interactive=False)
+        await child.close()
+        assert child.agent_status == "shutdown"
+        assert events[-1].kind == "session_closed"
+        assert not reported
+        assert len(messages(root._steer_queue)) == 1
+        assert len(root.agents_manager.list_agents(root.agent.agent_id)) == 1
+    finally:
+        try:
+            await root.close()
+        finally:
+            loop.set_exception_handler(previous_handler)
+
+
+@pytest.mark.asyncio
+async def test_parent_close_starts_child_cleanup_concurrently(tmp_path):
+    root = make_tree(tmp_path, ScriptedModelClient([ModelResponse([AssistantMessage("done")])]))
+    children = [await spawn(root, "child_" + str(index)) for index in range(2)]
+    entered = [asyncio.Event() for child in children]
+    release = asyncio.Event()
+    for index, child in enumerate(children):
+        async def cleanup(index=index):
+            entered[index].set()
+            await release.wait()
+        child.add_close_handler(cleanup)
+    closing = asyncio.create_task(root.close())
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(event.wait() for event in entered)), 2,
+        )
+        assert all(not child.accepts_input for child in children)
+        assert not closing.done()
+    finally:
+        release.set()
+        await closing
+
+
+@pytest.mark.asyncio
 async def test_parent_close_cleans_every_child_after_cleanup_errors(tmp_path):
     root = make_tree(tmp_path, ScriptedModelClient([ModelResponse([AssistantMessage("done")])]))
     children = [await spawn(root, "child_" + str(index)) for index in range(3)]
+    grandchildren = [await spawn(children[0], "nested_" + str(index)) for index in range(2)]
     failures = [RuntimeError("first cleanup failed"), RuntimeError("second cleanup failed")]
     for child, failure in zip(children, failures):
         async def fail_cleanup(error=failure):
@@ -300,7 +348,16 @@ async def test_parent_close_cleans_every_child_after_cleanup_errors(tmp_path):
         assert caught.value is failures[0]
         assert reported == failures[1:]
         assert root.agent.is_shutdown
-        assert all(child.agent.is_shutdown and child._worker.done() for child in children)
+        assert all(
+            child.agent.is_shutdown and child._worker.done()
+            for child in children + grandchildren
+        )
+        assert root.agents_manager.list_agents(root.agent.agent_id) == [{
+            "agent_id": root.agent.agent_id,
+            "parent_agent_id": None,
+            "agent_path": "/root",
+            "status": "shutdown",
+        }]
     finally:
         await asyncio.gather(*(child.close() for child in children), return_exceptions=True)
         loop.set_exception_handler(previous_handler)
