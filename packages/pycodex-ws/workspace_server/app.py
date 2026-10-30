@@ -922,6 +922,9 @@ class WorkspaceInteractiveSession:
                 view = await self.event_view(agent["agent_id"])
                 agents[agent["agent_id"]] = dict(
                     agent,
+                    elapsed_seconds=runtime.agents_manager.get_runtime(
+                        agent["agent_id"]
+                    ).turn_elapsed_seconds,
                     last_message=shorten_title(
                         view.summary()["last_assistant"],
                         limit=SPINNER_STATUS_PREVIEW_LIMIT,

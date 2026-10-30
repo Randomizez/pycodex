@@ -118,7 +118,10 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 
 访问 `http://127.0.0.1:6007`。工作区同时提供对话、实时 HTML Canvas 和只读
 文件/diff 查看器。点击回复中的文件链接打开视图，通过 **Insert into chat**
-把选中的代码插入可编辑草稿。`diff:left..right` 比较两个本地文件，
+把选中的代码插入可编辑草稿。
+上下文圆环可打开 Agent 树，显示包含 root 的 `n running · m failed` 汇总、
+每个 Agent 的本轮耗时（`for x min`）和错误详情。
+`diff:left..right` 比较两个本地文件，
 两侧均支持绝对或相对路径。用 `[TODO](TODO.md)` 链接本地文件，
 裸写的文件名保持纯文本。本地 PDF 链接使用浏览器内置阅读器预览，
 并提供新标签页打开和下载入口。运行期间保持服务器 stdin 打开，EOF 会触发关闭。

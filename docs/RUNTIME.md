@@ -366,6 +366,14 @@ limit and maximum context length (the config override or model metadata value,
 before effective-window scaling). A click pins the details; another click,
 an outside click or Escape dismisses them. With auto-compaction disabled, the
 ring instead uses the maximum context length and the details say `Off`.
+The details also show the live Agent tree and an `n running · m failed` count
+across the root and all retained descendants. Each name shows `for x min`,
+the current or most recent turn's elapsed time in minutes to one decimal place.
+Runtime records turn start and end using a monotonic clock; the duration freezes
+on completion, failure or interruption and resets when another turn starts.
+Before the first turn it is zero. Errored rows show the error from their
+status in red, with wrapping and the full text available in a tooltip, even
+when the Agent has an earlier assistant message.
 After compaction or history restore, current usage is unknown until the next
 token report; the ring resets and the details show that usage is pending.
 Queue hints use neutral backgrounds and running status uses a small activity dot.

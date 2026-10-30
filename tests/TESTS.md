@@ -307,6 +307,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不增加未发出请求的 iteration；溢出恢复只重试一次，不重跑已完成工具。
 - `test_runtime_state.py` 覆盖 exec/clock 唤醒后的 steer：正常中断不报通知失败，
   真实模型异常仍上报，待处理用户输入由 Runtime worker 继续执行。
+- `test_runtime_timing.py` 覆盖本轮耗时在运行中增长、完成/失败/中断后冻结，以及下一轮重置；
+  workspace Agent 树测试验证耗时 API 和延迟接入前端时保留已完成任务的耗时。
 - mailbox 等待超时后仍能收到后续完成通知；Python 3.6 下也必须完成
   event waiter 的取消清理，不能留下等待任务或丢失后续通知。
 - `test_cli.py` 保留入口、装配、portable round-trip、steer/queue 反馈和流式展示；

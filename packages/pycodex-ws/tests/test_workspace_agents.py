@@ -118,6 +118,7 @@ async def test_agent_tree_tracks_descendants_and_assistant_text_without_interact
     try:
         initial = await session.api_query("agents", {})
         assert initial["root"]["agent_id"] == root.agent.agent_id
+        assert initial["root"]["elapsed_seconds"] == 0
         assert initial["agents"] == []
         child = await spawn(root, "worker")
         await eventually(lambda: child.agent.agent_id in tools)
@@ -161,6 +162,7 @@ async def test_agent_tree_tracks_descendants_and_assistant_text_without_interact
         failed_row = (await session.api_query("agents", {"agent_id": failed.agent.agent_id}))["root"]
         assert failed_row["status"] == {"errored": "ValueError: fixture failure"}
         assert failed_row["last_message"] == ""
+        assert failed_row["elapsed_seconds"] == failed.turn_elapsed_seconds
 
         interrupted = await spawn(root, "interrupted")
         await eventually(lambda: interrupted.agent.agent_id in tools)
@@ -275,7 +277,10 @@ async def test_attach_observes_existing_descendants(tmp_path):
     session = WorkspaceInteractiveSession(root)
     try:
         await session.start()
-        assert (await session.api_query("agents", {}))["agents"][0]["last_message"] == "Offline final"
+        row = (await session.api_query("agents", {}))["agents"][0]
+        assert row["last_message"] == "Offline final"
+        assert row["elapsed_seconds"] == child.turn_elapsed_seconds
+        assert row["elapsed_seconds"] > 0
         assert len(child._frontends) == 1
     finally:
         await session.close()

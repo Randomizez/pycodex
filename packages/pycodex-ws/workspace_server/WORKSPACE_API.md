@@ -112,11 +112,15 @@ Workspace model clients implement `ModelControl`, including an explicit
 
 The response's `root` is the selected Agent and `agents` is its flattened
 descendant tree. Each row includes `agent_id`, `parent_agent_id`, canonical
-`agent_path`, `status` and `last_message`. Status is `pending_init`, `running`,
+`agent_path`, `status`, `elapsed_seconds` and `last_message`. Status is `pending_init`, `running`,
 `interrupted`, `shutdown`, `{completed: text}` or `{errored: text}`.
 `last_message` is the latest assistant text, including accumulated stream deltas;
 tool progress and errors do not replace it. Polling does not start turns,
 change history or grant interactive permissions to descendants.
+`elapsed_seconds` measures the current or most recent turn with the Runtime's
+monotonic clock. It starts at turn start, freezes on completion, failure or
+interruption, and resets on the next turn. It is zero before the first turn;
+opening the panel or attaching a frontend does not reset it.
 Closing a child, including capacity reclamation, unregisters it after cleanup.
 Its row and cached view are removed, and its subscriptions are closed. Requests
 using the old Agent ID return 404. Reusing its task name creates a new Agent ID;
@@ -125,7 +129,12 @@ Registered IDs remain fixed across resume. Add `?agent_id=...` to state,
 models, history, agents, background-work or commands to target an owned child.
 
 The built-in context popover uses these rows to render the tree beneath
-`To compact: N/limit`. Within each sibling group, running and initializing Agents
+`To compact: N/limit`. Its `n running · m failed` summary counts running and
+errored Agents across all displayed Agents, including the root. Each name is
+followed by `for x min`, showing `elapsed_seconds` in minutes to one decimal place.
+Errored rows display the error text from `status.errored` in place
+of `last_message`, with wrapping and a tooltip containing the full error.
+Within each sibling group, running and initializing Agents
 appear first, preserving source order within active and inactive groups; polling
 updates the order as statuses change. Usage comes from the latest provider token
 count and the limit is the auto-compaction threshold; unknown usage is `—`, and an unset

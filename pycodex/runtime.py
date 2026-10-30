@@ -3,6 +3,7 @@ import json
 import typing
 from collections import deque
 from dataclasses import dataclass, field, replace
+from time import monotonic
 
 from .agent import BASE_EVENT_HANDLER, Agent, TurnInterrupted
 from .events import (
@@ -103,6 +104,8 @@ class AgentRuntime:
         self._command_lock = None
         self._input_request = None
         self._active_turn = None
+        self._turn_started_at = None
+        self._turn_finished_at = None
         self._input_activity: "typing.Union[asyncio.Event, None]" = None
         self._wait_interrupted = False
         self._last_agent_status: "typing.Union[str, dict]" = "pending_init"
@@ -629,6 +632,13 @@ class AgentRuntime:
         )
 
     @property
+    def turn_elapsed_seconds(self) -> "float":
+        if self._turn_started_at is None:
+            return 0.0
+        end = monotonic() if self._turn_finished_at is None else self._turn_finished_at
+        return end - self._turn_started_at
+
+    @property
     def agent_status(self):
         if self.agent.is_shutdown:
             return "shutdown"
@@ -841,6 +851,11 @@ class AgentRuntime:
                 future.set_exception(exc)
 
     def _handle_agent_event(self, event: "TurnEvent") -> "None":
+        if isinstance(event, TurnStartedEvent):
+            self._turn_started_at = monotonic()
+            self._turn_finished_at = None
+        elif isinstance(event, (TurnCompletedEvent, TurnFailedEvent, TurnInterruptedEvent)):
+            self._turn_finished_at = monotonic()
         queued = self._current_submission
         if queued is not None and event.turn_id == queued.turn_id:
             event = replace(

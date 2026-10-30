@@ -583,7 +583,9 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    .context-agent-name { font-weight: 600; }
+    .context-agent-heading { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+    .context-agent-name { font-weight: 600; min-width: 0; }
+    .context-agent-duration { flex-shrink: 0; color: var(--muted); font-size: 11px; }
     .context-agent-message { min-height: 18px; color: var(--muted); }
     .context-agent[data-status="running"] > .context-agent-row .context-agent-message {
       animation: agent-message-breathe var(--breathing-duration) var(--breathing-ease) infinite;
@@ -596,6 +598,11 @@
     }
     .context-agent[data-status="completed"] > .context-agent-row .tab-status::before { background: #568a73; }
     .context-agent[data-status="errored"] > .context-agent-row .tab-status::before { background: var(--danger); }
+    .context-agent[data-status="errored"] > .context-agent-row .context-agent-message {
+      color: var(--danger);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
     .context-agent[data-status="interrupted"] > .context-agent-row .tab-status::before { background: #c98100; }
     .context-tree-status { margin: 8px 0 2px; color: var(--muted); }
     .tabs {
@@ -1484,6 +1491,7 @@
               <div id="contextDetails" class="context-details" role="region" aria-label="Context and agents" hidden>
                 <div class="context-details-card">
                   <div class="context-usage">To compact: <span id="contextCurrent">—</span>/<span id="contextCompact">—</span></div>
+                  <div id="contextAgentsSummary" class="context-tree-status" hidden></div>
                   <ul id="contextAgents" class="context-agent-tree" aria-label="Agent tree" tabindex="0"></ul>
                   <p id="contextAgentsStatus" class="context-tree-status" role="status" hidden></p>
                 </div>
@@ -2613,6 +2621,7 @@
       const control = document.getElementById("contextControl");
       const details = document.getElementById("contextDetails");
       const tree = document.getElementById("contextAgents");
+      const summary = document.getElementById("contextAgentsSummary");
       const status = document.getElementById("contextAgentsStatus");
       const rows = new Map();
       let pinned = false;
@@ -2631,6 +2640,7 @@
         structure = "";
         rows.clear();
         tree.replaceChildren();
+        summary.hidden = true;
         status.textContent = "Loading agents…";
         status.hidden = false;
       };
@@ -2639,6 +2649,10 @@
         const agents = [payload.root, ...payload.agents].sort(
           (left, right) => Number(isActive(right)) - Number(isActive(left))
         );
+        const running = agents.filter(agent => agent.status === "running").length;
+        const failed = agents.filter(agent => typeof agent.status === "object" && "errored" in agent.status).length;
+        summary.textContent = `${running} running · ${failed} failed`;
+        summary.hidden = false;
         const nextStructure = JSON.stringify(agents.map(agent => [agent.agent_id, agent.parent_agent_id]));
         if (nextStructure !== structure) {
           rows.clear();
@@ -2648,7 +2662,8 @@
             item.className = "context-agent";
             item.dataset.agentId = agent.agent_id;
             item.innerHTML = '<div class="context-agent-row"><span class="tab-status" role="img"></span>' +
-              '<div><span class="context-agent-name"></span><span class="context-agent-message"></span></div></div>' +
+              '<div><div class="context-agent-heading"><span class="context-agent-name"></span>' +
+              '<span class="context-agent-duration"></span></div><span class="context-agent-message"></span></div></div>' +
               '<ul class="context-agent-children"></ul>';
             rows.set(agent.agent_id, item);
           }
@@ -2670,10 +2685,11 @@
           const name = item.querySelector(".context-agent-name");
           name.textContent = agent.agent_path.split("/").pop();
           name.title = agent.agent_path;
+          item.querySelector(".context-agent-duration").textContent = `for ${(agent.elapsed_seconds / 60).toFixed(1)} min`;
           const message = item.querySelector(".context-agent-message");
-          const text = agent.last_message || "—";
+          const text = (state === "errored" ? agent.status.errored : agent.last_message) || "—";
           if (message.textContent !== text) message.textContent = text;
-          message.title = agent.last_message;
+          message.title = text;
         }
         status.hidden = true;
       };
@@ -3252,7 +3268,7 @@
           "and available reasoning. Recorded rollout history includes pre-compaction " +
           "records; active_history contains only current in-memory history.",
         "- GET api/sessions/{id}/agents -> {root, agents}: root and descendants with " +
-          "agent_id, parent_agent_id, agent_path, status and last_message. Add agent_id to resource/command " +
+          "agent_id, parent_agent_id, agent_path, status, elapsed_seconds and last_message. Add agent_id to resource/command " +
           "queries to target an owned child; submission lookup needs only its ID.",
         "- GET api/sessions/{id}/background-work -> {background_work}: exec " +
           "session_id/pid/tty/status/exit_code and clock enabled/period_m/status/" +
