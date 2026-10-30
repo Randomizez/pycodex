@@ -2635,7 +2635,10 @@
         status.hidden = false;
       };
       const render = payload => {
-        const agents = [payload.root, ...payload.agents];
+        const isActive = agent => agent.status === "running" || agent.status === "pending_init";
+        const agents = [payload.root, ...payload.agents].sort(
+          (left, right) => Number(isActive(right)) - Number(isActive(left))
+        );
         const nextStructure = JSON.stringify(agents.map(agent => [agent.agent_id, agent.parent_agent_id]));
         if (nextStructure !== structure) {
           rows.clear();

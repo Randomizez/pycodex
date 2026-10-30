@@ -125,8 +125,10 @@ Registered IDs remain fixed across resume. Add `?agent_id=...` to state,
 models, history, agents, background-work or commands to target an owned child.
 
 The built-in context popover uses these rows to render the tree beneath
-`To compact: N/limit`. Usage comes from the latest provider token count and the
-limit is the auto-compaction threshold; unknown usage is `—`, and an unset
+`To compact: N/limit`. Within each sibling group, running and initializing Agents
+appear first, preserving source order within active and inactive groups; polling
+updates the order as statuses change. Usage comes from the latest provider token
+count and the limit is the auto-compaction threshold; unknown usage is `—`, and an unset
 threshold is `Off`. The tree exists only for the live root runtime; restoring a
 saved workspace does not restore child runtimes.
 
