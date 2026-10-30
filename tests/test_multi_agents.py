@@ -4,6 +4,7 @@ import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
 from pycodex.protocol import AgentMessage, ToolResult
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import ClockTool
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 
@@ -246,7 +247,7 @@ async def test_wait_timeout_can_be_followed_by_child_completion(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("start_sampling", [False, True])
-async def test_parent_close_drains_active_and_queued_child_work(tmp_path, start_sampling):
+async def test_parent_close_interrupts_active_and_queued_child_work(tmp_path, start_sampling):
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -261,19 +262,23 @@ async def test_parent_close_drains_active_and_queued_child_work(tmp_path, start_
     try:
         if start_sampling:
             await entered.wait()
-        _submission_id, pending = child.enqueue("also finish")
-        closing = asyncio.create_task(root.close())
-        await entered.wait()
-        await asyncio.sleep(0)
-        assert not closing.done()
-        assert child.agent.is_running
-        release.set()
-        await asyncio.wait_for(closing, 2)
-        assert (await pending).output_text == "done"
-        assert child.agent.model_client.call_count == 2
+        _submission_id, pending = child.enqueue("discard")
+        if start_sampling:
+            closing = asyncio.create_task(root.close())
+            await asyncio.sleep(0)
+            assert not closing.done()
+            assert child.agent.is_running
+            assert not child.accepts_input
+            release.set()
+            await asyncio.wait_for(closing, 2)
+        else:
+            await root.close()
+        with pytest.raises(SubmissionInterrupted):
+            await pending
+        assert child.agent.model_client.call_count == int(start_sampling)
         assert child.agent_status == "shutdown"
         assert root.agent_status == "shutdown"
-        assert len(messages(root._steer_queue)) == 2
+        assert not root._steer_queue
     finally:
         release.set()
         if closing is not None:
@@ -296,7 +301,7 @@ async def test_immediate_child_close_finishes_before_deferred_queue_notification
         assert child.agent_status == "shutdown"
         assert events[-1].kind == "session_closed"
         assert not reported
-        assert len(messages(root._steer_queue)) == 1
+        assert not root._steer_queue
         assert len(root.agents_manager.list_agents(root.agent.agent_id)) == 1
     finally:
         try:
@@ -326,6 +331,90 @@ async def test_parent_close_starts_child_cleanup_concurrently(tmp_path):
     finally:
         release.set()
         await closing
+
+
+@pytest.mark.asyncio
+async def test_close_signals_whole_tree_before_waiting_and_keeps_child_errors(tmp_path):
+    entered = asyncio.Queue()
+    release_root = asyncio.Event()
+    release_children = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def respond(prompt, count):
+        await entered.put(None)
+        await release_children.wait()
+        return ModelResponse([AssistantMessage("child done")])
+
+    async def respond_root(prompt, count):
+        await entered.put(None)
+        await release_root.wait()
+        return ModelResponse([AssistantMessage("root done")])
+
+    root = make_tree(tmp_path, ScriptedModelClient(response_factory=respond))
+    children = [await spawn(root, "child_" + str(index)) for index in range(2)]
+    grandchild = await spawn(children[0], "nested")
+    root.agent.model_client = ScriptedModelClient(response_factory=respond_root)
+    await root.start()
+    _submission_id, active = root.enqueue("root work")
+    for _ in range(4):
+        await asyncio.wait_for(entered.get(), 1)
+
+    async def fail_cleanup():
+        cleaned.set()
+        raise ValueError("child cleanup failed")
+
+    children[0].add_close_handler(fail_cleanup)
+    pending = [runtime.enqueue("discard")[1] for runtime in [root] + children + [grandchild]]
+    closing = asyncio.create_task(root.close())
+    try:
+        await asyncio.sleep(0)
+        for runtime in [root] + children + [grandchild]:
+            assert not runtime.accepts_input
+            assert runtime.agent._stop_requested
+            assert not runtime._enqueue_queue
+        for future in pending:
+            with pytest.raises(SubmissionInterrupted):
+                await future
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await spawn(children[1], "too_late")
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await root.agents_manager.send_message(
+                children[1].agent.agent_id, root.agent.agent_id, "too late",
+            )
+        release_children.set()
+        await asyncio.wait_for(cleaned.wait(), 1)
+        assert root.agent.is_running
+        assert children[0].agent.agent_id not in root.agents_manager._runtimes
+        assert not closing.done()
+        release_root.set()
+        with pytest.raises(ValueError, match="child cleanup failed"):
+            await asyncio.wait_for(closing, 1)
+        with pytest.raises(SubmissionInterrupted):
+            await active
+        assert all(runtime.agent.is_shutdown for runtime in [root] + children + [grandchild])
+        assert not root._steer_queue
+    finally:
+        release_root.set()
+        release_children.set()
+        await asyncio.gather(active, closing, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_child_close_only_stops_its_subtree(tmp_path):
+    root = make_tree(tmp_path, ScriptedModelClient([ModelResponse([AssistantMessage("done")])]))
+    child = await spawn(root, "child")
+    sibling = await spawn(root, "sibling")
+    grandchild = await spawn(child, "nested")
+    try:
+        await child.close()
+        assert child.agent.is_shutdown
+        assert grandchild.agent.is_shutdown
+        assert root.accepts_input
+        assert sibling.accepts_input
+        await wait_for_runtime_idle(sibling)
+        assert sibling.agent_status == {"completed": "done"}
+    finally:
+        await root.close()
 
 
 @pytest.mark.asyncio

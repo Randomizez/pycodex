@@ -104,8 +104,10 @@ These rules also apply to the browser workspace and Feishu.
 Sessions are saved under `CODEX_HOME/sessions`. Set
 `model_auto_compact_token_limit` in the configuration to compact automatically.
 
-Ctrl+D or Ctrl+C closes the CLI after accepted work finishes. A second Ctrl+C
-during closing exits immediately. Use `pycodex --help` for startup options.
+Ctrl+D or Ctrl+C stops the session and its child agents: pending turns are
+discarded, and active turns stop after issued model/tool operations finish.
+Session close uses the same behavior. A second Ctrl+C during closing exits
+immediately. Use `pycodex --help` for startup options.
 
 ## Browser workspace
 

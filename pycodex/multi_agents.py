@@ -292,6 +292,8 @@ class AgentsManager:
     async def send_message(
         self, caller_agent_id, target, message, trigger_turn=False, encrypted=False,
     ):
+        if not self._runtimes[caller_agent_id].accepts_input:
+            raise RuntimeError("agent is shutting down")
         if not message.strip():
             raise ValueError("Empty message can't be sent to an agent")
         recipient_agent_id = self._resolve_agent_id(caller_agent_id, target)
@@ -328,15 +330,28 @@ class AgentsManager:
     async def wait_for_activity(self, agent_id, timeout_ms):
         return await self._runtimes[agent_id].wait_for_activity(timeout_ms)
 
-    async def shutdown_children(self, agent_id) -> "None":
-        parent_path = self._runtimes[agent_id].agent.agent_path
-        children = [
-            child for child in self._runtimes.values()
-            if child.agent.agent_path.rsplit("/", 1)[0] == parent_path
+    def request_close(self, agent_id) -> "None":
+        """Signal a whole subtree before waiting for any of its operations."""
+        path = self._runtimes[agent_id].agent.agent_path
+        runtimes = [
+            runtime for runtime in self._runtimes.values()
+            if runtime.agent.agent_path == path
+            or runtime.agent.agent_path.startswith(path + "/")
         ]
+        for runtime in runtimes:
+            runtime._request_close([
+                child for child in runtimes
+                if child.agent.agent_path.rsplit("/", 1)[0] == runtime.agent.agent_path
+            ])
+
+    async def shutdown_children(self, agent_id) -> "None":
+        # Children may finish and unregister while their parent's turn stops.
+        runtime = self._runtimes[agent_id]
+        children = runtime._closing_children
         outcomes = await asyncio.gather(
             *(child.close() for child in children), return_exceptions=True,
         )
+        runtime._closing_children = ()
         errors = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
         if errors:
             for error in errors[1:]:
@@ -372,7 +387,9 @@ class AgentsManager:
             return
         parent_agent_id = self.get_parent_agent_id(agent_id)
         if parent_agent_id is not None and text is not None:
-            self._runtimes[parent_agent_id].message(
-                self._message(agent_id, parent_agent_id, text, "FINAL_ANSWER"),
-            )
+            parent = self._runtimes[parent_agent_id]
+            if parent.accepts_input:
+                parent.message(
+                    self._message(agent_id, parent_agent_id, text, "FINAL_ANSWER"),
+                )
         self._notify_parents(agent_id)

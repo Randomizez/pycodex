@@ -153,7 +153,7 @@ Workspace routes parse JSON objects explicitly and return HTTP 422 with a
 `detail` message for invalid bodies or content types. HTTP errors retain their
 JSON `detail`, status and headers. File/Git view operations run in the thread
 pool so they do not block session polling or WebSocket delivery. Startup and
-shutdown continue to start and drain the same runtime managers.
+shutdown continue to start and close the same runtime managers.
 
 Portable AES-256-GCM runs through `pycodex.utils.crypto`, using the bundled pure
 Python subset of pyaes and tlslite-ng. It uses no optional crypto backend or
@@ -248,7 +248,7 @@ chat's draft. All opened entries retain live status while the
 sidebar is visible; hiding it stops observation without closing sessions.
 Model changes use typed `/model` commands; the model label is read-only.
 Closing an entry uses the existing session DELETE endpoint and waits for normal
-backend draining before removing the entry. HTTP snapshot polling uses the
+backend stop and cleanup before removing the entry. HTTP snapshot polling uses the
 existing Web projection. In remote workspaces, the extension host starts Python
 and makes HTTP requests on the remote machine; the webview only exchanges
 messages with the extension host.
@@ -265,8 +265,9 @@ crash can leave the temporary files behind. The `pycodex-ws` CLI always
 shuts down on stdin EOF. Stdin stays open for the backend's lifetime.
 EOF on folder removal, deactivation,
 or extension-host death starts normal server shutdown, including when EOF arrives
-before startup finishes. Accepted turns and queues drain through existing Runtime
-closure; no turn timeout or forced cancellation is added. Deactivation waits for
+before startup finishes. Runtime closure interrupts pending turns and stops
+active turns cooperatively across each session tree; no turn timeout or forced
+cancellation is added. Deactivation waits for
 all owned processes to exit. A temporary remote disconnection leaves sessions
 running if their extension host remains alive.
 Other CLI launchers must also keep stdin open; closed stdin (including
@@ -414,10 +415,11 @@ serialization omits it from Responses input and new rollout response items.
 Older rollout entries can still load that field, but replay never sends it to
 the API.
 
-`start()` is idempotent and owns the one queue worker. `close()` stops admission,
-resolves waiting input, drains turns and child sessions, and runs injected
-connection cleanup; it never cancels an Agent turn. Detach alone does not close
-the backend. The CLI process and workspace session manager close sessions they
+`start()` is idempotent and owns the one queue worker. `close()` stops admission
+across its Runtime subtree, interrupts pending turns, requests cooperative stop
+for active turns, resolves waiting input, and runs injected connection cleanup.
+It never cancels an Agent Task or an issued model/tool operation. Detach alone
+does not close the backend. The CLI process and workspace session manager close sessions they
 own; unlinking a Feishu card only detaches that frontend. Web submits directly
 to the backend, including across its worker-thread boundary: it does not run a
 CLI shell or maintain an extra prompt queue.
@@ -446,12 +448,16 @@ destination has no recorded path yet. The runtime broadcasts a `recording`
 state change after the first successful write; an unrelated file at the
 destination does not count as that write.
 The workspace manager keeps its persistence subscriber attached while sessions
-drain during close, then waits for the final events before releasing its state.
+stop during close, then waits for the final events before releasing its state.
 
 The queue has no separate public `shutdown()` or worker-start entry point.
 Do not restore `run_forever()`, `begin_shutdown` or a separate `draining` state.
-`close()` switches off `accepts_input` and wakes the worker. The worker exits when
-the queues are empty; there is no special shutdown submission. Its result carries
+`close()` asks `AgentsManager` to signal every Runtime in the subtree before
+awaiting any of them. Each Runtime switches off `accepts_input`, calls
+`stop_asap()`, clears its enqueue/mailbox queues and pending trigger, resolves
+discarded submission futures with `SubmissionInterrupted`, and wakes its worker.
+The current submission reaches its cooperative stop boundary before cleanup;
+there is no special shutdown submission. The worker's result carries
 cleanup errors for concurrent and repeated close callers. Closing also works
 before `start()`. A cancelled close caller does not cancel the worker.
 Cleanup visits every child and connection handler even if one fails; the first
@@ -461,8 +467,9 @@ prompt, and calls `runtime.close()`. The prompt toolkit
 `c-c` and `<sigint>` bindings exit with `EOFError`, including on version 3.0.36
 which has no `interrupt_exception` constructor parameter, so an input task cannot
 leak `KeyboardInterrupt` into the event-loop runner. One Ctrl+C initiates normal exit;
-the admission event renders a `[closing]` notice while accepted work and cleanup
-finish. It does not interrupt model/tool calls or bypass their completion.
+the admission event renders a `[closing]` notice while active turns stop and
+cleanup finishes. Pending turns do not start. Issued model/tool operations finish
+and persist their results before the turn stops.
 While closing, another Ctrl+C immediately terminates the CLI process with status
 130. This also works after Ctrl+D starts closing. The CLI
 installs a SIGINT handler for its interactive session and reinstalls it after
@@ -472,7 +479,7 @@ Normal completion and cleanup errors restore the
 original handler. Forced exit happens at the process boundary, without cancelling
 the turn or re-entering asyncio shutdown waits. It skips remaining cleanup and
 does not guarantee termination of external tool processes. Runtime close itself
-still waits for accepted work.
+still waits for issued operations and cleanup.
 The prompt uses `set_exception_handler=False` so prompt_toolkit does not replace
 the event loop's exception handler with its blocking "Press ENTER to continue"
 screen. Background notification failures (including provider rate limits) remain
@@ -616,7 +623,8 @@ Ordinary `/queue` input does not request a stop.
 Direct `run_turn` callers receive `TurnInterrupted` if a Runtime requests a stop.
 Runtime delivers messages through `TurnInputReadyEvent`, including during direct
 Agent execution. The Agent does not own or complete Runtime receipts; executing
-enqueued or triggered turns requires `runtime.start()` (or a draining `close()`).
+enqueued or triggered turns requires `runtime.start()`; `close()` discards
+pending turns.
 There are no separate
 input-inserted/submission-interrupted events: presentation uses the actual
 turn-started/interrupted lifecycle and the existing queued-input feedback.
@@ -628,7 +636,7 @@ schedule operations on that loop rather than mutate the queue directly.
 Worker notification is scheduled after enqueue returns, allowing cross-thread
 submission receipts to be delivered before model execution can block that loop.
 Deferred queue notifications stop once the Agent is shut down, so a worker that
-drains immediately cannot publish updates after its child Runtime is unregistered.
+closes immediately cannot publish updates after its child Runtime is unregistered.
 
 `runtime.is_busy` includes pending submissions, direct Agent work and closing
 resource cleanup. Destructive
@@ -636,24 +644,30 @@ interactive commands such as resume/model/compact use that same state.
 Exec/clock notifications require an idle Runtime with no queued work.
 
 `Agent.accepts_input` is a local admission flag; `runtime.accepts_input` reads it
-without a reverse Agent-to-Runtime dependency. `runtime.close()` clears it,
-resolves pending questions and drains existing entries. Background invocations
-observe that same flag, while accepted work can still run until final shutdown.
-The worker then waits for the command lock, closes children and connections, and
-calls `Agent.shutdown()`. Tool shutdown hooks run once at that final boundary,
+without a reverse Agent-to-Runtime dependency. `runtime.close()` clears it across
+the subtree, resolves pending questions, discards pending turns and requests
+cooperative stop. New submissions, mailbox messages, triggers and child spawns
+are rejected; late background outputs and child completion notifications do not
+enqueue work in a closing Runtime. `start()` cannot reopen a closing Runtime;
+explicit `resume()` is required after shutdown.
+The worker then waits for accepted command work and the command lock, closes
+children and connections, and calls `Agent.shutdown()`. Tool shutdown hooks run once at that final boundary,
 after accepted work can no longer rearm them. Completion comes from the worker,
 not a separate shutdown future. Direct `Agent.shutdown()` disables background
 hooks and rejects new calls without interrupting an active call.
-Direct children close concurrently, each draining its own accepted work and
-closing its descendants. All child closes finish before cleanup errors are
-reported; this removes serial child-cleanup waits without cancelling turns.
+The signal captures direct child references before any await, so children that
+finish and unregister while their parent is stopping are still awaited and
+their cleanup errors remain visible. Direct children close concurrently, each
+waiting for its current operation and closing its descendants. Closing a child
+only signals that child's subtree. All child closes finish before cleanup errors
+are reported; this removes serial child-cleanup waits without cancelling turns.
 A closed child Runtime is unregistered after publishing `SessionClosedEvent`,
 including when resource cleanup or tool shutdown reports an error. Its task path
 is released. The root stays registered for the session lifecycle;
 `runtime.resume()` without a path reopens a registered Runtime and rebinds tools.
-Runtime and workspace close wait
-for accepted work to finish. There is no close timeout that cancels a turn:
-if a request never finishes, close keeps waiting.
+Runtime and workspace close wait for issued model/tool operations to finish.
+There is no close timeout that cancels a turn: if a request never finishes,
+close keeps waiting.
 
 Sub-agent services observe ordinary Agent lifecycle events. They retain the last
 completed/failed status, but active execution and pending inputs take precedence
