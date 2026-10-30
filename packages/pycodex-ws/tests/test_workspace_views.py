@@ -199,6 +199,30 @@ def test_native_diff_paths_keep_parent_components_and_encoded_separators(tmp_pat
     assert literal["title"] == "old..file.py <-> ../new.py"
 
 
+@pytest.mark.parametrize("left_absolute,right_absolute", [
+    (True, True), (False, True), (True, False),
+])
+def test_native_diff_absolute_paths_reuse_relative_comparison(
+    tmp_path, left_absolute, right_absolute
+):
+    left = tmp_path / "old.py"
+    right = tmp_path / "new.py"
+    left.write_text("old\n", encoding="utf-8")
+    right.write_text("new\n", encoding="utf-8")
+    views = WorkspaceViewStore()
+    opener = WorkspaceViewOpener(views, tmp_path)
+    relative = opener.open("diff:old.py..new.py")
+    href = "diff:{0}..{1}#R1".format(
+        left if left_absolute else left.name,
+        right if right_absolute else right.name,
+    )
+    selected = opener.open(href)
+    assert selected["id"] == relative["id"]
+    assert len(views.list_views()) == 1
+    assert [document["text"] for document in selected["documents"]] == ["old\n", "new\n"]
+    assert selected["selection"] == {"document": 1, "line": 1}
+
+
 def test_windows_drive_links_keep_the_drive_and_line(tmp_path):
     opener = WorkspaceViewOpener(WorkspaceViewStore(), tmp_path)
     for href, path in [

@@ -1721,6 +1721,8 @@
       ? window.markdownit({html: false, linkify: true, breaks: false})
       : null;
     if (markdownRenderer) {
+      // Bare filenames such as TODO.md must not become http://TODO.md.
+      markdownRenderer.linkify.set({fuzzyLink: false});
       markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
         const token = tokens[index];
         const href = token.attrGet("href");

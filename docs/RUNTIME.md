@@ -942,6 +942,7 @@ Use Git-style expressions for comparisons:
 | `[versions](diff:HEAD~1..HEAD:src/app.py)` | Two revisions of the same file |
 | `[rename](diff:HEAD~1:old.py..HEAD:new.py)` | Two Git files with different paths |
 | `[files](diff:old.py..new.py)` | Two local files |
+| `[files](diff:/data/project/old.py../data/project/new.py)` | Two absolute local paths |
 | `[left](diff:HEAD:src/app.py#L12)` | Diff, left line 12 |
 | `[right](diff:HEAD:src/app.py#R42)` | Diff, right line 42 |
 | `[Canvas](workspace://canvas)` | The existing live HTML Canvas |
@@ -960,6 +961,10 @@ Canvas HTML file path opens a preview tab; adding a line number opens its source
 `workspace://canvas` selects the existing live page. External URLs, `mailto:` links and plain `#anchor` links keep their browser
 behavior. The renderer preserves recognized view destinations through sanitizing
 without permitting executable URL protocols.
+Bare filenames such as `TODO.md` remain text; use `[TODO](TODO.md)` to open them.
+Bare domain names are not automatically linked, so `.md` filenames are not
+mistaken for websites. Explicit Markdown links, URLs with a scheme or `//`
+prefix, and automatic email links still work.
 
 Percent-encode literal special characters in paths: space as `%20`, `#` as `%23`,
 `?` as `%3F`, `%` as `%25`, and a literal colon as `%3A`. For example,

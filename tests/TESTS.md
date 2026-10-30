@@ -121,6 +121,17 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 内容更新、展开状态、草稿、手机滚动、新建/关闭会话及切走后的 Mermaid
 异步完成。所有请求使用离线 fixture，不访问真实会话或 CDN。
 
+Markdown 文件链接的浏览器回归使用与页面相同版本的渲染和清洗库，手动运行：
+
+```bash
+npm install --prefix /tmp/pycodex-browser-check playwright markdown-it@14.1.0 dompurify@3.2.6
+NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests/workspace_markdown_links.cjs
+```
+
+覆盖 `[TODO](TODO.md)`、绝对/相对路径、行号和 Git/diff 链接的点击接管、
+Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 和邮件链接，
+以及可执行 URL 拒绝。脚本读取真实页面的渲染/点击代码，使用本地依赖，不请求 CDN。
+
 ### HTTP 框架依赖
 
 - `packages/pycodex-ws/tests/test_workspace_sharing.py` 覆盖管理员/访问者登录、
@@ -301,6 +312,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不再把 CSS 颜色、函数名等实现细节当成独立回归。
 - `test_workspace_views.py` 覆盖模型只输出链接时不打开标签、点击不增加模型请求/会话消息、
   空工具集仍可打开文件、普通路径与 Git 风格 URI、百分号编码及非法目标拒绝、
+  本地 diff 两侧的绝对/相对路径组合、父目录与编码分隔符、
   完整路径/Git 标题、有序比较与 Git 实际版本身份、并发打开去重、路径别名复用和 reveal 持久化、
   文件/diff/Git 行号定位、左右侧与数字 Git 文件名解析、无效行号拒绝、定位复用及原子保存、
   文件和图片自动更新、原子替换、未变文件不重读、删除/读取失败后的展示及恢复、
