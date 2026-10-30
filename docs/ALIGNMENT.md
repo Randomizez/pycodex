@@ -71,6 +71,21 @@ use isolated HOME/CODEX_HOME and fixed SSE fixtures, retain the unmodified
 request comparison, and list every normalization separately. Historical
 0.115/0.138/0.153.4 results below apply only to their stated checkpoints.
 
+### Profile file loading (2026-10-30)
+
+Isolated `codex --profile NAME mcp list --json` checks against CLI **0.166.0**
+confirm adjacent `NAME.config.toml` overlays, recursive table merging, array
+replacement, plain ASCII profile names, and rejection of selected legacy
+profile tables or the legacy default selector. Locally, model/context loading,
+Workspace discovery and Portable bundles support both adjacent files and embedded
+`[profiles.NAME]` tables with the same recursive merge rules. Pycodex deliberately
+retains the top-level default `profile` selector; an explicit `--profile` wins.
+Duplicate names across both sources are errors. Unlike that CLI version, pycodex
+requires a selected profile to exist in one source, preserving the saved-session
+restoration contract. These compatibility choices are local differences.
+The CLI check covers profile
+loading only; it does not update the HTTP or tool-schema baselines above.
+
 ### Remaining differences
 
 | Area | Boundary of the current prototype |

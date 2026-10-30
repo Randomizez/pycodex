@@ -53,7 +53,8 @@ def build_parser():
         help="Path to Codex config.toml.",
     )
     parser.add_argument(
-        "--profile", default=None, help="Optional profile name from config.toml."
+        "--profile", default=None,
+        help="Select <name>.config.toml or [profiles.<name>], overriding the config default.",
     )
     parser.add_argument(
         "--vllm-endpoint",

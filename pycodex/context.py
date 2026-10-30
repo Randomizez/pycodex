@@ -9,11 +9,7 @@ from xml.sax.saxutils import escape
 
 import yaml
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
-    import tomli as tomllib
-
+from .utils.codex_config import read_codex_config
 from .utils.model_metadata import model_metadata
 from .protocol import (
     ContextMessage, ConversationItem, JSONDict, Prompt, ToolCall, ToolResult, ToolSpec,
@@ -110,15 +106,10 @@ class ContextConfig:
         cls,
         config_path: "typing.Union[str, Path]",
         profile: "typing.Union[str, None]" = None,
+        use_default_profile: "bool" = True,
     ) -> "ContextConfig":
         path = Path(config_path)
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-        selected = dict(data)
-        if profile is not None:
-            overrides = data.get("profiles", {}).get(profile)
-            if overrides is None:
-                raise ValueError(f"unknown Codex profile: {profile}")
-            selected.update(overrides)
+        selected = read_codex_config(path, profile, use_default_profile)
 
         model_instructions_file = selected.get("model_instructions_file")
         resolved_file = None

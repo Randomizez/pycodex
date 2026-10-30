@@ -43,6 +43,12 @@ The built-in `openai` provider uses `OPENAI_API_KEY`. Authentication uses API
 keys; ChatGPT sign-in credentials from `auth.json` or the OS keychain are not
 loaded.
 
+`--profile NAME` selects an adjacent `NAME.config.toml` or an embedded
+`[profiles.NAME]` table. Both recursively merge over the base config, including
+provider and feature tables. A top-level `profile = "NAME"` sets the default;
+`--profile` overrides it. Duplicate names across both formats and missing selected
+profiles are errors. Existing embedded profiles can be used without migration.
+
 ```bash
 pycodex --profile my_profile "Summarize this repository."
 pycodex --config /path/to/config.toml
@@ -114,10 +120,11 @@ them, and use **Insert into chat** to add selected code to an editable draft.
 Local PDF links open in the browser's built-in reader, with **Open in new tab**
 and **Download** links. PDF files are streamed separately from text snapshots.
 Keep the server's stdin open: EOF initiates shutdown.
-**New session** directly creates a session using the launch `--profile`, or the
-base config when unset. The **+** button on its right (**Custom profile**) lets
-you choose a named profile from the server's Codex config; **Default** uses the
-launch setting. Each session saves its profile name and uses it again on restart; existing sessions
+**New session** uses the launch `--profile`, then the config's default `profile`,
+then the base config. The **+** button on its right (**Custom profile**) lets
+you choose from adjacent `*.config.toml` files and embedded `[profiles.NAME]`
+tables; **Default** uses the same default selection.
+Each session saves its profile name and uses it again on restart; existing sessions
 keep their configuration. Restart the server after adding or removing profiles.
 The page loads the last selected session directly on reopening. Switching back
 to a visited session immediately restores its rendered messages and scroll

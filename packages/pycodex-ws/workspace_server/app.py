@@ -16,11 +16,6 @@ from dataclasses import asdict, fields, is_dataclass, replace
 from functools import partial
 
 try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 and earlier
-    import tomli as tomllib
-
-try:
     from contextlib import asynccontextmanager
 except ImportError:  # pragma: no cover - Python 3.6 compatibility
     asynccontextmanager = None
@@ -80,6 +75,7 @@ from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.multi_agents import AgentsManager
 from pycodex.utils import uuid7_string
 from pycodex.utils.compat import importlib_metadata
+from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
 from pycodex.utils.event_helpers import (
     completed_history,
     shorten_title,
@@ -155,7 +151,10 @@ def build_parser() -> "argparse.ArgumentParser":
         default=str(DEFAULT_CODEX_CONFIG_PATH),
         help="Path to Codex config.toml.",
     )
-    parser.add_argument("--profile", default=None, help="Optional profile name.")
+    parser.add_argument(
+        "--profile", default=None,
+        help="Select <name>.config.toml or [profiles.<name>], overriding the config default.",
+    )
     parser.add_argument(
         "--system-prompt",
         default=None,
@@ -2402,7 +2401,8 @@ def _build_workspace_entry(
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
 ) -> "WorkspaceEntry":
-    config = tomllib.loads(Path(args.config).read_text(encoding="utf-8"))
+    selected = read_codex_config(args.config, args.profile)
+    profiles = list_codex_profiles(args.config)
 
     def build_session(profile) -> "WorkspaceInteractiveSession":
         model = build_model(
@@ -2412,9 +2412,12 @@ def _build_workspace_entry(
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
+            use_default_profile=False,
         )
         context_config = replace(
-            ContextConfig.from_codex_config(args.config, profile),
+            ContextConfig.from_codex_config(
+                args.config, profile, use_default_profile=False,
+            ),
             base_instructions_override=args.system_prompt,
             extra_contextual_user_messages=(
                 (_workspace_context_text(definition.board_path),)
@@ -2445,9 +2448,9 @@ def _build_workspace_entry(
             persist_callback=persist_callback,
             profile_factories={
                 name: partial(session_factory, name)
-                for name in config.get("profiles", {})
+                for name in profiles
             },
-            default_profile=args.profile,
+            default_profile=selected["profile"],
         ),
     )
 

@@ -36,6 +36,36 @@ steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 ses
 仅第一条请求携带。历史对比及其测试隔离边界见
 [Steer semantics](ALIGNMENT.md#steer-semantics)。
 
+## 配置读取与 profile
+
+`ResponsesProviderConfig` 和 `ContextConfig` 共用
+`pycodex.utils.codex_config.read_codex_config`。先读基础配置，再将同目录的
+`<name>.config.toml` 或基础配置内的 `[profiles.<name>]` 作为覆盖层；显式 `--config`
+指定其他文件时，profile 仍相对于该文件的目录。`.env`、AGENTS 和相对
+`model_instructions_file` 也保持以该目录为根。
+
+表递归合并，标量、数组及不同类型的值整体替换；provider 从合并后的
+`model_providers` 选择，因此 profile 可以修改现有 provider 的部分字段，
+也可以定义新的 provider。profile 名仅允许 ASCII 字母、数字、`_`、`-`。
+
+选择顺序为显式 `--profile name`、基础配置顶层的 `profile = "name"`、
+基础配置本身。两种格式共用递归合并语义；旧内嵌表可继续使用，无需迁移。
+profile 覆盖层不能再通过 `profile` 选择其他 profile。
+
+同名的独立文件与内嵌表并存时，选择该名称或枚举 profile 列表会明确报错，
+需只保留一处定义；未选择的同名冲突不影响仅加载基础配置或其他 profile。
+`profiles` 和内嵌条目必须是表。选中的 profile 在两种来源中均不存在、
+名称无效或 TOML 无效时直接报错，不回退到基础模型。
+
+读取结果的 `profile` 字段记录实际选择，基础配置为 `None`。
+Workspace 在启动时解析默认选择并保存每个会话的实际名称；恢复显式保存的
+基础配置时传 `use_default_profile=False`，避免配置默认值变化导致换模型。
+CLI、doctor、provider/context 的普通读取默认启用顶层 selector。
+
+文件分层和合并行为参照 CLI 0.166.0。本地额外保留内嵌表和顶层 selector
+兼容，并要求选中的 profile 存在，以维持 Workspace 保存会话恢复时的
+provider 一致性。此处不代表实现了上游所有系统、项目或托管配置层。
+
 ## Context 用量与压缩
 
 修改用量显示时，区分 CLI 与 workspace 的分母：

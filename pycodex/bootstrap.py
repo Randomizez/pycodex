@@ -83,11 +83,13 @@ def build_model(
     vllm_endpoint: "typing.Union[str, None]" = None,
     use_chat_completion: "typing.Union[bool, None]" = None,
     use_messages: "bool" = False,
+    use_default_profile: "bool" = True,
 ):
     load_codex_dotenv(config_path)
     provider_config = ResponsesProviderConfig.from_codex_config(
         config_path,
         profile,
+        use_default_profile,
     )
     if use_chat_completion is None:
         use_chat_completion = bool(provider_config.use_chat_completion)

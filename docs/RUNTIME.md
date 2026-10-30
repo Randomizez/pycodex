@@ -647,11 +647,15 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 
 `GET api/sessions` returns the session list (including each tab's `profile`),
 the available profile names in `profiles`, and `default_profile`. The CLI
-loads the profile catalog from its Codex config when building each workspace.
+loads the sorted profile catalog from valid adjacent `*.config.toml` files and
+embedded `[profiles.NAME]` tables when building each workspace. Duplicate names
+across the two formats are errors. Provider and context settings share the
+[profile loader](CONTEXT.md#配置读取与-profile).
 `POST api/sessions` creates a session with optional string fields `title` and
 `prompt`, plus an optional `profile` name. Title and prompt default to an empty
 string; requests with no body still create an empty session. An omitted or null
-profile uses the launch `--profile`, or the base config when unset. Unknown
+profile uses the launch `--profile`, then the top-level config `profile`, then
+the base config. Unknown
 names fail before creating a session. The selected profile is passed to both
 model and Agent construction on the session's worker thread. CLI overrides
 continue to apply. A nonempty prompt is submitted unchanged through the Runtime.

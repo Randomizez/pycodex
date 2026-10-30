@@ -20,18 +20,32 @@ from test_workspace_server import make_session, wait_snapshot
 
 
 @pytest.mark.parametrize("multi", [False, True])
-@pytest.mark.parametrize("default_profile", [None, "fast"])
-def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_profile):
+@pytest.mark.parametrize("profile_format,config_default,launch_profile", [
+    ("file", None, None),
+    ("file", None, "fast"),
+    ("embedded", None, None),
+    ("embedded", "fast", None),
+    ("file", "fast", None),
+    ("mixed", "review", "fast"),
+])
+def test_profile_creation_and_restore(
+    tmp_path, monkeypatch, multi, profile_format, config_default, launch_profile,
+):
+    default_profile = launch_profile or config_default
     config = tmp_path / "config.toml"
     config.write_text(
         'model = "base-model"\n'
         'model_reasoning_effort = "low"\n'
-        'base_instructions = "Base instructions."\n'
-        '[profiles.fast]\n'
+        'base_instructions = "Base instructions."\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "fast.config.toml").write_text(
         'model = "fast-model"\n'
         'model_reasoning_effort = "medium"\n'
-        'base_instructions = "Fast instructions."\n'
-        '[profiles.review]\n'
+        'base_instructions = "Fast instructions."\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "review.config.toml").write_text(
         'model = "review-model"\n'
         'model_provider = "review-provider"\n'
         'model_reasoning_effort = "high"\n'
@@ -42,6 +56,17 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
         'env_key = "TEST_REVIEW_KEY"\n',
         encoding="utf-8",
     )
+    base = config.read_text(encoding="utf-8")
+    if config_default is not None:
+        base = 'profile = "{}"\n'.format(config_default) + base
+    for name in ("fast", "review"):
+        if profile_format == "embedded" or (profile_format == "mixed" and name == "fast"):
+            path = tmp_path / (name + ".config.toml")
+            base += "[profiles.{}]\n".format(name) + path.read_text(encoding="utf-8").replace(
+                "[model_providers.", "[profiles.{}.model_providers.".format(name),
+            )
+            path.unlink()
+    config.write_text(base, encoding="utf-8")
     definition = WorkspaceDefinition("test", tmp_path / "state", tmp_path, False)
     store = WorkspaceStateStore(tmp_path / "state.pycodex-ws.json")
     agents = []
@@ -74,7 +99,7 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
 
     prefix = "/w/test" if multi else ""
     expected_default_model = "fast-model" if default_profile else "base-model"
-    with TestClient(build_app(default_profile)) as browser:
+    with TestClient(build_app(launch_profile)) as browser:
         catalog = browser.get(prefix + "/api/sessions").json()
         assert catalog["profiles"] == ["fast", "review"]
         assert catalog["default_profile"] == default_profile
@@ -119,6 +144,10 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
     agents.clear()
     # Changing the launch default must not change any saved tab's configuration,
     # including explicit null (base configuration).
+    base = config.read_text(encoding="utf-8")
+    if config_default is not None:
+        base = base.replace('profile = "{}"\n'.format(config_default), "", 1)
+    config.write_text('profile = "review"\n' + base, encoding="utf-8")
     with TestClient(build_app("review")) as browser:
         restored = browser.get(prefix + "/api/sessions").json()["sessions"]
         assert [tab["profile"] for tab in restored] == [tab["profile"] for tab in saved]

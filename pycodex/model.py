@@ -16,11 +16,7 @@ import requests
 from urllib3.exceptions import ReadTimeoutError
 
 from .utils.compat import Protocol
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
-    import tomli as tomllib
+from .utils.codex_config import read_codex_config
 
 from .events import (
     AssistantDeltaEvent,
@@ -133,17 +129,12 @@ class ResponsesProviderConfig:
         cls,
         config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
         profile: "typing.Union[str, None]" = None,
+        use_default_profile: "bool" = True,
     ) -> "ResponsesProviderConfig":
-        data = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-        selected = dict(data)
-        if profile is not None:
-            overrides = data.get("profiles", {}).get(profile)
-            if overrides is None:
-                raise ValueError(f"unknown Codex profile: {profile}")
-            selected.update(overrides)
+        selected = read_codex_config(config_path, profile, use_default_profile)
 
         provider_name = selected.get("model_provider", "openai")
-        provider = data.get("model_providers", {}).get(provider_name)
+        provider = selected.get("model_providers", {}).get(provider_name)
         if provider is None:
             if provider_name != "openai":
                 raise ValueError(f"unknown Codex model provider: {provider_name}")

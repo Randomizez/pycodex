@@ -150,6 +150,15 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 
 ### Provider 配置
 
+- `test_codex_config.py` 覆盖独立文件/内嵌 profile 的递归表合并、数组/类型替换、
+  provider/context 一致性、相对指令路径、默认 selector 和显式选择优先级、
+  名称/结构校验，以及同名冲突、缺失 profile 和 TOML 错误的明确失败。
+  自定义 `--config` 使用其同目录 profile。
+- workspace 的 `test_workspace_profiles.py` 覆盖两种来源和混合配置的发现、
+  profile 内 provider 定义、单/多 workspace 创建及重启恢复，默认配置变化后
+  保存的显式基础配置仍保持不变；`test_portable.py` 验证两种格式混用及默认
+  selector 经上传/下载后仍可加载，基础和各 profile 的相对指令文件均保留。
+- `test_doctor.py` 验证诊断报告显示顶层默认 selector 选中的 profile。
 - `ResponsesModelClient` 默认 `stream_max_retries = 5`。CLI/REPL 测试若要求
   “先报错，再由下一句 `go on` 继续”，fixture 的 provider 配置必须设
   `stream_max_retries = 0`，否则自动重试会延后预期错误并使交互测试等待。

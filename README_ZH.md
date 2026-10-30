@@ -41,6 +41,11 @@ pycodex-ws --help
 内置 `openai` provider 使用 `OPENAI_API_KEY`。认证使用 API key，
 不读取 `auth.json` 或系统钥匙串中的 ChatGPT 登录凭据。
 
+`--profile NAME` 支持同目录的 `NAME.config.toml` 和内嵌的
+`[profiles.NAME]`，两者均递归合并到基础配置，包括 provider 和 feature
+等嵌套表。顶层 `profile = "NAME"` 设置默认选择，显式 `--profile` 优先。
+两种格式同名或选中的 profile 缺失时会报错；现有内嵌配置无需迁移。
+
 ```bash
 pycodex --profile my_profile "概括这个仓库。"
 pycodex --config /path/to/config.toml
@@ -107,9 +112,10 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 文件/diff 查看器。点击回复中的文件链接打开视图，通过 **Insert into chat**
 把选中的代码插入可编辑草稿。本地 PDF 链接使用浏览器内置阅读器预览，
 并提供新标签页打开和下载入口。运行期间保持服务器 stdin 打开，EOF 会触发关闭。
-点击 **New session** 直接按启动时的 `--profile` 创建会话，未指定时使用基础配置。
-右侧 **+** 按钮（Custom profile）可从服务器的 Codex 配置中选择 profile；
-选择框中的 **Default** 沿用启动配置。会话保存 profile 名称，
+点击 **New session** 按启动时的 `--profile`、配置默认 `profile`、基础配置的
+优先级创建会话。右侧 **+** 按钮（Custom profile）可从同目录的
+`*.config.toml` 文件和内嵌 `[profiles.NAME]` 中选择；
+选择框中的 **Default** 沿用相同默认选择。会话保存 profile 名称，
 重启后按同一名称恢复；已有会话的配置保持不变。增删 profile 后需重启服务器。
 当前 Agent 工作时，空输入框从随机位置开始，每约 6 秒顺序轮换一条简短提示，
 涵盖命令、界面定制、工作区分享、会话间协作和可选功能。可在 `workspace.html` 的 `updatePromptPlaceholder`

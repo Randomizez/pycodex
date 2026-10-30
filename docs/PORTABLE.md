@@ -18,7 +18,7 @@ pycodex --put @127.0.0.1:5577
   然后重写 `args.config`。
 - `model`、`context` 和 `runtime` 继续按 `config_path.parent` 读取 `.env`、
   `AGENTS.md`、skills 和模型指令，不感知远端存储模式。
-- `config.toml`、prompts、AGENTS、skills、dotenv、session history 的文本读取
+- `config.toml`、profile、prompts、AGENTS、skills、dotenv、session history 的文本读取
   显式传 `encoding="utf-8"`；用户编写的指令和历史使用 `errors="replace"`。
   不能依赖 Windows GBK 等进程默认编码。
 
@@ -37,8 +37,13 @@ Call token 保持 `SECRET-CALLID@<host:port>` 的形状。加密格式及纯 Pyt
 打包使用白名单：
 
 - `config.toml`、`.env`、`AGENTS.md`、`AGENTS.override.md`；
+- 同目录、名称有效的 `<name>.config.toml` profile 文件；
 - `skills/**`；
-- config 中相对引用的 `model_instructions_file`。
+- 基础配置和各 profile（独立文件或内嵌 `[profiles.<name>]`）中相对引用的
+  `model_instructions_file`，包括被默认 profile 覆盖的基础指令文件。
+
+保留顶层默认 `profile` 和两种来源的配置；恢复后沿用相同选择与合并规则。
+打包使用统一 loader 验证默认选择及各 profile，同名冲突或无效配置会报错。
 
 `sessions/` 等运行态目录不在白名单中。不要恢复依赖黑名单排除运行态文件
 的扫描策略。

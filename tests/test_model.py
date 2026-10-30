@@ -238,10 +238,6 @@ def test_provider_config_reads_codex_style_config_with_profile_override(
                 'model_verbosity = "medium"',
                 'service_tier = "fast"',
                 "",
-                "[profiles.fast]",
-                'model = "fast-model"',
-                'model_provider = "backup"',
-                "",
                 "[model_providers.primary]",
                 'base_url = "https://example.com/v1"',
                 'env_key = "PRIMARY_KEY"',
@@ -259,6 +255,10 @@ def test_provider_config_reads_codex_style_config_with_profile_override(
                 "guardian_approval = true",
             ]
         )
+    )
+    (tmp_path / "fast.config.toml").write_text(
+        'model = "fast-model"\nmodel_provider = "backup"\n',
+        encoding="utf-8",
     )
     monkeypatch.setenv("BACKUP_KEY", "test-key")
 
@@ -322,8 +322,10 @@ def test_provider_config_profile_selects_builtin_openai(tmp_path) -> "None":
         'model = "base-model"\n'
         'model_provider = "local"\n'
         "[model_providers.local]\n"
-        'base_url = "http://localhost:8000/v1"\n'
-        "[profiles.openai]\n"
+        'base_url = "http://localhost:8000/v1"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "openai.config.toml").write_text(
         'model = "gpt-5.4"\n'
         'model_provider = "openai"\n'
         'openai_base_url = "https://example.invalid/v1"\n',
@@ -397,10 +399,6 @@ def test_provider_config_allows_provider_without_env_key(tmp_path) -> "None":
                 'model = "demo-model"',
                 'model_provider = "local"',
                 "",
-                "[profiles.step]",
-                'model = "step-3.5-flash-2603"',
-                'model_provider = "example-chat"',
-                "",
                 "[model_providers.local]",
                 'base_url = "http://localhost:8000/v1"',
                 'wire_api = "responses"',
@@ -410,6 +408,10 @@ def test_provider_config_allows_provider_without_env_key(tmp_path) -> "None":
                 'wire_api = "responses"',
             ]
         )
+    )
+    (tmp_path / "step.config.toml").write_text(
+        'model = "step-3.5-flash-2603"\nmodel_provider = "example-chat"\n',
+        encoding="utf-8",
     )
 
     provider = ResponsesProviderConfig.from_codex_config(config_path, "step")

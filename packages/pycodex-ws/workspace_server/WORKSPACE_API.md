@@ -39,8 +39,10 @@ Agent execution permissions, and does not replace Router authentication.
 
 `GET api/sessions` returns `{sessions, profiles, default_profile}`. `profiles`
 contains only names from the server's Codex config; no provider configuration
-or credentials are returned. The catalog is loaded when the workspace is built.
-`default_profile` is the launch `--profile`, or `null` for the base configuration.
+or credentials are returned. The catalog combines adjacent `*.config.toml` files
+and embedded `[profiles.NAME]` tables and rejects duplicate names. It is loaded
+when the workspace is built. `default_profile` is the launch `--profile`, then
+the top-level config `profile`, or `null` for the base configuration.
 Each session list entry includes its effective `profile` name or `null`.
 
 `POST api/sessions` accepts `{title?, prompt?, profile?}`. Title and prompt are
