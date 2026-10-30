@@ -218,6 +218,8 @@ their task names can be reused.
 Recorded sessions retain the clock period in a small environment snapshot beside
 the rollout. Resuming starts a fresh countdown and restores `idle: sleeping`
 in attached frontends; child Agents remain in memory.
+Runtime reads execution facts through `Agent.execution_snapshot()`; session
+history and live-state snapshots retain their separate frontend formats.
 See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
 the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
 

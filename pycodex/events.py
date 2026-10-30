@@ -163,7 +163,7 @@ class TurnStartedEvent(TurnEvent):
 
 @dataclass(frozen=True)
 class TurnInputReadyEvent(TurnEvent):
-    """Synchronous boundary for Runtime to deliver queued input."""
+    """Synchronous input coordination; delivery failures must fail the turn."""
 
     turn_id: "str"
     submission_id: "typing.Union[str, None]" = None

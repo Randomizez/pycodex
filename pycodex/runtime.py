@@ -76,6 +76,50 @@ class _InputRequest:
     other: "bool" = False
     timer: "typing.Union[asyncio.TimerHandle, None]" = None
 
+    def event(self):
+        payload = (
+            {"question": self.payload["questions"][self.question_index]}
+            if self.kind == "questions" else {"permissions": self.payload}
+        )
+        return InputRequestedEvent(self.request_id, self.kind, self.other, **payload)
+
+    def answer(self, text):
+        """Advance question progress and return (resolved, answer)."""
+        if not text:
+            return True, None
+        if self.kind == "permissions":
+            answer = text.lower()
+            granted = answer in {"t", "turn", "y", "yes", "s", "session"}
+            return True, {
+                "permissions": self.payload.get("permissions", {}) if granted else {},
+                "scope": "session" if answer in {"s", "session"} else "turn",
+            }
+        question = self.payload["questions"][self.question_index]
+        options = question["options"]
+        if not self.other and text.isdigit():
+            choice = int(text)
+            if choice == 0:
+                self.other = True
+                return False, None
+            if 1 <= choice <= len(options):
+                text = options[choice - 1]["label"]
+        self.answers[question["id"]] = {"answers": [text]}
+        self.question_index += 1
+        self.other = False
+        complete = self.question_index == len(self.payload["questions"])
+        return complete, {"answers": self.answers} if complete else None
+
+
+def _parse_input(text):
+    """Recognize slash commands, preserving ASCII-space escapes and paths."""
+    escaped = text.startswith(" ")
+    text = text.strip()
+    parts = text.split(None, 1)
+    command = parts[0] if parts else ""
+    if escaped or not command.startswith("/") or "/" in command[1:] or len(command) < 2:
+        command = None
+    return text, command, parts[1] if len(parts) == 2 else ""
+
 
 class AgentRuntime:
     """Frontend-independent session input, scheduling, state and events."""
@@ -166,47 +210,49 @@ class AgentRuntime:
             + ("queue",)
         )
 
+    def _snapshot_fields(self, execution):
+        agent = self.agent
+        return {
+            "title": self.title,
+            "cwd": str(agent.context_manager.cwd),
+            "busy": self.is_busy,
+            "closed": agent.is_shutdown,
+            "accepts_input": agent.accepts_input,
+            "context_window": agent.context_manager.resolve_model_context_window(),
+            "max_context_window": agent.context_manager.resolve_model_max_context_window(),
+            "auto_compact_token_limit": agent.context_manager.resolve_auto_compact_token_limit(),
+            "usage_tokens": execution.usage_tokens,
+            "background_work_count": sum(
+                tool.background_work_count(False)
+                for tool in agent.tool_registry.tools()
+            ),
+            "input_request": self._input_request_event(),
+            "plan": agent.tool_registry.runtime_environment.plan_store.snapshot(),
+        }
+
     def snapshot(self):
+        execution = self.agent.execution_snapshot()
         rollout_path = self.agent.session_file_path
         recorded_path = self.agent.recorded_session_file_path
         return {
-            "session_id": self.agent.session_id,
-            "cwd": str(self.agent.context_manager.cwd),
+            **self._snapshot_fields(execution),
+            "session_id": execution.session_id,
             "rollout_path": str(rollout_path) if rollout_path is not None else None,
-            "recorded_rollout_path": (
-                str(recorded_path) if recorded_path is not None else None
-            ),
+            "recorded_rollout_path": str(recorded_path) if recorded_path is not None else None,
             "model": "{0}:{1}".format(
                 self.agent.model_name,
                 getattr(self.agent.model_client, "reasoning_effort", None) or "default",
             ),
-            "title": self.title,
             "history": conversation_history_to_turns(self.agent.history),
-            "busy": self.is_busy,
-            "closed": self.agent.is_shutdown,
-            "accepts_input": self.agent.accepts_input,
-            "context_window": self.agent.context_manager.resolve_model_context_window(),
-            "max_context_window": (
-                self.agent.context_manager.resolve_model_max_context_window()
-            ),
-            "auto_compact_token_limit": (
-                self.agent.context_manager.resolve_auto_compact_token_limit()
-            ),
-            "usage_tokens": self.agent._last_total_usage_tokens,
-            "background_work_count": sum(
-                tool.background_work_count(False)
-                for tool in self.agent.tool_registry.tools()
-            ),
-            "input_request": self._input_request_event(),
             "active_turn": (
                 dict(self._active_turn) if self._active_turn is not None else None
             ),
-            "plan": self.agent.tool_registry.runtime_environment.plan_store.snapshot(),
         }
 
     def state_snapshot(self):
         """Current frontend state, without completed conversation history."""
         agent = self.agent
+        execution = agent.execution_snapshot()
         client = typing.cast(ModelControl, agent.model_client)
         active = self._active_turn
         pending = []
@@ -214,19 +260,15 @@ class AgentRuntime:
             pending.append(("steer", self._triggered_submission))
         pending.extend(("enqueue", item) for item in self._enqueue_queue)
         return {
+            **self._snapshot_fields(execution),
             "agent_id": agent.agent_id,
             "agent_path": agent.agent_path,
-            "agent_session_id": agent.session_id,
-            "title": self.title,
-            "cwd": str(agent.context_manager.cwd),
+            "agent_session_id": execution.session_id,
             "model": {
                 "name": agent.model_name,
                 "reasoning_effort": client.reasoning_effort,
             },
-            "busy": self.is_busy,
-            "running": agent.is_running,
-            "closed": agent.is_shutdown,
-            "accepts_input": self.accepts_input,
+            "running": execution.running,
             "active_turn": (
                 {
                     key: active[key]
@@ -245,17 +287,7 @@ class AgentRuntime:
                 }
                 for name, item in pending
             ],
-            "input_request": self._input_request_event(),
-            "plan": agent.tool_registry.runtime_environment.plan_store.snapshot(),
             "commands": [dict(command) for command in self._active_commands.values()],
-            "background_work_count": sum(
-                tool.background_work_count(False)
-                for tool in agent.tool_registry.tools()
-            ),
-            "context_window": agent.context_manager.resolve_model_context_window(),
-            "max_context_window": agent.context_manager.resolve_model_max_context_window(),
-            "auto_compact_token_limit": agent.context_manager.resolve_auto_compact_token_limit(),
-            "usage_tokens": agent._last_total_usage_tokens,
         }
 
     def background_work_snapshot(self):
@@ -296,6 +328,7 @@ class AgentRuntime:
         self.publish_state("cwd")
 
     def resume(self, path=None, title=""):
+        """Reopen an idle registered agent, optionally restoring its rollout."""
         self.agents_manager.get_runtime(self.agent.agent_id)
         self.require_idle("resume")
         resumed = self.agent.resume(path)
@@ -330,6 +363,7 @@ class AgentRuntime:
             self._queue_event.set()
 
     async def close(self):
+        """Stop admission across the subtree and wait for issued work and cleanup."""
         if self._worker is None:
             self._worker = asyncio.create_task(self._run_forever())
         if self.accepts_input:
@@ -356,20 +390,11 @@ class AgentRuntime:
         self._wake_worker()
 
     async def submit_input(self, text, sender="user", wait_for_command=True):
+        """Route frontend text to a pending answer, slash command or steer input."""
         if not self.agent.accepts_input:
             raise RuntimeError("agent is shutting down")
-        input_starts_with_space = text.startswith(" ")
-        text = text.strip()
-        command = text.split(None, 1)[0] if text else ""
-        # Codex treats another slash in the name as a path and a leading
-        # ASCII space as an escape, even for a registered command.
-        is_command = (
-            command.startswith("/")
-            and not input_starts_with_space
-            and "/" not in command[1:]
-            and len(command) > 1
-        )
-        if self._input_request is not None and not is_command:
+        text, command, argument = _parse_input(text)
+        if self._input_request is not None and command is None:
             self._answer_input(text)
             future = asyncio.get_running_loop().create_future()
             future.set_result(None)
@@ -378,9 +403,7 @@ class AgentRuntime:
             future = asyncio.get_running_loop().create_future()
             future.set_result(None)
             return SubmittedInput(uuid7_string(), "empty", future)
-        parts = text.split(None, 1)
-        argument = parts[1] if len(parts) == 2 else ""
-        if not is_command:
+        if command is None:
             return self._submit_turn(text, "steer", sender)
         if command == "/queue":
             if not argument.strip():
@@ -558,58 +581,15 @@ class AgentRuntime:
                 self._publish(InputResolvedEvent(request.request_id))
 
     def _input_request_event(self):
-        request = self._input_request
-        if request is None:
-            return None
-        if request.kind == "questions":
-            return InputRequestedEvent(
-                request.request_id,
-                request.kind,
-                request.other,
-                question=request.payload["questions"][request.question_index],
-            )
-        return InputRequestedEvent(
-            request.request_id,
-            request.kind,
-            request.other,
-            permissions=request.payload,
-        )
+        return self._input_request.event() if self._input_request is not None else None
 
     def _publish_input_request(self):
         self._publish(self._input_request_event())
 
     def _answer_input(self, text):
-        request = self._input_request
-        if not text:
-            self._finish_input_request(None)
-            return
-        if request.kind == "permissions":
-            answer = text.lower()
-            granted = answer in {"t", "turn", "y", "yes", "s", "session"}
-            self._finish_input_request(
-                {
-                    "permissions": (
-                        request.payload.get("permissions", {}) if granted else {}
-                    ),
-                    "scope": "session" if answer in {"s", "session"} else "turn",
-                }
-            )
-            return
-        question = request.payload["questions"][request.question_index]
-        options = question["options"]
-        if not request.other and text.isdigit():
-            choice = int(text)
-            if choice == 0:
-                request.other = True
-                self._publish_input_request()
-                return
-            if 1 <= choice <= len(options):
-                text = options[choice - 1]["label"]
-        request.answers[question["id"]] = {"answers": [text]}
-        request.question_index += 1
-        request.other = False
-        if request.question_index == len(request.payload["questions"]):
-            self._finish_input_request({"answers": request.answers})
+        complete, answer = self._input_request.answer(text)
+        if complete:
+            self._finish_input_request(answer)
         else:
             self._publish_input_request()
 
@@ -673,6 +653,7 @@ class AgentRuntime:
         )
 
     async def submit_user_turn(self, text: "str") -> "TurnResult":
+        """Enqueue one independent turn and wait for its receipt."""
         _submission_id, future = self.enqueue(text)
         return await future
 
@@ -697,6 +678,7 @@ class AgentRuntime:
         return True
 
     def stop_asap(self) -> "None":
+        """Request a cooperative stop; issued model and tool operations finish."""
         if self.agent.is_shutdown:
             raise RuntimeError("agent is shutdown")
         if self.agent.is_running:
@@ -706,6 +688,7 @@ class AgentRuntime:
                 self._input_activity.set()
 
     def interrupt(self) -> "None":
+        """Request a stop and publish interrupted status immediately."""
         self.stop_asap()
         self._last_agent_status = "interrupted"
         self.publish_update("interrupt")
@@ -722,7 +705,7 @@ class AgentRuntime:
         """Start or restart execution; repeated pending triggers share one run."""
         if not self.accepts_input:
             raise RuntimeError("agent is shutting down")
-        if self._active_turn is not None and not self.agent._stop_requested:
+        if self._active_turn is not None and not self.agent.execution_snapshot().stop_requested:
             return None
         if self._triggered_submission is None:
             self._triggered_submission = _QueuedSubmission([])
@@ -755,7 +738,7 @@ class AgentRuntime:
             self._input_activity.set()
 
     def _deliver_messages(self):
-        if not self._steer_queue or self.agent._stop_requested:
+        if not self._steer_queue or self.agent.execution_snapshot().stop_requested:
             return
         self.agent.receive_messages(tuple(self._steer_queue))
         self._steer_queue.clear()

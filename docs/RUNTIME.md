@@ -63,6 +63,11 @@ boundaries instead of adding another Session wrapper or `SubmissionQueue` alias.
 | `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, lifecycle observation and recursive close |
 | CLI / web / Feishu | Input transport and event rendering; no command interpretation or direct Agent control |
 
+`Agent.execution_snapshot()` derives immutable running, stop, usage and session
+facts from current execution state. Runtime shares common snapshot fields while
+preserving distinct session-history and live-state projections. Slash parsing
+is pure; each pending input request owns its question progress and answer mapping.
+
 Construction takes four required arguments:
 `Agent(model_client, tool_registry, context_config, session_id)`. `ContextConfig` includes
 cwd, instruction overrides and extra contextual messages
@@ -631,7 +636,9 @@ Ordinary `/queue` input does not request a stop.
 
 Direct `run_turn` callers receive `TurnInterrupted` if a Runtime requests a stop.
 Runtime delivers messages through `TurnInputReadyEvent`, including during direct
-Agent execution. The Agent does not own or complete Runtime receipts; executing
+Agent execution. This synchronous coordination propagates delivery errors to the
+turn; ordinary event observers report errors to the loop without failing the
+turn. The Agent does not own or complete Runtime receipts; executing
 enqueued or triggered turns requires `runtime.start()`; `close()` discards
 pending turns.
 There are no separate

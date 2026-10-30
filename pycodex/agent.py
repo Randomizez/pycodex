@@ -76,6 +76,14 @@ class _TurnState:
     output_text: "typing.Union[str, None]" = None
 
 
+@dataclass(frozen=True)
+class ExecutionSnapshot:
+    session_id: "str"
+    running: "bool"
+    stop_requested: "bool"
+    usage_tokens: "typing.Union[int, None]"
+
+
 class Agent:
     """Minimal Python port of Codex's turn loop.
 
@@ -135,6 +143,13 @@ class Agent:
     @property
     def is_running(self) -> "bool":
         return self._idle is not None
+
+    def execution_snapshot(self) -> "ExecutionSnapshot":
+        """Read execution facts without retaining a second lifecycle state."""
+        return ExecutionSnapshot(
+            self.session_id, self.is_running,
+            self._stop_requested, self._last_total_usage_tokens,
+        )
 
     async def wait_until_idle(self) -> "None":
         while self.is_running:
