@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 from ..utils.compat import Literal
+from .clock_manager import ClockManager
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
 PlanListener = Callable[[typing.Dict[str, object]], None]
@@ -88,9 +89,31 @@ class RequestPermissionsManager:
 
 class AgentRuntimeEnvironment:
     def __init__(self) -> "None":
+        self.clock_manager = ClockManager()
         self.plan_store = PlanStore()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
+
+    def dump_state(self):
+        return {
+            "version": 1,
+            "managers": {"clock": self.clock_manager.dump_state()},
+        }
+
+    def validate_state(self, state):
+        if state is not None:
+            if state["version"] != 1:
+                raise ValueError("unsupported environment state version")
+            self.clock_manager.validate_state(state["managers"]["clock"])
+
+    def restore_state(self, state):
+        self.validate_state(state)
+        self.clock_manager.restore_state(
+            {"period_m": None} if state is None else state["managers"]["clock"]
+        )
+
+    def start(self):
+        self.clock_manager.arm_after_reply()
 
 
 def create_agent_runtime_environment() -> "AgentRuntimeEnvironment":

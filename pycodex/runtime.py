@@ -290,6 +290,8 @@ class AgentRuntime:
             tool.bind_runtime(self)
         if resumed is not None:
             self.title = title or str(resumed["title"])
+        if self._worker is not None and not self._worker.done():
+            self.agent.tool_registry.runtime_environment.start()
         self.publish_state("history" if path is not None else "admission")
         return resumed
 
@@ -301,6 +303,7 @@ class AgentRuntime:
                 raise RuntimeError("resume the agent before restarting its runtime")
             self.agent.accepts_input = True
             self._worker = asyncio.create_task(self._run_forever())
+            self.agent.tool_registry.runtime_environment.start()
         return self
 
     def _get_command_lock(self):

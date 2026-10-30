@@ -8,7 +8,8 @@ import typing
 
 from .apply_patch_tool import ApplyPatchTool
 from .base_tool import BaseTool, Registry, ToolContext, ToolRegistry
-from .clock_tool import ClockManager, ClockTool
+from .clock_manager import ClockManager
+from .clock_tool import ClockTool
 from .code_mode_manager import CodeModeManager
 from .exec_command_tool import ExecCommandTool
 from .exec_tool import ExecTool
@@ -50,7 +51,7 @@ def get_tools(
     registry = Registry(runtime_environment)
     code_mode_manager = CodeModeManager(registry)
     unified_exec_manager = UnifiedExecManager()
-    clock_manager = ClockManager()
+    clock_manager = runtime_environment.clock_manager
     exec_tool = ExecTool(code_mode_manager)
     wait_tool = WaitTool(code_mode_manager)
     web_search_tool = WebSearchTool()

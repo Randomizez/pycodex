@@ -838,7 +838,7 @@ def test_runtime_connects_exec_completion_hook_from_tool_registry(tool_name) -> 
 @pytest.mark.asyncio
 async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "None":
     monkeypatch.setattr(
-        "pycodex.tools.clock_tool._current_time",
+        "pycodex.tools.clock_manager._current_time",
         lambda: "2026-08-07T12:34:56+08:00",
     )
     manager = ClockManager(seconds_per_minute=0.01)
@@ -936,7 +936,7 @@ async def test_runtime_shutdown_cancels_clock_after_draining_queued_tools() -> "
         assert (await pending_turn).output_text == "done"
         await asyncio.gather(pending_timer, return_exceptions=True)
 
-        assert manager.snapshot() == {"enabled": False, "period_m": None}
+        assert manager.snapshot() == {"enabled": True, "period_m": 1.0}
         assert manager._timer_task is None
         assert model.call_count == 3
     finally:

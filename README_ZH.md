@@ -169,6 +169,8 @@ run_async(main())
 默认 16（包含根 Agent）。满额时关闭最久未使用且没有待处理或后台工作的
 空闲叶子节点；没有可回收节点则报容量不足。已关闭子节点从 Agent 树、
 Workspace 和 `list_agents` 中移除，原任务名可重新使用。
+已记录会话将 clock 周期保存在 rollout 旁的小型环境快照中；恢复后重新计时，
+子 Agent 仍仅保存在内存。
 详见[运行时契约](docs/RUNTIME.md)、[上下文装配](docs/CONTEXT.md)和
 [新版对齐基线与剩余差异](docs/ALIGNMENT.md)。
 

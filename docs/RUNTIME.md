@@ -59,7 +59,7 @@ boundaries instead of adding another Session wrapper or `SubmissionQueue` alias.
 | `Agent` | Serial execution, local admission and cooperative stop flags, final shutdown, history, usage, context, rollout, identity and model/tool dependencies |
 | `AgentRuntime` | Frontend interfaces, session commands, enqueue/mailbox/trigger state, receipts, title/state snapshots, subscriptions, interactive requests and worker lifecycle |
 | `ToolRegistry` | Tool instances and their session-local runtime environment |
-| `AgentRuntimeEnvironment` | Plan, user-input and permissions services |
+| `AgentRuntimeEnvironment` | Clock manager, plan, user-input and permissions services; manager state snapshots |
 | `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, lifecycle observation and recursive close |
 | CLI / web / Feishu | Input transport and event rendering; no command interpretation or direct Agent control |
 
@@ -507,6 +507,24 @@ The recorder does not keep a second initial-history copy, so replacing history
 before the first write changes what gets recorded.
 The recorder opens and closes the file for each append, so there is no persistent
 file handle requiring another shutdown task.
+
+Recorded Agents save the environment's restorable manager state alongside the
+rollout in `<rollout-path>.state.json`. The environment aggregates manager-owned
+data; tools have no persistence interface. The current version records only the
+clock's `period_m` (`null` disables it), not timer Tasks, callbacks or deadlines.
+The Agent saves after committing a tool result and before tool shutdown. The
+recorder skips unchanged snapshots and atomically replaces changed snapshots;
+write errors propagate, and final tool cleanup still runs after a save failure.
+Unused lazy recordings and unrecorded Agents, including children, create no
+state file.
+
+Explicit resume reads this small snapshot independently of model history and
+compaction. A missing snapshot starts with the clock disabled; malformed or
+unsupported state fails before replacing the current session. Restoring data
+does not start a timer. Runtime startup, or resume in an already-running Runtime,
+starts a fresh full period after binding callbacks. No-argument resume retains
+the in-memory configuration. Keep the snapshot alongside its rollout when
+copying a recorded session; Portable configuration bundles exclude both.
 
 Unrecorded sessions update only in-memory history during turns and compaction.
 Compaction omits the rollout-file reference from the handoff, and runtime
@@ -1437,8 +1455,9 @@ It does not accept IDs or return a status map.
 
 Tools with background work implement the small `BaseTool.bind_runtime`,
 `handle_agent_event`, `shutdown`, and `background_work_count` hooks.
-Exec/clock tools wire their own managers;
-the Agent does not inspect their names, concrete classes, or private attributes.
+Exec/clock tools wire their managers; `ClockManager` is owned by the registry's
+`AgentRuntimeEnvironment` and is shared with its clock tool.
+The Agent does not inspect their names, concrete classes, or private attributes.
 Clock countdowns pause on turn/manual-compact start events and rearm on success,
 including successful manual compaction. Terminal events retain the single
 aggregate `background_work_count`.
@@ -1448,8 +1467,9 @@ An exiting exec session can invoke `<exec_command_completed>` through
 busy notifications are dropped. `clock` likewise uses `maybe_invoke`, with one period per
 Agent/session and a timezone-aware ISO 8601 `current_time` captured when the
 timer expires. Starting a turn cancels the pending countdown; a successful
-reply rearms it. `clock(null)` and shutdown cancel it. The aggregate background
-count includes running exec sessions and an enabled clock after a successful
+reply rearms it. `clock(null)` disables the clock; shutdown stops the timer and
+unbinds callbacks while retaining the configured period for restoration.
+The aggregate background count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
 loop. Running code-mode `exec` cells also report background work; a completed
 cell closes its Node input stream so its process can exit.

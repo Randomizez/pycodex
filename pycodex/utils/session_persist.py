@@ -2,6 +2,7 @@ import json
 import mmap
 import os
 import re
+import tempfile
 import typing
 from collections import deque
 from contextlib import closing
@@ -49,6 +50,42 @@ class SessionRolloutRecorder:
     def __init__(self, rollout_path: "Path") -> "None":
         self.rollout_path = rollout_path
         self._session_meta: "typing.Union[typing.Dict[str, object], None]" = None
+        self._environment_state_json = None
+
+    def read_environment_state(self):
+        path = Path(str(self.rollout_path) + ".state.json")
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                state = json.load(handle)
+        except FileNotFoundError:
+            return None
+        self._environment_state_json = json.dumps(
+            state, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        return state
+
+    def save_environment_state(self, state):
+        serialized = json.dumps(
+            state, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+        if serialized == self._environment_state_json:
+            return
+        path = Path(str(self.rollout_path) + ".state.json")
+        temporary = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=str(path.parent),
+            prefix=path.name + ".", delete=False,
+        )
+        temporary_path = Path(temporary.name)
+        try:
+            with temporary as handle:
+                handle.write(serialized + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(str(temporary_path), str(path))
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        self._environment_state_json = serialized
 
     @classmethod
     def create(

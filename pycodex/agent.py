@@ -209,6 +209,8 @@ class Agent:
             recorder = None
         elif resume:
             recorder = SessionRolloutRecorder.resume(session_file_path)
+            environment_state = recorder.read_environment_state()
+            self.tool_registry.runtime_environment.validate_state(environment_state)
         else:
             recorder = SessionRolloutRecorder.create(
                 self.context_manager._config.codex_home or resolve_codex_home(),
@@ -225,6 +227,8 @@ class Agent:
             self.model_client._session_id = session_id
         self.session_id = session_id
         self._rollout_recorder = recorder
+        if resume:
+            self.tool_registry.runtime_environment.restore_state(environment_state)
 
     async def compact(
         self,
@@ -365,9 +369,12 @@ class Agent:
         if self.is_shutdown:
             return
         self.accepts_input = False
-        self.is_shutdown = True
-        for tool in self.tool_registry.tools():
-            tool.shutdown()
+        try:
+            self._save_environment_state()
+        finally:
+            self.is_shutdown = True
+            for tool in self.tool_registry.tools():
+                tool.shutdown()
 
     async def _execute_tool_batch(
         self,
@@ -424,8 +431,15 @@ class Agent:
         self._emit(ToolStartedEvent(turn_id, call))
         result = await self.tool_registry.execute(call, context)
         self._append_history([truncate_tool_result_for_history(result)])
+        self._save_environment_state()
         self._emit(ToolCompletedEvent(turn_id, call, result))
         return result
+
+    def _save_environment_state(self) -> "None":
+        if self.recorded_session_file_path is not None:
+            self._rollout_recorder.save_environment_state(
+                self.tool_registry.runtime_environment.dump_state()
+            )
 
     def _emit(self, event: "TurnEvent") -> "None":
         handlers = [self.event_handler]

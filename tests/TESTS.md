@@ -259,6 +259,10 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   idle mailbox、活跃父 turn 的消息接入、状态快照隔离、后台唤醒、
   等待超时清理、父树关闭排空、子节点并行关闭及清理失败、
   立即关闭后的过期队列通知。
+- `test_environment_state.py`：clock 配置在 compact、关闭和 resume 后恢复，
+  Runtime 就绪后重新计时、取消状态保存、旧会话无快照时清除当前 clock、
+  损坏快照不改变当前会话、原子写入失败时保留旧文件并释放资源、
+  相同状态不重复写入，以及子 Agent / 未启用记录的环境不落盘。
 - `test_agent_capacity.py`：含根的容量上限、最近使用顺序、关闭注销与任务名复用、
   排队/邮箱/命令/clock/exec 工作保护、调用者与存活子树保护、
   并发创建的容量预留，以及回收与父关闭/资源清理及工具关闭失败的交互。
