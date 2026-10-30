@@ -3,8 +3,8 @@
 [English](README.md)
 
 pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 的 Agent 主循环，
-提供 CLI、可复用的 Agent API 和浏览器工作区。项目以对齐上游行为为目标；
-支持范围和刻意保留的差异见[对齐文档](docs/ALIGNMENT.md)。
+提供 CLI、可复用的 Agent API 和浏览器工作区。项目对齐选定功能、模型与协议在
+上游默认配置下的行为；支持范围和刻意保留的差异见[对齐文档](docs/ALIGNMENT.md)。
 
 | 包 | 内容 | Python |
 | --- | --- | --- |

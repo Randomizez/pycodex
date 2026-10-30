@@ -3,8 +3,9 @@
 [中文](README_ZH.md)
 
 pycodex brings the [Codex](https://github.com/openai/codex) agent loop to Python,
-with a CLI, reusable Agent API and browser workspace. It aims to follow upstream
-behavior; supported features and deliberate differences are documented in
+with a CLI, reusable Agent API and browser workspace. It targets upstream default
+behavior for the selected features, model and protocol; supported features and
+deliberate differences are documented in
 [Alignment](docs/ALIGNMENT.md).
 
 | Package | Provides | Python |

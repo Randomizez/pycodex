@@ -4,6 +4,23 @@ This document records the current alignment work between `pycodex` and upstream
 Codex from `https://github.com/openai/codex`: prompt/context assembly,
 model-visible tool schemas, and observed tool round-trip behavior.
 
+The target is upstream behavior with default options for the selected features,
+model and protocol, together with the explicitly retained local differences.
+Implementing every optional configuration branch is outside this target.
+Optional tool arguments that are present in the default declaration still count
+as part of the default schema.
+
+`responses_server` adapts vLLM `/v1/chat/completions` to a local `/v1/responses`
+endpoint. OpenAI models are evaluated through native Responses; OpenAI/models_proxy
+Chat restrictions are outside this alignment target. Chat/messages adapters
+convert plaintext Agent messages to user text and reject `encrypted_content`
+with HTTP 501. This plaintext-only boundary is accepted; encrypted-input support
+in these adapters is outside the alignment target.
+
+Native MultiAgentV2 requires a provider that supports `agent_message` and the
+encrypted-argument contract. The Step native endpoint's Agent-message limitations
+are a provider capability boundary, outside the pycodex alignment target.
+
 ## Current prototype baseline (2026-10-29)
 
 The current workspace is the prototype for the newer MultiAgentV2 protocol.
@@ -13,6 +30,11 @@ The saved HTTP captures used **Codex CLI 0.165.0**, release source commit
 [`360319d8dee62d87e2d59fc0c21805d79519cfed`](https://github.com/openai/codex/tree/360319d8dee62d87e2d59fc0c21805d79519cfed).
 These are separate references: a match against a release capture does not prove
 parity with every branch in the later source tree.
+
+MultiAgentV2 is an existing project choice. Its upstream feature flag defaults to
+`false` at the source reference above; comparisons here use its default
+sub-options after enabling it. This is not a claim of zero-configuration Codex
+parity.
 
 The implementation now uses these contracts:
 
@@ -91,19 +113,55 @@ restoration contract. These compatibility choices are local differences.
 The CLI check covers profile
 loading only; it does not update the HTTP or tool-schema baselines above.
 
+### Default-option tool schema audit (2026-10-29)
+
+The saved GPT-6.1 Sol requests were compared with the current serialized Python
+tool classes. `native_lite_first` uses the native model catalog;
+`fork_none` and `ordinary_first` override the catalog to use direct tools.
+All three enable MultiAgentV2 and set fixture-specific transport, instructions,
+effort and sandbox/approval options. Source checks establish which observed
+schema fields also belong to the default options.
+
+The six MultiAgentV2 `parameters` objects match exactly, ignoring JSON object
+key order: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`,
+`interrupt_agent` and `list_agents`. This includes parameter descriptions,
+`required`, `additionalProperties` and `encrypted: true` on message arguments.
+Function declarations use `strict: false` on both sides, and neither serializes
+its internal `output_schema`.
+The complete `apply_patch` declaration, including its description and custom
+grammar, also matches the direct-tool captures.
+
+| Remaining declaration difference | Default behavior to match |
+| --- | --- |
+| Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. |
+| `spawn_agent` description | Upstream includes available model overrides with supported effort/tier information. Python omits that list and adds fixed inheritance/override guidance that differs from this default description. |
+| `request_user_input` | Python adds `autoResolutionMs`; the upstream synchronous tool's default parameters only contain `questions`. Its description and the quotation marks around `Other` also differ. Default-mode unavailability remains the separate local contract. |
+| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, which upstream adds even with the optional exec-permission-approvals feature disabled. `additional_permissions` belongs to the enabled feature branch and is outside this default comparison. Python also adds background-invocation wording to the description. |
+
+No generic catalog-schema override mechanism is required by this snapshot:
+`model_messages.tools` is null in every bundled model at the source reference,
+so the MAv2 schema-override path is inactive. Native model `tool_mode` is a
+different field: GPT-6.1 Sol selects `code_mode_only` without enabling either
+code-mode feature flag. That default tool-selection difference remains in scope.
+
+MAv2 defaults already match local choices for hiding spawn metadata, exposing
+model/effort arguments, enabling wait, its 30-second default and 10-second/
+one-hour bounds, and omitting `agent_type` without configured roles. Custom
+namespace names, schema overrides, role configurations, alternate wait settings,
+metadata toggles, `wake_on_agent_messages`, token budgets and rollout budgets
+are not requirements merely because upstream supports them. The last three
+feature flags default off.
+
 ### Remaining differences
 
 | Area | Boundary of the current prototype |
 | --- | --- |
-| Tool exposure | Tools remain flat and use local class schemas. Upstream tool namespaces, deferred discovery, model-specific schema overrides, and CodeModeOnly selection are not reproduced. |
+| Tool declarations | Default namespace packaging, the schema/description differences above, and native CodeModeOnly selection remain. Inactive optional catalog overrides and configurable namespace/exposure branches are outside the default-options target. |
 | Fork overrides | The prompt describes upstream restrictions on full-history model/effort overrides; the local manager currently accepts explicit overrides. Model availability, MultiAgentV2 support, and supported effort are not validated against the provider catalog. |
 | Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
-| Optional MultiAgentV2 settings | Role configurations, nicknames, configurable wait/schema exposure, and `wake_on_agent_messages` are not implemented. |
-| Shared budget | Usage and compaction are per Agent; there is no tree-wide token budget or budget-triggered shutdown. |
 | Wire metadata | Client metadata, some user/result IDs, headers, and User-Agent version still differ. Preserving provider fields does not imply all locally generated IDs match. |
 | Catalog | Local Step/GPT-OSS entries remain; `codex-auto-review` is not provided. Updating bundled model data does not implement every catalog capability. |
 | Prompt selection | Model-dependent prompt shaping is not fully reproduced. The default `gpt-5.4` HTTP fixture still differs from CLI 0.165.0 in Planning and skills usage guidance. |
-| Provider compatibility | Native Responses must support `agent_message` and the encrypted-argument contract. Chat/messages adapters convert plaintext to user text and reject `encrypted_content` with HTTP 501. Provider-specific reasoning/tool restrictions remain visible errors. |
 
 Intentional local boundaries remain: no bundled system-skill installation, no
 persisted collaboration tree, no session `/fork`, and no asynchronous
