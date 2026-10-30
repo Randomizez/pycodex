@@ -124,6 +124,75 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> "None":
     ]
 
 
+@pytest.mark.parametrize("outcomming_api", ["chat_completions", "messages"])
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_agent_messages_cross_compat_only_as_plaintext(tmp_path, outcomming_api, encrypted):
+    capture_path = tmp_path / "capture"
+    store = CaptureStore(capture_path)
+    arguments = '{"target":"/root","message":"reply"}'
+    if outcomming_api == "messages":
+        backend = build_fake_messages_server(
+            store, build_messages_tool_use_events("reply", "send_message", [arguments]),
+        )
+    else:
+        backend = build_fake_chat_server(
+            store, build_tool_call_chunks("reply", "send_message", [arguments]),
+        )
+    backend.start()
+    app = ManagedResponseServer.build_app(CompatServerConfig(
+        outcomming_base_url="http://127.0.0.1:{0}/v1".format(backend.server_port),
+        outcomming_api=outcomming_api,
+    ))
+    content = (
+        [{"type": "encrypted_content", "encrypted_content": "opaque-fixture"}]
+        if encrypted else [{"type": "input_text", "text": "task payload"}]
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/responses", json={
+                "model": "fixture",
+                "input": [{
+                    "type": "agent_message", "id": "amsg_fixture",
+                    "author": "/root", "recipient": "/root/worker", "content": content,
+                }],
+                "tools": [{
+                    "type": "function", "name": "send_message",
+                    "parameters": {"type": "object"}, "strict": False,
+                }],
+                "stream": True,
+            })
+        request_files = list(capture_path.glob("*_POST_*.json"))
+        if encrypted:
+            assert response.status_code == 501
+            assert "opaque-fixture" not in response.text
+            assert request_files == []
+        else:
+            assert response.status_code == 200
+            assert len(request_files) == 1
+            request = json.loads(request_files[0].read_text(encoding="utf-8"))
+            text = "Agent message from /root to /root/worker:\ntask payload"
+            expected_content = (
+                [{"type": "text", "text": text}] if outcomming_api == "messages" else text
+            )
+            assert request["body"]["messages"] == [
+                {"role": "user", "content": expected_content}
+            ]
+            events = [
+                json.loads(line[len("data: "):])
+                for line in response.text.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            call = next(
+                event["item"] for event in events
+                if event["type"] == "response.output_item.done"
+            )
+            assert call["type"] == "function_call"
+            assert call["encrypted_function_args"] == []
+            assert call["arguments"] == arguments
+    finally:
+        backend.stop()
+
+
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
 def test_responses_server_dumps_forwarded_chat_token_trajectory(
     tmp_path,

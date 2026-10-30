@@ -142,7 +142,7 @@ class ClockManager:
             task.cancel()
 
     async def _wait_and_notify(self, generation: "int", period_m: "float") -> "None":
-        from ..agent import TurnInterrupted
+        from ..runtime import SubmissionInterrupted
 
         try:
             await asyncio.sleep(period_m * self._seconds_per_minute)
@@ -165,7 +165,7 @@ class ClockManager:
                     "current_time": _current_time(),
                 }
             )
-        except TurnInterrupted:
+        except SubmissionInterrupted:
             # The next successful reply will arm the clock after a steer.
             return
         except asyncio.CancelledError:
@@ -214,8 +214,8 @@ class ClockTool(BaseTool):
     def __init__(self, manager: "ClockManager") -> "None":
         self._manager = manager
 
-    def bind_agent(self, agent) -> "None":
-        self._manager.set_notify_hook(agent.maybe_invoke)
+    def bind_runtime(self, runtime) -> "None":
+        self._manager.set_notify_hook(runtime.maybe_invoke)
 
     def handle_agent_event(self, event: "Event") -> "None":
         if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):

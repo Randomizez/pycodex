@@ -1,49 +1,22 @@
 import asyncio
-import json
 
 import pytest
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
-    AssistantMessage,
-    BaseTool,
-    ContextConfig,
-    ContextLengthExceeded,
-    ModelResponse,
-    ToolCall,
-    ToolRegistry,
-    ToolResult,
-    TurnInterrupted,
-    UserMessage,
+    AssistantMessage, BaseTool, ContextConfig, ContextLengthExceeded,
+    ModelResponse, ToolCall, ToolRegistry, UserMessage,
 )
-from pycodex.bootstrap import get_tools
 from pycodex.events import TokenCountEvent
 from pycodex.runtime import SubmissionInterrupted
-from pycodex.tools.runtime_services import AgentRuntimeEnvironment, SubAgentManager
-from pycodex.tools import (
-    ClockManager,
-    ClockTool,
-    ExecCommandTool,
-    UnifiedExecManager,
-    WaitAgentTool,
-)
+from pycodex.tools import ClockManager, ClockTool, ExecCommandTool, UnifiedExecManager
+from pycodex.tools.runtime_services import AgentRuntimeEnvironment
 from pycodex.tools.unified_exec_manager import UnifiedExecSession
-from tests.fakes import ScriptedModelClient
-
-
-def _subagent_notifications(history):
-    return [
-        json.loads(item.text.split("\n", 1)[1].rsplit("\n", 1)[0])
-        for item in history
-        if isinstance(item, UserMessage)
-        and item.text.startswith("<subagent_notification>\n")
-    ]
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
 
 
 @pytest.mark.asyncio
 async def test_nonblocking_commands_share_serial_execution_and_drain_on_close():
-    runtime = AgentRuntime(Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig()))
+    runtime = make_runtime(make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig()))
     entered = asyncio.Event()
     release = asyncio.Event()
     completed = []
@@ -85,7 +58,7 @@ async def test_lightweight_state_excludes_history_and_preserves_queue_identity()
         await release.wait()
         return ModelResponse([AssistantMessage("done")])
 
-    runtime = AgentRuntime(Agent(
+    runtime = make_runtime(make_agent(
         ScriptedModelClient(response_factory=response), ToolRegistry(), ContextConfig(),
         initial_history=(UserMessage("old"), AssistantMessage("previous")),
     ))
@@ -109,64 +82,55 @@ async def test_lightweight_state_excludes_history_and_preserves_queue_identity()
 
 def test_agent_and_tools_share_a_session_local_runtime():
     environment = AgentRuntimeEnvironment()
-    tools = get_tools(environment)
-    agent = Agent(ScriptedModelClient([]), tools, ContextConfig())
-    other = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
-
+    tools = make_tools(environment)
+    agent = make_agent(ScriptedModelClient([]), tools, ContextConfig())
+    other = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     assert tools.runtime_environment is environment
     assert agent.tool_registry.runtime_environment is environment
     assert other.tool_registry.runtime_environment is not environment
-    assert (
-        other.tool_registry.runtime_environment.plan_store is not environment.plan_store
-    )
+    assert other.tool_registry.runtime_environment.plan_store is not environment.plan_store
 
 
 @pytest.mark.asyncio
-async def test_shutdown_finishes_active_and_pending_submissions():
+async def test_shutdown_drains_existing_inputs_but_rejects_new_invocations():
     started = asyncio.Event()
-    finished = asyncio.Event()
     release = asyncio.Event()
 
-    async def response_factory(prompt, call_count):
+    async def respond(prompt, count):
         started.set()
         await release.wait()
-        finished.set()
-        return ModelResponse([AssistantMessage("done")])
+        return ModelResponse([AssistantMessage("done " + str(count))])
 
-    agent = Agent(
-        ScriptedModelClient(response_factory=response_factory),
-        ToolRegistry(),
-        ContextConfig(),
-    )
-    queue = AgentRuntime(agent)
-    await queue.start()
-    futures = []
-    closing = None
+    model = ScriptedModelClient(response_factory=respond)
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    await runtime.start()
+    first_id, first = runtime.enqueue("first")
+    second_id, second = runtime.enqueue("second")
+    await asyncio.wait_for(started.wait(), 1)
+    closing = asyncio.create_task(runtime.close())
     try:
-        _submission_id, first = await queue.enqueue_user_turn("first")
-        futures.append(first)
-        await asyncio.wait_for(started.wait(), 1)
-        _submission_id, second = await queue.enqueue_user_turn("second")
-        futures.append(second)
-        assert queue.is_busy
-
-        closing = asyncio.create_task(queue.close())
         await asyncio.sleep(0)
-        assert not closing.done()
-        assert agent.is_running
+        assert not runtime.accepts_input
+        assert not runtime.agent.is_shutdown
+        assert runtime.is_busy
+        assert len(runtime._enqueue_queue) == 1
+        assert not await runtime.maybe_invoke({"type": "clock_tick"})
+        with pytest.raises(RuntimeError, match="shutting down"):
+            runtime.enqueue("too late")
+        with pytest.raises(RuntimeError, match="shutting down"):
+            runtime.trigger()
+        with pytest.raises(RuntimeError, match="shutting down"):
+            await runtime.submit_input("too late")
         release.set()
-        for future in futures:
-            assert (await future).output_text == "done"
+        assert (await first).output_text == "done 1"
+        assert (await second).output_text == "done 2"
+        assert first_id != second_id
         await closing
-        assert finished.is_set()
-        assert not queue.is_busy
+        assert runtime.agent.is_shutdown
+        assert not runtime.is_busy
     finally:
         release.set()
-        if closing is None:
-            await queue.close()
-        else:
-            await closing
-        await asyncio.gather(*futures, return_exceptions=True)
+        await asyncio.gather(first, second, closing, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -174,398 +138,168 @@ async def test_queue_busy_includes_direct_agent_work_until_it_finishes():
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def response_factory(prompt, call_count):
+    async def respond(prompt, count):
         started.set()
         await release.wait()
         return ModelResponse([AssistantMessage("done")])
 
-    agent = Agent(
-        ScriptedModelClient(response_factory=response_factory),
-        ToolRegistry(),
-        ContextConfig(),
-    )
-    queue = AgentRuntime(agent)
-    turn = asyncio.create_task(agent.run_turn(["direct turn"]))
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient(response_factory=respond), ToolRegistry(), ContextConfig(),
+    ))
+    turn = asyncio.create_task(runtime.agent.run_turn(["direct turn"]))
     try:
         await asyncio.wait_for(started.wait(), 1)
-        assert queue.is_busy
-        agent.shutdown()
-        assert queue.is_busy
+        assert runtime.is_busy
+        runtime.agent.shutdown()
+        assert runtime.is_busy
         release.set()
         assert (await turn).output_text == "done"
-        assert not queue.is_busy
+        assert not runtime.is_busy
     finally:
         release.set()
         await asyncio.gather(turn, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio
 async def test_queue_busy_includes_pending_submissions_before_worker_starts():
-    queue = AgentRuntime(
-        Agent(
-            ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
-            ToolRegistry(),
-            ContextConfig(),
-        )
-    )
-    _submission_id, future = await queue.enqueue_user_turn("pending")
-    assert queue.is_busy
-    await queue.close()
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
+        ToolRegistry(), ContextConfig(),
+    ))
+    _submission_id, future = runtime.enqueue("pending")
+    assert runtime.is_busy
+    await runtime.close()
     assert (await future).output_text == "done"
-    assert not queue.is_busy
-    with pytest.raises(ValueError, match="unknown submission queue"):
-        await queue.enqueue_user_turn("invalid", queue="typo")
+    assert not runtime.is_busy
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("interrupt", [False, True])
-async def test_subagent_waits_for_pending_work_after_failed_or_interrupted_turn(
-    interrupt,
-):
-    first_started = asyncio.Event()
-    release_first = asyncio.Event()
-    second_started = asyncio.Event()
-    release_second = asyncio.Event()
-
-    async def response_factory(prompt, call_count):
-        if call_count == 1:
-            first_started.set()
-            await release_first.wait()
-            if not interrupt:
-                raise RuntimeError("first turn failed")
-            return ModelResponse([AssistantMessage("first answer")])
-        second_started.set()
-        await release_second.wait()
-        return ModelResponse([AssistantMessage("follow-up done")])
-
-    model = ScriptedModelClient(response_factory=response_factory)
-    manager = SubAgentManager()
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, session_id: AgentRuntime(
-            Agent(model, ToolRegistry(), ContextConfig(), initial_history=history)
-        )
-    )
-    spawned = await manager.spawn_agent("first", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
+async def test_idle_messages_wait_for_execution_and_pending_triggers_merge():
+    model = ScriptedModelClient([
+        ModelResponse([AssistantMessage("triggered")]),
+        ModelResponse([AssistantMessage("queued")]),
+    ])
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    runtime.message("first message")
+    assert not runtime.is_busy
+    assert model.call_count == 0
+    queued_id, queued = runtime.enqueue("queued prompt")
+    first_id, first = runtime.trigger()
+    runtime.message("second message")
+    second_id, second = runtime.trigger()
+    assert first_id == second_id
+    assert queued_id != first_id
+    await runtime.start()
     try:
-        await asyncio.wait_for(first_started.wait(), 1)
-        sent = await manager.send_input(agent_id, "next", interrupt)
-        if interrupt:
-            batched = await manager.send_input(agent_id, "also next", True)
-            assert batched["submission_id"] == sent["submission_id"]
-        release_first.set()
-        await asyncio.wait_for(second_started.wait(), 1)
-
-        pending = await manager.wait_agents([agent_id], timeout_ms=10)
-        assert pending == {"status": {}, "timed_out": True}
-        release_second.set()
-        result = await manager.wait_agents([agent_id], timeout_ms=1000)
-        assert result == {
-            "status": {agent_id: {"completed": "follow-up done"}},
-            "timed_out": False,
-        }
-        await manager.close_agent(agent_id)
-        await asyncio.sleep(0)
-        assert (await manager.wait_agents([agent_id]))["status"] == {
-            agent_id: "shutdown"
-        }
-        assert not manager._agents[agent_id].runtime.is_busy
+        first_result, second_result, queued_result = await asyncio.gather(first, second, queued)
+        assert first_result is second_result
+        assert first_result.output_text == "triggered"
+        assert queued_result.output_text == "queued"
+        assert [
+            item.text for item in model.prompts[0].input if isinstance(item, UserMessage)
+        ] == ["first message", "second message"]
+        assert [
+            item.text for item in model.prompts[1].input if isinstance(item, UserMessage)
+        ] == ["first message", "second message", "queued prompt"]
     finally:
-        release_first.set()
-        release_second.set()
-        await manager.close_agent(agent_id)
+        await runtime.close()
 
 
 @pytest.mark.asyncio
-async def test_subagent_status_result_does_not_expose_mutable_state():
-    manager = SubAgentManager()
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, session_id: AgentRuntime(
-            Agent(
-                ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
-                ToolRegistry(),
-                ContextConfig(),
-            )
-        )
-    )
-    spawned = await manager.spawn_agent("prompt", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
+async def test_active_message_reuses_turn_and_trigger_does_not_queue_an_extra_turn():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 1:
+            started.set()
+            await release.wait()
+        return ModelResponse([AssistantMessage("answer " + str(count))])
+
+    model = ScriptedModelClient(response_factory=respond)
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    events = []
+    runtime.event_handler = events.append
+    await runtime.start()
+    _submission_id, result = runtime.enqueue("start")
     try:
-        snapshot = await manager.wait_agents([agent_id], 1000)
-        snapshot["status"][agent_id]["completed"] = "changed by caller"
-        current = await manager.wait_agents([agent_id], 1000)
-        assert current["status"][agent_id] == {"completed": "done"}
+        await started.wait()
+        runtime.message("agent update")
+        assert runtime.trigger() is None
+        release.set()
+        assert (await result).output_text == "answer 2"
+        assert model.call_count == 2
+        assert model.prompts[0].turn_id == model.prompts[1].turn_id
+        assert [event.kind for event in events].count("turn_started") == 1
+        assert not runtime.state_snapshot()["queued_inputs"]
+        assert runtime.agent.history == (
+            UserMessage("start"), AssistantMessage("answer 1"),
+            UserMessage("agent update"), AssistantMessage("answer 2"),
+        )
     finally:
-        await manager.close_agent(agent_id)
+        release.set()
+        await runtime.close()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("wait_first", [False, True])
-async def test_subagent_result_is_delivered_after_tool_batch_once(wait_first):
-    release_child = asyncio.Event()
-    tools = ToolRegistry()
-    manager = tools.runtime_environment.subagent_manager
+async def test_wait_activity_timeout_cleans_waiter_and_does_not_consume_mail():
+    runtime = make_runtime(make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig()))
+    tasks = set(asyncio.all_tasks())
+    assert await runtime.wait_for_activity(1) == {
+        "message": "Wait timed out.", "timed_out": True,
+    }
+    assert set(asyncio.all_tasks()) == tasks
+    waiter = asyncio.create_task(runtime.wait_for_activity(1000))
+    await asyncio.sleep(0)
+    runtime.message("mail")
+    assert await waiter == {"message": "Wait completed.", "timed_out": False}
+    assert await runtime.wait_for_activity(1) == {
+        "message": "Wait completed.", "timed_out": False,
+    }
+    assert list(runtime._steer_queue) == [UserMessage("mail")]
+    await runtime.close()
 
-    async def finish_child(prompt, call_count):
-        await release_child.wait()
-        return ModelResponse([AssistantMessage("child result")])
 
-    manager.set_runtime_builder(
-        lambda model, effort, history, agent_id: AgentRuntime(
-            Agent(
-                ScriptedModelClient(response_factory=finish_child),
-                ToolRegistry(),
-                ContextConfig(),
-            )
-        )
-    )
-    spawned = await manager.spawn_agent("work", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
+@pytest.mark.asyncio
+async def test_stop_releases_waiting_tool_without_a_timeout():
+    entered = asyncio.Event()
 
-    class OrdinaryTool(BaseTool):
-        name = "ordinary"
-        description = "An ordinary tool that finishes after the child."
-        supports_parallel = False
+    class WaitingTool(BaseTool):
+        name = "wait_for_mail"
+        description = "Wait for runtime activity."
 
         async def run(self, context, args):
-            assert not _subagent_notifications(context.history)
-            result = await manager.wait_agents([agent_id], 1000)
-            assert result["status"] == {agent_id: {"completed": "child result"}}
-            return "ordinary result"
+            entered.set()
+            return await runtime.wait_for_activity(10000)
 
-    tools.register(OrdinaryTool())
-    tools.register(WaitAgentTool(manager))
-
-    def respond(prompt, call_count):
-        if call_count == 1:
-            release_child.set()
-            first = (
-                ToolCall("first", "wait_agent", {"ids": [agent_id]})
-                if wait_first
-                else ToolCall("first", "ordinary", {})
-            )
-            return ModelResponse([first, ToolCall("second", "ordinary", {})])
-        if call_count == 2:
-            return ModelResponse([ToolCall("again", "wait_agent", {"ids": [agent_id]})])
-        return ModelResponse([AssistantMessage("parent result")])
-
-    model = ScriptedModelClient(response_factory=respond)
-    parent = Agent(model, tools, ContextConfig())
-    try:
-        await parent.run_turn(["work while the child runs"])
-        expected = [{"agent_id": agent_id, "status": {"completed": "child result"}}]
-        assert model.call_count == 3
-        assert _subagent_notifications(model.prompts[1].input) == expected
-        assert _subagent_notifications(model.prompts[2].input) == expected
-        assert _subagent_notifications(parent.history) == expected
-        first_follow_up = model.prompts[1].input
-        notification_index = next(
-            index
-            for index, item in enumerate(first_follow_up)
-            if _subagent_notifications([item])
-        )
-        assert all(
-            index < notification_index
-            for index, item in enumerate(first_follow_up)
-            if isinstance(item, ToolResult)
-        )
-        assert manager.take_pending_notifications() == ()
-    finally:
-        release_child.set()
-        await manager.shutdown()
-        parent.shutdown()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("during_reply", [False, True])
-async def test_late_subagent_result_waits_for_next_parent_turn(during_reply):
-    release_child = asyncio.Event()
     tools = ToolRegistry()
-    manager = tools.runtime_environment.subagent_manager
-
-    async def finish_child(prompt, call_count):
-        await release_child.wait()
-        return ModelResponse([AssistantMessage("late result")])
-
-    manager.set_runtime_builder(
-        lambda model, effort, history, agent_id: AgentRuntime(
-            Agent(
-                ScriptedModelClient(response_factory=finish_child),
-                ToolRegistry(),
-                ContextConfig(),
-            )
-        )
-    )
-    spawned = await manager.spawn_agent("work", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
-
-    async def respond(prompt, call_count):
-        if call_count == 1 and during_reply:
-            release_child.set()
-            await manager.wait_agents([agent_id], 1000)
-        return ModelResponse([AssistantMessage("parent result")])
-
-    model = ScriptedModelClient(response_factory=respond)
-    parent = Agent(model, tools, ContextConfig())
+    tools.register(WaitingTool())
+    model = ScriptedModelClient([ModelResponse([ToolCall("wait", "wait_for_mail", {})])])
+    runtime = make_runtime(make_agent(model, tools, ContextConfig()))
+    await runtime.start()
+    _submission_id, result = runtime.enqueue("wait")
     try:
-        await parent.run_turn(["first"])
-        release_child.set()
-        assert (await manager.wait_agents([agent_id], 1000))["status"] == {
-            agent_id: {"completed": "late result"}
+        await entered.wait()
+        runtime.stop_asap()
+        with pytest.raises(SubmissionInterrupted):
+            await asyncio.wait_for(result, 1)
+        assert runtime.agent.history[-1].output == {
+            "message": "Wait interrupted by new input.", "timed_out": False,
         }
-        await asyncio.sleep(0)
         assert model.call_count == 1
-        assert not _subagent_notifications(parent.history)
-
-        await parent.run_turn(["next"])
-        expected = [{"agent_id": agent_id, "status": {"completed": "late result"}}]
-        assert _subagent_notifications(model.prompts[1].input) == expected
-        assert model.prompts[1].input[-1] == UserMessage("next")
-        await parent.run_turn(["third"])
-        assert _subagent_notifications(parent.history) == expected
-        assert model.call_count == 3
     finally:
-        release_child.set()
-        await manager.shutdown()
-        parent.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_subagent_notifications_preserve_identical_completed_turns():
-    manager = SubAgentManager()
-    model = ScriptedModelClient(
-        [ModelResponse([AssistantMessage("same result")]) for _ in range(2)]
-    )
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, agent_id: AgentRuntime(
-            Agent(model, ToolRegistry(), ContextConfig())
-        )
-    )
-    spawned = await manager.spawn_agent("first", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
-    try:
-        await manager.wait_agents([agent_id], 1000)
-        await manager.send_input(agent_id, "second", False)
-        await manager.wait_agents([agent_id], 1000)
-        assert _subagent_notifications(manager.take_pending_notifications()) == [
-            {"agent_id": agent_id, "status": {"completed": "same result"}},
-            {"agent_id": agent_id, "status": {"completed": "same result"}},
-        ]
-        assert manager.take_pending_notifications() == ()
-    finally:
-        await manager.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_subagent_status_tracks_background_invocation_and_shutdown():
-    background_started = asyncio.Event()
-    release_background = asyncio.Event()
-
-    async def response_factory(prompt, call_count):
-        if call_count == 1:
-            return ModelResponse([AssistantMessage("first answer")])
-        background_started.set()
-        await release_background.wait()
-        return ModelResponse([AssistantMessage("background answer")])
-
-    model = ScriptedModelClient(response_factory=response_factory)
-    manager = SubAgentManager()
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, session_id: AgentRuntime(
-            Agent(model, ToolRegistry(), ContextConfig())
-        )
-    )
-    spawned = await manager.spawn_agent("first", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
-    child = manager._agents[agent_id].runtime.agent
-    invoked = None
-    try:
-        assert (await manager.wait_agents([agent_id], 1000))["status"] == {
-            agent_id: {"completed": "first answer"}
-        }
-        invoked = asyncio.create_task(
-            child.maybe_invoke({"type": "exec_command_completed"})
-        )
-        await asyncio.wait_for(background_started.wait(), 1)
-        assert not invoked.done()
-        assert await manager.wait_agents([agent_id], 10) == {
-            "status": {},
-            "timed_out": True,
-        }
-        waiter = asyncio.create_task(manager.wait_agents([agent_id], 1000))
-        release_background.set()
-        assert await invoked
-        assert (await waiter)["status"] == {
-            agent_id: {"completed": "background answer"}
-        }
-        await manager.close_agent(agent_id)
-        assert not await child.maybe_invoke({"type": "exec_command_completed"})
-        with pytest.raises(RuntimeError, match="shutdown"):
-            await child.run_turn(["closed"])
-        assert (await manager.resume_agent(agent_id))["status"] == "pending_init"
-        await manager.send_input(agent_id, "resume", False)
-        assert (await manager.wait_agents([agent_id], 1000))["status"] == {
-            agent_id: {"completed": "background answer"}
-        }
-    finally:
-        release_background.set()
-        if invoked is not None:
-            await asyncio.gather(invoked, return_exceptions=True)
-        await manager.close_agent(agent_id)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("interrupted", [False, True])
-async def test_subagent_waiter_is_notified_by_direct_turn_failure_or_stop(interrupted):
-    def fail(prompt, call_count):
-        if interrupted:
-            child.stop_asap()
-            return ModelResponse([])
-        raise ValueError("direct failure")
-
-    manager = SubAgentManager()
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, session_id: AgentRuntime(
-            Agent(
-                ScriptedModelClient(response_factory=fail),
-                ToolRegistry(),
-                ContextConfig(),
-            )
-        )
-    )
-    spawned = await manager.spawn_agent(None, None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
-    child = manager._agents[agent_id].runtime.agent
-    try:
-        waiter = asyncio.create_task(manager.wait_agents([agent_id], 1000))
-        await asyncio.sleep(0)
-        error_type = TurnInterrupted if interrupted else ValueError
-        message = "turn interrupted" if interrupted else "direct failure"
-        with pytest.raises(error_type, match=message):
-            await child.run_turn(["fail"])
-        result = await waiter
-        assert result["status"] == {
-            agent_id: {"errored": error_type.__name__ + ": " + message}
-        }
-        assert _subagent_notifications(manager.take_pending_notifications()) == [
-            {
-                "agent_id": agent_id,
-                "status": {"errored": error_type.__name__ + ": " + message},
-            }
-        ]
-        assert manager.take_pending_notifications() == ()
-    finally:
-        await manager.close_agent(agent_id)
+        await runtime.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed", [False, True])
-async def test_runtime_stops_direct_invoke_then_owns_steer_execution(failed):
+async def test_runtime_owns_notification_and_subsequent_steer_execution(failed):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def respond(prompt, call_count):
-        if call_count == 1:
+    async def respond(prompt, count):
+        if count == 1:
             started.set()
             await release.wait()
             return ModelResponse([AssistantMessage("first")])
@@ -573,46 +307,38 @@ async def test_runtime_stops_direct_invoke_then_owns_steer_execution(failed):
             raise ValueError("follow-up failed")
         return ModelResponse([AssistantMessage("final")])
 
-    agent = Agent(
-        ScriptedModelClient(response_factory=respond), ToolRegistry(), ContextConfig()
-    )
-    queue = AgentRuntime(agent)
-    invocation = asyncio.create_task(agent.maybe_invoke({"type": "wake_up"}))
-    steered = None
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient(response_factory=respond), ToolRegistry(), ContextConfig(),
+    ))
+    invocation = asyncio.create_task(runtime.maybe_invoke({"type": "wake_up"}))
     try:
         await asyncio.wait_for(started.wait(), 1)
-        _submission_id, steered = await queue.enqueue_user_turn("steer", queue="steer")
+        assert not await runtime.maybe_invoke({"type": "ignored"})
+        steered = await runtime.submit_input("steer")
         release.set()
-        with pytest.raises(TurnInterrupted):
+        with pytest.raises(SubmissionInterrupted):
             await invocation
-        assert not steered.done()
-        assert agent.model_client.call_count == 1
-        await queue.start()
         if failed:
             with pytest.raises(ValueError, match="follow-up failed"):
-                await steered
+                await steered.future
         else:
-            assert (await steered).output_text == "final"
-        assert not queue.is_busy
+            assert (await steered.future).output_text == "final"
+        assert not runtime.is_busy
     finally:
         release.set()
         await asyncio.gather(invocation, return_exceptions=True)
-        await queue.close()
-        if steered is not None:
-            await asyncio.gather(steered, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["exec", "clock"])
 @pytest.mark.parametrize("failed", [False, True])
-async def test_background_notification_steer_reports_only_failures(
-    tmp_path, source, failed
-):
+async def test_background_notification_steer_reports_only_failures(source, failed):
     started = asyncio.Event()
     release = asyncio.Event()
     error = ValueError("background model failed")
-    events = []
     errors = []
+    events = []
     tools = ToolRegistry()
     if source == "exec":
         class CompletedProcess:
@@ -623,7 +349,7 @@ async def test_background_notification_steer_reports_only_failures(
 
         manager = UnifiedExecManager()
         manager._sessions[1000] = UnifiedExecSession(
-            1000, CompletedProcess(), 0.0, "completed command", False
+            1000, CompletedProcess(), 0.0, "completed command", False,
         )
         tools.register(ExecCommandTool(manager))
         notification = manager._notify_when_session_completes(1000)
@@ -635,8 +361,8 @@ async def test_background_notification_steer_reports_only_failures(
         notification = manager._wait_and_notify(manager._generation, 1)
         tag = "clock_tick"
 
-    async def respond(prompt, call_count):
-        if call_count == 1:
+    async def respond(prompt, count):
+        if count == 1:
             started.set()
             await release.wait()
             if failed:
@@ -645,150 +371,40 @@ async def test_background_notification_steer_reports_only_failures(
         return ModelResponse([AssistantMessage("steer answer")])
 
     model = ScriptedModelClient(response_factory=respond)
-    agent = Agent(model, tools, ContextConfig())
-    runtime = AgentRuntime(agent)
+    runtime = make_runtime(make_agent(model, tools, ContextConfig()))
     runtime.event_handler = events.append
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: errors.append(context))
     notification_task = asyncio.create_task(notification)
-    steered = None
     try:
         await asyncio.wait_for(started.wait(), 1)
-        _submission_id, steered = await runtime.enqueue_user_turn(
-            "user steer", queue="steer"
-        )
-        assert not notification_task.done()
+        steered = await runtime.submit_input("user steer")
         release.set()
         await asyncio.wait_for(notification_task, 1)
-        assert not steered.done()
-        assert not agent.is_running
-        assert model.call_count == 1
-        assert agent.history[0].text.startswith("<" + tag + ">\n")
-        if source == "clock":
-            assert manager._timer_task is None
-        assert [
-            event.kind
-            for event in events
+        assert (await asyncio.wait_for(steered.future, 1)).output_text == "steer answer"
+        await runtime.close()
+        assert model.call_count == 2
+        assert runtime.agent.history[0].text.startswith("<" + tag + ">\n")
+        terminal = [
+            event.kind for event in events
             if event.kind in ("turn_completed", "turn_interrupted", "turn_failed")
-        ] == ["turn_failed" if failed else "turn_interrupted"]
+        ]
+        assert terminal == [
+            "turn_failed" if failed else "turn_interrupted", "turn_completed",
+        ]
         if failed:
             assert len(errors) == 1
             assert errors[0]["exception"] is error
-            assert errors[0]["message"] == (
-                "Exec completion notification failed"
-                if source == "exec"
-                else "Clock notification failed"
-            )
         else:
             assert errors == []
-            assert agent.history[-1] == AssistantMessage("background answer")
-
-        await runtime.start()
-        assert (await asyncio.wait_for(steered, 1)).output_text == "steer answer"
-        await runtime.close()
-        assert model.call_count == 2
-        assert model.prompts[-1].input[-1] == UserMessage("user steer")
-        assert agent.history[-2:] == (
-            UserMessage("user steer"),
-            AssistantMessage("steer answer"),
+        assert runtime.agent.history[-2:] == (
+            UserMessage("user steer"), AssistantMessage("steer answer"),
         )
     finally:
         release.set()
         await asyncio.gather(notification_task, return_exceptions=True)
         await runtime.close()
-        if steered is not None:
-            await asyncio.gather(steered, return_exceptions=True)
-        loop.set_exception_handler(previous_handler)
-
-
-@pytest.mark.asyncio
-async def test_parent_queue_shutdown_waits_for_child_work():
-    started = asyncio.Event()
-    release = asyncio.Event()
-
-    async def respond(prompt, call_count):
-        started.set()
-        await release.wait()
-        return ModelResponse([AssistantMessage("child done")])
-
-    parent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
-    manager = parent.tool_registry.runtime_environment.subagent_manager
-    manager.set_runtime_builder(
-        lambda model, effort, history, session_id: AgentRuntime(
-            Agent(
-                ScriptedModelClient(response_factory=respond),
-                ToolRegistry(),
-                ContextConfig(),
-            )
-        )
-    )
-    queue = AgentRuntime(parent)
-    await queue.start()
-    spawned = await manager.spawn_agent("finish me", None, None, False, None, None, ())
-    await asyncio.wait_for(started.wait(), 1)
-    closing = asyncio.create_task(queue.close())
-    try:
-        await asyncio.sleep(0)
-        assert not closing.done()
-        child = manager._agents[spawned["agent_id"]].runtime.agent
-        assert child.is_running
-        release.set()
-        await asyncio.wait_for(closing, 1)
-        assert child.history[-1] == AssistantMessage("child done")
-        assert (await manager.wait_agents([spawned["agent_id"]], 10))["status"] == {
-            spawned["agent_id"]: "shutdown",
-        }
-    finally:
-        release.set()
-        await closing
-
-
-@pytest.mark.asyncio
-async def test_parent_close_cleans_all_children_after_child_cleanup_errors():
-    parent = AgentRuntime(
-        Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
-    )
-    manager = parent.agent.tool_registry.runtime_environment.subagent_manager
-    manager.set_runtime_builder(
-        lambda model, effort, history, session_id: AgentRuntime(
-            Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
-        )
-    )
-    await parent.start()
-    for index in range(3):
-        await manager.spawn_agent(None, None, None, False, None, None, ())
-    children = [managed.runtime for managed in manager._agents.values()]
-    failures = [
-        RuntimeError("first cleanup failed"),
-        RuntimeError("second cleanup failed"),
-    ]
-    for child, failure in zip(children, failures):
-
-        async def fail_cleanup(error=failure):
-            raise error
-
-        child.add_close_handler(fail_cleanup)
-    reported = []
-    loop = asyncio.get_running_loop()
-    previous_handler = loop.get_exception_handler()
-    loop.set_exception_handler(
-        lambda loop, context: reported.append(context["exception"])
-    )
-    try:
-        with pytest.raises(RuntimeError, match="first cleanup failed") as caught:
-            await parent.close()
-        assert caught.value is failures[0]
-        assert reported == failures[1:]
-        assert parent.agent.is_shutdown
-        assert all(
-            child.agent.is_shutdown and not child.accepts_input for child in children
-        )
-        assert all(child._worker.done() for child in children)
-    finally:
-        await asyncio.gather(
-            *(child.close() for child in children), return_exceptions=True
-        )
         loop.set_exception_handler(previous_handler)
 
 
@@ -800,89 +416,65 @@ async def test_steer_during_compaction_restarts_execution_with_shared_turn_id(ov
     compact_started = asyncio.Event()
     release_compact = asyncio.Event()
 
-    class CompactingClient:
-        model = "test"
+    async def respond(prompt, count):
+        if count == 1:
+            request_started.set()
+            await release_request.wait()
+            if overflow:
+                raise ContextLengthExceeded("input exceeds the context window")
+            runtime.agent._last_total_usage_tokens = 100
+            return ModelResponse([AssistantMessage("first answer")])
+        if count == 2:
+            compact_started.set()
+            await release_compact.wait()
+            return ModelResponse([AssistantMessage("summary")])
+        return ModelResponse([AssistantMessage("final answer")])
 
-        def __init__(self):
-            self.prompts = []
-
-        async def complete(self, prompt, event_handler):
-            self.prompts.append(prompt)
-            if len(self.prompts) == 1:
-                request_started.set()
-                await release_request.wait()
-                if overflow:
-                    raise ContextLengthExceeded("input exceeds the context window")
-                event_handler(TokenCountEvent({"total_tokens": 100}))
-                return ModelResponse([AssistantMessage("first answer")])
-            if len(self.prompts) == 2:
-                compact_started.set()
-                await release_compact.wait()
-                return ModelResponse([AssistantMessage("summary")])
-            return ModelResponse([AssistantMessage("final answer")])
-
-    model = CompactingClient()
-    agent = Agent(
-        model,
-        ToolRegistry(),
-        ContextConfig(model_auto_compact_token_limit=50),
-    )
-    queue = AgentRuntime(agent)
+    model = ScriptedModelClient(response_factory=respond)
+    runtime = make_runtime(make_agent(
+        model, ToolRegistry(), ContextConfig(model_auto_compact_token_limit=50),
+    ))
     events = []
-    queue.event_handler = events.append
-    await queue.start()
-    futures = []
+    runtime.event_handler = events.append
+    await runtime.start()
+    _submission_id, original = runtime.enqueue("original")
+    futures = [original]
     try:
-        _submission_id, original = await queue.enqueue_user_turn("original")
-        futures.append(original)
-        await asyncio.wait_for(request_started.wait(), 1)
-        first_id, first_steer = await queue.enqueue_user_turn(
-            "steer one", queue="steer"
-        )
-        futures.append(first_steer)
+        await request_started.wait()
+        first = await runtime.submit_input("steer one")
+        futures.append(first.future)
         release_request.set()
         await asyncio.wait_for(compact_started.wait(), 1)
-        second_id, second_steer = await queue.enqueue_user_turn(
-            "steer two", queue="steer"
-        )
-        futures.append(second_steer)
+        second = await runtime.submit_input("steer two")
+        futures.append(second.future)
         release_compact.set()
-        result = await asyncio.wait_for(second_steer, 1)
+        result = await asyncio.wait_for(second.future, 1)
         with pytest.raises(SubmissionInterrupted):
             await original
         if overflow:
-            assert first_id == second_id
-            assert await first_steer is result
+            assert first.submission_id == second.submission_id
+            assert await first.future is result
         else:
-            assert first_id != second_id
+            assert first.submission_id != second.submission_id
             with pytest.raises(SubmissionInterrupted):
-                await first_steer
-        assert [event.kind for event in events].count("turn_started") == (
-            2 if overflow else 3
-        )
+                await first.future
+        assert [event.kind for event in events].count("turn_started") == (2 if overflow else 3)
         assert result.output_text == "final answer"
         assert len(model.prompts) == 3
         assert all(prompt.turn_id == result.turn_id for prompt in model.prompts)
         assert [
-            item.text
-            for item in model.prompts[-1].input
-            if isinstance(item, UserMessage)
-        ][-2:] == [
-            "steer one",
-            "steer two",
-        ]
+            item.text for item in model.prompts[-1].input if isinstance(item, UserMessage)
+        ][-2:] == ["steer one", "steer two"]
     finally:
         release_request.set()
         release_compact.set()
-        await queue.close()
+        await runtime.close()
         await asyncio.gather(*futures, return_exceptions=True)
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("overflow", [False, True])
-async def test_steer_arriving_during_tool_follow_up_compact_enters_next_request(
-    overflow,
-):
+async def test_steer_during_tool_follow_up_compact_preserves_completed_tools(overflow):
     compact_started = asyncio.Event()
     release_compact = asyncio.Event()
     executions = []
@@ -897,25 +489,23 @@ async def test_steer_arriving_during_tool_follow_up_compact_enters_next_request(
 
     class CompactingClient:
         model = "test"
+        reasoning_effort = None
 
         def __init__(self):
             self.prompts = []
 
         async def complete(self, prompt, event_handler):
             self.prompts.append(prompt)
-            request_number = len(self.prompts)
-            if request_number == 1:
+            number = len(self.prompts)
+            if number == 1:
                 if not overflow:
                     event_handler(TokenCountEvent({"total_tokens": 100}))
-                return ModelResponse(
-                    [
-                        AssistantMessage("old commentary"),
-                        ToolCall("count_call", "count", {}),
-                    ]
-                )
-            if overflow and request_number == 2:
+                return ModelResponse([
+                    AssistantMessage("old commentary"), ToolCall("count_call", "count", {}),
+                ])
+            if overflow and number == 2:
                 raise ContextLengthExceeded("input exceeds the context window")
-            if request_number == (3 if overflow else 2):
+            if number == (3 if overflow else 2):
                 compact_started.set()
                 await release_compact.wait()
                 return ModelResponse([AssistantMessage("summary")])
@@ -924,135 +514,64 @@ async def test_steer_arriving_during_tool_follow_up_compact_enters_next_request(
     tools = ToolRegistry()
     tools.register(CountingTool())
     client = CompactingClient()
-    agent = Agent(
-        client,
-        tools,
-        ContextConfig(model_auto_compact_token_limit=50),
-    )
-    queue = AgentRuntime(agent)
-    await queue.start()
-    futures = []
+    runtime = make_runtime(make_agent(
+        client, tools, ContextConfig(model_auto_compact_token_limit=50),
+    ))
     events = []
-    queue.event_handler = events.append
+    runtime.event_handler = events.append
+    await runtime.start()
+    _submission_id, original = runtime.enqueue("original")
+    futures = [original]
     try:
-        _submission_id, original = await queue.enqueue_user_turn("original")
-        futures.append(original)
         await asyncio.wait_for(compact_started.wait(), 1)
-        first_id, first = await queue.enqueue_user_turn("steer one", queue="steer")
-        second_id, second = await queue.enqueue_user_turn("steer two", queue="steer")
-        futures.extend([first, second])
-        assert first_id == second_id
+        first = await runtime.submit_input("steer one")
+        second = await runtime.submit_input("steer two")
+        futures.extend([first.future, second.future])
+        assert first.submission_id == second.submission_id
         assert not original.done()
-        assert not first.done()
         release_compact.set()
-        result = await asyncio.wait_for(second, 1)
+        result = await asyncio.wait_for(second.future, 1)
         with pytest.raises(SubmissionInterrupted):
             await original
-        assert await first is result
+        assert await first.future is result
         assert result.output_text is None
         assert result.iterations == 1
-        assert [event.kind for event in events].count("turn_started") == 2
         assert executions == [result.turn_id]
         assert len(client.prompts) == (4 if overflow else 3)
         assert all(prompt.turn_id == result.turn_id for prompt in client.prompts)
         assert [
-            item.text
-            for item in client.prompts[-1].input
-            if isinstance(item, UserMessage)
-        ][-2:] == [
-            "steer one",
-            "steer two",
-        ]
-        assert not queue.is_busy
+            item.text for item in client.prompts[-1].input if isinstance(item, UserMessage)
+        ][-2:] == ["steer one", "steer two"]
         interrupted = [event for event in events if event.kind == "turn_interrupted"]
         assert len(interrupted) == 1
         assert interrupted[0].output_text == "old commentary"
     finally:
         release_compact.set()
-        await queue.close()
+        await runtime.close()
         await asyncio.gather(*futures, return_exceptions=True)
 
 
 @pytest.mark.asyncio
-async def test_shutdown_drains_existing_inputs_but_rejects_new_invocations():
-    started = asyncio.Event()
-    release = asyncio.Event()
+async def test_terminal_observer_can_trigger_a_followup_turn():
+    model = ScriptedModelClient([
+        ModelResponse([AssistantMessage("first")]),
+        ModelResponse([AssistantMessage("second")]),
+    ])
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    receipts = []
 
-    async def respond(prompt, call_count):
-        started.set()
-        await release.wait()
-        return ModelResponse([AssistantMessage("done")])
+    def observe(event):
+        if event.kind == "turn_completed" and event.output_text == "first":
+            runtime.message("after terminal event")
+            receipts.append(runtime.trigger())
 
-    agent = Agent(
-        ScriptedModelClient(response_factory=respond), ToolRegistry(), ContextConfig()
-    )
-    queue = AgentRuntime(agent)
-    await queue.start()
-    _submission_id, first = await queue.enqueue_user_turn("first")
-    _submission_id, second = await queue.enqueue_user_turn("second")
-    await asyncio.wait_for(started.wait(), 1)
-    closing = asyncio.create_task(queue.close())
+    runtime.event_handler = observe
+    await runtime.start()
     try:
-        await asyncio.sleep(0)
-        assert not queue.accepts_input
-        assert not agent.accepts_input
-        assert not agent.is_shutdown
-        assert len(queue._enqueue_queue) == 1
-        assert not await agent.maybe_invoke({"type": "exec_command_completed"})
-        assert not await agent.maybe_invoke({"type": "clock_tick"})
-        with pytest.raises(RuntimeError, match="shutting down"):
-            await queue.enqueue_user_turn("too late")
-        release.set()
-        assert (await first).output_text == "done"
-        assert (await second).output_text == "done"
-        await closing
-        assert agent.is_shutdown
+        runtime.stop_asap()
+        _submission_id, first = runtime.trigger()
+        assert (await first).output_text == "first"
+        assert (await receipts[0][1]).output_text == "second"
+        assert model.call_count == 2
     finally:
-        release.set()
-        await asyncio.gather(first, second, closing, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("start_sampling", [False, True])
-async def test_close_agent_drains_active_and_queued_work(start_sampling):
-    started = asyncio.Event()
-    cleaned_up = asyncio.Event()
-    release = asyncio.Event()
-
-    async def respond(prompt, call_count):
-        started.set()
-        await release.wait()
-        cleaned_up.set()
-        return ModelResponse([AssistantMessage("done")])
-
-    client = ScriptedModelClient(response_factory=respond)
-    manager = SubAgentManager()
-    manager.set_runtime_builder(
-        lambda model_name, effort, history, session_id: AgentRuntime(
-            Agent(client, ToolRegistry(), ContextConfig())
-        )
-    )
-    spawned = await manager.spawn_agent("first", None, None, False, None, None, ())
-    agent_id = spawned["agent_id"]
-    closing = None
-    try:
-        if start_sampling:
-            await asyncio.wait_for(started.wait(), 1)
-        await manager.send_input(agent_id, "also finish", False)
-        closing = asyncio.create_task(manager.close_agent(agent_id))
-        await asyncio.wait_for(started.wait(), 1)
-        await asyncio.sleep(0)
-        assert not closing.done()
-        release.set()
-        await asyncio.wait_for(closing, 1)
-        assert client.call_count == 2
-        assert cleaned_up.is_set()
-        assert (await manager.wait_agents([agent_id], 10))["status"] == {
-            agent_id: "shutdown",
-        }
-        assert not manager._agents[agent_id].runtime.is_busy
-    finally:
-        release.set()
-        if closing is not None:
-            await asyncio.gather(closing, return_exceptions=True)
-        await manager.close_agent(agent_id)
+        await runtime.close()

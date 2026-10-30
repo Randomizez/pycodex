@@ -16,7 +16,6 @@ import requests
 import pycodex.utils.get_env as get_env
 from pycodex import (
     NOOP_MODEL_STREAM_EVENT_HANDLER,
-    Agent,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -54,8 +53,13 @@ from tests.fake_responses_server import CaptureStore, build_handler
 
 EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
   "model": "demo-model",
-  "instructions": "Be concise.",
   "input": [
+    {
+      "type": "message",
+      "id": "msg_e7555c33-ec11-5ccb-a610-0958049677ff",
+      "role": "developer",
+      "content": [{"type": "input_text", "text": "Be concise."}]
+    },
     {
       "type": "message",
       "role": "developer",
@@ -600,31 +604,34 @@ def test_responses_model_client_builds_responses_payload() -> "None":
     payload = client._build_payload(prompt)
 
     assert payload["model"] == "demo-model"
-    assert payload["instructions"] == "Be concise."
+    assert "instructions" not in payload
     assert payload["parallel_tool_calls"] is True
     assert payload["prompt_cache_key"] is not None
     assert payload["reasoning"] == {"effort": "medium", "summary": "detailed"}
     assert payload["text"] == {"verbosity": "low"}
     assert payload["input"][0]["role"] == "developer"
     assert payload["input"][0]["content"][0]["type"] == "input_text"
-    assert payload["input"][0]["content"][0]["text"] == "first developer block"
-    assert payload["input"][0]["content"][1]["text"] == "second developer block"
+    assert payload["input"][0]["content"][0]["text"] == "Be concise."
+    assert payload["input"][0]["id"].startswith("msg_")
+    assert payload["input"][1]["content"][0]["text"] == "first developer block"
+    assert payload["input"][1]["content"][1]["text"] == "second developer block"
     assert payload["input"][1]["content"][0]["type"] == "input_text"
-    assert payload["input"][2]["content"][0]["type"] == "output_text"
-    assert payload["input"][3]["type"] == "function_call"
-    assert json.loads(payload["input"][3]["arguments"]) == {"text": "hello"}
-    assert payload["input"][4] == {
+    assert payload["input"][2]["content"][0]["type"] == "input_text"
+    assert payload["input"][3]["content"][0]["type"] == "output_text"
+    assert payload["input"][4]["type"] == "function_call"
+    assert json.loads(payload["input"][4]["arguments"]) == {"text": "hello"}
+    assert payload["input"][5] == {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": '{"text":"hello"}',
     }
-    assert payload["input"][5] == {
+    assert payload["input"][6] == {
         "type": "custom_tool_call",
         "name": "apply_patch",
         "input": "*** Begin Patch\n*** End Patch",
         "call_id": "call_2",
     }
-    assert payload["input"][6] == {
+    assert payload["input"][7] == {
         "type": "custom_tool_call_output",
         "call_id": "call_2",
         "name": "apply_patch",
@@ -896,9 +903,13 @@ def test_responses_model_client_can_disable_lite_for_compat_transport() -> "None
     headers = client._build_headers(prompt)
 
     assert provider.use_responses_lite() is False
-    assert payload["instructions"] == "Be concise."
+    assert "instructions" not in payload
     assert payload["tools"] == []
     assert payload["input"][0]["type"] == "message"
+    assert payload["input"][0]["role"] == "developer"
+    assert payload["input"][0]["content"] == [
+        {"type": "input_text", "text": "Be concise."}
+    ]
     assert RESPONSES_LITE_HEADER not in headers
 
 
@@ -1831,7 +1842,9 @@ async def test_responses_model_client_retries_compat_function_argument_errors(
     monkeypatch.setattr(requests.Session, "send", send_response)
     tools = ToolRegistry()
     tools.register(RecordingTool())
-    agent = Agent(
+    from tests.fakes import make_agent
+
+    agent = make_agent(
         client,
         tools,
         ContextConfig(base_instructions="Fixture.", codex_home=tmp_path, cwd=tmp_path),

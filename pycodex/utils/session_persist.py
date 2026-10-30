@@ -5,10 +5,12 @@ import re
 import typing
 from collections import deque
 from contextlib import closing
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
 
 from ..protocol import (
+    AgentMessage,
     AssistantMessage,
     ContextMessage,
     ConversationItem,
@@ -103,7 +105,7 @@ class SessionRolloutRecorder:
         for item in items:
             history.append(item)
             if isinstance(item, ContextMessage) and item.role == "user":
-                # Preserve a fork's compact summary as context when replayed.
+                # Preserve compact summaries as context when replayed.
                 yield "compacted", _compacted_payload(history)
                 continue
             serialized = item.serialize()
@@ -232,7 +234,7 @@ def load_resumed_session_path(
     thread_id = _thread_id_from_rollout_path(rollout_path) or ""
     session_id = thread_id
     history: "typing.List[ConversationItem]" = []
-    saw_user_turn = False
+    saw_input = False
     tool_names_by_call_id: "typing.Dict[str, str]" = {}
 
     # A rollout is append-only, and a compacted entry replaces everything
@@ -262,8 +264,9 @@ def load_resumed_session_path(
                 history = _deserialize_compacted_history(
                     replacement_history, payload.get("message")
                 )
-                saw_user_turn = any(
-                    isinstance(item, (UserMessage, ContextMessage)) for item in history
+                saw_input = any(
+                    isinstance(item, (UserMessage, AgentMessage, ContextMessage))
+                    for item in history
                 )
                 tool_names_by_call_id = {
                     item.call_id: item.name
@@ -275,14 +278,14 @@ def load_resumed_session_path(
         if item_type == "event_msg" and isinstance(payload, dict):
             if payload.get("type") == "user_message":
                 history.append(UserMessage(text=str(payload.get("message", ""))))
-                saw_user_turn = True
+                saw_input = True
             continue
 
-        if (
-            item_type != "response_item"
-            or not saw_user_turn
-            or not isinstance(payload, dict)
-        ):
+        if item_type != "response_item" or not isinstance(payload, dict):
+            continue
+        if payload.get("type") == "agent_message":
+            saw_input = True
+        if not saw_input:
             continue
 
         _append_deserialized_response_item(
@@ -319,7 +322,7 @@ def conversation_history_to_turns(
     current_user_text: "typing.Union[str, None]" = None
     current_assistant_text = ""
     for item in history:
-        if isinstance(item, UserMessage):
+        if isinstance(item, (UserMessage, AgentMessage)):
             if current_user_text is not None or current_assistant_text:
                 turns.append((current_user_text or "", current_assistant_text))
             current_user_text = item.text
@@ -379,6 +382,8 @@ def load_display_history(
             turns.append(None)
         elif item_type == "event_msg" and payload.get("type") == "user_message":
             turns.append((str(payload.get("message", "")), ""))
+        elif item_type == "response_item" and payload.get("type") == "agent_message":
+            turns.append((AgentMessage.from_response_item(payload).text, ""))
         elif (
             item_type == "response_item"
             and payload.get("type") == "message"
@@ -591,6 +596,9 @@ def _append_deserialized_response_item(
     include_user_messages: "bool",
 ) -> "None":
     response_item_type = str(payload.get("type", "")).strip()
+    if response_item_type == "agent_message":
+        history.append(AgentMessage.from_response_item(payload))
+        return
     if response_item_type == "message":
         role = str(payload.get("role", "")).strip()
         if role == "assistant":
@@ -633,6 +641,7 @@ def _append_deserialized_response_item(
                 id=payload.get("id"),
                 raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
                 namespace=payload.get("namespace"),
+                encrypted_function_args=deepcopy(payload.get("encrypted_function_args")),
             )
         )
         tool_names_by_call_id[call_id] = name

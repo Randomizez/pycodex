@@ -75,7 +75,6 @@ pycodex --json "Reply with exactly OK."
 | `/title`、`/history` | 管理标题、查看历史 |
 | `/resume` | 列出已保存会话；传入序号或 UUID 恢复 |
 | `/compact` | 压缩历史，释放上下文空间 |
-| `/fork` | 保留当前历史，以新会话 ID 继续 |
 | `/queue <message>` | 等当前 turn 完成后再执行 |
 
 运行中提交普通输入，会在下一个安全采样边界插入。
@@ -127,19 +126,35 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 在 Python 中复用标准模型和工具装配：
 
 ```python
-from pycodex.bootstrap import build_agent, build_model
+from pycodex import AgentsManager, ContextConfig
+from pycodex.bootstrap import build_model
+from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
+from pycodex.utils.async_bridge import run_async
 
-agent = build_agent(build_model())
-try:
-    result = agent.ask("用一句话概括这个仓库。")
-    print(result.output_text)
-finally:
-    agent.shutdown()
+async def main():
+    runtime = AgentsManager(
+        build_model(), ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
+    ).create_root_runtime()
+    await runtime.start()
+    try:
+        receipt = await runtime.submit_input("用一句话概括这个仓库。")
+        print((await receipt.future).output_text)
+    finally:
+        await runtime.close()
+
+run_async(main())
 ```
 
-自定义集成时，`Agent` 接收 model client、`ToolRegistry` 和 `ContextConfig`。
-通过 `await agent.run_turn([...])` 异步运行 turn；`AgentRuntime` 提供输入队列、
-会话命令和前端订阅。详见[运行时契约与示例](docs/RUNTIME.md)。
+自定义集成时，`Agent` 必须接收 model client、`ToolRegistry`、`ContextConfig`
+和 `session_id`。通过 `await agent.run_turn([...])` 异步运行 turn；
+`AgentRuntime(agent, agents_manager)` 提供输入队列、会话命令和前端订阅。
+`AgentsManager` 统一管理命名任务树，并提供标准构造入口。
+
+当前原型使用 MultiAgentV2 工具：`spawn_agent`、`send_message`、
+`followup_task`、`wait_agent`、`interrupt_agent` 和 `list_agents`。
+子 Agent 通过 `fork_turns` 继承上下文；会话 `/fork` 命令已移除。
+详见[运行时契约](docs/RUNTIME.md)、[上下文装配](docs/CONTEXT.md)和
+[新版对齐基线与剩余差异](docs/ALIGNMENT.md)。
 
 ## Portable 配置
 

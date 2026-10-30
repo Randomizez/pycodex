@@ -7,8 +7,6 @@ import types
 import pytest
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -24,10 +22,10 @@ from pycodex.events import AssistantDeltaEvent
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
-from pycodex_ws import build_runtime as build_workspace_runtime
+from pycodex_ws import register_feishu_commands
 from pycodex_ws.feishu_card import PycodexCard
 from pycodex_ws.feishu_link import PycodexRuntimeLink
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 from tests.test_session_backend import ControlClient, make_queue, question_payload
 from workspace_server.app import (
     ThreadedWorkspaceInteractiveSession,
@@ -49,6 +47,12 @@ class ScriptedView(CliSessionView):
             return next(self.inputs)
         except StopIteration:
             raise EOFError()
+
+
+def make_workspace_runtime(agent):
+    runtime = make_runtime(agent)
+    register_feishu_commands(runtime)
+    return runtime
 
 
 async def run_frontend(frontend, queue, inputs):
@@ -87,7 +91,7 @@ async def run_frontend(frontend, queue, inputs):
 @pytest.mark.asyncio
 async def test_frontends_share_all_session_commands(frontend, resume_by_id):
     session_id = uuid7_string()
-    source = Agent(
+    source = make_agent(
         ControlClient([ModelResponse([AssistantMessage("old answer")])]),
         ToolRegistry(),
         ContextConfig(),
@@ -132,7 +136,6 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
         "title_changed",
         "title",
         "history",
-        "forked",
         "compacted",
     ]
     assert "exit" not in results[0]["commands"]
@@ -140,7 +143,7 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
     assert results[7]["state"]["history"] == (("old prompt", "old answer"),)
     assert queue.title == "Shared title"
     assert queue.agent.model_name == "changed"
-    assert queue.agent.session_id != old_id
+    assert queue.agent.session_id == old_id
     assert queue.agent.is_shutdown
     assert client.call_count == 1
     assert not any(
@@ -149,6 +152,7 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
         if isinstance(item, UserMessage)
     )
     assert [event.command for event in events if event.kind == "command_failed"] == [
+        "/fork",
         "/unknown",
         "/exit",
         "/quit",
@@ -356,8 +360,8 @@ async def test_link_without_sdk_reports_unavailable_before_creating_connection(
 
     monkeypatch.setattr("pycodex_ws.feishu_link.PycodexRuntimeLink", create_link)
     client = ControlClient([ModelResponse([AssistantMessage("still ready")])])
-    queue = build_workspace_runtime(
-        Agent(client, ToolRegistry(), ContextConfig())
+    queue = make_workspace_runtime(
+        make_agent(client, ToolRegistry(), ContextConfig())
     )
     await queue.start()
     try:
@@ -402,8 +406,8 @@ async def test_close_waits_for_accepted_command_then_releases_connection(
 
     monkeypatch.setitem(sys.modules, "lark_oapi", types.ModuleType("lark_oapi"))
     monkeypatch.setattr("pycodex_ws.feishu_link.PycodexRuntimeLink", Link)
-    queue = build_workspace_runtime(
-        Agent(ControlClient([]), ToolRegistry(), ContextConfig())
+    queue = make_workspace_runtime(
+        make_agent(ControlClient([]), ToolRegistry(), ContextConfig())
     )
     await queue.start()
     connecting = asyncio.create_task(queue.submit_input("/link fake"))
@@ -525,7 +529,7 @@ def test_web_transports_deliver_structured_answers(threaded, transport):
             QuestionTool(tools.runtime_environment.request_user_input_manager)
         )
         return WorkspaceInteractiveSession(
-            AgentRuntime(Agent(client, tools, ContextConfig()))
+            make_runtime(make_agent(client, tools, ContextConfig()))
         )
 
     def build_frontend():
@@ -595,8 +599,8 @@ async def test_interactive_commands_reject_direct_background_work(monkeypatch):
 
     model = ScriptedModelClient(response_factory=response_factory)
     model.model = "original"
-    agent = Agent(model, ToolRegistry(), ContextConfig())
-    session = WorkspaceInteractiveSession(AgentRuntime(agent))
+    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    session = WorkspaceInteractiveSession(make_runtime(agent))
     lines = []
     commands_handled = asyncio.Event()
 
@@ -611,14 +615,13 @@ async def test_interactive_commands_reject_direct_background_work(monkeypatch):
     turn = asyncio.create_task(agent.run_turn(["background"]))
     try:
         await asyncio.wait_for(started.wait(), 1)
-        for command in ["/model changed", "/compact", "/fork", "/resume 1"]:
+        for command in ["/model changed", "/compact", "/resume 1"]:
             await asyncio.wait_for(session.submit(command), 1)
         await asyncio.wait_for(commands_handled.wait(), 1)
         output = "\n".join(lines)
         for message in [
             "Cannot change model",
             "Cannot compact",
-            "Cannot fork",
             "Cannot resume",
         ]:
             assert message in output

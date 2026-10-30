@@ -7,18 +7,16 @@ from pathlib import Path
 
 import pytest
 
-from pycodex import Agent, AgentRuntime, AssistantMessage, ContextConfig, ModelResponse
-from pycodex.protocol import ToolCall, ToolResult, UserMessage
+from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse
+from pycodex.protocol import AgentMessage, ToolCall, ToolResult, UserMessage
 from pycodex.tools.runtime_services import (
     PlanStore,
     RequestPermissionsManager,
-    SubAgentManager,
 )
 from pycodex.tools import (
     ApplyPatchTool,
     ClockManager,
     ClockTool,
-    CloseAgentTool,
     CodeModeManager,
     ExecCommandTool,
     ExecTool,
@@ -27,11 +25,8 @@ from pycodex.tools import (
     ReadFileTool,
     RequestPermissionsTool,
     RequestUserInputTool,
-    ResumeAgentTool,
-    SendInputTool,
     ShellCommandTool,
     ShellTool,
-    SpawnAgentTool,
     ToolContext,
     ToolRegistry,
     UnifiedExecManager,
@@ -42,7 +37,9 @@ from pycodex.tools import (
     WebSearchTool,
     WriteStdinTool,
 )
-from tests.fakes import ScriptedModelClient
+from tests.fakes import (
+    ScriptedModelClient, make_agent, make_runtime, wait_for_runtime_idle,
+)
 
 
 def make_registry() -> "ToolRegistry":
@@ -65,54 +62,24 @@ def make_registry() -> "ToolRegistry":
     return registry
 
 
-def make_subagent_registry(
-    model_factory,
-) -> "ToolRegistry":
-    manager = SubAgentManager()
-
-    def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
-        client = model_factory()
-        agent = Agent(
-            client,
-            ToolRegistry(),
-            ContextConfig(),
-            initial_history=tuple(initial_history),
-        )
-        return AgentRuntime(agent)
-
-    manager.set_runtime_builder(runtime_builder)
-    registry = ToolRegistry()
-    registry.register(SpawnAgentTool(manager))
-    registry.register(SendInputTool(manager))
-    registry.register(ResumeAgentTool(manager))
-    registry.register(WaitAgentTool(manager))
-    registry.register(CloseAgentTool(manager))
-    return registry
-
-
-def make_subagent_registry_with_session_capture(
-    model_factory,
-    captured_session_ids: "typing.List[str]",
-) -> "ToolRegistry":
-    manager = SubAgentManager()
-
-    def runtime_builder(_model, _reasoning_effort, initial_history, session_id):
-        captured_session_ids.append(session_id)
-        client = model_factory()
-        agent = Agent(
-            client,
-            ToolRegistry(),
-            ContextConfig(),
-            initial_history=tuple(initial_history),
-        )
-        return AgentRuntime(agent)
-
-    manager.set_runtime_builder(runtime_builder)
-    registry = ToolRegistry()
-    registry.register(SpawnAgentTool(manager))
-    registry.register(WaitAgentTool(manager))
-    registry.register(CloseAgentTool(manager))
-    return registry
+def make_agent_tools(tmp_path):
+    manager = AgentsManager(
+        ScriptedModelClient([
+            ModelResponse([AssistantMessage("done one")]),
+            ModelResponse([AssistantMessage("done two")]),
+        ]),
+        ContextConfig(cwd=tmp_path, codex_home=tmp_path),
+        toolset=(
+            "spawn_agent", "send_message", "followup_task", "wait_agent",
+            "interrupt_agent", "list_agents",
+        ),
+    )
+    runtime = manager.create_root_runtime()
+    context = ToolContext(
+        turn_id="test", history=(), cwd=tmp_path, agent_id=runtime.agent.agent_id,
+        encrypted_messages=False,
+    )
+    return runtime, context
 
 
 @pytest.mark.asyncio
@@ -1269,89 +1236,92 @@ async def test_view_image_tool_handles_oversized_images(
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_send_input_wait_and_close_round_trip() -> "None":
-    first_client = ScriptedModelClient(
-        [
-            ModelResponse(items=[AssistantMessage(text="done one")]),
-            ModelResponse(items=[AssistantMessage(text="done two")]),
-        ]
-    )
-    registry = make_subagent_registry(lambda: first_client)
-
-    spawned = await registry.execute(
-        ToolCall(
-            call_id="call_spawn",
-            name="spawn_agent",
-            arguments={"message": "hello"},
-        ),
-        ToolContext(turn_id="turn_spawn", history=(), cwd=Path.cwd()),
-    )
-
-    agent_id = spawned.output["agent_id"]
-    assert isinstance(spawned.output["nickname"], str)
-    assert spawned.output["nickname"]
-    sent = await registry.execute(
-        ToolCall(
-            call_id="call_send",
-            name="send_input",
-            arguments={"id": agent_id, "message": "hello"},
-        ),
-        ToolContext(turn_id="turn_send", history=(), cwd=Path.cwd()),
-    )
-    assert sent.output["submission_id"]
-
-    waited = await registry.execute(
-        ToolCall(
-            call_id="call_wait",
-            name="wait_agent",
-            arguments={"ids": [agent_id], "timeout_ms": 1000},
-        ),
-        ToolContext(turn_id="turn_wait", history=(), cwd=Path.cwd()),
-    )
-    if waited.output == {
-        "status": {agent_id: {"completed": "done one"}},
-        "timed_out": False,
-    }:
-        waited = await registry.execute(
-            ToolCall(
-                call_id="call_wait_again",
-                name="wait_agent",
-                arguments={"ids": [agent_id], "timeout_ms": 1000},
-            ),
-            ToolContext(turn_id="turn_wait_again", history=(), cwd=Path.cwd()),
+async def test_agent_tools_deliver_messages_and_followup_tasks(tmp_path):
+    root, context = make_agent_tools(tmp_path)
+    registry = root.agent.tool_registry
+    manager = root.agents_manager
+    try:
+        spawned = await registry.execute(
+            ToolCall("spawn", "spawn_agent", {
+                "task_name": "worker", "message": "hello", "fork_turns": "none",
+            }), context,
         )
+        assert spawned.output == {"task_name": "/root/worker"}
+        child = manager.get_runtime(
+            manager._resolve_agent_id(root.agent.agent_id, "/root/worker")
+        )
+        await wait_for_runtime_idle(child)
+        assert child.agent.tool_registry.names() == registry.names()
+        assert child.agent.model_client._session_id == child.agent.agent_id
+        assert child.agent.model_client._openai_subagent == "collab_spawn"
+        assert child.agent.session_file_path is None
+        sent = await registry.execute(
+            ToolCall("send", "send_message", {"target": "worker", "message": "note"}),
+            context,
+        )
+        assert sent.output == ""
+        await asyncio.sleep(0)
+        assert child.agent.model_client.call_count == 1
+        assert not child.is_busy
 
-    assert waited.output == {
-        "status": {agent_id: {"completed": "done two"}},
-        "timed_out": False,
-    }
+        followed = await registry.execute(
+            ToolCall("followup", "followup_task", {
+                "target": child.agent.agent_id, "message": "second task",
+            }), context,
+        )
+        assert followed.output == ""
+        await wait_for_runtime_idle(child)
+        messages = [
+            item for item in child.agent.history if isinstance(item, AgentMessage)
+        ]
+        assert [item.text.rsplit("Payload:\n", 1)[1] for item in messages] == [
+            "hello", "note", "second task",
+        ]
+        assert all(item.author == "/root" for item in messages)
+        assert all(item.recipient == "/root/worker" for item in messages)
+        assert "Message Type: NEW_TASK" in messages[-1].text
+        assert "Message Type: MESSAGE" in messages[1].text
 
-    closed = await registry.execute(
-        ToolCall(
-            call_id="call_close",
-            name="close_agent",
-            arguments={"id": agent_id},
-        ),
-        ToolContext(turn_id="turn_close", history=(), cwd=Path.cwd()),
-    )
-
-    assert closed.output == {"previous_status": {"completed": "done two"}}
+        waited = await registry.execute(ToolCall("wait", "wait_agent", {}), context)
+        assert waited.output == {"message": "Wait completed.", "timed_out": False}
+        assert len(root._steer_queue) == 2
+        listed = await registry.execute(
+            ToolCall("list", "list_agents", {"path_prefix": "worker"}), context,
+        )
+        assert listed.output == {"agents": [{
+            "agent_name": "/root/worker", "agent_status": {"completed": "done two"},
+        }]}
+        interrupted = await registry.execute(
+            ToolCall("interrupt", "interrupt_agent", {"target": "worker"}), context,
+        )
+        assert interrupted.output == {"previous_status": {"completed": "done two"}}
+        assert child.accepts_input
+    finally:
+        await root.close()
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_requires_message_or_items() -> "None":
-    client = ScriptedModelClient(
-        [ModelResponse(items=[AssistantMessage(text="unused")])]
-    )
-    registry = make_subagent_registry(lambda: client)
-
-    spawned = await registry.execute(
-        ToolCall(call_id="call_spawn_empty", name="spawn_agent", arguments={}),
-        ToolContext(turn_id="turn_spawn_empty", history=(), cwd=Path.cwd()),
-    )
-
-    assert spawned.is_error is False
-    assert spawned.output == "Provide one of: message or items"
+@pytest.mark.parametrize("arguments, error", [
+    ({}, "task_name"),
+    ({"task_name": "worker"}, "message"),
+    ({"task_name": "root", "message": "task"}, "reserved"),
+    ({"task_name": "Bad/Name", "message": "task"}, "lowercase"),
+    ({"task_name": "worker", "message": " "}, "Empty message"),
+    ({"task_name": "worker", "message": "task", "fork_turns": "some"}, "fork_turns"),
+    ({"task_name": "worker", "message": "task", "fork_context": True}, "unexpected"),
+    ({"task_name": "worker", "message": "task", "items": []}, "unexpected"),
+])
+async def test_spawn_agent_rejects_invalid_tasks(tmp_path, arguments, error):
+    root, context = make_agent_tools(tmp_path)
+    try:
+        result = await root.agent.tool_registry.execute(
+            ToolCall("invalid", "spawn_agent", arguments), context,
+        )
+        assert result.is_error
+        assert error in str(result.output)
+        assert len(root.agents_manager.list_agents(root.agent.agent_id)) == 1
+    finally:
+        await root.close()
 
 
 @pytest.mark.asyncio
@@ -1360,49 +1330,38 @@ async def test_wait_agent_tool_clamps_timeout_to_schema_range() -> "None":
         def __init__(self) -> "None":
             self.calls = []
 
-        async def wait_agents(self, agent_ids, timeout_ms):
-            self.calls.append((agent_ids, timeout_ms))
-            return {"status": {}, "timed_out": True}
+        async def wait_for_activity(self, agent_id, timeout_ms):
+            self.calls.append((agent_id, timeout_ms))
+            return {"message": "Wait timed out.", "timed_out": True}
 
     manager = RecordingManager()
     tool = WaitAgentTool(manager)
-    context = ToolContext(turn_id="turn_wait_agent_clamp", history=(), cwd=Path.cwd())
+    context = ToolContext(
+        turn_id="turn_wait_agent_clamp", history=(), cwd=Path.cwd(), agent_id="root-id",
+    )
 
-    result = await tool.run(context, {"ids": ["agent-1"], "timeout_ms": 1})
-    assert result == {"status": {}, "timed_out": True}
-    assert manager.calls[-1] == (["agent-1"], 10_000)
+    result = await tool.run(context, {"timeout_ms": 1})
+    assert result["timed_out"] is True
+    assert "clamped to the minimum of 10000ms" in result["message"]
+    assert manager.calls[-1] == ("root-id", 10_000)
 
-    result = await tool.run(context, {"ids": ["agent-1"]})
-    assert result == {"status": {}, "timed_out": True}
-    assert manager.calls[-1] == (["agent-1"], 30_000)
+    result = await tool.run(context, {})
+    assert result == {"message": "Wait timed out.", "timed_out": True}
+    assert manager.calls[-1] == ("root-id", 30_000)
 
-    result = await tool.run(context, {"ids": ["agent-1"], "timeout_ms": 9_999_999})
-    assert result == {"status": {}, "timed_out": True}
-    assert manager.calls[-1] == (["agent-1"], 3_600_000)
+    for timeout in (True, 10000.0, "10000", None):
+        with pytest.raises(ValueError, match="must be an integer"):
+            await tool.run(context, {"timeout_ms": timeout})
+    with pytest.raises(ValueError, match="at most 3600000"):
+        await tool.run(context, {"timeout_ms": 3_600_001})
+    with pytest.raises(ValueError, match="unexpected"):
+        await tool.run(context, {"ids": ["old-agent-id"]})
+    assert len(manager.calls) == 2
 
 
 @pytest.mark.asyncio
-async def test_spawn_agent_fork_context_drops_unpaired_tool_calls() -> "None":
-    captured_history = []
-    manager = SubAgentManager()
-
-    def runtime_builder(_model, _reasoning_effort, initial_history, _session_id):
-        captured_history.append(tuple(initial_history))
-        client = ScriptedModelClient(
-            [ModelResponse(items=[AssistantMessage(text="done")])]
-        )
-        agent = Agent(
-            client,
-            ToolRegistry(),
-            ContextConfig(),
-            initial_history=tuple(initial_history),
-        )
-        return AgentRuntime(agent)
-
-    manager.set_runtime_builder(runtime_builder)
-    registry = ToolRegistry()
-    registry.register(SpawnAgentTool(manager))
-    registry.register(WaitAgentTool(manager))
+async def test_spawn_agent_fork_projects_aborted_results_without_mutating_history(tmp_path):
+    root, context = make_agent_tools(tmp_path)
 
     paired_call = ToolCall(
         call_id="call_paired",
@@ -1417,204 +1376,32 @@ async def test_spawn_agent_fork_context_drops_unpaired_tool_calls() -> "None":
     current_spawn_call = ToolCall(
         call_id="call_current_spawn",
         name="spawn_agent",
-        arguments={"message": "child"},
+        arguments={"task_name": "worker", "message": "child"},
     )
 
-    spawned = await registry.execute(
-        ToolCall(
-            call_id="call_spawn_filter",
-            name="spawn_agent",
-            arguments={"message": "initial", "fork_context": True},
-        ),
-        ToolContext(
-            turn_id="turn_spawn_filter",
-            cwd=Path.cwd(),
-            history=(
-                UserMessage(text="parent"),
-                paired_call,
-                paired_result,
-                current_spawn_call,
-            ),
-        ),
+    history = (UserMessage("parent"), paired_call, paired_result, current_spawn_call)
+    context = ToolContext(
+        turn_id="spawn", cwd=tmp_path, agent_id=root.agent.agent_id, history=history,
     )
-    agent_id = spawned.output["agent_id"]
-    waited = await registry.execute(
-        ToolCall(
-            call_id="call_wait_filter",
-            name="wait_agent",
-            arguments={"ids": [agent_id], "timeout_ms": 1000},
-        ),
-        ToolContext(turn_id="turn_wait_filter", history=(), cwd=Path.cwd()),
-    )
-
-    assert waited.output == {
-        "status": {agent_id: {"completed": "done"}},
-        "timed_out": False,
-    }
-    assert captured_history == [
-        (
-            UserMessage(text="parent"),
-            paired_call,
-            paired_result,
-        )
-    ]
-
-
-@pytest.mark.asyncio
-async def test_spawn_agent_uses_agent_id_as_nested_session_id() -> "None":
-    captured_session_ids: "typing.List[str]" = []
-    client = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
-    registry = make_subagent_registry_with_session_capture(
-        lambda: client,
-        captured_session_ids,
-    )
-
-    spawned = await registry.execute(
-        ToolCall(
-            call_id="call_spawn_session",
-            name="spawn_agent",
-            arguments={"message": "initial"},
-        ),
-        ToolContext(turn_id="turn_spawn_session", history=(), cwd=Path.cwd()),
-    )
-
-    agent_id = spawned.output["agent_id"]
-    assert captured_session_ids == [agent_id]
-
-    waited = await registry.execute(
-        ToolCall(
-            call_id="call_wait_session",
-            name="wait_agent",
-            arguments={"ids": [agent_id], "timeout_ms": 1000},
-        ),
-        ToolContext(turn_id="turn_wait_session", history=(), cwd=Path.cwd()),
-    )
-    assert waited.output == {
-        "status": {agent_id: {"completed": "done"}},
-        "timed_out": False,
-    }
-
-    closed = await registry.execute(
-        ToolCall(
-            call_id="call_close_session",
-            name="close_agent",
-            arguments={"id": agent_id},
-        ),
-        ToolContext(turn_id="turn_close_session", history=(), cwd=Path.cwd()),
-    )
-    assert closed.output == {"previous_status": {"completed": "done"}}
-
-
-@pytest.mark.asyncio
-async def test_resume_agent_restarts_closed_agent_runtime() -> "None":
-    client = ScriptedModelClient(
-        [
-            ModelResponse(items=[AssistantMessage(text="initial done")]),
-            ModelResponse(items=[AssistantMessage(text="after resume")]),
-        ]
-    )
-    registry = make_subagent_registry(lambda: client)
-
-    spawned = await registry.execute(
-        ToolCall(
-            call_id="call_spawn_2",
-            name="spawn_agent",
-            arguments={"message": "initial"},
-        ),
-        ToolContext(turn_id="turn_spawn_2", history=(), cwd=Path.cwd()),
-    )
-    agent_id = spawned.output["agent_id"]
-
-    initial = await registry.execute(
-        ToolCall(
-            call_id="call_wait_initial_2",
-            name="wait_agent",
-            arguments={"ids": [agent_id], "timeout_ms": 1000},
-        ),
-        ToolContext(turn_id="turn_wait_initial_2", history=(), cwd=Path.cwd()),
-    )
-    assert initial.output["status"] == {agent_id: {"completed": "initial done"}}
-
-    await registry.execute(
-        ToolCall(
-            call_id="call_close_2", name="close_agent", arguments={"id": agent_id}
-        ),
-        ToolContext(turn_id="turn_close_2", history=(), cwd=Path.cwd()),
-    )
-    resumed = await registry.execute(
-        ToolCall(
-            call_id="call_resume", name="resume_agent", arguments={"id": agent_id}
-        ),
-        ToolContext(turn_id="turn_resume", history=(), cwd=Path.cwd()),
-    )
-    assert resumed.output == {"status": "pending_init"}
-
-    await registry.execute(
-        ToolCall(
-            call_id="call_send_2",
-            name="send_input",
-            arguments={"id": agent_id, "message": "after"},
-        ),
-        ToolContext(turn_id="turn_send_2", history=(), cwd=Path.cwd()),
-    )
-    waited = await registry.execute(
-        ToolCall(
-            call_id="call_wait_2",
-            name="wait_agent",
-            arguments={"ids": [agent_id], "timeout_ms": 1000},
-        ),
-        ToolContext(turn_id="turn_wait_2", history=(), cwd=Path.cwd()),
-    )
-    assert waited.output == {
-        "status": {agent_id: {"completed": "after resume"}},
-        "timed_out": False,
-    }
-    await registry.execute(
-        ToolCall(
-            call_id="call_close_resumed", name="close_agent", arguments={"id": agent_id}
-        ),
-        ToolContext(turn_id="turn_close_resumed", history=(), cwd=Path.cwd()),
-    )
-
-
-@pytest.mark.asyncio
-async def test_resume_agent_before_first_turn_keeps_history_in_memory() -> "None":
-    client = ScriptedModelClient([ModelResponse([AssistantMessage("after resume")])])
-    registry = make_subagent_registry(lambda: client)
-    manager = registry.get_tool("resume_agent")._subagent_manager
-    initial_history = (UserMessage("parent prompt"), AssistantMessage("parent answer"))
-    spawned = await manager.spawn_agent(
-        None, None, None, True, None, None, initial_history
-    )
-    agent_id = spawned["agent_id"]
-    agent = manager._agents[agent_id].runtime.agent
     try:
-        assert agent.session_file_path is None
-        assert agent.history == initial_history
-        await manager.close_agent(agent_id)
-
-        resumed = await registry.execute(
-            ToolCall("resume_unstarted", "resume_agent", {"id": agent_id}),
-            ToolContext(turn_id="resume_unstarted", history=(), cwd=Path.cwd()),
+        spawned = await root.agent.tool_registry.execute(current_spawn_call, context)
+        manager = root.agents_manager
+        child = manager.get_runtime(
+            manager._resolve_agent_id(root.agent.agent_id, spawned.output["task_name"])
         )
-
-        assert resumed.output == {"status": "pending_init"}
-        assert agent.accepts_input
-        assert agent.session_file_path is None
-        assert agent.history == initial_history
-        await manager.send_input(agent_id, "first prompt", False)
-        waited = await manager.wait_agents([agent_id], 1000)
-        assert waited == {
-            "status": {agent_id: {"completed": "after resume"}},
-            "timed_out": False,
-        }
-        assert agent.session_file_path is None
-        assert agent.history == initial_history + (
-            UserMessage("first prompt"),
-            AssistantMessage("after resume"),
-        )
+        await wait_for_runtime_idle(child)
+        assert child.agent.history[:len(history)] == history
+        assert root.agent.history == ()
+        results = [
+            item for item in child.agent.model_client.prompts[0].input
+            if isinstance(item, ToolResult)
+        ]
+        assert results[0] == paired_result
+        assert results[1].call_id == current_spawn_call.call_id
+        assert results[1].output == "aborted"
+        assert results[1] not in child.agent.history
     finally:
-        await manager.close_agent(agent_id)
+        await root.close()
 
 
 @pytest.mark.parametrize("restore_file", [False, True])
@@ -1624,21 +1411,22 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     registry = ToolRegistry()
     registry.register(ClockTool(clock_manager))
     registry.register(ExecCommandTool(exec_manager))
-    agent = Agent(
+    agent = make_agent(
         ScriptedModelClient([]),
         registry,
         ContextConfig(),
         session_file_path=tmp_path / "rollout.jsonl",
     )
+    runtime = make_runtime(agent)
     if restore_file:
         agent._append_history([UserMessage("saved prompt")])
     agent.shutdown()
     assert clock_manager._notify_hook is None
     assert exec_manager._notify_hook is None
 
-    agent.resume(agent.session_file_path if restore_file else None)
+    runtime.resume(agent.session_file_path if restore_file else None)
 
-    assert clock_manager._notify_hook == agent.maybe_invoke
-    assert exec_manager._notify_hook == agent.maybe_invoke
+    assert clock_manager._notify_hook == runtime.maybe_invoke
+    assert exec_manager._notify_hook == runtime.maybe_invoke
     assert agent.session_file_path.exists() == restore_file
     agent.shutdown()

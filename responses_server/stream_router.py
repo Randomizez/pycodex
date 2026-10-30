@@ -596,6 +596,28 @@ class StreamRouter:
             if item_type not in {"function_call_output", "custom_tool_call_output"}:
                 flush_pending_tool_images()
 
+            if item_type == "agent_message":
+                if not all(
+                    isinstance(raw_item.get(key), str) for key in ("author", "recipient")
+                ):
+                    raise UnsupportedIncommingFeature(
+                        "agent_message requires string `author` and `recipient`"
+                    )
+                text, image_parts = self._split_content_parts(raw_item.get("content"))
+                if image_parts:
+                    raise UnsupportedIncommingFeature(
+                        "agent_message content must contain only input_text parts"
+                    )
+                flush_pending_assistant()
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Agent message from {raw_item['author']} to "
+                        f"{raw_item['recipient']}:\n{text}"
+                    ),
+                })
+                continue
+
             if item_type == "message":
                 role = str(raw_item.get("role", "")).strip()
                 if role not in {"developer", "user", "assistant", "system"}:
@@ -1074,6 +1096,7 @@ class StreamRouter:
                     "call_id": str(tool_call.get("id", "")).strip() or f"call_{index}",
                     "name": name,
                     "arguments": arguments,
+                    "encrypted_function_args": [],
                 }
             )
 

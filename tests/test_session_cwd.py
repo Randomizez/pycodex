@@ -3,10 +3,9 @@ from pathlib import Path
 
 import pytest
 
-from pycodex import Agent, AgentRuntime, AssistantMessage, ContextConfig, ModelResponse
-from pycodex.bootstrap import get_tools
+from pycodex import AssistantMessage, ContextConfig, ModelResponse
 from pycodex.protocol import ToolCall, ToolResult, UserMessage
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
 
 
 @pytest.mark.asyncio
@@ -24,8 +23,8 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         ModelResponse([AssistantMessage("done")]),
     ]
     client = ScriptedModelClient(calls)
-    runtime = AgentRuntime(Agent(client, get_tools(), ContextConfig(cwd=tmp_path)))
-    other = Agent(ScriptedModelClient([]), get_tools(), ContextConfig(cwd=tmp_path))
+    runtime = make_runtime(make_agent(client, make_tools(), ContextConfig(cwd=tmp_path)))
+    other = make_agent(ScriptedModelClient([]), make_tools(), ContextConfig(cwd=tmp_path))
     observers = [[], []]
     for events in observers:
         runtime.attach(events.append)
@@ -82,8 +81,8 @@ async def test_cd_rejects_active_or_queued_work(tmp_path, active):
         await release.wait()
         return ModelResponse([AssistantMessage("done")])
 
-    runtime = AgentRuntime(Agent(
-        ScriptedModelClient(response_factory=respond), get_tools(),
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient(response_factory=respond), make_tools(),
         ContextConfig(cwd=tmp_path),
     ))
     receipt = await runtime.submit_input("pending")

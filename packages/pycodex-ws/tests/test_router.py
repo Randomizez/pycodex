@@ -38,14 +38,12 @@ from workspace_server import (
 )
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
     AssistantMessage,
     ContextConfig,
     ModelResponse,
     ToolRegistry,
 )
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 from workspace_server.owned_process import run_owned_server
 
 
@@ -194,7 +192,7 @@ def workspace_app(directory, password=None, response_factory=None):
             or (lambda prompt, count: ModelResponse([AssistantMessage("done")]))
         )
         return WorkspaceInteractiveSession(
-            AgentRuntime(Agent(model, ToolRegistry(), ContextConfig()))
+            make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
         )
 
     registry = WorkspaceRegistry(

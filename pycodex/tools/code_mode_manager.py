@@ -16,7 +16,7 @@ import math
 import threading
 import typing
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from loguru import logger
@@ -273,7 +273,7 @@ class CodeModeManager:
                 arguments=message.get("arguments"),
                 tool_type=tool.tool_type,
             ),
-            context,
+            replace(context, encrypted_messages=False),
         )
         if result.is_error:
             payload = {

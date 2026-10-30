@@ -4,6 +4,99 @@ This document records the current alignment work between `pycodex` and upstream
 Codex from `https://github.com/openai/codex`: prompt/context assembly,
 model-visible tool schemas, and observed tool round-trip behavior.
 
+## Current prototype baseline (2026-10-29)
+
+The current workspace is the prototype for the newer MultiAgentV2 protocol.
+Its source reference is upstream commit
+[`9cc14e79882ff8885cd5d33b4adadae014045aef`](https://github.com/openai/codex/tree/9cc14e79882ff8885cd5d33b4adadae014045aef).
+The saved HTTP captures used **Codex CLI 0.165.0**, release source commit
+[`360319d8dee62d87e2d59fc0c21805d79519cfed`](https://github.com/openai/codex/tree/360319d8dee62d87e2d59fc0c21805d79519cfed).
+These are separate references: a match against a release capture does not prove
+parity with every branch in the later source tree.
+
+The implementation now uses these contracts:
+
+| Area | Current prototype |
+| --- | --- |
+| Ownership | One `AgentsManager` owns the runtime tree. Each `AgentRuntime` owns scheduling for one `Agent`; Agents do not own their Runtime. |
+| Construction | `AgentsManager(client, context_config, toolset).create_root_runtime()` builds `/root`. `get_tools` lives in `pycodex.tools` and receives the manager explicitly. |
+| Identity | `agent_id` remains fixed across resume; `agent_path` is a canonical task path such as `/root/review`. `session_id` identifies the current rollout. |
+| Tools | `spawn_agent`, `send_message`, `followup_task`, mailbox-based `wait_agent`, `interrupt_agent`, and `list_agents`. The old `send_input`, `resume_agent`, and `close_agent` tools are removed. |
+| Input | `enqueue` schedules an independent turn; `message` queues accepted input; `trigger` requests execution; `stop_asap` requests a cooperative stop. Frontends still enter through `submit_input`. |
+| Agent messages | `NEW_TASK`, `MESSAGE`, and automatic `FINAL_ANSWER` deliveries use native `agent_message` input items. Message receipt alone does not start an idle recipient. |
+| Wait | Waits for mailbox activity or steered input, without consuming or returning message content. It no longer takes agent IDs or returns a status map. |
+| Forked context | `fork_turns="all"` is the default. Fixed context and real history retain their ordering; child identity and task are appended after the inherited prefix. `"none"` starts fresh history. |
+| Persistence | Root recording remains lazy; child agents stay in memory. Session `/fork`, `Agent.fork`, `AgentRuntime.fork`, and pending Workspace fork restoration are removed. |
+| Workspace | Context details show `To compact: N/limit` and the root/descendant tree. `last_message` is the latest assistant text, including streaming text; tool and error status do not replace it. |
+
+Developer instructions, fork assembly, message serialization, model overrides,
+and ordinary/Responses-lite placement are specified in [CONTEXT.md](CONTEXT.md).
+The presence of model-provided Default-mode instructions does not add a
+collaboration-mode switch or enable `request_user_input`.
+
+Frontend steer composes stop/message/trigger: the interrupted receipt fails,
+pending steer receipts share the next execution, and the logical turn ID is
+retained. Agent-to-Agent messages instead join an active turn at an input
+boundary without interrupting it. These paths are tested separately.
+
+### Evidence and comparison limits
+
+The October audit separately checked source contracts, captured requests, and
+local runtime behavior. Its context matrix covered ordinary and lite first
+requests, default/full/empty forks, follow-up messages, changed effort, and nested
+forks. The earlier 38-pair context projection explicitly excluded tool
+declarations, namespaces, selected client IDs, headers, and the unavailable
+asynchronous-question hint. It also projected Agent messages into readable text.
+That projection predates native `AgentMessage` serialization and must not be
+reported as native wire-format parity.
+
+The prototype subsequently preserves native Agent-message fields and encrypted
+payloads, and the compatibility adapter marks its tool arguments as plaintext.
+Repository tests exercise these contracts using synthetic clients and local
+HTTP servers. They do not establish that an arbitrary configured provider accepts
+native Agent messages or encrypted input.
+
+The current offline diagnostic also ran against CLI 0.165.0 with MultiAgentV2
+enabled and direct tools over HTTP. The default `gpt-5.4` fixture produced one
+request per side for `plain`, two for `resume`, and two for `tool`. Raw comparisons
+still report base-instruction text, skills guidance and client-generated IDs,
+as well as separately reported tool/body/header differences. In particular, the
+local base prompt retains a Planning section and skills usage guidance absent
+from that release fixture. These are recorded differences, not passing parity
+checks; the command exits `1` when it writes such a report.
+
+Capture artifacts are local audit evidence, not required package resources.
+When repeating a comparison, record the executable version and source commit,
+use isolated HOME/CODEX_HOME and fixed SSE fixtures, retain the unmodified
+request comparison, and list every normalization separately. Historical
+0.115/0.138/0.153.4 results below apply only to their stated checkpoints.
+
+### Remaining differences
+
+| Area | Boundary of the current prototype |
+| --- | --- |
+| Tool exposure | Tools remain flat and use local class schemas. Upstream tool namespaces, deferred discovery, model-specific schema overrides, and CodeModeOnly selection are not reproduced. |
+| Fork overrides | The prompt describes upstream restrictions on full-history model/effort overrides; the local manager currently accepts explicit overrides. Model availability, MultiAgentV2 support, and supported effort are not validated against the provider catalog. |
+| Capacity | `multi_agent_max_concurrency` controls prompt text. It is not an execution limit, residency pool, or idle-agent eviction mechanism. |
+| Optional MultiAgentV2 settings | Role configurations, nicknames, configurable wait/schema exposure, and `wake_on_agent_messages` are not implemented. |
+| Shared budget | Usage and compaction are per Agent; there is no tree-wide token budget or budget-triggered shutdown. |
+| Wire metadata | Client metadata, some user/result IDs, headers, and User-Agent version still differ. Preserving provider fields does not imply all locally generated IDs match. |
+| Catalog | Local Step/GPT-OSS entries remain; `codex-auto-review` is not provided. Updating bundled model data does not implement every catalog capability. |
+| Prompt selection | Model-dependent prompt shaping is not fully reproduced. The default `gpt-5.4` HTTP fixture still differs from CLI 0.165.0 in Planning and skills usage guidance. |
+| Provider compatibility | Native Responses must support `agent_message` and the encrypted-argument contract. Chat/messages adapters convert plaintext to user text and reject `encrypted_content` with HTTP 501. Provider-specific reasoning/tool restrictions remain visible errors. |
+
+Intentional local boundaries remain: no bundled system-skill installation, no
+persisted collaboration tree, no session `/fork`, and no asynchronous
+model-facing question tool. `request_user_input` retains Default-mode
+unavailability. A stop waits for issued model/tool work; normal close drains
+accepted work. `clock` remains a local extension.
+
+## Historical audit notes
+
+The remaining sections preserve earlier comparison methods and results. Their
+references to legacy tool membership and prompt exclusions describe those
+checkpoints, not the current MultiAgentV2 prototype above.
+
 ## Scope
 
 The original comparison pass focused on the model-visible prompt assembly:
@@ -228,7 +321,7 @@ been reviewed/refreshed against the latest upstream-facing specs where a current
 upstream builtin exists. The request-visible payload for the compared official
 tools now comes from class-level specs rather than vendored JSON snapshots.
 
-## Current non-prompt status
+## Historical non-prompt status
 
 After prompt/context parity, the next comparison layer is the full outbound
 request shape. That work is still layered:

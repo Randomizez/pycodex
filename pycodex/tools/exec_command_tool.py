@@ -23,7 +23,7 @@ from .unified_exec_manager import (
 )
 
 if typing.TYPE_CHECKING:
-    from ..agent import Agent
+    from ..runtime import AgentRuntime
 
 MIN_EXEC_YIELD_TIME_MS = 250
 MAX_EXEC_YIELD_TIME_MS = 30_000
@@ -77,8 +77,8 @@ class ExecCommandTool(BaseTool):
     def __init__(self, manager: "UnifiedExecManager") -> "None":
         self._manager = manager
 
-    def bind_agent(self, agent: "Agent") -> "None":
-        self._manager.set_notify_hook(agent.maybe_invoke)
+    def bind_runtime(self, runtime: "AgentRuntime") -> "None":
+        self._manager.set_notify_hook(runtime.maybe_invoke)
 
     def shutdown(self) -> "None":
         self._manager.set_notify_hook(None)

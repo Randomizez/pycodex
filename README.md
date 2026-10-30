@@ -78,7 +78,6 @@ pycodex --json "Reply with exactly OK."
 | `/title`, `/history` | Manage the title and inspect conversation history |
 | `/resume` | List saved sessions; pass an index or session UUID to resume |
 | `/compact` | Summarize history to free context |
-| `/fork` | Continue the current history under a new session ID |
 | `/queue <message>` | Wait for the active turn to finish before submitting |
 
 Ordinary input during a turn steers at the next safe sampling boundary.
@@ -154,20 +153,36 @@ workspace backend, including on Remote SSH hosts.
 Use the standard model and tool setup from Python:
 
 ```python
-from pycodex.bootstrap import build_agent, build_model
+from pycodex import AgentsManager, ContextConfig
+from pycodex.bootstrap import build_model
+from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
+from pycodex.utils.async_bridge import run_async
 
-agent = build_agent(build_model())
-try:
-    result = agent.ask("Summarize this repository in one sentence.")
-    print(result.output_text)
-finally:
-    agent.shutdown()
+async def main():
+    runtime = AgentsManager(
+        build_model(), ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
+    ).create_root_runtime()
+    await runtime.start()
+    try:
+        receipt = await runtime.submit_input("Summarize this repository in one sentence.")
+        print((await receipt.future).output_text)
+    finally:
+        await runtime.close()
+
+run_async(main())
 ```
 
-For custom integrations, `Agent` accepts a model client, `ToolRegistry` and
-`ContextConfig`. `await agent.run_turn([...])` runs an asynchronous turn;
-`AgentRuntime` adds input queues, commands and frontend subscriptions.
-See [runtime contracts and examples](docs/RUNTIME.md).
+For custom integrations, `Agent` requires a model client, `ToolRegistry`,
+`ContextConfig` and `session_id`. `await agent.run_turn([...])` runs an asynchronous
+turn; `AgentRuntime(agent, agents_manager)` adds input queues, commands and frontend
+subscriptions. `AgentsManager` owns the tree of named tasks and supplies the
+standard construction path.
+
+The current prototype uses MultiAgentV2 tools: `spawn_agent`, `send_message`,
+`followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`. Child context
+inheritance uses `fork_turns`; the session `/fork` command has been removed.
+See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
+the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
 
 ## Portable configuration
 

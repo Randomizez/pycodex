@@ -57,6 +57,7 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）
 - function / custom tool follow-up history 重建
+- 原生 `agent_message` 明文输入转换成 user 消息，保留发送者与接收者标签
 - 结构化 `input_image` content items：user message 里的图片直接转成 chat `image_url` part；tool output 里的图片会在该 `tool` message 之后补一条只带图片的 `user` message（chat backend 普遍会丢弃 `tool` role 里的图片）；`/v1/messages` 侧再转成 Anthropic `image` block
 
 ## 当前明确不支持
@@ -65,6 +66,19 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 
 - 真正的 Responses `web_search` 执行；当前只做空结果 mock
 - 非流式 incomming 请求
+- 含 `encrypted_content` 的 Agent 消息，返回 HTTP 501
+
+## MultiAgentV2 消息边界
+
+原生 Responses 的 `agent_message` 经 compat 转成
+`Agent message from <author> to <recipient>:` 开头的 user 文本；`messages`
+后端再将其包装为 text blocks。该转换只处理明文，不解密消息。
+
+compat 生成的 function-call output item 显式带
+`encrypted_function_args: []`。Agent 将且仅将这个空列表视为明文参数，
+因此 spawn、send-message 和 follow-up 经本地 adapter 后按明文投递。
+缺字段或非空列表走加密消息分支；包含密文的输入会在发出下游请求前被拒绝。
+这项支持不表示 chat/messages backend 原生实现了 AgentMessage 协议。
 
 ## Incomming / Outcomming 分层
 

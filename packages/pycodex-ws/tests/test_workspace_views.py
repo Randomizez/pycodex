@@ -14,8 +14,7 @@ from starlette.testclient import TestClient
 
 import workspace_server.app as workspace_app
 from pycodex import AssistantMessage, ModelResponse
-from pycodex.bootstrap import get_tools
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_tools
 from test_workspace_server import make_session, wait_snapshot
 from workspace_server import (
     WorkspaceDefinition,
@@ -967,7 +966,7 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
         assert opened["view"]["documents"][0]["text"] == "source body\n"
         assert browser.get("/w/first/api/session").json()["snapshot"] == before
         assert len(model.prompts) == 1
-    assert "workspace_display" not in get_tools(toolset=["apply_patch"])
+    assert "workspace_display" not in make_tools(toolset=["apply_patch"])
     assert len(WorkspaceViewStore(tmp_path / "board.pycodex-views.json").list_views()) == 1
 
 

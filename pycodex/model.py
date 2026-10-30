@@ -6,6 +6,7 @@ import threading
 import typing
 import urllib.parse
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -59,6 +60,19 @@ class ModelClient(Protocol):
     @property
     def model(self) -> "str":
         """Return the current model identifier."""
+
+    @property
+    def reasoning_effort(self) -> "typing.Union[str, None]":
+        """Return the effective effort used for context assembly."""
+
+    def with_overrides(
+        self,
+        model: "typing.Union[str, None]",
+        reasoning_effort: "typing.Union[str, None]",
+        session_id: "typing.Union[str, None]" = None,
+        openai_subagent: "typing.Union[str, None]" = None,
+    ) -> "ModelClient":
+        """Construct an independent client for a child Agent."""
 
     async def complete(
         self,
@@ -1030,6 +1044,7 @@ class ResponsesModelClient:
                 id=item.get("id"),
                 raw_arguments=raw_arguments,
                 namespace=item.get("namespace"),
+                encrypted_function_args=deepcopy(item.get("encrypted_function_args")),
             )
 
         if item_type == "custom_tool_call":

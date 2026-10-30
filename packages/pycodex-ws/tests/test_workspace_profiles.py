@@ -4,6 +4,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from pycodex import AssistantMessage, ModelResponse
+from pycodex.multi_agents import AgentsManager
 from workspace_server import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -45,7 +46,7 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
     store = WorkspaceStateStore(tmp_path / "state.pycodex-ws.json")
     agents = []
     prompts = []
-    original_build_agent = app_module.build_agent
+    original_build_agent = AgentsManager.build_agent
 
     def build_agent(*args, **kwargs):
         assert threading.current_thread() is not threading.main_thread()
@@ -57,7 +58,7 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
         prompts.append(prompt)
         return ModelResponse([AssistantMessage("done")])
 
-    monkeypatch.setattr(app_module, "build_agent", build_agent)
+    monkeypatch.setattr(AgentsManager, "build_agent", build_agent)
     monkeypatch.setattr("pycodex.model.ResponsesModelClient.complete", complete)
 
     def build_app(profile):
@@ -106,15 +107,15 @@ def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_prof
         assert [tab["profile"] for tab in store.load_tabs()] == [
             default_profile, "review", default_profile, default_profile,
         ]
-        # Fork events must retain the selected profile, even before a new recording.
+        # A rejected command must preserve the selected profile and recording.
         assert browser.post(prefix + "/api/session/message", json={
             "session_id": selected, "prompt": "/fork",
         }).status_code == 200
     assert all(agent.is_shutdown for agent in agents)
     saved = store.load_tabs()
     assert saved[1]["profile"] == "review"
-    assert saved[1]["fork"] is True
-    assert all(set(tab) <= {"title", "cwd", "rollout_path", "fork", "profile"} for tab in saved)
+    assert saved[1]["rollout_path"]
+    assert all(set(tab) <= {"title", "cwd", "rollout_path", "profile"} for tab in saved)
     agents.clear()
     # Changing the launch default must not change any saved tab's configuration,
     # including explicit null (base configuration).
