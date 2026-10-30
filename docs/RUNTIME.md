@@ -752,6 +752,12 @@ cursors are captured together in `WebSessionView`, implemented in
 `workspace_server.session_view` alongside its event JSON encoding. The view keeps
 one lock for state projection, cursor allocation, subscription and publication;
 its existing `workspace_server` and `workspace_server.app` imports remain available.
+`workspace_server.sessions` contains the ordinary and threaded Session adapters.
+Each ordinary Session owns one submission store shared by its observed Runtime
+tree; it retains pending receipts and the last 500 completed results. The threaded
+adapter dispatches operations to its worker loop and drains Runtime before stopping
+that loop. Session imports and method signatures remain available through the
+package and app entry points.
 
 `AgentRuntime.submit_input(..., wait_for_command=False)` returns an admitted
 command receipt without waiting for completion. Runtime owns these command

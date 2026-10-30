@@ -78,11 +78,11 @@ class WebSessionView:
         self._max_context_window: "typing.Union[int, None]" = None
         self._auto_compact_token_limit: "typing.Union[int, None]" = None
         self._usage_tokens: "typing.Union[int, None]" = None
-        self._server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
+        self.server_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
         self._lock = threading.RLock()
 
     def attach_server_loop(self, loop: "asyncio.AbstractEventLoop") -> None:
-        self._server_loop = loop
+        self.server_loop = loop
 
     def handle_event(self, event: "Event", runtime_state=None) -> None:
         with self._lock:
@@ -93,7 +93,7 @@ class WebSessionView:
             payload.update({"type": "event", "snapshot": self.snapshot()})
             if isinstance(event, ToolCompletedEvent):
                 payload["summary"] = event.visualize()
-            self._publish_nowait(payload)
+            self.publish(payload)
 
     def api_snapshot(self):
         with self._lock:
@@ -108,7 +108,7 @@ class WebSessionView:
             state = _json_safe(state)
             if state != self._runtime_state:
                 self._runtime_state = state
-                self._publish_nowait({"type": "state"})
+                self.publish({"type": "state"})
 
     def finish_stream(self) -> None:
         with self._lock:
@@ -121,7 +121,7 @@ class WebSessionView:
                 active_turn["_thinking_active"] = False
             self._stream_buffer = ""
             event = {"type": "snapshot", "snapshot": self.snapshot()}
-        self._publish_nowait(event)
+        self.publish(event)
 
     def write_line(self, text: str) -> None:
         with self._lock:
@@ -130,7 +130,7 @@ class WebSessionView:
             turn["response"] = text
             turn["status"] = "completed"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
-        self._publish_nowait(event)
+        self.publish(event)
 
     def show_error(self, text: str) -> None:
         self.finish_stream()
@@ -139,7 +139,7 @@ class WebSessionView:
             turn["error"] = str(text or "")
             turn["status"] = "error"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
-        self._publish_nowait(event)
+        self.publish(event)
 
     def set_session_title(self, title: str) -> None:
         with self._lock:
@@ -149,7 +149,7 @@ class WebSessionView:
                 "title": self._title,
                 "snapshot": self.snapshot(),
             }
-        self._publish_nowait(event)
+        self.publish(event)
 
     def load_session_history(
         self,
@@ -178,7 +178,7 @@ class WebSessionView:
                 turn["queue"] = "history"
                 turn["sender"] = "resume"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
-        self._publish_nowait(event)
+        self.publish(event)
 
     def subscribe(self, cursor=None) -> "asyncio.Queue":
         queue: "asyncio.Queue" = asyncio.Queue()
@@ -539,7 +539,7 @@ class WebSessionView:
                 return turn
         return None
 
-    def _publish_nowait(self, event: "typing.Dict[str, object]") -> None:
+    def publish(self, event: "typing.Dict[str, object]") -> None:
         with self._lock:
             self._sequence += 1
             event.update(self.api_snapshot(), sequence=self._sequence)
@@ -554,7 +554,7 @@ class WebSessionView:
         queues: "typing.Iterable[asyncio.Queue]",
         event: "typing.Union[typing.Dict[str, object], None]",
     ) -> None:
-        loop = self._server_loop
+        loop = self.server_loop
         if loop is None:
             for queue in queues:
                 queue.put_nowait(event)
