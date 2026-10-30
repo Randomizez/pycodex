@@ -572,7 +572,7 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
 
 @pytest.mark.parametrize("root", ["", "/remote"])
 async def test_router_and_workspace_passwords_protect_remote_visitors(tmp_path, root, monkeypatch):
-    monkeypatch.setattr("workspace_server.app.socket.gethostname", lambda: "test<device>")
+    monkeypatch.setattr("pycodex_ws.server_support.socket.gethostname", lambda: "test<device>")
     gate = create_app("router-password")
     app, registry = workspace_app(tmp_path / "workspace", "local-password")
     async with serve_router(gate, root) as (address, target):

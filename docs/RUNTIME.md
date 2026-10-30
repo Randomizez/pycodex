@@ -165,6 +165,11 @@ The VS Code extension in `packages/pycodex-ws/extensions/vscode/` is a workspace
 own Node tests and VSIX build, separate from both Python distributions.
 
 Both HTTP services use Starlette and Uvicorn directly, without Pydantic.
+They share authentication, JSON-body parsing and listener address parsing through
+`pycodex_ws.server_support`. Workspace definitions and configuration path handling
+live in `pycodex_ws.workspace_config`; `workspace_server.workspaces` retains its
+public configuration imports and owns the session managers and registry.
+Router imports these shared modules without loading the workspace app.
 Workspace routes parse JSON objects explicitly and return HTTP 422 with a
 `detail` message for invalid bodies or content types. HTTP errors retain their
 JSON `detail`, status and headers. File/Git view operations run in the thread

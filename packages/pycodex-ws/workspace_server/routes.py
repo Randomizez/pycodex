@@ -22,6 +22,10 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.utils.compat import importlib_metadata
+from pycodex_ws.server_support import (
+    html_response as _html_response,
+    json_object_body as _json_object_body,
+)
 
 from .customization import frontend_asset_response, frontend_directory, load_workspace_template
 from .runtime_info import runtime_info_prompt
@@ -187,32 +191,6 @@ def _install_workspace_routes(
     app.routes.extend(workspace_routes(
         lambda request: context, app.state.workspace_sharing,
     ))
-
-
-async def _json_object_body(
-    request: Request, max_bytes: "typing.Union[int, None]" = None,
-) -> "typing.Dict[str, object]":
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type != "application/json" and not (
-        media_type.startswith("application/") and media_type.endswith("+json")
-    ):
-        raise HTTPException(status_code=422, detail="request body must be JSON")
-    body = bytearray()
-    async for chunk in request.stream():
-        if max_bytes is not None and len(body) + len(chunk) > max_bytes:
-            raise HTTPException(
-                status_code=413,
-                detail="request body exceeds {0} bytes".format(max_bytes),
-                headers={"Connection": "close"},
-            )
-        body.extend(chunk)
-    try:
-        payload = json.loads(body)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        raise HTTPException(status_code=422, detail="invalid JSON body")
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=422, detail="request body must be a JSON object")
-    return payload
 
 
 def _views_response(manager: WorkspaceSessionManager) -> JSONResponse:
@@ -575,16 +553,6 @@ async def _websocket_session_handler(
         view.unsubscribe(subscriber)
         sender.cancel()
         await asyncio.gather(sender, return_exceptions=True)
-
-
-def _html_response(content: str) -> HTMLResponse:
-    return HTMLResponse(
-        content,
-        headers={
-            "Cache-Control": "no-store",
-            "Pragma": "no-cache",
-        },
-    )
 
 
 async def _send_ws_events(websocket: WebSocket, subscriber: "asyncio.Queue") -> None:
