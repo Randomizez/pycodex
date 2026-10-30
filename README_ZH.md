@@ -118,7 +118,7 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 
 访问 `http://127.0.0.1:6007`。工作区同时提供对话、实时 HTML Canvas 和只读
 文件/diff 查看器。点击回复中的文件链接打开视图，通过 **Insert into chat**
-把选中的代码插入可编辑草稿。
+把选中的代码插入可编辑草稿。文本和图片视图的单文件上限为 10 MiB。
 上下文圆环可打开 Agent 树，显示包含 root 的 `n running · m failed` 汇总、
 每个 Agent 的本轮耗时（`for x min`）和错误详情。
 `diff:left..right` 比较两个本地文件，

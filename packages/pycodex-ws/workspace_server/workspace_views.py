@@ -28,7 +28,7 @@ class WorkspaceViewStore:
     """Share file-backed views and fixed Git contents across workspace sessions."""
 
     max_storage_bytes = 64 * 1024 * 1024
-    max_file_bytes = 2 * 1024 * 1024
+    max_file_bytes = 10 * 1024 * 1024
     max_text_lines = 20000
 
     def __init__(self, path=None):
@@ -245,7 +245,7 @@ class WorkspaceViewStore:
 
     def decode_document(self, data, label, allow_image=False):
         if len(data) > self.max_file_bytes:
-            raise ValueError("file exceeds 2 MiB: {0}".format(label))
+            raise ValueError("file exceeds 10 MiB: {0}".format(label))
         media_type = mimetypes.guess_type(label)[0] or ""
         if (
             allow_image
@@ -502,7 +502,7 @@ class WorkspaceViewOpener:
         object_id = object_id.decode("ascii")
         size = int(self._git(["cat-file", "-s", object_id]))
         if size > self._views.max_file_bytes:
-            raise ValueError("file exceeds 2 MiB: " + reference["label"])
+            raise ValueError("file exceeds 10 MiB: " + reference["label"])
         document = self._views.decode_document(
             self._git(["cat-file", "blob", object_id]), reference["label"], allow_preview
         )

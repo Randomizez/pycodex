@@ -1156,7 +1156,7 @@ or a tab switch invalidates an older pending request. Ordinary content refreshes
 and manual tab switches do not replay an earlier line request; another click
 can explicitly reveal even the same line again.
 
-Text and image snapshots are limited to 2 MiB each, text to 20,000 lines and raster images to
+Text and image snapshots are limited to 10 MiB each, text to 20,000 lines and raster images to
 20 megapixels. View storage is limited to 64 MiB per workspace; exceeding a
 limit when opening a view is reported in the browser and does not create or replace a tab.
 Local PDFs stream directly and are not subject to the text/image size limit.

@@ -128,6 +128,7 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 Open `http://127.0.0.1:6007`. The workspace combines conversations with a live
 HTML Canvas and read-only file/diff viewers. Click file links in replies to open
 them, and use **Insert into chat** to add selected code to an editable draft.
+Text and image views support files up to 10 MiB each.
 The context ring opens the Agent tree with `n running · m failed` counts
 (including the root), each Agent's turn duration, and error details for failures.
 Compare local files with `diff:left..right`; either path can be absolute or relative.

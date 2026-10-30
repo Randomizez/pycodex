@@ -352,7 +352,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   静态资源测试覆盖 gzip/identity 协商、拒绝的编码、HEAD、按表示区分的 ETag/304、
   文件更新后的缓存失效、每个应用实例的缓存隔离及 API 不进入压缩路径。
   `test_workspace_pdf.py` 覆盖本地 PDF 原文件响应、GET/HEAD 和下载、
-  管理员/访问者鉴权与 workspace 隔离、超过 2 MiB 的文件、轻量持久化、
+  管理员/访问者鉴权与 workspace 隔离、超过 10 MiB 的文件、轻量持久化、
   文件更新/删除/恢复、无效文件头和行号拒绝。
   生命周期测试直接读取前端源码，无需安装 npm 依赖；发布前用真实浏览器检查
   聊天/Markdown/Canvas 链接、普通外链与锚点、危险协议过滤、中文和特殊字符路径，
