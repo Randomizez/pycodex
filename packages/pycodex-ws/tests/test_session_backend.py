@@ -7,6 +7,7 @@ import types
 import pytest
 
 from pycodex import (
+    AgentsManager,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -157,6 +158,61 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
         "/exit",
         "/quit",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restore_before_start", [False, True])
+async def test_frontends_restore_clock_idle_status(tmp_path, restore_before_start):
+    source = AgentsManager(
+        ScriptedModelClient([
+            ModelResponse([ToolCall("set_clock", "clock", {"period_m": 5})]),
+            ModelResponse([AssistantMessage("done")]),
+        ]),
+        ContextConfig(cwd=tmp_path, codex_home=tmp_path),
+        toolset=("clock",),
+    ).create_root_runtime()
+    await source.start()
+    try:
+        await source.submit_user_turn("set clock")
+        rollout = source.agent.session_file_path
+        session_id = source.agent.session_id
+    finally:
+        await source.close()
+
+    runtime = AgentsManager(
+        ScriptedModelClient([]),
+        ContextConfig(cwd=tmp_path, codex_home=tmp_path),
+        toolset=("clock",),
+    ).create_root_runtime()
+    if restore_before_start:
+        runtime.resume(rollout)
+    web = await WorkspaceInteractiveSession(runtime).start()
+    cli = ScriptedView([])
+    cli_id = runtime.attach(cli.handle_event)
+    card = PycodexCard()
+    card_id = runtime.attach(card.apply_event)
+    try:
+        if not restore_before_start:
+            submitted = await runtime.submit_input("/resume " + session_id)
+            await submitted.future
+        assert runtime.snapshot()["background_work_count"] == 1
+        assert web.snapshot()["spinner"] == "idle: sleeping"
+        assert web.summary()["running"]
+        assert cli.prompter._status == card.status == "idle: sleeping"
+        assert runtime.agent.model_client.call_count == 0
+
+        legacy_rollout = tmp_path / "legacy.jsonl"
+        legacy_rollout.write_bytes(rollout.read_bytes())
+        runtime.resume(legacy_rollout)
+        assert runtime.snapshot()["background_work_count"] == 0
+        assert web.snapshot()["spinner"] == ""
+        assert not web.summary()["running"]
+        assert cli.prompter._status is None
+        assert card.status is None
+    finally:
+        runtime.detach(cli_id)
+        runtime.detach(card_id)
+        await web.close()
 
 
 @pytest.mark.asyncio

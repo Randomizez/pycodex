@@ -20,7 +20,6 @@ from .events import (
     SessionClosedEvent,
     SessionStateEvent,
     StreamErrorEvent,
-    TerminalEvent,
     ToolCompletedEvent,
     TurnCompletedEvent,
     TurnEvent,
@@ -102,7 +101,6 @@ class AgentRuntime:
         self._worker = None
         self._command_lock = None
         self._input_request = None
-        self._background_work_count = 0
         self._active_turn = None
         self._input_activity: "typing.Union[asyncio.Event, None]" = None
         self._wait_interrupted = False
@@ -183,7 +181,10 @@ class AgentRuntime:
                 self.agent.context_manager.resolve_auto_compact_token_limit()
             ),
             "usage_tokens": self.agent._last_total_usage_tokens,
-            "background_work_count": self._background_work_count,
+            "background_work_count": sum(
+                tool.background_work_count(False)
+                for tool in self.agent.tool_registry.tools()
+            ),
             "input_request": self._input_request_event(),
             "active_turn": (
                 dict(self._active_turn) if self._active_turn is not None else None
@@ -876,8 +877,6 @@ class AgentRuntime:
             if prompt:
                 self.title = shorten_title(prompt)
                 self.publish_state("auto_title")
-        if isinstance(event, TerminalEvent) and event.background_work_count is not None:
-            self._background_work_count = event.background_work_count
         if self.agent.recorded_session_file_path != self._recorded_rollout_path:
             self.publish_state("recording")
         self._publish(event)

@@ -69,11 +69,14 @@ async def test_clock_state_survives_compaction_close_and_resume(tmp_path):
     restored.resume(rollout)
     assert clock(restored).enabled
     assert not clock(restored).armed
+    assert restored.snapshot()["background_work_count"] == 0
     await restored.start()
     try:
         assert clock(restored).armed
+        assert restored.snapshot()["background_work_count"] == 1
         await restored.submit_user_turn("cancel clock")
         assert not clock(restored).enabled
+        assert restored.snapshot()["background_work_count"] == 0
         assert json.loads(state_path(restored.agent).read_text()) == state(None)
     finally:
         await restored.close()
@@ -92,6 +95,7 @@ async def test_resume_without_snapshot_clears_old_clock_without_replaying_histor
     await runtime.start()
     try:
         await runtime.submit_user_turn("set clock")
+        assert runtime.snapshot()["background_work_count"] == 1
         original_state = state_path(runtime.agent)
         previous_timer = clock(runtime)._timer_task
         other_rollout = tmp_path / "other.jsonl"
@@ -102,6 +106,7 @@ async def test_resume_without_snapshot_clears_old_clock_without_replaying_histor
         assert any(isinstance(item, ToolCall) for item in runtime.agent.history)
         assert not clock(runtime).enabled
         assert not clock(runtime).armed
+        assert runtime.snapshot()["background_work_count"] == 0
         await asyncio.gather(previous_timer, return_exceptions=True)
         assert previous_timer.cancelled() or previous_timer.done()
         assert json.loads(original_state.read_text()) == state(5)

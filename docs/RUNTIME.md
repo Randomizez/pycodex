@@ -523,7 +523,10 @@ compaction. A missing snapshot starts with the clock disabled; malformed or
 unsupported state fails before replacing the current session. Restoring data
 does not start a timer. Runtime startup, or resume in an already-running Runtime,
 starts a fresh full period after binding callbacks. No-argument resume retains
-the in-memory configuration. Keep the snapshot alongside its rollout when
+the in-memory configuration. Session snapshots count current background work
+directly from tools; attach/history presentation restores `idle: sleeping` for
+an armed clock without requiring another reply. Resuming a session without
+background work clears that status. Keep the snapshot alongside its rollout when
 copying a recorded session; Portable configuration bundles exclude both.
 
 Unrecorded sessions update only in-memory history during turns and compaction.

@@ -450,6 +450,8 @@ class WebSessionView:
                     self._turns_by_turn_id[active["turn_id"]]["model_errors"] = list(
                         active.get("model_errors", [])
                     )
+                elif not state["busy"]:
+                    self._set_idle_spinner_status(state["background_work_count"])
             elif event.reason == "title":
                 self.set_session_title(state["title"])
             else:
@@ -611,13 +613,15 @@ class WebSessionView:
             self._set_spinner_status("called {0}".format(event.call.name))
             return
         if isinstance(event, TerminalEvent):
-            self._set_idle_spinner_status(event)
+            self._set_idle_spinner_status(event.background_work_count)
 
     def _set_spinner_status(self, text: "typing.Union[str, None]") -> None:
         self._spinner_status = str(text or "").strip()
 
-    def _set_idle_spinner_status(self, event: "TerminalEvent") -> None:
-        if (event.background_work_count or 0) > 0:
+    def _set_idle_spinner_status(
+        self, background_work_count: "typing.Union[int, None]"
+    ) -> None:
+        if (background_work_count or 0) > 0:
             self._set_spinner_status(IDLE_SLEEPING_STATUS)
         else:
             self._set_spinner_status("")

@@ -711,6 +711,8 @@ class SessionStateEvent(Event):
                     active["submission_id"],
                 ).render(display)
                 display.stream_buffer = active["assistant_text"]
+            elif not state["busy"]:
+                display.set_idle_status(state["background_work_count"])
         if self.reason == "auto_title":
             display.show_title()
         if self.reason == "attach" and state["input_request"] is not None:
