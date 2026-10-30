@@ -758,6 +758,11 @@ tree; it retains pending receipts and the last 500 completed results. The thread
 adapter dispatches operations to its worker loop and drains Runtime before stopping
 that loop. Session imports and method signatures remain available through the
 package and app entry points.
+`workspace_server.routes` constructs the shared route set for single and multi
+workspaces from an explicit manager/board/directory context. HTTP responses,
+WebSocket delivery and packaged resource handling live with those routes;
+`app` composes the services, workspace registry and CLI. Both URL families retain
+their route order, methods, validation, response fields and resource headers.
 
 `AgentRuntime.submit_input(..., wait_for_command=False)` returns an admitted
 command receipt without waiting for completion. Runtime owns these command

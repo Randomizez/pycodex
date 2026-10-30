@@ -13,6 +13,7 @@ from PIL import Image
 from starlette.testclient import TestClient
 
 import workspace_server.app as workspace_app
+import workspace_server.routes as workspace_routes
 from pycodex.bootstrap import ModelBootstrapResult
 from pycodex import AssistantMessage, ModelResponse
 from tests.fakes import ScriptedModelClient, make_tools
@@ -855,14 +856,14 @@ def test_opening_view_does_not_block_session_polling(tmp_path, monkeypatch, mult
         prefix = ""
     entered = threading.Event()
     release = threading.Event()
-    original = workspace_app._open_view_response
+    original = workspace_routes._open_view_response
 
     def blocked_open(*args):
         entered.set()
         assert release.wait(5), "view operation was not released"
         return original(*args)
 
-    monkeypatch.setattr(workspace_app, "_open_view_response", blocked_open)
+    monkeypatch.setattr(workspace_routes, "_open_view_response", blocked_open)
     with TestClient(app) as browser, ThreadPoolExecutor(max_workers=2) as executor:
         opened = executor.submit(
             browser.post, prefix + "/api/views/open", json={"href": "A.py"}
@@ -879,18 +880,18 @@ def test_opening_view_does_not_block_session_polling(tmp_path, monkeypatch, mult
 
 
 def test_view_asset_compression_cache_and_revalidation(tmp_path, monkeypatch):
-    monkeypatch.setattr(workspace_app, "__file__", str(tmp_path / "app.py"))
+    monkeypatch.setattr(workspace_routes, "__file__", str(tmp_path / "routes.py"))
     source = tmp_path / "editor.mjs"
     original = b"export const source = 'original';\n" * 100
     source.write_bytes(original)
     compressions = []
-    compress = workspace_app.gzip.compress
+    compress = workspace_routes.gzip.compress
 
     def tracked_compress(body, compresslevel):
         compressions.append(body)
         return compress(body, compresslevel)
 
-    monkeypatch.setattr(workspace_app.gzip, "compress", tracked_compress)
+    monkeypatch.setattr(workspace_routes.gzip, "compress", tracked_compress)
     app = create_app(make_session, None, work_dir=tmp_path)
     with TestClient(app) as browser:
         path = "/assets/editor.mjs"
