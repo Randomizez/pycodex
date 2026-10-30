@@ -324,7 +324,7 @@ class AgentsManager:
             )
         previous = recipient.agent_status
         if not recipient.agent.is_shutdown:
-            recipient.stop_asap()
+            recipient.interrupt()
         return {"previous_status": previous}
 
     async def wait_for_activity(self, agent_id, timeout_ms):

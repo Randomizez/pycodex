@@ -642,6 +642,8 @@ class AgentRuntime:
     def agent_status(self):
         if self.agent.is_shutdown:
             return "shutdown"
+        if self._last_agent_status == "interrupted":
+            return "interrupted"
         if self.is_busy:
             return "running"
         status = self._last_agent_status
@@ -694,6 +696,11 @@ class AgentRuntime:
             self._wait_interrupted = True
             if self._input_activity is not None:
                 self._input_activity.set()
+
+    def interrupt(self) -> "None":
+        self.stop_asap()
+        self._last_agent_status = "interrupted"
+        self.publish_update("interrupt")
 
     def enqueue(self, text: "str") -> "typing.Tuple[str, asyncio.Future[TurnResult]]":
         """Schedule an independent user turn without affecting active execution."""
@@ -879,6 +886,7 @@ class AgentRuntime:
         elif isinstance(event, TurnInterruptedEvent):
             self._last_agent_status = "interrupted"
         if isinstance(event, TurnStartedEvent):
+            self._last_agent_status = "running"
             self._active_turn = {
                 "turn_id": event.turn_id,
                 "submission_id": event.submission_id or event.turn_id,
