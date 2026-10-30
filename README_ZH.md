@@ -96,8 +96,9 @@ pycodex --json "Reply with exactly OK."
 这些规则同样适用于浏览器工作区和飞书。会话保存在
 `CODEX_HOME/sessions`；配置 `model_auto_compact_token_limit` 可启用自动压缩。
 
-Ctrl+D 或 Ctrl+C 发起退出，等待已接收任务完成；关闭等待期间再次 Ctrl+C
-立即退出。完整启动参数见 `pycodex --help`。
+Ctrl+D 或 Ctrl+C 发起退出，同时停止本会话及所有子 Agent：清空待执行任务，
+当前执行在已发出的模型请求和工具操作完成后停止。关闭 session 使用相同行为；
+关闭等待期间再次 Ctrl+C 立即退出。完整启动参数见 `pycodex --help`。
 
 ## 浏览器工作区
 

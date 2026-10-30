@@ -4,7 +4,7 @@ import pytest
 
 from pycodex import (
     AssistantMessage, BaseTool, ContextConfig, ContextLengthExceeded,
-    ModelResponse, ToolCall, ToolRegistry, UserMessage,
+    ModelResponse, ToolCall, ToolRegistry, ToolResult, UserMessage,
 )
 from pycodex.events import TokenCountEvent
 from pycodex.runtime import SubmissionInterrupted
@@ -92,28 +92,61 @@ def test_agent_and_tools_share_a_session_local_runtime():
 
 
 @pytest.mark.asyncio
-async def test_shutdown_drains_existing_inputs_but_rejects_new_invocations():
+@pytest.mark.parametrize("stop_during", ["model", "tool"])
+@pytest.mark.parametrize("with_steer", [False, True])
+async def test_close_interrupts_pending_inputs_and_finishes_issued_tools(stop_during, with_steer):
     started = asyncio.Event()
     release = asyncio.Event()
+    tool_finished = []
 
     async def respond(prompt, count):
-        started.set()
-        await release.wait()
-        return ModelResponse([AssistantMessage("done " + str(count))])
+        if stop_during == "model":
+            started.set()
+            await release.wait()
+        return ModelResponse([ToolCall("work", "work", {})])
+
+    class WorkTool(BaseTool):
+        name = "work"
+        description = "Finish an issued operation."
+        exec_only = False
+
+        async def run(self, context, args):
+            if stop_during == "tool":
+                started.set()
+                await release.wait()
+            tool_finished.append(True)
+            return "done"
 
     model = ScriptedModelClient(response_factory=respond)
-    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    tools = ToolRegistry()
+    tools.register(WorkTool())
+    runtime = make_runtime(make_agent(model, tools, ContextConfig()))
     await runtime.start()
     first_id, first = runtime.enqueue("first")
     second_id, second = runtime.enqueue("second")
     await asyncio.wait_for(started.wait(), 1)
+    pending = [second]
+    if with_steer:
+        steer = await runtime.submit_input("replacement")
+        _submission_id, triggered = runtime.trigger()
+        pending.extend([steer.future, triggered])
+    else:
+        runtime.message("discard this mailbox input")
     closing = asyncio.create_task(runtime.close())
     try:
         await asyncio.sleep(0)
         assert not runtime.accepts_input
         assert not runtime.agent.is_shutdown
         assert runtime.is_busy
-        assert len(runtime._enqueue_queue) == 1
+        assert not closing.done()
+        assert not first.done()
+        assert not runtime._enqueue_queue
+        assert not runtime._steer_queue
+        assert runtime._triggered_submission is None
+        for future in pending:
+            assert future.done()
+            with pytest.raises(SubmissionInterrupted):
+                await future
         assert not await runtime.maybe_invoke({"type": "clock_tick"})
         with pytest.raises(RuntimeError, match="shutting down"):
             runtime.enqueue("too late")
@@ -121,16 +154,46 @@ async def test_shutdown_drains_existing_inputs_but_rejects_new_invocations():
             runtime.trigger()
         with pytest.raises(RuntimeError, match="shutting down"):
             await runtime.submit_input("too late")
+        with pytest.raises(RuntimeError, match="shutting down"):
+            runtime.message("late message")
+        with pytest.raises(RuntimeError, match="resume"):
+            await runtime.start()
         release.set()
-        assert (await first).output_text == "done 1"
-        assert (await second).output_text == "done 2"
+        with pytest.raises(SubmissionInterrupted):
+            await first
         assert first_id != second_id
         await closing
+        assert tool_finished == [True]
+        assert model.call_count == 1
+        assert any(
+            isinstance(item, ToolResult) and item.call_id == "work"
+            for item in runtime.agent.history
+        )
         assert runtime.agent.is_shutdown
         assert not runtime.is_busy
     finally:
         release.set()
-        await asyncio.gather(first, second, closing, return_exceptions=True)
+        await asyncio.gather(first, closing, *pending, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_before_start_discards_work_and_resume_accepts_new_work():
+    model = ScriptedModelClient([ModelResponse([AssistantMessage("resumed")])])
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    _submission_id, queued = runtime.enqueue("discard")
+    steer = await runtime.submit_input("discard too")
+    await runtime.close()
+    for future in (queued, steer.future):
+        with pytest.raises(SubmissionInterrupted):
+            await future
+    assert model.call_count == 0
+    assert not runtime.agent.history
+    runtime.resume()
+    await runtime.start()
+    try:
+        assert (await runtime.submit_user_turn("new work")).output_text == "resumed"
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -170,7 +233,8 @@ async def test_queue_busy_includes_pending_submissions_before_worker_starts():
     _submission_id, future = runtime.enqueue("pending")
     assert runtime.is_busy
     await runtime.close()
-    assert (await future).output_text == "done"
+    with pytest.raises(SubmissionInterrupted):
+        await future
     assert not runtime.is_busy
 
 

@@ -257,7 +257,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 
 - `test_multi_agents.py`：命名任务树、完成/失败通知恰好一次、同文不同事件、
   idle mailbox、活跃父 turn 的消息接入、状态快照隔离、后台唤醒、
-  等待超时清理、父树关闭排空、子节点并行关闭及清理失败、
+  等待超时清理、整棵树先停止再等待、待执行回执中断、子树关闭隔离、
+  子节点并行关闭及提前注销后的清理失败、
   立即关闭后的过期队列通知。
 - `test_environment_state.py`：clock 配置在 compact、关闭和 resume 后恢复，
   会话快照读取当前后台任务数，
@@ -271,7 +272,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   并发创建的容量预留，以及回收与父关闭/资源清理及工具关闭失败的交互。
 - `test_runtime_state.py`：独立 enqueue、合并 trigger、只投递消息、
   用户 steer 的回执与逻辑 turn ID、停止唤醒 wait、compaction 边界、
-  exec/clock 唤醒归属和关闭后的拒绝接纳。
+  exec/clock 唤醒归属、关闭清空两个队列及 trigger、已发工具完成后停止、
+  关闭后的拒绝接纳和显式 resume。
 - `test_builtin_tools.py`：六个新版协作工具的真实 registry 调用、参数校验、
   子节点工具继承、wait 的 clamp/上限及旧参数拒绝。
 - `test_multi_agent_context.py`：Default/role/mode 独立 blocks、配置优先级、
@@ -299,7 +301,7 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不同事件循环时的行为；core 测试不导入 workspace。
 - Agent/Runtime 保持单向控制：Agent 无队列引用，裸 `stop_asap` 不取消已发出的
   工具且保持 call/result 配对；Runtime 结算停止回执并启动下一批输入。
-  compaction/overflow 期间停止、steer 合并、关闭排空及子 Agent 接入在
+  compaction/overflow 期间停止、steer 合并、关闭中断及子 Agent 接入在
   `test_agent_state.py`、`test_runtime_state.py` 和 `test_agent.py` 覆盖。
 - pre-turn、mid-turn 和 overflow compact 中收到停止请求时，不再发后续采样，
   不增加未发出请求的 iteration；溢出恢复只重试一次，不重跑已完成工具。
@@ -316,8 +318,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   前缀含点时的历史隔离，以及跨开关的重复前缀拒绝；
   损坏的会话索引直接报错并保留原文件，不跳过记录或创建空会话覆盖它；
   普通/线程会话覆盖 `/fork` 拒绝、标题更新、续写、
-  compact/模型失败后的恢复路径、关闭排空、空标签页和无效源路径。
-  验证启动/清理失败仍回收线程，取消关闭调用方不打断当前 turn；
+  compact/模型失败后的恢复路径、关闭停止并保存历史、空标签页和无效源路径。
+  验证启动/清理失败仍回收线程，取消关闭调用方不取消当前模型请求；
   `/history` 整条命令只产生一条控制消息，不逐行挤占聊天记录；
   执行前端实际切换/渲染代码，验证关闭 tab 后恢复已访问 tab 的内容、草稿和
   滚动位置，以及旧轮询迟到或报错时不能覆盖当前 tab；

@@ -16,6 +16,7 @@ from pycodex import (
     ToolRegistry,
     UserMessage,
 )
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime
@@ -296,7 +297,8 @@ async def test_effort_changes_reject_queued_or_active_work(active, monkeypatch):
     finally:
         release.set()
         await queue.close()
-        await receipt.future
+        with pytest.raises(SubmissionInterrupted):
+            await receipt.future
 
 
 def question_payload():

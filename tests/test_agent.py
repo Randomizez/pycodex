@@ -22,6 +22,7 @@ from pycodex import (
 )
 from pycodex.events import AssistantDeltaEvent, StreamErrorEvent, TokenCountEvent
 from pycodex.protocol import ContextMessage
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import (
     ClockManager,
     ClockTool,
@@ -904,11 +905,13 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
 
 
 @pytest.mark.asyncio
-async def test_runtime_shutdown_cancels_clock_after_draining_queued_tools() -> "None":
+async def test_runtime_shutdown_cancels_clock_and_discards_queued_tools() -> "None":
     manager = ClockManager()
     manager.set_period(1)
     tools = ToolRegistry()
-    tools.register(ClockTool(manager))
+    clock = ClockTool(manager)
+    clock.exec_only = False
+    tools.register(clock)
     model = ScriptedModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="done")]),
@@ -933,12 +936,13 @@ async def test_runtime_shutdown_cancels_clock_after_draining_queued_tools() -> "
 
         _submission_id, pending_turn = runtime.enqueue("set clock again")
         await runtime.close()
-        assert (await pending_turn).output_text == "done"
+        with pytest.raises(SubmissionInterrupted):
+            await pending_turn
         await asyncio.gather(pending_timer, return_exceptions=True)
 
         assert manager.snapshot() == {"enabled": True, "period_m": 1.0}
         assert manager._timer_task is None
-        assert model.call_count == 3
+        assert model.call_count == 1
     finally:
         await runtime.close()
 

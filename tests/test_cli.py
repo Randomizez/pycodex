@@ -36,7 +36,9 @@ from pycodex.events import (
     TurnCompletedEvent,
 )
 from pycodex.portable.server import CodexStorageServer
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
+from tests.fakes import (
+    ScriptedModelClient, make_agent, make_runtime, make_tools, wait_for_runtime_idle,
+)
 
 
 @pytest.fixture
@@ -303,6 +305,7 @@ async def test_cli_steer_and_queue_feedback(queued):
             await asyncio.wait_for(started.wait(), 1)
         if text == "":
             release.set()
+            await wait_for_runtime_idle(queue)
 
     client = ScriptedModelClient(response_factory=respond)
     queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
@@ -327,7 +330,12 @@ async def test_cli_steer_and_queue_feedback(queued):
 async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, json_mode):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
     queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
-    view = InputView(["", "/queue hello"])
+
+    async def before_input(text):
+        if text == "":
+            await wait_for_runtime_idle(queue)
+
+    view = InputView(["", "/queue hello", ""], before_input)
     await queue.start()
     tasks = []
     create_task = asyncio.create_task
@@ -393,7 +401,7 @@ async def test_cli_detaches_view_when_close_fails():
         ),
     ],
 )
-def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_input):
+def test_cli_input_exit_stops_turn_and_discards_queue_without_cancelling_calls(tmp_path, busy, exit_input):
     source = textwrap.dedent("""
         import asyncio
         import os
@@ -407,6 +415,7 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             ModelResponse, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
+        from pycodex.runtime import SubmissionInterrupted
         from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 
         async def run(pipe):
@@ -419,6 +428,7 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             class CleanupTool(BaseTool):
                 name = "cleanup"
                 description = "Records final cleanup."
+                exec_only = False
 
                 async def run(self, context, args):
                     return None
@@ -464,9 +474,9 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             assert runtime._worker.done() and not runtime._worker.cancelled()
             assert not runtime._frontends
             assert cleaned == [True]
-            assert client.call_count == (2 if busy else 0)
+            assert client.call_count == (1 if busy else 0)
             for receipt in receipts:
-                assert receipt.future.result().output_text == "finished"
+                assert isinstance(receipt.future.exception(), SubmissionInterrupted)
             print("CLI_EXIT_OK")
 
         with create_pipe_input() as pipe:
@@ -525,6 +535,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
             class BlockingTool(BaseTool):
                 name = "blocking"
                 description = "Waits until the test releases it."
+                exec_only = False
 
                 async def run(self, context, args):
                     started.set()

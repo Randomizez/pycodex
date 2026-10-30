@@ -22,7 +22,8 @@
   使用显式协议和普通属性，不为缺字段添加静默兜底或机械 getter/setter。
 - Agent 串行执行普通 async `run_turn`，不持有 turn Task、不提供取消 API。
   steer 在模型请求和已发工具完成后的安全边界协作式停止；
-  正常关闭停止接纳并排空已接受工作，不用超时取消 turn。
+  正常关闭先向整棵 Runtime 子树停止接纳、清空待执行队列并请求 stop_asap，
+  再等待当前已发操作完成和资源清理，不用超时取消 turn。
   Follow-up/tool handoff 自然决定结束，不加固定迭代上限。
 - 上下文装配统一在 `context.py`；固定指令、AGENTS、环境不写回会话历史。
   Rollout recorder 由 Agent 内部管理：默认仅内存，前端显式传记录路径，

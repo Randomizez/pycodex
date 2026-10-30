@@ -183,8 +183,9 @@ enforcement, restore interaction modes, or hardcode OpenAI model capabilities.
 Intentional local boundaries remain: no bundled system-skill installation, no
 persisted collaboration tree, no session `/fork`, and no asynchronous
 model-facing question tool. `request_user_input` retains Default-mode
-unavailability. A stop waits for issued model/tool work; normal close drains
-accepted work. `clock` remains a local extension.
+unavailability. A stop waits for issued model/tool work. Normal close signals the
+whole Runtime subtree, discards pending turns and waits for active turns to stop
+cooperatively before cleanup. `clock` remains a local extension.
 
 ## Historical audit notes
 

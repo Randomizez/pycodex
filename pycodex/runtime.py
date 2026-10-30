@@ -98,6 +98,7 @@ class AgentRuntime:
         self._command_tasks = set()
         self._active_commands = {}
         self._close_handlers = []
+        self._closing_children = ()
         self._worker = None
         self._command_lock = None
         self._input_request = None
@@ -299,10 +300,11 @@ class AgentRuntime:
     async def start(self, config_path=None):
         if config_path is not None:
             self.codex_home = resolve_codex_home(config_path)
+        if not self.accepts_input:
+            raise RuntimeError("resume the agent before restarting its runtime")
         if self._worker is None or self._worker.done():
             if self.agent.is_shutdown:
                 raise RuntimeError("resume the agent before restarting its runtime")
-            self.agent.accepts_input = True
             self._worker = asyncio.create_task(self._run_forever())
             self.agent.tool_registry.runtime_environment.start()
         return self
@@ -320,12 +322,27 @@ class AgentRuntime:
         if self._worker is None:
             self._worker = asyncio.create_task(self._run_forever())
         if self.accepts_input:
-            self.agent.accepts_input = False
-            self.publish_state("admission")
-            if self._input_request is not None:
-                self._finish_input_request(None)
-            self._wake_worker()
+            self.agents_manager.request_close(self.agent.agent_id)
         await asyncio.shield(self._worker)
+
+    def _request_close(self, children):
+        if not self.accepts_input:
+            return
+        self._closing_children = tuple(children)
+        self.agent.accepts_input = False
+        self.stop_asap()
+        pending = list(self._enqueue_queue)
+        if self._triggered_submission is not None:
+            pending.append(self._triggered_submission)
+        self._enqueue_queue.clear()
+        self._steer_queue.clear()
+        self._triggered_submission = None
+        for queued in pending:
+            self._finish_submission_exception(queued, SubmissionInterrupted())
+        if self._input_request is not None:
+            self._finish_input_request(None)
+        self.publish_state("admission")
+        self._wake_worker()
 
     async def submit_input(self, text, sender="user", wait_for_command=True):
         if not self.agent.accepts_input:
@@ -703,9 +720,9 @@ class AgentRuntime:
         self._wake_worker()
 
     def message(self, text: "typing.Union[str, AgentMessage]") -> "None":
-        """Deliver accepted input to steer, including completion notices during close."""
-        if self.agent.is_shutdown:
-            raise RuntimeError("agent is shutdown")
+        """Deliver input to an open runtime's mailbox."""
+        if not self.accepts_input:
+            raise RuntimeError("agent is shutting down")
         self._steer_queue.append(UserMessage(text) if isinstance(text, str) else text)
         if self._active_turn is not None:
             self.agent.request_follow_up()
@@ -794,14 +811,14 @@ class AgentRuntime:
     async def _next_submission(self) -> "typing.Union[typing.Tuple[_QueuedSubmission, typing.List[str]], None]":
         while True:
             await self.agent.wait_until_idle()
+            if not self.accepts_input:
+                return None
             if self._triggered_submission is not None:
                 queued, self._triggered_submission = self._triggered_submission, None
                 return queued, []
             if self._enqueue_queue:
                 queued = self._enqueue_queue.popleft()
                 return queued, list(queued.texts)
-            if not self.accepts_input:
-                return None
             self._queue_event.clear()
             await self._queue_event.wait()
 

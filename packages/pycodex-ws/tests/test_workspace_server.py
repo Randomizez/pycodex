@@ -1484,7 +1484,7 @@ def test_workspace_keeps_recorded_target_after_compact_or_failure(tmp_path, next
 
 
 @pytest.mark.asyncio
-async def test_workspace_close_persists_session_after_draining_turn(tmp_path):
+async def test_workspace_close_persists_session_after_stopping_turn(tmp_path):
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -1511,7 +1511,8 @@ async def test_workspace_close_persists_session_after_draining_turn(tmp_path):
     finally:
         release.set()
         await closing
-    await second.future
+    with pytest.raises(SubmissionInterrupted):
+        await second.future
     assert WorkspaceStateStore(board.with_suffix(".pycodex-ws.json")).load_tabs() == [
         {"title": "saved", "rollout_path": str(rollout_path), "cwd": str(Path.cwd()), "profile": None}
     ]
@@ -2159,7 +2160,7 @@ async def test_threaded_session_releases_resources_on_lifecycle_failure(failure)
 
 
 @pytest.mark.asyncio
-async def test_threaded_close_drains_active_turn_when_caller_is_cancelled():
+async def test_threaded_close_stops_active_turn_when_caller_is_cancelled():
     started = threading.Event()
     release = threading.Event()
     cancelled = []
