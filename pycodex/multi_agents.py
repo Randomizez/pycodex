@@ -41,6 +41,7 @@ class AgentsManager:
         toolset: "typing.Union[typing.Iterable[str], None]" = None,
     ) -> "None":
         self._runtimes: "OrderedDict[str, AgentRuntime]" = OrderedDict()
+        self._closing_children = {}
         self._spawn_lock = None
         self._root_model_client = model_client
         self._context_config = context_config
@@ -343,19 +344,21 @@ class AgentsManager:
             or runtime.agent.agent_path.startswith(path + "/")
         ]
         for runtime in runtimes:
-            runtime._request_close([
-                child for child in runtimes
-                if child.agent.agent_path.rsplit("/", 1)[0] == runtime.agent.agent_path
-            ])
+            if runtime.accepts_input:
+                self._closing_children[runtime.agent.agent_id] = tuple(
+                    child for child in runtimes
+                    if child.agent.agent_path.rsplit("/", 1)[0] == runtime.agent.agent_path
+                )
+                runtime.request_close()
 
     async def shutdown_children(self, agent_id) -> "None":
         # Children may finish and unregister while their parent's turn stops.
-        runtime = self._runtimes[agent_id]
-        children = runtime._closing_children
+        self._runtimes[agent_id]
+        children = self._closing_children.get(agent_id, ())
         outcomes = await asyncio.gather(
             *(child.close() for child in children), return_exceptions=True,
         )
-        runtime._closing_children = ()
+        self._closing_children.pop(agent_id, None)
         errors = [outcome for outcome in outcomes if isinstance(outcome, BaseException)]
         if errors:
             for error in errors[1:]:

@@ -671,7 +671,9 @@ children and connections, and calls `Agent.shutdown()`. Tool shutdown hooks run 
 after accepted work can no longer rearm them. Completion comes from the worker,
 not a separate shutdown future. Direct `Agent.shutdown()` disables background
 hooks and rejects new calls without interrupting an active call.
-The signal captures direct child references before any await, so children that
+Manager owns the closing child references; only Manager calls
+`Runtime.request_close()` to signal a node after capturing its children. Callers
+close a subtree with `Runtime.close()`. References are captured before any await, so children that
 finish and unregister while their parent is stopping are still awaited and
 their cleanup errors remain visible. Direct children close concurrently, each
 waiting for its current operation and closing its descendants. Closing a child

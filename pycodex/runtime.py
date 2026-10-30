@@ -144,7 +144,6 @@ class AgentRuntime:
         self._command_tasks = set()
         self._active_commands = {}
         self._close_handlers = []
-        self._closing_children = ()
         self._worker = None
         self._command_lock = None
         self._input_request = None
@@ -370,10 +369,10 @@ class AgentRuntime:
             self.agents_manager.request_close(self.agent.agent_id)
         await asyncio.shield(self._worker)
 
-    def _request_close(self, children):
+    def request_close(self):
+        """Manager-only local signal, after it captures this node's children."""
         if not self.accepts_input:
             return
-        self._closing_children = tuple(children)
         self.agent.accepts_input = False
         self.stop_asap()
         pending = list(self._enqueue_queue)

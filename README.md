@@ -214,7 +214,8 @@ inheritance uses `fork_turns`; the session `/fork` command has been removed.
 capacity, defaulting to 16 including the root. When full, spawn closes the least
 recently used idle leaf with no pending or background work, or reports a capacity
 error. Closed children are removed from the Agent tree and Workspace views;
-their task names can be reused.
+their task names can be reused. The Manager retains closing child references
+until their cleanup finishes, even after they leave the live tree.
 Recorded sessions retain the clock period in a small environment snapshot beside
 the rollout. Resuming starts a fresh countdown and restores `idle: sleeping`
 in attached frontends; child Agents remain in memory.
