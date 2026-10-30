@@ -9,6 +9,7 @@ import pytest
 from pycodex import (
     AssistantMessage,
     BaseTool,
+    ClockManager,
     ContextConfig,
     ModelResponse,
     ResponsesModelClient,
@@ -436,18 +437,13 @@ async def test_start_close_are_idempotent_and_errors_do_not_hang_shutdown(
 ):
     hook_calls = []
 
-    class CountingTool(BaseTool):
-        name = "count_shutdown"
-        description = "Records shutdown."
-
+    class CountingResource(ClockManager):
         def shutdown(self):
             hook_calls.append(True)
-
-        async def run(self, context, args):
-            return None
+            super().shutdown()
 
     tools = ToolRegistry()
-    tools.register(CountingTool())
+    tools.runtime_environment.register_resource("counter", CountingResource())
     queue = make_runtime(make_agent(ControlClient([]), tools, ContextConfig()))
     if started:
         await queue.start()

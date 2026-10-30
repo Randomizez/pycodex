@@ -34,9 +34,9 @@ from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
 from .tools.runtime_services import close_resources
 from .utils import uuid7_string
 from .utils.event_helpers import shorten_title
+from .utils.history import conversation_history_to_turns
 from .utils.truncation import truncate_tool_result_for_history
 from .utils.session_persist import (
-    conversation_history_to_turns,
     list_resumable_sessions,
     resolve_codex_home,
     select_resumable_session,

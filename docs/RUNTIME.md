@@ -1297,6 +1297,10 @@ Not calling a status executor preserves it; passing `None` explicitly clears it.
 The terminal owns only input/output, locking and refresh scheduling; even spinner
 frame formatting belongs to `EventDisplay`. Shared text/color/summary formatting,
 non-event errors and one-shot/JSON output helpers live in `utils/event_helpers.py`.
+Tool summaries use the pure `summarize_tool_result(call, result)` projection;
+structured exec metadata is displayed from the result object, without parsing
+legacy `Process running...` text. Conversation pairs are projected by
+`utils.history.conversation_history_to_turns`, independently of rollout storage.
 That helper module depends only on the standard library, never events or
 frontends. The compactor's event type import is type-checking-only so loading
 the utils package cannot create an events/utils initialization cycle.

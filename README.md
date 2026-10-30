@@ -228,6 +228,8 @@ model-callable behavior. Pass `tools_factory(manager, environment, toolset)` to
 [resource contract](docs/RUNTIME.md#tools).
 Model clients expose explicit recording metadata; Agent supplies each request's
 session identity through `Prompt`, including compaction and resumed sessions.
+Tool summaries and conversation-history projections are pure helpers shared by
+event and session views.
 See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
 the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
 

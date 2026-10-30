@@ -1,6 +1,8 @@
 """Stateless presentation helpers; no event or frontend dependencies."""
 
 import json
+import re
+import shlex
 import typing
 from dataclasses import asdict
 
@@ -184,3 +186,139 @@ def truncate_text(text: "str", limit: "int" = 96) -> "str":
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3].rstrip() + "..."
+
+
+def summarize_tool_result(call, result) -> "str":
+    """Format call/result data without changing it or interpreting process state text."""
+    name = call.name
+    arguments = call.arguments if isinstance(call.arguments, dict) else {}
+    output = result.output
+    call_summary = ""
+    result_summary = None
+    if name == "exec" and isinstance(call.arguments, str):
+        call_summary = call.arguments
+    elif name == "exec_command":
+        command = arguments.get("cmd")
+        if command not in (None, ""):
+            command = str(command)
+            call_summary = truncate_text(command, 200)
+            lines = command.splitlines()
+            match = re.search(
+                r"\bpython(?:\d+(?:\.\d+)?)?\s+-\s+<<[-]?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1",
+                lines[0] if lines else "",
+            )
+            if match is not None:
+                for index, line in enumerate(lines[1:], 1):
+                    if line.strip() == match.group(2):
+                        call_summary = "\n".join(lines[: index + 1])
+                        break
+    elif name == "shell_command":
+        command = arguments.get("command")
+        if command not in (None, ""):
+            call_summary = truncate_text(str(command), 200)
+    elif name == "shell":
+        command = arguments.get("command")
+        if isinstance(command, list) and command:
+            call_summary = truncate_text(
+                " ".join(shlex.quote(str(part)) for part in command), 200
+            )
+    elif name == "write_stdin":
+        session_id = arguments.get("session_id")
+        if session_id not in (None, ""):
+            session_id = str(session_id)
+            chars = arguments.get("chars") or ""
+            call_summary = (
+                f"session {session_id} <- {truncate_text(str(chars), 32)}"
+                if chars
+                else f"poll session {session_id}"
+            )
+    elif name in {"read_file", "list_dir", "view_image"}:
+        key = (
+            "file_path"
+            if name == "read_file"
+            else ("dir_path" if name == "list_dir" else "path")
+        )
+        path = arguments.get(key)
+        if path not in (None, ""):
+            call_summary = truncate_text(str(path), 200)
+        if name == "view_image" and isinstance(output, list):
+            result_summary = f"{len(output)} image item(s)"
+    elif name == "grep_files":
+        pattern, path = arguments.get("pattern"), arguments.get("path")
+        if pattern not in (None, ""):
+            call_summary = truncate_text(
+                f"{pattern} @ {path}" if path not in (None, "") else str(pattern),
+                200,
+            )
+    elif name == "update_plan":
+        plan = arguments.get("plan")
+        if isinstance(plan, list):
+            total = len(plan)
+            completed = 0
+            in_progress = 0
+            for item in plan:
+                if isinstance(item, dict):
+                    status = str(item.get("status", "")).strip()
+                    completed += status == "completed"
+                    in_progress += status == "in_progress"
+            if not total:
+                return "0 steps"
+            if completed >= total:
+                return f"Done {completed}/{total}"
+            if in_progress:
+                return f"Working on {completed + in_progress}/{total}"
+            return f"Planned {completed}/{total}"
+        if isinstance(output, dict) and isinstance(output.get("plan"), list):
+            return f"{len(output['plan'])} steps"
+    elif name == "spawn_agent":
+        if isinstance(output, dict):
+            if output.get("task_name"):
+                return str(output["task_name"])
+    elif name in {"send_message", "followup_task"}:
+        target = arguments.get("target", "")
+        message = arguments.get("message", "")
+        if target or message:
+            call_summary = "{0} <- {1}".format(target, truncate_text(str(message), 40))
+    elif name == "wait_agent":
+        if isinstance(output, dict):
+            if output.get("timed_out") is True:
+                return "timed out"
+            if output.get("message"):
+                return str(output["message"])
+    elif name == "list_agents":
+        if isinstance(output, dict) and isinstance(output.get("agents"), list):
+            return "{0} agents".format(len(output["agents"]))
+    elif name == "interrupt_agent":
+        call_summary = str(arguments.get("target", ""))
+        if isinstance(output, dict):
+            result_summary = agent_status_summary(output.get("previous_status"))
+    if result_summary is None:
+        if isinstance(output, (dict, list)):
+            result_summary = truncate_text(
+                json.dumps(output, ensure_ascii=False, separators=(",", ":"))
+            )
+        else:
+            lines = [
+                line.strip() for line in result.output_text().splitlines()
+            ]
+            if "Output:" in lines:
+                result_summary = next(
+                    (line for line in lines[lines.index("Output:") + 1 :] if line),
+                    None,
+                )
+            if result_summary is None:
+                result_summary = next(
+                    (
+                        line
+                        for line in lines
+                        if line
+                        and not line.startswith(
+                            ("Exit code:", "Wall time:", "Command:")
+                        )
+                    ),
+                    "",
+                )
+            result_summary = truncate_text(result_summary)
+    if call_summary and result_summary:
+        return f"{call_summary} -> {result_summary}"
+    return call_summary or result_summary

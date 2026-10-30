@@ -139,8 +139,8 @@ def test_provider_tool_text(details, text):
         (
             "exec_command",
             {"cmd": "work"},
-            "Process running with session ID 12\nOutput:\nstarted",
-            "work -> session_id=12",
+            {"session_id": 12, "output": "started"},
+            'work -> {"session_id":12,"output":"started"}',
         ),
         (
             "write_stdin",
