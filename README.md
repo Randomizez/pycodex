@@ -55,8 +55,9 @@ pycodex --config /path/to/config.toml
 pycodex doctor
 ```
 
-Models use the streaming Responses API. For a Chat Completions backend, set
-`use_chat_completion = true` in its provider table. Other backend options include:
+Models use the streaming Responses API; OpenAI models use native Responses
+directly. For a vLLM Chat Completions backend, set `use_chat_completion = true`
+in its provider table. Other backend options include:
 
 ```bash
 pycodex --vllm-endpoint http://127.0.0.1:18000
@@ -65,6 +66,9 @@ pycodex --profile my_profile --use-messages
 
 See [context and configuration](docs/CONTEXT.md) and the
 [Responses compatibility server](docs/responses_server/README.md).
+The compatibility server supports namespaced function/custom tools, including
+upstream Codex subagent tools, with namespace restoration on returned calls.
+Text and reasoning streams include item lifecycle events for Codex's live display.
 
 ## CLI
 

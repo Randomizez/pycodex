@@ -465,9 +465,9 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert all(event["content_index"] == 0 for event in reasoning_deltas)
     assert [event["type"] for event in events[:4]] == [
         "response.created",
+        "response.output_item.added",
         "response.reasoning_text.delta",
         "response.reasoning_text.delta",
-        "response.output_text.delta",
     ]
     reasoning_items = [
         event["item"]
@@ -479,6 +479,8 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert reasoning_items == [
         {
             "type": "reasoning",
+            "id": reasoning_deltas[0]["item_id"],
+            "status": "completed",
             "summary": [],
             "content": [
                 {

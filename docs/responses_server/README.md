@@ -2,8 +2,10 @@
 
 这部分文档只描述独立的 incomming / outcomming HTTP server。
 
-它和现有 `pycodex/` runtime 保持隔离，目标是建模一个面向 Codex 的本地
-`/v1/responses` 服务，再把请求翻译到 outcomming backend。
+它和现有 `pycodex/` runtime 保持隔离，目标是为 vLLM 的
+`/v1/chat/completions` 提供面向 Codex 的本地 `/v1/responses` 适配。
+OpenAI 模型直接通过原生 Responses 运行和验证；OpenAI/models_proxy 的
+Chat 接口限制不属于本服务的适配目标，vLLM 参数映射按其后端契约维护。
 
 请求中的 `model` 必须透传到下游；不能读取 `/models` 的第一个 ID
 并覆盖调用方选择。Provider 差异只在真正发送下游请求及读取 SSE 的边界适配，
@@ -53,6 +55,7 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - 当环境变量 `PYCODEX_DUMP` 存在时，为每条 outcomming 请求附加 `return_token_ids = true`，并把实际下发的 request body、下游 usage/cache、`prompt_token_ids` / `token_ids` 以 JSONL 追加到 `{PYCODEX_DUMP}/dump.jsonl`
 - 下游请求在等待响应头或读流时失败，会返回 `response.failed`，错误直接包含耗时、timeout、失败阶段、响应头/首个 chunk 的时间和 chunk 数量
 - 普通 function tools
+- namespace 内的 function / custom tools，包含工具选择、调用返回及历史回放
 - 普通 function-call 参数拼接完成后校验 JSON；解析失败返回 `response.failed(type=server_error)`，由客户端按现有策略重试
 - custom tools 的 function-wrapper 兼容适配
 - mock `web_search` 接口对齐（返回空结果）
@@ -66,7 +69,43 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 
 - 真正的 Responses `web_search` 执行；当前只做空结果 mock
 - 非流式 incomming 请求
-- 含 `encrypted_content` 的 Agent 消息，返回 HTTP 501
+- 含 `encrypted_content` 的 Agent 消息，返回 HTTP 501；密文适配不在目标范围内
+
+## 流式输出事件
+
+每个输出条目先发送 `response.output_item.added`，再发送增量，最后发送
+`response.output_item.done`；同一条目的 ID 与 `output_index` 保持一致。
+reasoning 和正文按下游分片的实际顺序形成条目，切换类型时先结束前一条目，
+避免客户端把正文增量归到 reasoning，或报告 `without active item`。
+正文还发送 `content_part.added/done` 与 `output_text.done`；
+reasoning 发送 `reasoning_text.delta/done`。增量持续转发，不等待下游整轮结束。
+
+工具参数仍先拼接、校验，再发送工具的 added、参数 delta/done 和 item done，
+保留 namespace、call_id 和 custom 工具的明文 input。mock web search 的内部
+follow-up 同样结束前一轮条目，再开始下一轮，避免重复发送已完成的文本。
+`response.completed.output` 包含按事件顺序完成的条目及其完整内容。
+
+reasoning-only 重试会废弃当前未完成条目，不为它发送 `done`，也不把它加入
+最终 output；重试使用新的条目 ID。已显示的临时 reasoning 不代表已写入历史。
+下游中断同样保留未完成状态，不伪造成功的 item done 或 response completed。
+
+## Namespace 工具
+
+支持上游 Codex 的 `multi_agent_v1`、`collaboration`、`functions` 等
+`type: "namespace"` 工具组。发送到 chat-completions / messages 后端时，
+组内工具展开为 `namespace__name`，例如
+`multi_agent_v1__spawn_agent`；namespace 的描述附在每个工具的描述前。
+参数 schema 保留原样，custom 工具继续使用已有的 `input` 字符串 wrapper。
+
+下游工具调用返回时，服务恢复 Responses 的原始 `name` 和 `namespace`，
+并保持 `call_id`。带 namespace 的 function/custom `tool_choice` 和历史
+调用使用相同映射；历史工具已从当前 `tools` 移除时仍能回放。映射属于单次
+请求，并随 mock web search 的内部 follow-up 保留，不在会话间共享。
+
+不同 namespace 可以包含同名工具，也可以与同名的顶层工具共存。若展开后
+发生歧义，例如顶层 `a__run` 与 namespace `a` 下的 `run`，服务在请求下游
+之前返回 HTTP 501。namespace 只允许包含 function/custom，不支持嵌套
+namespace 或组内 hosted tools；错误结构同样明确拒绝。
 
 ## MultiAgentV2 消息边界
 
@@ -90,6 +129,7 @@ compat 生成的 function-call output item 显式带
 - `responses_server/app.py`：Starlette app 和 CLI 入口
 - `responses_server/server.py`：`ResponseServer`，负责持有 `SessionStore` 和 `StreamRouter`
 - `responses_server/stream_router.py`：`StreamRouter`，负责 incomming 请求翻译、outcomming request 和流路由；对 `model_provider = "vllm"` 额外适配 chat-level reasoning
+- `responses_server/stream_events.py`：单次响应的条目 ID、增量、完成事件及最终 output
 - `responses_server/payload_processors.py`：按 `CompatServerConfig.model_provider` 选择 provider-specific payload `post_process`
 - `responses_server/tools/`：provider 侧工具适配层；当前放 mock `web_search` 和 custom-tool function wrapper
 - `responses_server/session_store.py`：最小隐藏状态存储
@@ -159,7 +199,8 @@ length-stopped thinking 被持久化成 terminal reasoning-only history，并在
 下游 chat 后端不接受的裸 assistant message。
 
 普通 function-call 的 `arguments` 在拼接完成后由 server 校验 JSON。解析失败时，
-server 在发出本次最终 output items 之前返回 `response.failed(type=server_error)`；
+server 在发出本轮任何工具条目之前返回 `response.failed(type=server_error)`；
+已经按流式顺序完成的 reasoning/正文条目不受工具参数校验控制。
 错误只包含工具名和解析位置，不包含原始参数。`ResponsesModelClient` 通过通用
 `response.failed` 处理按 `stream_max_retries` 重试当前请求，默认最多重试 5 次。
 这条路径不增加 server 内部重试，也不把本次失败响应里的工具交给 Agent 执行。
@@ -185,11 +226,17 @@ follow-up、provider payload post-process 仍然复用同一套主逻辑。
 当前独立测试：
 
 ```bash
-uv run pytest tests/responses_server/test_server.py -q
+env -u VIRTUAL_ENV uv run --dev pytest tests/responses_server -q
 ```
 
 这些测试通过一个假的 outcomming chat server 做端到端验证，不依赖现有
 `pycodex` runtime。
+`test_namespaces.py` 另覆盖 chat/messages 的 namespace 工具往返、
+同名工具区分、tool_choice、工具移除后的历史回放、custom apply_patch、
+mock search follow-up、请求间隔离及歧义名称的拒绝。
+`test_stream_events.py` 按顺序消费 added/delta/done，检查父条目存在、
+ID/索引一致、增量与最终内容一致，覆盖类型切换、工具参数、重试丢弃、
+mock search follow-up 和两个 HTTP 后端。
 
 `tests/test_model.py` 另有真实 HTTP client → compat server → fake backend 的
 读空闲超时回归：每 `0.1` 秒发送 reasoning 分片，正文延迟超过客户端的

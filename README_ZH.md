@@ -52,8 +52,9 @@ pycodex --config /path/to/config.toml
 pycodex doctor
 ```
 
-默认使用流式 Responses API。接入 Chat Completions 后端时，在对应 provider
-配置中设置 `use_chat_completion = true`。其他后端入口包括：
+默认使用流式 Responses API；OpenAI 模型直接使用原生 Responses。
+接入 vLLM Chat Completions 后端时，在对应 provider 配置中设置
+`use_chat_completion = true`。其他后端入口包括：
 
 ```bash
 pycodex --vllm-endpoint http://127.0.0.1:18000
@@ -62,6 +63,9 @@ pycodex --profile my_profile --use-messages
 
 详见[配置与上下文](docs/CONTEXT.md)和
 [Responses 兼容服务](docs/responses_server/README.md)。
+兼容服务支持 namespace 内的 function/custom 工具（包括上游 Codex 的
+子 Agent 工具），并在调用返回时恢复 namespace。
+正文和 reasoning 流包含完整条目生命周期事件，支持 Codex 实时展示。
 
 ## CLI
 
