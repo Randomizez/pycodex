@@ -10,6 +10,12 @@ Implementing every optional configuration branch is outside this target.
 Optional tool arguments that are present in the default declaration still count
 as part of the default schema.
 
+The project deliberately omits sandbox enforcement and collaboration-mode
+switching. Sub-agent model/effort overrides and tool descriptions do not require
+hardcoded OpenAI-specific model, effort or tier allowlists, or complete coverage
+of OpenAI's model catalog. The related declaration and behavior differences are
+intentional local choices.
+
 `responses_server` adapts vLLM `/v1/chat/completions` to a local `/v1/responses`
 endpoint. OpenAI models are evaluated through native Responses; OpenAI/models_proxy
 Chat restrictions are outside this alignment target. Chat/messages adapters
@@ -131,12 +137,12 @@ its internal `output_schema`.
 The complete `apply_patch` declaration, including its description and custom
 grammar, also matches the direct-tool captures.
 
-| Remaining declaration difference | Default behavior to match |
-| --- | --- |
-| Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. |
-| `spawn_agent` description | Upstream includes available model overrides with supported effort/tier information. Python omits that list and adds fixed inheritance/override guidance that differs from this default description. |
-| `request_user_input` | Python adds `autoResolutionMs`; the upstream synchronous tool's default parameters only contain `questions`. Its description and the quotation marks around `Other` also differ. Default-mode unavailability remains the separate local contract. |
-| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, which upstream adds even with the optional exec-permission-approvals feature disabled. `additional_permissions` belongs to the enabled feature branch and is outside this default comparison. Python also adds background-invocation wording to the description. |
+| Declaration difference | Current behavior | Alignment scope |
+| --- | --- | --- |
+| Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. | Remains in scope. |
+| `spawn_agent` description | Python omits upstream's available model/effort/tier list and retains local inheritance/override guidance. | Intentional: no hardcoded OpenAI-specific capability lists. |
+| `request_user_input` | Python retains `autoResolutionMs` and local description wording, including different quotation marks around `Other`. | Intentional: the tool stays unavailable in Default mode; interaction-mode machinery is not restored to match its declaration. |
+| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, and retains local background-invocation wording. | Intentional: sandbox enforcement and its request parameters are outside the local contract. |
 
 No generic catalog-schema override mechanism is required by this snapshot:
 `model_messages.tools` is null in every bundled model at the source reference,
@@ -156,12 +162,23 @@ feature flags default off.
 
 | Area | Boundary of the current prototype |
 | --- | --- |
-| Tool declarations | Default namespace packaging, the schema/description differences above, and native CodeModeOnly selection remain. Inactive optional catalog overrides and configurable namespace/exposure branches are outside the default-options target. |
-| Fork overrides | The prompt describes upstream restrictions on full-history model/effort overrides; the local manager currently accepts explicit overrides. Model availability, MultiAgentV2 support, and supported effort are not validated against the provider catalog. |
-| Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
+| Tool namespaces | Default namespace packaging remains. Inactive optional catalog overrides and configurable namespace/exposure branches are outside the default-options target. |
+| Default tool selection | Native model CodeModeOnly selection remains. Existing local `exec` / `wait` implementations do not supply that automatic selection. |
 | Wire metadata | Client metadata, some user/result IDs, headers, and User-Agent version still differ. Preserving provider fields does not imply all locally generated IDs match. |
-| Catalog | Local Step/GPT-OSS entries remain; `codex-auto-review` is not provided. Updating bundled model data does not implement every catalog capability. |
 | Prompt selection | Model-dependent prompt shaping is not fully reproduced. The default `gpt-5.4` HTTP fixture still differs from CLI 0.165.0 in Planning and skills usage guidance. |
+
+### Intentional local differences
+
+Spawn/fork model overrides, the `spawn_agent`, `exec_command` and
+`request_user_input` declaration differences above, and model-catalog coverage
+are retained choices. They do not create alignment requirements to add sandbox
+enforcement, restore interaction modes, or hardcode OpenAI model capabilities.
+
+| Area | Retained local behavior |
+| --- | --- |
+| Fork overrides | The manager accepts explicit full-history model/effort overrides and keeps its existing inheritance rules. It does not add OpenAI-specific allowlists for model availability, MultiAgentV2 support or effort; configured values are passed to the provider. |
+| Catalog | Local Step/GPT-OSS entries remain. OpenAI-specific entries such as `codex-auto-review` are not required for catalog completeness. |
+| Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
 
 Intentional local boundaries remain: no bundled system-skill installation, no
 persisted collaboration tree, no session `/fork`, and no asynchronous

@@ -6,6 +6,9 @@ pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 的 Agent 主
 提供 CLI、可复用的 Agent API 和浏览器工作区。项目对齐选定功能、模型与协议在
 上游默认配置下的行为；支持范围和刻意保留的差异见[对齐文档](docs/ALIGNMENT.md)。
 
+本地约定不实现 sandbox、不恢复 collaboration mode 交互模式切换；
+子 Agent 不使用 OpenAI 专属模型/effort 白名单，也不要求补齐所有 OpenAI 模型目录条目。
+
 | 包 | 内容 | Python |
 | --- | --- | --- |
 | `python-codex` | Agent、Runtime、CLI、工具、Responses 兼容服务和 portable 存储 | 3.6.2+ |

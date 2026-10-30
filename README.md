@@ -8,6 +8,10 @@ behavior for the selected features, model and protocol; supported features and
 deliberate differences are documented in
 [Alignment](docs/ALIGNMENT.md).
 
+Intentional boundaries include no sandbox enforcement or collaboration-mode
+switching, no OpenAI-specific model/effort allowlists for sub-agents, and no
+requirement to mirror every OpenAI model-catalog entry.
+
 | Package | Provides | Python |
 | --- | --- | --- |
 | `python-codex` | Agent, runtime, CLI, tools, Responses compatibility server and portable storage | 3.6.2+ |
