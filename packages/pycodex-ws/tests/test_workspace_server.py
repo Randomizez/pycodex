@@ -11,6 +11,8 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from pycodex import (
+    Agent,
+    AgentRuntime,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -40,7 +42,7 @@ from pycodex.model import ResponsesIncompleteError
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+from tests.fakes import ScriptedModelClient
 from workspace_server import (
     ThreadedWorkspaceInteractiveSession,
     WebSessionView,
@@ -69,8 +71,8 @@ def make_session(model=None, tools=None, cwd=None):
         )
     session_id = uuid7_string()
     return WorkspaceInteractiveSession(
-        make_runtime(
-            make_agent(
+        AgentRuntime(
+            Agent(
                 model,
                 tools or ToolRegistry(),
                 ContextConfig(cwd=cwd),
@@ -1234,8 +1236,8 @@ def test_sessions_persist_titles_and_restore_history(
 
 
 @pytest.mark.parametrize("threaded", [False, True])
-@pytest.mark.parametrize("continue_after_error", [False, True])
-def test_workspace_rejects_fork_and_restores_original_session(tmp_path, threaded, continue_after_error):
+@pytest.mark.parametrize("continue_after_fork", [False, True])
+def test_workspace_fork_survives_restart(tmp_path, threaded, continue_after_fork):
     board = tmp_path / "board.html"
     store = WorkspaceStateStore(board.with_suffix(".pycodex-ws.json"))
 
@@ -1268,40 +1270,53 @@ def test_workspace_rejects_fork_and_restores_original_session(tmp_path, threaded
         ]
 
     with TestClient(create_app(session_factory, board.with_suffix(""))) as browser:
-        send(browser, "saved prompt")
-        state = wait_reply(browser, "saved prompt")
+        send(browser, "before fork")
+        state = wait_reply(browser, "before fork")
         original_path = Path(state["rollout_path"])
         original_bytes = original_path.read_bytes()
         send(browser, "/title saved")
         state = send(browser, "/fork")
-        assert state["turns"][-1]["error"] == "Unknown command: /fork"
-        assert Path(state["rollout_path"]) == original_path
-        assert original_path.read_bytes() == original_bytes
-        if continue_after_error:
-            send(browser, "after error")
-            wait_reply(browser, "after error")
+        assert not Path(state["rollout_path"]).exists()
+        send(browser, "/title forked")
+        # A second pending fork must still restore from the recorded ancestor.
+        state = send(browser, "/fork")
+        fork_path = Path(state["rollout_path"])
+        assert fork_path != original_path
+        assert not fork_path.exists()
+        if continue_after_fork:
+            send(browser, "after fork")
+            wait_reply(browser, "after fork")
 
-    expected = [("saved prompt", "done")]
-    if continue_after_error:
-        expected.append(("after error", "done"))
-    assert store.load_tabs() == [
-        {"title": "saved", "rollout_path": str(original_path), "cwd": str(Path.cwd()), "profile": None}
-    ]
+    expected = [("before fork", "done")]
+    if continue_after_fork:
+        expected.append(("after fork", "done"))
+        assert store.load_tabs() == [
+            {"title": "forked", "rollout_path": str(fork_path), "cwd": str(Path.cwd()), "profile": None}
+        ]
+    else:
+        assert not fork_path.exists()
+        assert store.load_tabs() == [
+            {"title": "forked", "rollout_path": str(original_path), "fork": True, "cwd": str(Path.cwd()), "profile": None}
+        ]
 
     with TestClient(create_app(session_factory, board.with_suffix(""))) as browser:
         state = browser.get("/api/session").json()["snapshot"]
-        assert state["title"] == "saved"
+        assert state["title"] == "forked"
         assert conversation(state) == expected
         restored_path = Path(state["rollout_path"])
-        assert restored_path == original_path
+        assert restored_path != original_path
+        if continue_after_fork:
+            assert restored_path == fork_path
+        else:
+            assert not restored_path.exists()
         send(browser, "after restart")
         assert conversation(wait_reply(browser, "after restart")) == expected + [
             ("after restart", "done")
         ]
 
-    assert original_path.read_bytes().startswith(original_bytes)
+    assert original_path.read_bytes() == original_bytes
     assert store.load_tabs() == [
-        {"title": "saved", "rollout_path": str(restored_path), "cwd": str(Path.cwd()), "profile": None}
+        {"title": "forked", "rollout_path": str(restored_path), "cwd": str(Path.cwd()), "profile": None}
     ]
 
 
@@ -1453,7 +1468,7 @@ def test_workspace_explicit_save_keeps_unchanged_state(tmp_path, command):
 
 
 @pytest.mark.parametrize("next_input", ["/compact", "failed turn"])
-def test_workspace_keeps_recorded_target_after_compact_or_failure(tmp_path, next_input):
+def test_workspace_fork_saves_new_target_after_compact_or_failure(tmp_path, next_input):
     board = tmp_path / "board.html"
     store = WorkspaceStateStore(board.with_suffix(".pycodex-ws.json"))
 
@@ -1466,25 +1481,29 @@ def test_workspace_keeps_recorded_target_after_compact_or_failure(tmp_path, next
         return make_session(ScriptedModelClient(response_factory=respond))
 
     with TestClient(create_app(session_factory, board.with_suffix(""))) as browser:
-        browser.post("/api/session/message", json={"prompt": "saved prompt"})
+        browser.post("/api/session/message", json={"prompt": "before fork"})
         state = wait_snapshot(
             browser, lambda s: s["turns"] and s["turns"][-1]["response"] == "done"
         )
         original_path = Path(state["rollout_path"])
+        original_bytes = original_path.read_bytes()
         browser.post("/api/session/message", json={"prompt": "/title saved"})
+        response = browser.post("/api/session/message", json={"prompt": "/fork"})
+        fork_path = Path(response.json()["snapshot"]["rollout_path"])
         browser.post("/api/session/message", json={"prompt": next_input})
         if next_input == "failed turn":
             wait_snapshot(browser, lambda s: s["turns"][-1]["status"] == "error")
-    assert original_path.is_file()
-    assert store.load_tabs() == [{"title": "saved", "rollout_path": str(original_path), "cwd": str(Path.cwd()), "profile": None}]
+    assert fork_path.is_file()
+    assert store.load_tabs() == [{"title": "saved", "rollout_path": str(fork_path), "cwd": str(Path.cwd()), "profile": None}]
+    assert original_path.read_bytes() == original_bytes
     with TestClient(create_app(session_factory, board.with_suffix(""))) as browser:
         assert browser.get("/api/session").json()["snapshot"]["rollout_path"] == str(
-            original_path
+            fork_path
         )
 
 
 @pytest.mark.asyncio
-async def test_workspace_close_persists_session_after_draining_turn(tmp_path):
+async def test_workspace_close_persists_fork_after_draining_turn(tmp_path):
     entered = asyncio.Event()
     release = asyncio.Event()
 
@@ -1498,11 +1517,12 @@ async def test_workspace_close_persists_session_after_draining_turn(tmp_path):
     board = tmp_path / "board.html"
     manager = WorkspaceSessionManager(lambda: session, board.with_suffix(""))
     await manager.start()
-    first = await session.runtime.submit_input("first")
+    first = await session.runtime.submit_input("before fork")
     await first.future
     await session.submit("/title saved")
-    rollout_path = session.runtime.agent.session_file_path
-    second = await session.runtime.submit_input("second")
+    await session.submit("/fork")
+    fork_path = session.runtime.agent.session_file_path
+    second = await session.runtime.submit_input("after fork")
     await entered.wait()
     closing = asyncio.create_task(manager.close())
     try:
@@ -1513,7 +1533,7 @@ async def test_workspace_close_persists_session_after_draining_turn(tmp_path):
         await closing
     await second.future
     assert WorkspaceStateStore(board.with_suffix(".pycodex-ws.json")).load_tabs() == [
-        {"title": "saved", "rollout_path": str(rollout_path), "cwd": str(Path.cwd()), "profile": None}
+        {"title": "saved", "rollout_path": str(fork_path), "cwd": str(Path.cwd()), "profile": None}
     ]
 
 
@@ -1552,7 +1572,7 @@ async def test_workspace_missing_restore_path_still_fails_and_closes_session(tmp
     board = tmp_path / "board.html"
     missing_path = str(tmp_path / "missing-rollout.jsonl")
     WorkspaceStateStore(board.with_suffix(".pycodex-ws.json")).save_tabs(
-        [{"title": "saved", "rollout_path": missing_path}]
+        [{"title": "saved", "rollout_path": missing_path, "fork": True}]
     )
     manager = WorkspaceSessionManager(lambda: session, board.with_suffix(""))
     with pytest.raises(FileNotFoundError):
@@ -1590,18 +1610,26 @@ async def test_workspace_failed_restore_keeps_the_full_saved_tab_list(
         await manager.close()
 
 
-@pytest.mark.asyncio
-async def test_workspace_rejects_legacy_pending_fork_without_replacing_state(tmp_path):
-    path = tmp_path / "saved.pycodex-ws.json"
-    contents = json.dumps({"tabs": [{
-        "title": "saved", "rollout_path": str(tmp_path / "source.jsonl"), "fork": True,
-    }]})
-    path.write_text(contents, encoding="utf-8")
-    manager = WorkspaceSessionManager(make_session, tmp_path / "saved")
-    with pytest.raises(ValueError, match="fork"):
-        await manager.start()
-    assert path.read_text(encoding="utf-8") == contents
-    assert not manager.list_sessions()
+def test_workspace_does_not_save_a_fork_destination_owned_by_another_writer(tmp_path):
+    board = tmp_path / "board.html"
+    with TestClient(create_app(make_session, board.with_suffix(""))) as browser:
+        browser.post("/api/session/message", json={"prompt": "before fork"})
+        state = wait_snapshot(
+            browser, lambda s: s["turns"] and s["turns"][-1]["response"] == "done"
+        )
+        original_path = state["rollout_path"]
+        browser.post("/api/session/message", json={"prompt": "/title saved"})
+        response = browser.post("/api/session/message", json={"prompt": "/fork"})
+        fork_path = Path(response.json()["snapshot"]["rollout_path"])
+        fork_path.write_text("another writer", encoding="utf-8")
+        browser.post("/api/session/message", json={"prompt": "after fork"})
+        state = wait_snapshot(browser, lambda s: s["turns"][-1]["status"] == "error")
+        assert state["recorded_rollout_path"] is None
+        assert "File exists" in state["turns"][-1]["error"]
+    assert fork_path.read_text(encoding="utf-8") == "another writer"
+    assert WorkspaceStateStore(board.with_suffix(".pycodex-ws.json")).load_tabs() == [
+        {"title": "saved", "rollout_path": original_path, "fork": True, "cwd": str(Path.cwd()), "profile": None}
+    ]
 
 
 @pytest.mark.parametrize("old_turns,pretty", [(1, False), (85, True)])
@@ -1619,7 +1647,7 @@ def test_workspace_resume_hides_compact_handoff_and_keeps_real_reply(
         ]
     )
     session_id = uuid7_string()
-    source = make_agent(
+    source = Agent(
         model,
         ToolRegistry(),
         ContextConfig(),
@@ -1883,8 +1911,8 @@ def test_final_or_failure_creates_unread_independently_of_running(failure):
 @pytest.mark.asyncio
 async def test_web_view_projects_context_tool_and_stream_events():
     view = WebSessionView()
-    runtime = make_runtime(
-        make_agent(
+    runtime = AgentRuntime(
+        Agent(
             ScriptedModelClient([]),
             ToolRegistry(),
             ContextConfig(
@@ -1928,8 +1956,8 @@ async def test_web_view_projects_context_tool_and_stream_events():
 def test_web_context_meter_uses_compact_threshold(
     compact_limit, max_len, current, remaining
 ):
-    runtime = make_runtime(
-        make_agent(
+    runtime = AgentRuntime(
+        Agent(
             ScriptedModelClient([]),
             ToolRegistry(),
             ContextConfig(
@@ -1957,8 +1985,8 @@ def test_web_context_meter_uses_compact_threshold(
     ],
 )
 def test_web_context_usage_clears_after_compaction(completed):
-    runtime = make_runtime(
-        make_agent(
+    runtime = AgentRuntime(
+        Agent(
             ScriptedModelClient([]),
             ToolRegistry(),
             ContextConfig(
@@ -2077,7 +2105,6 @@ def test_threaded_sessions_do_not_block_other_sessions():
 
     class BlockingClient:
         model = "blocking"
-        reasoning_effort = None
 
         async def complete(self, prompt, event_handler):
             workers.append(threading.get_ident())

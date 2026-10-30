@@ -91,8 +91,6 @@ async def compact_history(
             [],
             False,
             turn_id=turn_id,
-            reasoning_effort=model_client.reasoning_effort,
-            capture_context=False,
         )
         try:
             response = await model_client.complete(

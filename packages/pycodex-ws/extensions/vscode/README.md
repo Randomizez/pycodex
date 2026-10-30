@@ -71,9 +71,8 @@ The settings button in the chat header opens two actions:
   `bin/python` (`Scripts/python.exe` on Windows). The selection is validated before
   saving; installation happens when you start a chat.
 - **Profile** lets you edit the profile name from the workspace host's Codex
-  configuration. For example, `step` selects `step.config.toml` beside the base
-  `config.toml` or its `[profiles.step]` table. Leave it empty to inherit the
-  configuration's default profile selection.
+  configuration. For example, `step` selects `[profiles.step]`; leave it empty
+  to use the default configuration.
 
 Selections are saved for the displayed chat's project, or the current workspace
 folder before a chat is opened. They can also be edited as VS Code settings:

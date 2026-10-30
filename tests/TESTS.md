@@ -16,10 +16,6 @@ core 及测试收集/import 时执行的共享辅助代码必须能由 Python 3.
   `conftest.py` 另隔离 `HOME`，避免飞书测试读取开发者的真实凭据。
   两组共用 `tests/fakes.py`。
 
-`make_agent`、`make_runtime` 和 `make_tools` 只为测试显式装配 UUID、登记和
-依赖；生产构造仍要求 `Agent(..., session_id)` 与 `AgentRuntime(agent, manager)`。
-多 Agent 行为测试直接使用 `AgentsManager.create_root_runtime()`。
-
 在仓库根目录运行全部测试或仅 workspace 测试：
 
 ```bash
@@ -121,17 +117,6 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 内容更新、展开状态、草稿、手机滚动、新建/关闭会话及切走后的 Mermaid
 异步完成。所有请求使用离线 fixture，不访问真实会话或 CDN。
 
-Markdown 文件链接的浏览器回归使用与页面相同版本的渲染和清洗库，手动运行：
-
-```bash
-npm install --prefix /tmp/pycodex-browser-check playwright markdown-it@14.1.0 dompurify@3.2.6
-NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests/workspace_markdown_links.cjs
-```
-
-覆盖 `[TODO](TODO.md)`、绝对/相对路径、行号和 Git/diff 链接的点击接管、
-Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 和邮件链接，
-以及可执行 URL 拒绝。脚本读取真实页面的渲染/点击代码，使用本地依赖，不请求 CDN。
-
 ### HTTP 框架依赖
 
 - `packages/pycodex-ws/tests/test_workspace_sharing.py` 覆盖管理员/访问者登录、
@@ -145,12 +130,6 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
   Starlette 0.19.x；安装和运行不需要 FastAPI、Pydantic 或 pydantic-core。
 - `tests/responses_server/test_server.py` 覆盖路由别名、JSON 响应和 HTTP 错误，
   并通过真实本地下游验证 SSE、tool follow-up 和模型请求转换。
-- `tests/responses_server/test_namespaces.py` 覆盖 chat/messages 的 namespace
-  function/custom 工具往返、同名工具及 tool_choice、工具移除后的历史回放、
-  mock search follow-up、请求间映射隔离，以及歧义名称在下游请求前的拒绝。
-- `tests/responses_server/test_stream_events.py` 验证 added/delta/done 的顺序、
-  ID/索引及增量/最终内容一致性、即时转发、reasoning/正文切换、工具条目、
-  重试丢弃和 mock search follow-up，以及 chat/messages 两种 HTTP 后端。
 - `packages/pycodex-ws/tests/test_workspace_server.py` 覆盖单/多 workspace 的 JSON 对象校验、
   非 JSON Content-Type 拒绝、JSON HTTP 错误、登录和 WebSocket。
   `test_workspace_views.py` 还在文件打开操作阻塞时并发轮询会话，
@@ -167,15 +146,6 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
 
 ### Provider 配置
 
-- `test_codex_config.py` 覆盖独立文件/内嵌 profile 的递归表合并、数组/类型替换、
-  provider/context 一致性、相对指令路径、默认 selector 和显式选择优先级、
-  名称/结构校验，以及同名冲突、缺失 profile 和 TOML 错误的明确失败。
-  自定义 `--config` 使用其同目录 profile。
-- workspace 的 `test_workspace_profiles.py` 覆盖两种来源和混合配置的发现、
-  profile 内 provider 定义、单/多 workspace 创建及重启恢复，默认配置变化后
-  保存的显式基础配置仍保持不变；`test_portable.py` 验证两种格式混用及默认
-  selector 经上传/下载后仍可加载，基础和各 profile 的相对指令文件均保留。
-- `test_doctor.py` 验证诊断报告显示顶层默认 selector 选中的 profile。
 - `ResponsesModelClient` 默认 `stream_max_retries = 5`。CLI/REPL 测试若要求
   “先报错，再由下一句 `go on` 继续”，fixture 的 provider 配置必须设
   `stream_max_retries = 0`，否则自动重试会延后预期错误并使交互测试等待。
@@ -221,8 +191,7 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
 
 ### Context 抓包审计（2026-09-23）
 
-历史基线为本机 `codex-cli 0.153.4`；脚本已迁到当前 AgentsManager 构造路径，
-重新执行时必须记录实际 CLI 版本。脚本使用隔离的 localhost fixture，
+基线为本机 `codex-cli 0.153.4`；脚本使用隔离的 localhost fixture，
 不读取用户账号配置、不调用真实模型：
 
 ```bash
@@ -235,10 +204,6 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 
 - 首轮、文件 resume、reasoning/tool follow-up 走生产装配和真实 HTTP。
 - 默认创建新的临时目录并打印 `comparison.json`；`--root` 必须使用新的目录。
-- `--codex-bin /path/to/codex` 显式选择审计版本；子进程使用最小 fixture 环境，
-  避免继承宿主 Codex 会话的开关。
-- 当前 fixture 显式开启 MultiAgentV2，关闭 code mode 和 Responses WebSocket，
-  因此旧版默认配置的报告只保留历史参考意义。
 - 只对客户端动态 UUID、Chunk ID、Wall time 做动态值规范化。
   raw context 有差异时仍退出 `1`，不能把 shared context 一致当成整包一致。
 - 报告同时保留 shared-context exclusions、工具声明、其他 body 和 header 差异。
@@ -249,50 +214,11 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不会把 user 正文中的协作标签当作可排除的 developer 指令。
 - 完整边界及已知差异见 `docs/CONTEXT.md`。
 
-### 新版协议原型（2026-10-29）
-
-当前源码基线和 CLI 0.165.0 抓包的适用范围见
-[ALIGNMENT](../docs/ALIGNMENT.md#current-prototype-baseline-2026-10-29)。
-以下回归使用合成客户端或 localhost HTTP，不调用真实模型：
-
-- `test_multi_agents.py`：命名任务树、完成/失败通知恰好一次、同文不同事件、
-  idle mailbox、活跃父 turn 的消息接入、状态快照隔离、后台唤醒、
-  等待超时清理、父树关闭排空、子节点并行关闭及清理失败、
-  立即关闭后的过期队列通知。
-- `test_environment_state.py`：clock 配置在 compact、关闭和 resume 后恢复，
-  会话快照读取当前后台任务数，
-  Runtime 就绪后重新计时、取消状态保存、旧会话无快照时清除当前 clock、
-  损坏快照不改变当前会话、原子写入失败时保留旧文件并释放资源、
-  相同状态不重复写入，以及子 Agent / 未启用记录的环境不落盘。
-- workspace `test_session_backend.py` 覆盖启动恢复及 `/resume` 后
-  Web/CLI/飞书立即显示 `idle: sleeping`，切换到无 clock 快照的会话后清除状态。
-- `test_agent_capacity.py`：含根的容量上限、最近使用顺序、关闭注销与任务名复用、
-  排队/邮箱/命令/clock/exec 工作保护、调用者与存活子树保护、
-  并发创建的容量预留，以及回收与父关闭/资源清理及工具关闭失败的交互。
-- `test_runtime_state.py`：独立 enqueue、合并 trigger、只投递消息、
-  用户 steer 的回执与逻辑 turn ID、停止唤醒 wait、compaction 边界、
-  exec/clock 唤醒归属和关闭后的拒绝接纳。
-- `test_builtin_tools.py`：六个新版协作工具的真实 registry 调用、参数校验、
-  子节点工具继承、wait 的 clamp/上限及旧参数拒绝。
-- `test_multi_agent_context.py`：Default/role/mode 独立 blocks、配置优先级、
-  全历史与嵌套 fork 的 prefix、context 更新、稳定 aborted 结果、原生
-  AgentMessage 和加密参数标记在普通/lite 请求及 resume/checkpoint 中保留。
-- `tests/responses_server/test_server.py`：chat/messages 转换明文 AgentMessage，
-  明确输出 `encrypted_function_args: []`，密文在下游请求前被拒绝。
-- workspace 的 `test_workspace_agents.py`：普通与独立线程的 Agent 树 API、
-  流式 assistant 正文、工具/错误状态期间的消息保留、观察已有子节点及订阅清理，
-  容量关闭与递归关闭后移除节点和缓存、结束订阅，旧 Agent ID 查询返回 404。
-- core/workspace session 测试：`/fork` 拒绝且不改历史、身份或录制路径，
-  普通 resume/重启继续工作，旧 pending-fork 状态明确报错且保留原文件。
-
-这些测试验证本地契约；它们不代替对 upstream 当前完整请求的比较。
-旧版真实模型 smoke 记录在下方历史章节，不能作为新版 MAv2 的验证结果。
-
 ### 测试分层与去重
 
 - 小幅文案、布局、样式改动做页面检查，不搭建专用 Node/DOM 模拟测试；
   状态或队列语义只保留必要的行为回归，按变更范围运行相关用例。
-- 纯后端的权限、问题取消、会话命令和关闭契约集中在 `tests/test_session_backend.py`；
+- 纯后端的权限、问题取消、fork 和关闭契约集中在 `tests/test_session_backend.py`；
   CLI/Web/飞书的会话命令与订阅集成集中在
   `packages/pycodex-ws/tests/test_session_backend.py`，不在每个前端重复测试后端命令。
 - 两组 `test_async_bridge.py` 分别覆盖 core 与 workspace 在构造和执行使用
@@ -305,8 +231,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不增加未发出请求的 iteration；溢出恢复只重试一次，不重跑已完成工具。
 - `test_runtime_state.py` 覆盖 exec/clock 唤醒后的 steer：正常中断不报通知失败，
   真实模型异常仍上报，待处理用户输入由 Runtime worker 继续执行。
-- mailbox 等待超时后仍能收到后续完成通知；Python 3.6 下也必须完成
-  event waiter 的取消清理，不能留下等待任务或丢失后续通知。
+- 子 Agent 状态等待超时后仍能收到后续完成通知；Python 3.6 下也必须等
+  condition waiter 取消并重新获得锁后再离开临界区，不能留下卡死的通知等待。
 - `test_cli.py` 保留入口、装配、portable round-trip、steer/queue 反馈和流式展示；
   验证普通/JSON 回执不创建额外任务，移除逐个 argparse 字段、
   相同 buffer 状态和重复恢复流程的微测试。
@@ -315,8 +241,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   Canvas 开关切换保持会话与视图状态、单/多 workspace 的 Canvas 路由关闭、
   前缀含点时的历史隔离，以及跨开关的重复前缀拒绝；
   损坏的会话索引直接报错并保留原文件，不跳过记录或创建空会话覆盖它；
-  普通/线程会话覆盖 `/fork` 拒绝、标题更新、续写、
-  compact/模型失败后的恢复路径、关闭排空、空标签页和无效源路径。
+  fork 重启覆盖普通/线程会话、连续未落盘 fork、标题更新、续写与源文件隔离，
+  并覆盖 compact/模型失败后的恢复路径、关闭排空、空标签页和无效源路径。
   验证启动/清理失败仍回收线程，取消关闭调用方不打断当前 turn；
   `/history` 整条命令只产生一条控制消息，不逐行挤占聊天记录；
   执行前端实际切换/渲染代码，验证关闭 tab 后恢复已访问 tab 的内容、草稿和
@@ -324,7 +250,6 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   不再把 CSS 颜色、函数名等实现细节当成独立回归。
 - `test_workspace_views.py` 覆盖模型只输出链接时不打开标签、点击不增加模型请求/会话消息、
   空工具集仍可打开文件、普通路径与 Git 风格 URI、百分号编码及非法目标拒绝、
-  本地 diff 两侧的绝对/相对路径组合、父目录与编码分隔符、
   完整路径/Git 标题、有序比较与 Git 实际版本身份、并发打开去重、路径别名复用和 reveal 持久化、
   文件/diff/Git 行号定位、左右侧与数字 Git 文件名解析、无效行号拒绝、定位复用及原子保存、
   文件和图片自动更新、原子替换、未变文件不重读、删除/读取失败后的展示及恢复、
@@ -481,18 +406,15 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   - 已安装 Pillow 时默认缩图；缺少 Pillow 时，省略或显式 `high` 均保留原图并返回
     `original`。显式 `original` 始终保留原图；验证字节、尺寸和序列化后的 detail。
 - `spawn_agent`
-  - 预期：通过 `task_name`/`message` 创建子 Agent，返回 canonical path；
-    默认继承全部 context，校验名称、空消息、fork_turns 和旧字段。
-- `send_message`
-  - 预期：投递消息但不唤醒 idle Agent。
-- `followup_task`
-  - 预期：投递新任务并触发 idle 子节点；活跃节点在输入边界接入。
+  - 预期：happy path 下能创建子 agent 并通过 `wait_agent` / `close_agent` 正常回收；当前还额外校验了空参数时要返回固定校验错误 `Provide one of: message or items`。
+- `send_input`
+  - 预期：能给已有子 agent 继续发消息。
+- `resume_agent`
+  - 预期：关闭后的子 agent 能被恢复并继续接收输入。
 - `wait_agent`
-  - 预期：只等待 mailbox 活动，返回 `{message, timed_out}`，不消费正文。
-- `interrupt_agent`
-  - 预期：返回先前状态并协作式停止，保留节点供后续任务使用。
-- `list_agents`
-  - 预期：列出活跃树的任务路径和状态，支持路径前缀过滤。
+  - 预期：能等待子 agent 到达完成态。
+- `close_agent`
+  - 预期：能关闭子 agent，并返回关闭前状态。
 
 ### `tests/test_context.py`
 
@@ -568,11 +490,9 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - 为了比较“默认 steer”而不是本机用户配置带来的 fast-mode 噪音，脚本会给 upstream 和 `pycodex` 都生成临时 config，并显式去掉顶层 `service_tier`。
 - 所需 tmux/capture helper 直接放在本脚本内。完整请求比较会保留 pycodex 移除协作指令、修改问答工具可用性描述产生的有意差异，不再承诺整包相同。
 
-## 历史真实模型 smoke tests（旧协议）
+## 真实模型 smoke tests
 
-以下是早期版本真实模型 smoke 的历史记录。表中的 `send_input`、
-`resume_agent`、`close_agent` 等旧工具已移除；当前原型的验证以本页
-新版协议回归和 ALIGNMENT 中注明版本的比较为准。
+下面这些测试是用真实 `pycodex` + `~/.codex/config.toml` 跑过的 prompt 级 smoke，用来确认模型在真实对话里会主动选对工具。
 
 说明：
 
@@ -602,11 +522,10 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 | `wait_agent` | 创建子 agent 后显式等待 | 至少应调用 `spawn_agent`、`wait_agent`、`close_agent`，最终回复 `WAIT_AGENT_OK` |
 | `close_agent` | 创建子 agent 后显式关闭 | 至少应调用 `spawn_agent`、`wait_agent`、`close_agent`，最终回复 `CLOSE_AGENT_OK` |
 
-## 历史通过情况
+## 当前通过情况
 
-- 以下结论仅适用于旧协议检查点，不表示当前请求整包一致。
-  本地验证使用隔离 HOME/CODEX_HOME 的 `uv run --dev pytest`；
-  数量以实际 collection 为准。
+- 本地验证使用隔离 HOME/CODEX_HOME 的 `uv run --dev pytest`；数量以实际 collection 为准，
+  不把历史通过数量当成当前覆盖范围。
 - 已对 `exec` 做过真实模型 smoke，当前通过。
 - 已对 `pycodex "请只回复当前目录的 basename，不要解释。"` 做过真实配置 smoke；预期回复应等于当前 checkout 目录名。
 - collaboration mode 状态和模式专用对齐脚本已删除；`request_user_input` 的默认不可用行为保留，通过工具及 CLI/Web/飞书接入测试验证。通用输入服务的回答与取消测试继续独立运行。

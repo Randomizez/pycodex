@@ -31,12 +31,10 @@ def _write_config(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("builtin_openai", [False, True])
-@pytest.mark.parametrize("default_profile", [False, True])
 async def test_collect_doctor_report_succeeds_with_live_check(
     tmp_path,
     monkeypatch,
     builtin_openai,
-    default_profile,
 ) -> "None":
     capture_store = CaptureStore(tmp_path / "capture")
     httpd = ThreadingHTTPServer(
@@ -59,12 +57,6 @@ async def test_collect_doctor_report_succeeds_with_live_check(
         _write_config(config_path, base_url)
         env_key = "DOCTOR_KEY"
     monkeypatch.setenv(env_key, "dummy-key")
-    if default_profile:
-        config_path.write_text(
-            'profile = "work"\n' + config_path.read_text(encoding="utf-8")
-            + '\n[profiles.work]\nmodel_reasoning_effort = "high"\n',
-            encoding="utf-8",
-        )
 
     try:
         report = await collect_doctor_report(
@@ -78,7 +70,6 @@ async def test_collect_doctor_report_succeeds_with_live_check(
         httpd.server_close()
 
     assert report.ok is True
-    assert report.profile == ("work" if default_profile else None)
     assert report.provider_name == ("openai" if builtin_openai else "neo")
     assert report.api_key_env == env_key
     assert report.api_key_loaded is True

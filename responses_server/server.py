@@ -3,7 +3,7 @@ import typing
 from .config import CompatServerConfig
 from .payload_processors import post_process_outcomming_request
 from .session_store import SessionStore
-from .stream_router import StreamRouter, ToolNameMap
+from .stream_router import StreamRouter
 from .trajectory_dump import TrajectoryDumpWriter
 
 
@@ -39,10 +39,7 @@ class ResponseServer:
         request_body: "typing.Dict[str, object]",
         request_headers: "typing.Dict[str, str]",
     ):
-        tool_names = ToolNameMap()
-        outcomming_request = self._stream_router.build_outcomming_request(
-            request_body, tool_names,
-        )
+        outcomming_request = self._stream_router.build_outcomming_request(request_body)
         if self._trajectory_dump is not None:
             # vLLM surfaces prompt/decode token IDs only when this flag is set.
             outcomming_request["return_token_ids"] = True
@@ -50,6 +47,7 @@ class ResponseServer:
             outcomming_request,
             self._config.model_provider,
         )
+        custom_tool_names = self._stream_router.collect_custom_tool_names(request_body)
         session_id = (
             request_headers.get("x-client-request-id")
             or str(request_body.get("prompt_cache_key", "")).strip()
@@ -62,6 +60,6 @@ class ResponseServer:
         return self._stream_router.route_stream(
             stored_response,
             outcomming_request,
-            tool_names,
+            custom_tool_names,
             self._trajectory_dump,
         )

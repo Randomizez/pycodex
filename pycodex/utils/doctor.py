@@ -12,7 +12,6 @@ import requests
 
 from ..model import ResponsesModelClient, ResponsesProviderConfig
 from ..protocol import AssistantMessage, Prompt, UserMessage
-from .codex_config import read_codex_config
 from .dotenv import DOTENV_FILENAME, load_codex_dotenv
 
 
@@ -57,7 +56,7 @@ def build_doctor_parser():
     parser.add_argument(
         "--profile",
         default=None,
-        help="Select <name>.config.toml or [profiles.<name>], overriding the config default.",
+        help="Optional profile name from config.toml.",
     )
     parser.add_argument(
         "--timeout-seconds",
@@ -118,9 +117,8 @@ async def collect_doctor_report(
     load_codex_dotenv(config_file)
 
     try:
-        report.profile = read_codex_config(config_file, profile)["profile"]
         provider_config = ResponsesProviderConfig.from_codex_config(
-            config_file, report.profile
+            config_file, profile
         )
     except Exception as exc:
         checks.append(

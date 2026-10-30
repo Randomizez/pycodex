@@ -40,7 +40,7 @@ export function mount(host) {
           list.replaceChildren(...agents.map(agent => {
             const item = document.createElement("li");
             const name = document.createElement("strong");
-            name.textContent = agent.agent_path;
+            name.textContent = agent.nickname || agent.agent_id;
             const state = document.createElement("span");
             const detail = document.createElement("pre");
             if (typeof agent.status === "string") {

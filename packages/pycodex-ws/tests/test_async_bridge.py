@@ -16,7 +16,7 @@ def test_workspace_construction_uses_the_execution_loop(tmp_path, construction_l
             Agent, AgentRuntime, AssistantMessage, ContextConfig,
             ModelResponse, ToolRegistry,
         )
-        from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+        from tests.fakes import ScriptedModelClient
         from workspace_server.app import WorkspaceInteractiveSession
         from workspace_server.workspaces import WorkspaceSessionManager
 
@@ -30,7 +30,7 @@ def test_workspace_construction_uses_the_execution_loop(tmp_path, construction_l
                 model = ScriptedModelClient([
                     ModelResponse([AssistantMessage("done")]),
                 ])
-                runtime = make_runtime(make_agent(
+                runtime = AgentRuntime(Agent(
                     model, ToolRegistry(), ContextConfig()
                 ))
                 workspace = WorkspaceSessionManager(

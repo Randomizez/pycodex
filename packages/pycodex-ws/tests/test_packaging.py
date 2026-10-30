@@ -31,17 +31,17 @@ def test_workspace_distribution_tracks_core_version():
 
 
 def test_runtime_commands_follow_package_boundary():
-    from pycodex import ContextConfig, ToolRegistry
-    from pycodex_ws import register_feishu_commands
-    from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+    from pycodex import Agent, ContextConfig, ToolRegistry
+    from pycodex.bootstrap import build_runtime
+    from pycodex_ws import build_runtime as build_workspace_runtime
+    from tests.fakes import ScriptedModelClient
 
-    core = make_runtime(
-        make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    core = build_runtime(
+        Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     )
-    workspace = make_runtime(
-        make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    workspace = build_workspace_runtime(
+        Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     )
-    register_feishu_commands(workspace)
 
     assert "link" not in core.commands()
     assert "unlink" not in core.commands()

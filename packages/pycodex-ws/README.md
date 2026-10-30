@@ -144,9 +144,6 @@ uv run --dev pytest packages/pycodex-ws/tests
 uv build packages/pycodex-ws
 ```
 
-Python integrations construct a runtime through `AgentsManager.create_root_runtime()`
-and call `pycodex_ws.register_feishu_commands(runtime)` to include `/link` and
-`/unlink`. The context indicator shows tokens against the auto-compaction limit;
-its expandable Agent tree shows each task's status and latest assistant text.
-See [runtime contracts](../../docs/RUNTIME.md) and
+Python integrations use `pycodex_ws.build_runtime(agent)` to include workspace
+commands. See [runtime contracts](../../docs/RUNTIME.md) and
 [test documentation](../../tests/TESTS.md).

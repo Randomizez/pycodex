@@ -14,7 +14,8 @@ from starlette.testclient import TestClient
 
 import workspace_server.app as workspace_app
 from pycodex import AssistantMessage, ModelResponse
-from tests.fakes import ScriptedModelClient, make_tools
+from pycodex.bootstrap import get_tools
+from tests.fakes import ScriptedModelClient
 from test_workspace_server import make_session, wait_snapshot
 from workspace_server import (
     WorkspaceDefinition,
@@ -197,30 +198,6 @@ def test_native_diff_paths_keep_parent_components_and_encoded_separators(tmp_pat
     literal = opener.open("diff:old%2E%2Efile.py..../new.py#L1")
     assert literal["documents"][0]["text"] == "literal dots\n"
     assert literal["title"] == "old..file.py <-> ../new.py"
-
-
-@pytest.mark.parametrize("left_absolute,right_absolute", [
-    (True, True), (False, True), (True, False),
-])
-def test_native_diff_absolute_paths_reuse_relative_comparison(
-    tmp_path, left_absolute, right_absolute
-):
-    left = tmp_path / "old.py"
-    right = tmp_path / "new.py"
-    left.write_text("old\n", encoding="utf-8")
-    right.write_text("new\n", encoding="utf-8")
-    views = WorkspaceViewStore()
-    opener = WorkspaceViewOpener(views, tmp_path)
-    relative = opener.open("diff:old.py..new.py")
-    href = "diff:{0}..{1}#R1".format(
-        left if left_absolute else left.name,
-        right if right_absolute else right.name,
-    )
-    selected = opener.open(href)
-    assert selected["id"] == relative["id"]
-    assert len(views.list_views()) == 1
-    assert [document["text"] for document in selected["documents"]] == ["old\n", "new\n"]
-    assert selected["selection"] == {"document": 1, "line": 1}
 
 
 def test_windows_drive_links_keep_the_drive_and_line(tmp_path):
@@ -990,7 +967,7 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
         assert opened["view"]["documents"][0]["text"] == "source body\n"
         assert browser.get("/w/first/api/session").json()["snapshot"] == before
         assert len(model.prompts) == 1
-    assert "workspace_display" not in make_tools(toolset=["apply_patch"])
+    assert "workspace_display" not in get_tools(toolset=["apply_patch"])
     assert len(WorkspaceViewStore(tmp_path / "board.pycodex-views.json").list_views()) == 1
 
 

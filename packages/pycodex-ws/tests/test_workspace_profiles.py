@@ -4,7 +4,6 @@ import pytest
 from starlette.testclient import TestClient
 
 from pycodex import AssistantMessage, ModelResponse
-from pycodex.multi_agents import AgentsManager
 from workspace_server import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -20,32 +19,18 @@ from test_workspace_server import make_session, wait_snapshot
 
 
 @pytest.mark.parametrize("multi", [False, True])
-@pytest.mark.parametrize("profile_format,config_default,launch_profile", [
-    ("file", None, None),
-    ("file", None, "fast"),
-    ("embedded", None, None),
-    ("embedded", "fast", None),
-    ("file", "fast", None),
-    ("mixed", "review", "fast"),
-])
-def test_profile_creation_and_restore(
-    tmp_path, monkeypatch, multi, profile_format, config_default, launch_profile,
-):
-    default_profile = launch_profile or config_default
+@pytest.mark.parametrize("default_profile", [None, "fast"])
+def test_profile_creation_and_restore(tmp_path, monkeypatch, multi, default_profile):
     config = tmp_path / "config.toml"
     config.write_text(
         'model = "base-model"\n'
         'model_reasoning_effort = "low"\n'
-        'base_instructions = "Base instructions."\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "fast.config.toml").write_text(
+        'base_instructions = "Base instructions."\n'
+        '[profiles.fast]\n'
         'model = "fast-model"\n'
         'model_reasoning_effort = "medium"\n'
-        'base_instructions = "Fast instructions."\n',
-        encoding="utf-8",
-    )
-    (tmp_path / "review.config.toml").write_text(
+        'base_instructions = "Fast instructions."\n'
+        '[profiles.review]\n'
         'model = "review-model"\n'
         'model_provider = "review-provider"\n'
         'model_reasoning_effort = "high"\n'
@@ -56,22 +41,11 @@ def test_profile_creation_and_restore(
         'env_key = "TEST_REVIEW_KEY"\n',
         encoding="utf-8",
     )
-    base = config.read_text(encoding="utf-8")
-    if config_default is not None:
-        base = 'profile = "{}"\n'.format(config_default) + base
-    for name in ("fast", "review"):
-        if profile_format == "embedded" or (profile_format == "mixed" and name == "fast"):
-            path = tmp_path / (name + ".config.toml")
-            base += "[profiles.{}]\n".format(name) + path.read_text(encoding="utf-8").replace(
-                "[model_providers.", "[profiles.{}.model_providers.".format(name),
-            )
-            path.unlink()
-    config.write_text(base, encoding="utf-8")
     definition = WorkspaceDefinition("test", tmp_path / "state", tmp_path, False)
     store = WorkspaceStateStore(tmp_path / "state.pycodex-ws.json")
     agents = []
     prompts = []
-    original_build_agent = AgentsManager.build_agent
+    original_build_agent = app_module.build_agent
 
     def build_agent(*args, **kwargs):
         assert threading.current_thread() is not threading.main_thread()
@@ -83,7 +57,7 @@ def test_profile_creation_and_restore(
         prompts.append(prompt)
         return ModelResponse([AssistantMessage("done")])
 
-    monkeypatch.setattr(AgentsManager, "build_agent", build_agent)
+    monkeypatch.setattr(app_module, "build_agent", build_agent)
     monkeypatch.setattr("pycodex.model.ResponsesModelClient.complete", complete)
 
     def build_app(profile):
@@ -99,7 +73,7 @@ def test_profile_creation_and_restore(
 
     prefix = "/w/test" if multi else ""
     expected_default_model = "fast-model" if default_profile else "base-model"
-    with TestClient(build_app(launch_profile)) as browser:
+    with TestClient(build_app(default_profile)) as browser:
         catalog = browser.get(prefix + "/api/sessions").json()
         assert catalog["profiles"] == ["fast", "review"]
         assert catalog["default_profile"] == default_profile
@@ -132,22 +106,18 @@ def test_profile_creation_and_restore(
         assert [tab["profile"] for tab in store.load_tabs()] == [
             default_profile, "review", default_profile, default_profile,
         ]
-        # A rejected command must preserve the selected profile and recording.
+        # Fork events must retain the selected profile, even before a new recording.
         assert browser.post(prefix + "/api/session/message", json={
             "session_id": selected, "prompt": "/fork",
         }).status_code == 200
     assert all(agent.is_shutdown for agent in agents)
     saved = store.load_tabs()
     assert saved[1]["profile"] == "review"
-    assert saved[1]["rollout_path"]
-    assert all(set(tab) <= {"title", "cwd", "rollout_path", "profile"} for tab in saved)
+    assert saved[1]["fork"] is True
+    assert all(set(tab) <= {"title", "cwd", "rollout_path", "fork", "profile"} for tab in saved)
     agents.clear()
     # Changing the launch default must not change any saved tab's configuration,
     # including explicit null (base configuration).
-    base = config.read_text(encoding="utf-8")
-    if config_default is not None:
-        base = base.replace('profile = "{}"\n'.format(config_default), "", 1)
-    config.write_text('profile = "review"\n' + base, encoding="utf-8")
     with TestClient(build_app("review")) as browser:
         restored = browser.get(prefix + "/api/sessions").json()["sessions"]
         assert [tab["profile"] for tab in restored] == [tab["profile"] for tab in saved]

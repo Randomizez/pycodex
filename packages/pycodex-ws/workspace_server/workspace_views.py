@@ -418,15 +418,13 @@ class WorkspaceViewOpener:
         if destination.lower().startswith("diff:"):
             expression = destination[5:]
             # Parent-directory components are paths, not comparison separators.
-            # Inspect the left boundary: the right endpoint may start with /.
-            separator_pattern = r"(?<=[^/\\:.])\.\."
-            separator = re.search(separator_pattern, expression)
+            separator = re.search(r"(?<![/.])\.\.(?!/)", expression)
             if separator is None:
                 if not self._is_git_target(expression):
                     raise ValueError("expected diff:REV:path, diff:REV..REV:path or diff:left..right")
                 return "git-diff", {"left": expression}
             left, right = expression[:separator.start()], expression[separator.end():]
-            if not left or not right or re.search(separator_pattern, right):
+            if not left or not right or re.search(r"(?<![/.])\.\.(?!/)", right):
                 raise ValueError("expected two comparison endpoints; encode literal .. as %2E%2E")
             if self._is_git_target(right):
                 if not self._is_git_target(left):

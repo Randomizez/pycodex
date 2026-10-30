@@ -16,6 +16,7 @@ from .utils.event_helpers import (
     format_command_result,
     format_error,
     percent_of_context_window_remaining,
+    short_id,
     shorten_title,
     truncate_text,
 )
@@ -43,6 +44,7 @@ class EventDisplay:
         self.stream_buffer = ""
         self.queued_steer_prompts = {}
         self.inserted_steer_prompts = {}
+        self.agent_names = {}
         self.closed = False
         self.set_context_window_tokens(context_window_tokens)
 
@@ -113,6 +115,24 @@ class EventDisplay:
             return DEFAULT_MAIN_PROMPT
         return f"pyco({self.context_remaining_percent}%)> "
 
+    def remember_agent_name(self, summary):
+        if " (" not in summary or not summary.endswith(")"):
+            return
+        nickname, rest = summary.rsplit(" (", 1)
+        agent_short_id = rest[:-1].strip()
+        nickname = nickname.strip()
+        if nickname and agent_short_id:
+            self.agent_names[agent_short_id] = nickname
+
+    def replace_agent_ids_with_names(self, message):
+        for agent_short_id, nickname in sorted(
+            self.agent_names.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            message = message.replace(agent_short_id, nickname)
+        return message
+
     @staticmethod
     def status_frame(text, frame_index):
         if text is None:
@@ -159,15 +179,6 @@ class TurnStartedEvent(TurnEvent):
 
     def render(self, display: "EventDisplay") -> "None":
         display.begin_turn(self)
-
-
-@dataclass(frozen=True)
-class TurnInputReadyEvent(TurnEvent):
-    """Synchronous boundary for Runtime to deliver queued input."""
-
-    turn_id: "str"
-    submission_id: "typing.Union[str, None]" = None
-    kind: ClassVar[str] = "turn_input_ready"
 
 
 @dataclass(frozen=True)
@@ -368,6 +379,14 @@ class ToolCompletedEvent(TurnEvent):
         message = self.visualize()
         if name:
             display.set_status("called " + name)
+        if name in {"wait_agent", "send_input", "resume_agent", "close_agent"}:
+            message = display.replace_agent_ids_with_names(message)
+        if name == "spawn_agent":
+            summary = message
+            prefix = "[spawn_agent] spawned "
+            if summary.startswith(prefix):
+                summary = summary[len(prefix) :]
+            display.remember_agent_name(summary)
         for line in message.splitlines() or [""]:
             display.log(colorize_tool_message(line, display.color_enabled, name))
 
@@ -488,26 +507,41 @@ class ToolCompletedEvent(TurnEvent):
                 return f"{len(output['plan'])} steps"
         elif name == "spawn_agent":
             if isinstance(output, dict):
-                if output.get("task_name"):
-                    return str(output["task_name"])
-        elif name in {"send_message", "followup_task"}:
-            target = arguments.get("target", "")
-            message = arguments.get("message", "")
-            if target or message:
-                call_summary = "{0} <- {1}".format(target, truncate_text(str(message), 40))
+                agent_id = str(output.get("agent_id", "")).strip()
+                nickname = str(output.get("nickname", "")).strip()
+                if nickname and agent_id:
+                    return f"{nickname} ({short_id(agent_id)})"
+        elif name == "send_input":
+            agent_id, message = arguments.get("id"), arguments.get("message")
+            prefix = f"{short_id(str(agent_id))} <- " if agent_id else ""
+            call_summary = (
+                prefix + truncate_text(str(message), 40)
+                if message not in (None, "")
+                else prefix.rstrip()
+            )
+            if isinstance(output, dict):
+                submission_id = str(output.get("submission_id", "")).strip()
+                if submission_id:
+                    result_summary = "queued " + short_id(submission_id)
         elif name == "wait_agent":
             if isinstance(output, dict):
                 if output.get("timed_out") is True:
                     return "timed out"
-                if output.get("message"):
-                    return str(output["message"])
-        elif name == "list_agents":
-            if isinstance(output, dict) and isinstance(output.get("agents"), list):
-                return "{0} agents".format(len(output["agents"]))
-        elif name == "interrupt_agent":
-            call_summary = str(arguments.get("target", ""))
+                status = output.get("status")
+                if isinstance(status, dict):
+                    parts = [
+                        f"{short_id(agent_id)}={agent_status_summary(agent_status)}"
+                        for agent_id, agent_status in status.items()
+                        if isinstance(agent_id, str)
+                    ]
+                    if parts:
+                        return truncate_text(", ".join(parts))
+        elif name in {"resume_agent", "close_agent"}:
+            agent_id = arguments.get("id")
+            if agent_id not in (None, ""):
+                call_summary = short_id(str(agent_id))
             if isinstance(output, dict):
-                result_summary = agent_status_summary(output.get("previous_status"))
+                result_summary = agent_status_summary(output.get("status"))
         if result_summary is None:
             if isinstance(output, (dict, list)):
                 result_summary = truncate_text(
@@ -711,8 +745,6 @@ class SessionStateEvent(Event):
                     active["submission_id"],
                 ).render(display)
                 display.stream_buffer = active["assistant_text"]
-            elif not state["busy"]:
-                display.set_idle_status(state["background_work_count"])
         if self.reason == "auto_title":
             display.show_title()
         if self.reason == "attach" and state["input_request"] is not None:

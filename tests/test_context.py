@@ -4,6 +4,7 @@ from datetime import datetime
 import pytest
 
 from pycodex import (
+    Agent,
     AssistantMessage,
     ContextConfig,
     ContextManager,
@@ -13,7 +14,7 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.utils.model_metadata import model_metadata
-from tests.fakes import ScriptedModelClient, make_agent
+from tests.fakes import ScriptedModelClient
 
 
 def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> "None":
@@ -62,8 +63,8 @@ def test_context_manager_resolves_gpt56_model_metadata() -> "None":
 
     assert instructions.startswith("You are Codex, an agent based on GPT-5.")
     assert "curious, rich personality" in instructions
-    assert manager.resolve_model_max_context_window() == 272000
-    assert manager.resolve_model_context_window() == 258400
+    assert manager.resolve_model_max_context_window() == 372000
+    assert manager.resolve_model_context_window() == 353400
 
 
 @pytest.mark.parametrize(
@@ -418,7 +419,7 @@ async def test_agent_injects_context_without_polluting_history(
         include_skills_instructions=False,
     )
 
-    agent = make_agent(model, ToolRegistry(), config)
+    agent = Agent(model, ToolRegistry(), config)
     result = await agent.run_turn(["hello"])
 
     prompt = model.prompts[0]

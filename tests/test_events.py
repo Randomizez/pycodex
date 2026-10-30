@@ -177,39 +177,33 @@ def test_provider_tool_text(details, text):
         (
             "spawn_agent",
             {},
-            {"task_name": "/root/worker"},
-            "/root/worker",
+            {"agent_id": "1234567890abcdef", "nickname": "Ada"},
+            "Ada (12345678...cdef)",
         ),
         (
-            "send_message",
-            {"target": "/root/worker", "message": "go"},
-            "",
-            "/root/worker <- go",
+            "send_input",
+            {"id": "1234567890abcdef", "message": "go"},
+            {"submission_id": "abcdefgh12345678"},
+            "12345678...cdef <- go -> queued abcdefgh...5678",
         ),
         ("wait_agent", {}, {"timed_out": True}, "timed out"),
         (
             "wait_agent",
             {},
-            {"message": "Wait completed.", "timed_out": False},
-            "Wait completed.",
+            {"status": {"agent": {"completed": "done"}}},
+            "agent=completed: done",
         ),
         (
-            "followup_task",
-            {"target": "/root/worker", "message": "next task"},
-            "",
-            "/root/worker <- next task",
+            "resume_agent",
+            {"id": "agent"},
+            {"status": "pending_init"},
+            "agent -> pending_init",
         ),
         (
-            "interrupt_agent",
-            {"target": "/root/worker"},
-            {"previous_status": {"errored": "failed"}},
-            "/root/worker -> errored: failed",
-        ),
-        (
-            "list_agents",
-            {},
-            {"agents": [{"agent_name": "/root", "agent_status": "running"}]},
-            "1 agents",
+            "close_agent",
+            {"id": "agent"},
+            {"status": {"errored": "failed"}},
+            "agent -> errored: failed",
         ),
         (
             "other",
@@ -248,11 +242,10 @@ def test_tool_text(name, arguments, output, summary, is_error):
         "view_image",
         "update_plan",
         "spawn_agent",
-        "send_message",
+        "send_input",
         "wait_agent",
-        "followup_task",
-        "interrupt_agent",
-        "list_agents",
+        "resume_agent",
+        "close_agent",
         "other",
     ],
 )
@@ -454,6 +447,7 @@ def test_compact_progress_and_failures():
             "Session: demo\n[1]A> continued\n[2]U> 问\n[2]A> 答\nnext\n[3]U> pending",
         ),
         ({"kind": "compact_empty"}, "Nothing to compact."),
+        ({"kind": "forked", "session_id": "fork"}, "Forked session: fork"),
         ({"kind": "linked", "lines": ["first", "second"]}, "first\nsecond"),
     ],
 )
@@ -587,7 +581,7 @@ def test_render_keeps_subscriber_state_and_coloring_out_of_events():
     assert not plain.queued_steer_prompts
 
 
-def test_tool_render_orders_stream_flush_status_and_log_with_task_paths():
+def test_tool_render_orders_stream_flush_status_and_log_and_remembers_names():
     display, operations = make_display()
     AssistantDeltaEvent("checking").render(display)
     operations.clear()
@@ -599,20 +593,22 @@ def test_tool_render_orders_stream_flush_status_and_log_with_task_paths():
         ToolResult(
             "call",
             "spawn_agent",
-            {"task_name": "/root/worker"},
+            {"agent_id": "1234567890abcdef", "nickname": "Ada"},
         ),
     ).render(display)
     assert operations == [
         ("log", "assistant> checking"),
         ("status", "calling spawn_agent({})"),
         ("status", "called spawn_agent"),
-        ("log", "[spawn_agent] spawned /root/worker"),
+        ("log", "[spawn_agent] spawned Ada (12345678...cdef)"),
     ]
-    call = ToolCall("send", "send_message", {"target": "/root/worker", "message": "go"})
-    ToolCompletedEvent("turn", call, ToolResult("send", "send_message", "")).render(
+    call = ToolCall("send", "send_input", {"id": "1234567890abcdef", "message": "go"})
+    ToolCompletedEvent("turn", call, ToolResult("send", "send_input", "")).render(
         display
     )
-    assert operations[-1] == ("log", "[send_message] /root/worker <- go")
+    assert operations[-1] == ("log", "[send_input] Ada <- go")
+    other, _operations = make_display()
+    assert other.agent_names == {}
 
 
 @pytest.mark.parametrize("explicit", [False, True])

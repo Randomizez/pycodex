@@ -3,14 +3,9 @@
 [中文](README_ZH.md)
 
 pycodex brings the [Codex](https://github.com/openai/codex) agent loop to Python,
-with a CLI, reusable Agent API and browser workspace. It targets upstream default
-behavior for the selected features, model and protocol; supported features and
-deliberate differences are documented in
+with a CLI, reusable Agent API and browser workspace. It aims to follow upstream
+behavior; supported features and deliberate differences are documented in
 [Alignment](docs/ALIGNMENT.md).
-
-Intentional boundaries include no sandbox enforcement or collaboration-mode
-switching, no OpenAI-specific model/effort allowlists for sub-agents, and no
-requirement to mirror every OpenAI model-catalog entry.
 
 | Package | Provides | Python |
 | --- | --- | --- |
@@ -48,21 +43,14 @@ The built-in `openai` provider uses `OPENAI_API_KEY`. Authentication uses API
 keys; ChatGPT sign-in credentials from `auth.json` or the OS keychain are not
 loaded.
 
-`--profile NAME` selects an adjacent `NAME.config.toml` or an embedded
-`[profiles.NAME]` table. Both recursively merge over the base config, including
-provider and feature tables. A top-level `profile = "NAME"` sets the default;
-`--profile` overrides it. Duplicate names across both formats and missing selected
-profiles are errors. Existing embedded profiles can be used without migration.
-
 ```bash
 pycodex --profile my_profile "Summarize this repository."
 pycodex --config /path/to/config.toml
 pycodex doctor
 ```
 
-Models use the streaming Responses API; OpenAI models use native Responses
-directly. For a vLLM Chat Completions backend, set `use_chat_completion = true`
-in its provider table. Other backend options include:
+Models use the streaming Responses API. For a Chat Completions backend, set
+`use_chat_completion = true` in its provider table. Other backend options include:
 
 ```bash
 pycodex --vllm-endpoint http://127.0.0.1:18000
@@ -71,9 +59,6 @@ pycodex --profile my_profile --use-messages
 
 See [context and configuration](docs/CONTEXT.md) and the
 [Responses compatibility server](docs/responses_server/README.md).
-The compatibility server supports namespaced function/custom tools, including
-upstream Codex subagent tools, with namespace restoration on returned calls.
-Text and reasoning streams include item lifecycle events for Codex's live display.
 
 ## CLI
 
@@ -93,6 +78,7 @@ pycodex --json "Reply with exactly OK."
 | `/title`, `/history` | Manage the title and inspect conversation history |
 | `/resume` | List saved sessions; pass an index or session UUID to resume |
 | `/compact` | Summarize history to free context |
+| `/fork` | Continue the current history under a new session ID |
 | `/queue <message>` | Wait for the active turn to finish before submitting |
 
 Ordinary input during a turn steers at the next safe sampling boundary.
@@ -126,16 +112,13 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 Open `http://127.0.0.1:6007`. The workspace combines conversations with a live
 HTML Canvas and read-only file/diff viewers. Click file links in replies to open
 them, and use **Insert into chat** to add selected code to an editable draft.
-Compare local files with `diff:left..right`; either path can be absolute or relative.
-Use `[TODO](TODO.md)` for a local file link; bare filenames stay as text.
 Local PDF links open in the browser's built-in reader, with **Open in new tab**
 and **Download** links. PDF files are streamed separately from text snapshots.
 Keep the server's stdin open: EOF initiates shutdown.
-**New session** uses the launch `--profile`, then the config's default `profile`,
-then the base config. The **+** button on its right (**Custom profile**) lets
-you choose from adjacent `*.config.toml` files and embedded `[profiles.NAME]`
-tables; **Default** uses the same default selection.
-Each session saves its profile name and uses it again on restart; existing sessions
+**New session** directly creates a session using the launch `--profile`, or the
+base config when unset. The **+** button on its right (**Custom profile**) lets
+you choose a named profile from the server's Codex config; **Default** uses the
+launch setting. Each session saves its profile name and uses it again on restart; existing sessions
 keep their configuration. Restart the server after adding or removing profiles.
 The page loads the last selected session directly on reopening. Switching back
 to a visited session immediately restores its rendered messages and scroll
@@ -171,44 +154,20 @@ workspace backend, including on Remote SSH hosts.
 Use the standard model and tool setup from Python:
 
 ```python
-from pycodex import AgentsManager, ContextConfig
-from pycodex.bootstrap import build_model
-from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
-from pycodex.utils.async_bridge import run_async
+from pycodex.bootstrap import build_agent, build_model
 
-async def main():
-    runtime = AgentsManager(
-        build_model(), ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
-    ).create_root_runtime()
-    await runtime.start()
-    try:
-        receipt = await runtime.submit_input("Summarize this repository in one sentence.")
-        print((await receipt.future).output_text)
-    finally:
-        await runtime.close()
-
-run_async(main())
+agent = build_agent(build_model())
+try:
+    result = agent.ask("Summarize this repository in one sentence.")
+    print(result.output_text)
+finally:
+    agent.shutdown()
 ```
 
-For custom integrations, `Agent` requires a model client, `ToolRegistry`,
-`ContextConfig` and `session_id`. `await agent.run_turn([...])` runs an asynchronous
-turn; `AgentRuntime(agent, agents_manager)` adds input queues, commands and frontend
-subscriptions. `AgentsManager` owns the tree of named tasks and supplies the
-standard construction path.
-
-The current prototype uses MultiAgentV2 tools: `spawn_agent`, `send_message`,
-`followup_task`, `wait_agent`, `interrupt_agent` and `list_agents`. Child context
-inheritance uses `fork_turns`; the session `/fork` command has been removed.
-`features.multi_agent_v2.max_concurrent_threads_per_session` sets the total
-capacity, defaulting to 16 including the root. When full, spawn closes the least
-recently used idle leaf with no pending or background work, or reports a capacity
-error. Closed children are removed from the Agent tree and Workspace views;
-their task names can be reused.
-Recorded sessions retain the clock period in a small environment snapshot beside
-the rollout. Resuming starts a fresh countdown and restores `idle: sleeping`
-in attached frontends; child Agents remain in memory.
-See [runtime contracts](docs/RUNTIME.md), [context assembly](docs/CONTEXT.md) and
-the [versioned alignment baseline and remaining differences](docs/ALIGNMENT.md).
+For custom integrations, `Agent` accepts a model client, `ToolRegistry` and
+`ContextConfig`. `await agent.run_turn([...])` runs an asynchronous turn;
+`AgentRuntime` adds input queues, commands and frontend subscriptions.
+See [runtime contracts and examples](docs/RUNTIME.md).
 
 ## Portable configuration
 

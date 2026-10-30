@@ -13,7 +13,11 @@ from urllib.parse import quote, urlparse
 import requests
 
 from ..utils.crypto import aes_gcm_decrypt, aes_gcm_encrypt
-from ..utils.codex_config import list_codex_profiles, read_codex_config
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
+    import tomli as tomllib
 
 DEFAULT_STORAGE_SERVER = "127.0.0.1:5577"
 STORAGE_SERVER_ENV = "PYCODEX_STORAGE_SERVER"
@@ -185,10 +189,6 @@ def _collect_upload_files(root: "Path") -> "typing.List[str]":
         candidate = root / relative_name
         if candidate.is_file():
             included.add(relative_name)
-    for profile in list_codex_profiles(root / DEFAULT_ENTRY_CONFIG):
-        relative_name = profile + ".config.toml"
-        if (root / relative_name).is_file():
-            included.add(relative_name)
     for relative_dir in ALLOWED_TOP_LEVEL_DIRS:
         candidate = root / relative_dir
         if candidate.is_dir():
@@ -203,15 +203,16 @@ def _collect_config_referenced_files(root: "Path") -> "typing.Set[str]":
     config_path = root / DEFAULT_ENTRY_CONFIG
     if not config_path.is_file():
         return set()
+    data = tomllib.loads(config_path.read_text(encoding="utf-8"))
     referenced: "typing.Set[str]" = set()
-    candidates = [
-        read_codex_config(config_path, use_default_profile=False),
-        read_codex_config(config_path),
-    ]
-    candidates.extend(
-        read_codex_config(config_path, profile)
-        for profile in list_codex_profiles(config_path)
-    )
+    candidates = [data]
+    profiles = data.get("profiles")
+    if isinstance(profiles, dict):
+        candidates.extend(
+            profile_data
+            for profile_data in profiles.values()
+            if isinstance(profile_data, dict)
+        )
     for candidate in candidates:
         model_instructions_file = candidate.get("model_instructions_file")
         if not isinstance(model_instructions_file, str):

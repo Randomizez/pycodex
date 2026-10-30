@@ -32,7 +32,7 @@ from ..utils import get_debug_dir
 from .runtime_services import AgentRuntimeEnvironment
 
 if typing.TYPE_CHECKING:
-    from ..runtime import AgentRuntime
+    from ..agent import Agent
 
 
 @dataclass(
@@ -42,8 +42,6 @@ class ToolContext:
     turn_id: "str"
     history: "typing.Tuple[ConversationItem, ...]"
     cwd: "Path"
-    agent_id: "typing.Union[str, None]" = None
-    encrypted_messages: "bool" = True
 
     def resolve_path(self, path=None) -> "Path":
         return (self.cwd / Path("." if path is None else path).expanduser()).resolve()
@@ -97,7 +95,7 @@ class BaseTool(ABC):
     ) -> "typing.Tuple[UserMessage, ...]":
         return ()
 
-    def bind_runtime(self, runtime: "AgentRuntime") -> "None":
+    def bind_agent(self, agent: "Agent") -> "None":
         pass
 
     def handle_agent_event(self, event: "Event") -> "None":

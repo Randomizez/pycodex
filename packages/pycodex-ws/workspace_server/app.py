@@ -12,8 +12,13 @@ import subprocess
 import sys
 import threading
 from collections import deque
-from dataclasses import asdict, fields, is_dataclass, replace
+from dataclasses import asdict, fields, is_dataclass
 from functools import partial
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 and earlier
+    import tomli as tomllib
 
 try:
     from contextlib import asynccontextmanager
@@ -38,8 +43,7 @@ from starlette.responses import (
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from pycodex.bootstrap import build_model, configure_loguru
-from pycodex.context import ContextConfig
+from pycodex.bootstrap import build_agent, build_model, configure_loguru
 from pycodex.events import (
     IDLE_SLEEPING_STATUS,
     AssistantDeltaEvent,
@@ -56,7 +60,6 @@ from pycodex.events import (
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
-    RuntimeUpdatedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     StreamErrorEvent,
@@ -72,16 +75,14 @@ from pycodex.events import (
     TurnStartedEvent,
 )
 from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
-from pycodex.multi_agents import AgentsManager
 from pycodex.utils import uuid7_string
 from pycodex.utils.compat import importlib_metadata
-from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
 from pycodex.utils.event_helpers import (
     completed_history,
     shorten_title,
 )
 from pycodex.utils.session_persist import load_display_history
-from pycodex_ws import register_feishu_commands
+from pycodex_ws import build_runtime
 from pycodex_router.protocol import route_path, trusted_agent_request
 
 from .customization import (
@@ -151,10 +152,7 @@ def build_parser() -> "argparse.ArgumentParser":
         default=str(DEFAULT_CODEX_CONFIG_PATH),
         help="Path to Codex config.toml.",
     )
-    parser.add_argument(
-        "--profile", default=None,
-        help="Select <name>.config.toml or [profiles.<name>], overriding the config default.",
-    )
+    parser.add_argument("--profile", default=None, help="Optional profile name.")
     parser.add_argument(
         "--system-prompt",
         default=None,
@@ -450,8 +448,6 @@ class WebSessionView:
                     self._turns_by_turn_id[active["turn_id"]]["model_errors"] = list(
                         active.get("model_errors", [])
                     )
-                elif not state["busy"]:
-                    self._set_idle_spinner_status(state["background_work_count"])
             elif event.reason == "title":
                 self.set_session_title(state["title"])
             else:
@@ -613,15 +609,13 @@ class WebSessionView:
             self._set_spinner_status("called {0}".format(event.call.name))
             return
         if isinstance(event, TerminalEvent):
-            self._set_idle_spinner_status(event.background_work_count)
+            self._set_idle_spinner_status(event)
 
     def _set_spinner_status(self, text: "typing.Union[str, None]") -> None:
         self._spinner_status = str(text or "").strip()
 
-    def _set_idle_spinner_status(
-        self, background_work_count: "typing.Union[int, None]"
-    ) -> None:
-        if (background_work_count or 0) > 0:
+    def _set_idle_spinner_status(self, event: "TerminalEvent") -> None:
+        if (event.background_work_count or 0) > 0:
             self._set_spinner_status(IDLE_SLEEPING_STATUS)
         else:
             self._set_spinner_status("")
@@ -747,21 +741,6 @@ class WorkspaceInteractiveSession:
         self._handle_runtime_event(event, self.runtime, self.view)
 
     def _handle_runtime_event(self, event, runtime, view):
-        if runtime is self.runtime and (
-            isinstance(event, RuntimeUpdatedEvent) and event.reason == "agents"
-            or isinstance(event, SessionStateEvent) and event.reason == "attach"
-        ):
-            agents = runtime.agents_manager.list_agents(
-                runtime.agent.agent_id, runtime.agent.agent_path,
-            )
-            agent_ids = {agent["agent_id"] for agent in agents}
-            for agent_id in tuple(self._child_views):
-                if agent_id not in agent_ids:
-                    child, frontend_id, child_view = self._child_views.pop(agent_id)
-                    child.detach(frontend_id)
-                    child_view.close()
-            for agent in agents:
-                self._observe_runtime(runtime.agents_manager.get_runtime(agent["agent_id"]))
         view.handle_event(event, runtime.state_snapshot())
         if (
             isinstance(event, (CommandStartedEvent, CommandCompletedEvent, CommandFailedEvent))
@@ -769,7 +748,7 @@ class WorkspaceInteractiveSession:
         ):
             self._submissions[event.submission_id] = {
                 "submission_id": event.submission_id,
-                "agent_id": runtime.agent.agent_id,
+                "agent_id": runtime.agent.session_id,
                 "kind": "command", "command": event.command.lstrip("/"),
                 "status": "queued", "result": None, "error": None,
             }
@@ -840,7 +819,7 @@ class WorkspaceInteractiveSession:
         view = self.view if view is None else view
         record = {
             "submission_id": receipt.submission_id,
-            "agent_id": runtime.agent.agent_id,
+            "agent_id": runtime.agent.session_id,
             "kind": receipt.kind, "status": "queued", "result": None, "error": None,
         }
         if command is not None:
@@ -868,18 +847,18 @@ class WorkspaceInteractiveSession:
         receipt.future.add_done_callback(completed)
 
     def _runtime_for_agent(self, agent_id):
-        if agent_id is None or agent_id == self.runtime.agent.agent_id:
+        if agent_id is None or agent_id == self.runtime.agent.session_id:
             return self.runtime
-        runtime = self.runtime.agents_manager.get_runtime(agent_id)
-        if not runtime.agent.agent_path.startswith(self.runtime.agent.agent_path + "/"):
-            raise KeyError(agent_id)
-        return runtime
+        manager = self.runtime.agent.tool_registry.runtime_environment.subagent_manager
+        return manager.get_runtime(agent_id)
 
-    def _observe_runtime(self, runtime):
-        agent_id = runtime.agent.agent_id
+    async def event_view(self, agent_id=None):
+        runtime = self._runtime_for_agent(agent_id)
         if runtime is self.runtime:
-            return self.view
-        if agent_id not in self._child_views:
+            view = self.view
+        elif agent_id in self._child_views:
+            view = self._child_views[agent_id][2]
+        else:
             view = WebSessionView()
             view.attach_server_loop(self.view._server_loop)
             frontend_id = runtime.attach(
@@ -887,11 +866,6 @@ class WorkspaceInteractiveSession:
                 interactive=False,
             )
             self._child_views[agent_id] = (runtime, frontend_id, view)
-        return self._child_views[agent_id][2]
-
-    async def event_view(self, agent_id=None):
-        runtime = self._runtime_for_agent(agent_id)
-        view = self._observe_runtime(runtime)
         view.synchronize_state(runtime.state_snapshot())
         return view
 
@@ -915,22 +889,8 @@ class WorkspaceInteractiveSession:
                 agent.history, options.get("before"), options["limit"],
             )
         if resource == "agents":
-            agents = {}
-            for agent in runtime.agents_manager.list_agents(
-                runtime.agent.agent_id, runtime.agent.agent_path,
-            ):
-                view = await self.event_view(agent["agent_id"])
-                agents[agent["agent_id"]] = dict(
-                    agent,
-                    last_message=shorten_title(
-                        view.summary()["last_assistant"],
-                        limit=SPINNER_STATUS_PREVIEW_LIMIT,
-                    ),
-                )
-            return {
-                "root": agents.pop(runtime.agent.agent_id),
-                "agents": list(agents.values()),
-            }
+            manager = runtime.agent.tool_registry.runtime_environment.subagent_manager
+            return {"agents": manager.list_agents(agent_id or runtime.agent.session_id)}
         if resource == "background-work":
             return {"background_work": runtime.background_work_snapshot()}
         raise ValueError("unknown session resource: " + resource)
@@ -978,12 +938,15 @@ class WorkspaceInteractiveSession:
         self,
         rollout_path: str,
         title: str = "",
+        fork: bool = False,
         cwd: "typing.Optional[str]" = None,
     ) -> None:
         if cwd is not None:
             self.runtime.set_cwd(cwd)
         if rollout_path:
             self.runtime.resume(rollout_path, title)
+            if fork:
+                self.runtime.fork()
         else:
             self.runtime.set_title(title)
 
@@ -1122,6 +1085,7 @@ class ThreadedWorkspaceInteractiveSession:
         self,
         rollout_path: str,
         title: str = "",
+        fork: bool = False,
         cwd: "typing.Optional[str]" = None,
     ) -> None:
         session = self._session
@@ -1130,7 +1094,7 @@ class ThreadedWorkspaceInteractiveSession:
             return
 
         future = asyncio.run_coroutine_threadsafe(
-            session.restore_from_rollout(rollout_path, title=title, cwd=cwd),
+            session.restore_from_rollout(rollout_path, title=title, fork=fork, cwd=cwd),
             loop,
         )
         await asyncio.wrap_future(future)
@@ -2195,9 +2159,9 @@ def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> 
     for turn in reversed(list(turns)):
         if str(turn.get("kind") or "assistant") == "control":
             continue
-        text = str(turn.get("thinking") or turn.get("response") or "").strip()
-        if text:
-            return text
+        response = str(turn.get("response") or "").strip()
+        if response:
+            return response
     return ""
 
 
@@ -2412,8 +2376,7 @@ def _build_workspace_entry(
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
 ) -> "WorkspaceEntry":
-    selected = read_codex_config(args.config, args.profile)
-    profiles = list_codex_profiles(args.config)
+    config = tomllib.loads(Path(args.config).read_text(encoding="utf-8"))
 
     def build_session(profile) -> "WorkspaceInteractiveSession":
         model = build_model(
@@ -2423,26 +2386,22 @@ def _build_workspace_entry(
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
-            use_default_profile=False,
         )
-        context_config = replace(
-            ContextConfig.from_codex_config(
-                args.config, profile, use_default_profile=False,
-            ),
-            base_instructions_override=args.system_prompt,
+        agent = build_agent(
+            model,
+            config_path=args.config,
+            profile=profile,
+            system_prompt=args.system_prompt,
             extra_contextual_user_messages=(
-                (_workspace_context_text(definition.board_path),)
+                [_workspace_context_text(definition.board_path)]
                 if definition.board_path is not None
-                else ()
+                else []
             ),
             cwd=definition.work_dir,
+            toolset=args.toolset,
         )
-        runtime = AgentsManager(
-            model, context_config, args.toolset,
-        ).create_root_runtime()
-        register_feishu_commands(runtime)
         return WorkspaceInteractiveSession(
-            runtime,
+            build_runtime(agent),
             config_path=args.config,
         )
 
@@ -2459,9 +2418,9 @@ def _build_workspace_entry(
             persist_callback=persist_callback,
             profile_factories={
                 name: partial(session_factory, name)
-                for name in profiles
+                for name in config.get("profiles", {})
             },
-            default_profile=selected["profile"],
+            default_profile=args.profile,
         ),
     )
 

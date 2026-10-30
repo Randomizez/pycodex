@@ -6,7 +6,6 @@ import threading
 import typing
 import urllib.parse
 import uuid
-from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -16,7 +15,11 @@ import requests
 from urllib3.exceptions import ReadTimeoutError
 
 from .utils.compat import Protocol
-from .utils.codex_config import read_codex_config
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
+    import tomli as tomllib
 
 from .events import (
     AssistantDeltaEvent,
@@ -56,19 +59,6 @@ class ModelClient(Protocol):
     @property
     def model(self) -> "str":
         """Return the current model identifier."""
-
-    @property
-    def reasoning_effort(self) -> "typing.Union[str, None]":
-        """Return the effective effort used for context assembly."""
-
-    def with_overrides(
-        self,
-        model: "typing.Union[str, None]",
-        reasoning_effort: "typing.Union[str, None]",
-        session_id: "typing.Union[str, None]" = None,
-        openai_subagent: "typing.Union[str, None]" = None,
-    ) -> "ModelClient":
-        """Construct an independent client for a child Agent."""
 
     async def complete(
         self,
@@ -129,12 +119,17 @@ class ResponsesProviderConfig:
         cls,
         config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
         profile: "typing.Union[str, None]" = None,
-        use_default_profile: "bool" = True,
     ) -> "ResponsesProviderConfig":
-        selected = read_codex_config(config_path, profile, use_default_profile)
+        data = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
+        selected = dict(data)
+        if profile is not None:
+            overrides = data.get("profiles", {}).get(profile)
+            if overrides is None:
+                raise ValueError(f"unknown Codex profile: {profile}")
+            selected.update(overrides)
 
         provider_name = selected.get("model_provider", "openai")
-        provider = selected.get("model_providers", {}).get(provider_name)
+        provider = data.get("model_providers", {}).get(provider_name)
         if provider is None:
             if provider_name != "openai":
                 raise ValueError(f"unknown Codex model provider: {provider_name}")
@@ -1035,7 +1030,6 @@ class ResponsesModelClient:
                 id=item.get("id"),
                 raw_arguments=raw_arguments,
                 namespace=item.get("namespace"),
-                encrypted_function_args=deepcopy(item.get("encrypted_function_args")),
             )
 
         if item_type == "custom_tool_call":

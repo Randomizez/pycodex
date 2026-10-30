@@ -11,6 +11,8 @@ from types import SimpleNamespace
 import pytest
 
 from pycodex import (
+    Agent,
+    AgentRuntime,
     AssistantMessage,
     ContextConfig,
     ContextMessage,
@@ -19,8 +21,7 @@ from pycodex import (
     ToolRegistry,
     ToolResult,
 )
-from pycodex.bootstrap import build_model
-from pycodex.multi_agents import AgentsManager
+from pycodex.bootstrap import build_agent, build_model, get_subagent_tools, get_tools
 from pycodex.cli import (
     CliSessionView,
     build_parser,
@@ -36,7 +37,7 @@ from pycodex.events import (
     TurnCompletedEvent,
 )
 from pycodex.portable.server import CodexStorageServer
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
+from tests.fakes import ScriptedModelClient
 
 
 @pytest.fixture
@@ -164,21 +165,15 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
 @pytest.mark.asyncio
 async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_path):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    from dataclasses import replace
-
-    manager = AgentsManager(
-        client, replace(
-            ContextConfig.from_codex_config(config_path),
-            base_instructions_override="session rules",
-            extra_contextual_user_messages=("workspace context",),
-            cwd=tmp_path,
-        ),
-        toolset=("apply_patch", "view_image"),
+    agent = build_agent(
+        client,
+        config_path,
+        system_prompt="session rules",
+        extra_contextual_user_messages=["workspace context"],
+        cwd=tmp_path,
+        toolset=["apply_patch", "view_image"],
     )
-    runtime = manager.create_root_runtime()
-    await runtime.start()
-    await runtime.submit_user_turn("hello")
-    await runtime.close()
+    await agent.run_turn(["hello"])
     prompt = client.prompts[0]
     assert prompt.base_instructions == "session rules"
     assert [tool.name for tool in prompt.tools] == ["apply_patch", "view_image"]
@@ -188,10 +183,18 @@ async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_
         if isinstance(item, ContextMessage)
     )
     assert str(tmp_path) in repr(prompt.input)
-    assert make_tools(toolset=[]).names() == ()
+    assert get_tools(toolset=[]).names() == ()
     with pytest.raises(ValueError, match="unknown toolset"):
-        make_tools(toolset=["missing"])
-    defaults = make_tools(exec_mode=True)
+        get_tools(toolset=["missing"])
+    assert get_subagent_tools().names() == (
+        "exec_command",
+        "write_stdin",
+        "update_plan",
+        "apply_patch",
+        "web_search",
+        "view_image",
+    )
+    defaults = get_tools(exec_mode=True)
     assert "clock" in defaults.names()
     assert "shell" not in defaults.names()
     for spec in defaults.model_visible_specs():
@@ -305,7 +308,7 @@ async def test_cli_steer_and_queue_feedback(queued):
             release.set()
 
     client = ScriptedModelClient(response_factory=respond)
-    queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
+    queue = AgentRuntime(Agent(client, ToolRegistry(), ContextConfig()))
     view = InputView(
         ["first", "/queue second" if queued else "second", ""], before_input
     )
@@ -326,7 +329,7 @@ async def test_cli_steer_and_queue_feedback(queued):
 @pytest.mark.asyncio
 async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, json_mode):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
+    queue = AgentRuntime(Agent(client, ToolRegistry(), ContextConfig()))
     view = InputView(["", "/queue hello"])
     await queue.start()
     tasks = []
@@ -346,7 +349,7 @@ async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, jso
     ]
     assert view.lines[3] == (
         "Extra commands: /help, /history, /title, /cd, /model, /effort, /resume, "
-        "/compact, /queue"
+        "/compact, /fork, /queue"
     )
     assert signal.getsignal(signal.SIGINT) == previous_sigint
     results = [json.loads(line) for line in view.lines if line.startswith("{")]
@@ -369,8 +372,8 @@ async def test_cli_detaches_view_when_close_fails():
     async def fail_cleanup():
         raise RuntimeError("cleanup failed")
 
-    queue = make_runtime(
-        make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    queue = AgentRuntime(
+        Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     )
     queue.add_close_handler(fail_cleanup)
     previous_sigint = signal.getsignal(signal.SIGINT)
@@ -407,7 +410,7 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             ModelResponse, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
-        from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+        from tests.fakes import ScriptedModelClient
 
         async def run(pipe):
             busy = sys.argv[1] == "True"
@@ -435,7 +438,7 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             tools = ToolRegistry()
             tools.register(CleanupTool())
             client = ScriptedModelClient(response_factory=respond)
-            runtime = make_runtime(make_agent(client, tools, ContextConfig()))
+            runtime = AgentRuntime(Agent(client, tools, ContextConfig()))
             view = CliSessionView()
             receipts = []
 
@@ -516,7 +519,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
             ModelResponse, ToolCall, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
-        from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+        from tests.fakes import ScriptedModelClient
 
         async def run(pipe):
             started = asyncio.Event()
@@ -540,7 +543,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
                 ModelResponse([ToolCall("call1", "blocking", {})]),
                 ModelResponse([AssistantMessage("finished")]),
             ])
-            runtime = make_runtime(make_agent(client, tools, ContextConfig()))
+            runtime = AgentRuntime(Agent(client, tools, ContextConfig()))
             view = CliSessionView()
             view._line_output = lambda text: print(text, flush=True)
 

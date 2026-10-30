@@ -7,6 +7,8 @@ from dataclasses import replace
 import pytest
 
 from pycodex import (
+    Agent,
+    AgentRuntime,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -31,7 +33,7 @@ from pycodex.tools import (
 )
 from pycodex.tools.base_tool import StructuredToolOutput
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+from tests.fakes import ScriptedModelClient
 
 
 class EchoTool(BaseTool):
@@ -79,11 +81,17 @@ class CoordinatedParallelTool(BaseTool):
         return "done"
 
 
-class ReadyMailbox:
-    async def wait_for_activity(self, agent_id, timeout_ms):
-        assert agent_id
-        assert timeout_ms == 30000
-        return {"message": "Wait completed.", "timed_out": False}
+class CompletedSubAgentManager:
+    async def wait_agents(self, agent_ids, timeout_ms):
+        del agent_ids, timeout_ms
+        return {
+            "status": {
+                "019d0000-0000-7000-8000-000000000000": {
+                    "completed": "subagent done",
+                }
+            },
+            "timed_out": False,
+        }
 
 
 class LongOutputTool(BaseTool):
@@ -111,7 +119,6 @@ class ContentItemsTool(BaseTool):
 
 class UsageModelClient:
     model = "test"
-    reasoning_effort = None
 
     def __init__(
         self,
@@ -186,7 +193,7 @@ def test_agent_ask_runs_turn_from_sync_context() -> "None":
     model = ScriptedModelClient(
         [ModelResponse(items=[AssistantMessage(text="sync answer")])]
     )
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    agent = Agent(model, ToolRegistry(), ContextConfig())
 
     result = agent.ask("sync prompt")
 
@@ -205,7 +212,7 @@ def test_agent_ask_uses_run_turn_and_propagates_its_result(
         return ModelResponse([AssistantMessage("sync answer")])
 
     client = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    agent = Agent(client, ToolRegistry(), ContextConfig())
     received_inputs = []
     run_turn = agent.run_turn
 
@@ -227,7 +234,7 @@ def test_agent_ask_uses_run_turn_and_propagates_its_result(
 
 def test_agent_run_turn_is_a_regular_coroutine() -> "None":
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    agent = Agent(client, ToolRegistry(), ContextConfig())
     coroutine = agent.run_turn(["prompt"])
     assert inspect.iscoroutinefunction(agent.run_turn)
     assert inspect.iscoroutine(coroutine)
@@ -247,7 +254,7 @@ async def test_agent_ask_does_not_schedule_work_if_sync_bridge_cannot_run(
 ) -> "None":
     monkeypatch.setitem(sys.modules, "nest_asyncio", None)
     client = ScriptedModelClient([ModelResponse([AssistantMessage("unused")])])
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    agent = Agent(client, ToolRegistry(), ContextConfig())
 
     with pytest.raises(RuntimeError, match="cannot block on a running event loop"):
         agent.ask("prompt")
@@ -276,7 +283,7 @@ async def test_agent_runs_tool_then_returns_final_message() -> "None":
     tools = ToolRegistry()
     tools.register(EchoTool())
 
-    agent = make_agent(model, tools, ContextConfig())
+    agent = Agent(model, tools, ContextConfig())
     result = await agent.run_turn(["请回声 hello"])
 
     assert result.output_text == "工具返回了 hello"
@@ -312,7 +319,7 @@ async def test_parallel_tools_share_one_model_round() -> "None":
     tools.register(CoordinatedParallelTool("slow_a", entered, both_started))
     tools.register(CoordinatedParallelTool("slow_b", entered, both_started))
 
-    agent = make_agent(model, tools, ContextConfig())
+    agent = Agent(model, tools, ContextConfig())
     result = await agent.run_turn(["并行跑两个工具"])
 
     assert result.output_text == "两个工具都执行完了"
@@ -342,7 +349,7 @@ async def test_agent_default_has_no_fixed_iteration_cap() -> "None":
     tools = ToolRegistry()
     tools.register(EchoTool())
 
-    agent = make_agent(model, tools, ContextConfig())
+    agent = Agent(model, tools, ContextConfig())
     result = await agent.run_turn(["连续调用工具直到结束"])
 
     assert result.output_text == "超过 12 轮后也收敛了"
@@ -365,7 +372,7 @@ async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit(
         usage_by_call={1: 12},
     )
     events = []
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         replace(_auto_compact_context(10), cwd=tmp_path),
@@ -436,7 +443,7 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
     tools = ToolRegistry()
     tools.register(EchoTool())
     events = []
-    agent = make_agent(
+    agent = Agent(
         model,
         tools,
         _auto_compact_context(10),
@@ -479,7 +486,6 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
 ):
     class PartialCompactModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.prompts = []
@@ -514,7 +520,7 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
     tools = ToolRegistry()
     tools.register(EchoTool())
     events = []
-    agent = make_agent(
+    agent = Agent(
         model,
         tools,
         _auto_compact_context(10),
@@ -546,7 +552,6 @@ async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary()
 ):
     class PartialCompactModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.call_count = 0
@@ -576,7 +581,7 @@ async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary()
     events = []
     tools = ToolRegistry()
     tools.register(EchoTool())
-    agent = make_agent(
+    agent = Agent(
         PartialCompactModelClient(),
         tools,
         _auto_compact_context(1),
@@ -604,7 +609,7 @@ async def test_agent_does_not_auto_compact_without_token_limit() -> "None":
         usage_by_call={1: 1_000_000},
     )
     events = []
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         _auto_compact_context(None),
@@ -627,7 +632,7 @@ async def test_wait_agent_does_not_create_notifications_from_its_result() -> "No
                     ToolCall(
                         call_id="call_wait",
                         name="wait_agent",
-                        arguments={},
+                        arguments={"ids": ["agent_x"]},
                     )
                 ]
             ),
@@ -636,9 +641,9 @@ async def test_wait_agent_does_not_create_notifications_from_its_result() -> "No
     )
 
     tools = ToolRegistry()
-    tools.register(WaitAgentTool(ReadyMailbox()))
+    tools.register(WaitAgentTool(CompletedSubAgentManager()))
 
-    agent = make_agent(model, tools, ContextConfig())
+    agent = Agent(model, tools, ContextConfig())
     result = await agent.run_turn(["check subagent"])
 
     assert result.output_text == "done"
@@ -669,7 +674,7 @@ async def test_agent_truncates_tool_output_before_history_follow_up() -> "None":
     tools = ToolRegistry()
     tools.register(LongOutputTool())
 
-    agent = make_agent(model, tools, _model_context("gpt-5.5"))
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
 
     result = await agent.run_turn(["run long tool"])
 
@@ -714,7 +719,7 @@ async def test_agent_truncates_tool_content_items_for_history() -> "None":
     tools = ToolRegistry()
     tools.register(ContentItemsTool())
 
-    agent = make_agent(model, tools, _model_context("gpt-5.5"))
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
 
     await agent.run_turn(["run content tool"])
 
@@ -741,7 +746,7 @@ async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> "None
                     ToolCall(
                         call_id="call_wait",
                         name="wait_agent",
-                        arguments={},
+                        arguments={"ids": ["agent_x"]},
                     )
                 ]
             ),
@@ -749,15 +754,17 @@ async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> "None
         ]
     )
     tools = ToolRegistry()
-    tools.register(WaitAgentTool(ReadyMailbox()))
+    tools.register(WaitAgentTool(CompletedSubAgentManager()))
 
-    agent = make_agent(model, tools, _model_context("gpt-5.5"))
+    agent = Agent(model, tools, _model_context("gpt-5.5"))
 
     await agent.run_turn(["check subagent"])
 
     tool_result = next(item for item in agent.history if isinstance(item, ToolResult))
     assert isinstance(tool_result.output, dict)
-    assert tool_result.output == {"message": "Wait completed.", "timed_out": False}
+    assert tool_result.output["status"] == {
+        "019d0000-0000-7000-8000-000000000000": {"completed": "subagent done"}
+    }
     assert next(
         item for item in model.prompts[1].input if isinstance(item, ToolResult)
     ).output == tool_result.output
@@ -767,8 +774,8 @@ async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> "None
 async def test_runtime_submission_loop_processes_turn_and_shutdown() -> "None":
     model = ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])])
     tools = ToolRegistry()
-    agent = make_agent(model, tools, ContextConfig())
-    runtime = make_runtime(agent)
+    agent = Agent(model, tools, ContextConfig())
+    runtime = AgentRuntime(agent)
 
     await runtime.start()
     try:
@@ -779,7 +786,7 @@ async def test_runtime_submission_loop_processes_turn_and_shutdown() -> "None":
 
 
 @pytest.mark.asyncio
-async def test_runtime_maybe_invoke_formats_exec_completion_when_idle() -> "None":
+async def test_agent_maybe_invoke_formats_exec_completion_when_idle() -> "None":
     request_seen = asyncio.Event()
 
     async def response_factory(prompt, call_count):
@@ -790,10 +797,9 @@ async def test_runtime_maybe_invoke_formats_exec_completion_when_idle() -> "None
     model = ScriptedModelClient(
         response_factory=response_factory,
     )
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
-    runtime = make_runtime(agent)
+    agent = Agent(model, ToolRegistry(), ContextConfig())
 
-    started = await runtime.maybe_invoke(
+    started = await agent.maybe_invoke(
         {
             "type": "exec_command_completed",
             "session_id": 1000,
@@ -814,31 +820,28 @@ async def test_runtime_maybe_invoke_formats_exec_completion_when_idle() -> "None
         '{"session_id":1000,"exit_code":0,"command":"python watch.py"}\n'
         "</exec_command_completed>"
     )
-    await runtime.close()
 
 
 @pytest.mark.parametrize("tool_name", ["exec_command", "renamed_exec"])
-def test_runtime_connects_exec_completion_hook_from_tool_registry(tool_name) -> "None":
+def test_agent_connects_exec_completion_hook_from_tool_registry(tool_name) -> "None":
     tools = ToolRegistry()
     manager = UnifiedExecManager()
     tool = ExecCommandTool(manager)
     tool.name = tool_name
     tools.register(tool)
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
         tools,
         ContextConfig(),
     )
 
-    assert manager._notify_hook is None
-    runtime = make_runtime(agent)
-    assert manager._notify_hook == runtime.maybe_invoke
+    assert manager._notify_hook == agent.maybe_invoke
 
 
 @pytest.mark.asyncio
 async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "None":
     monkeypatch.setattr(
-        "pycodex.tools.clock_manager._current_time",
+        "pycodex.tools.clock_tool._current_time",
         lambda: "2026-08-07T12:34:56+08:00",
     )
     manager = ClockManager(seconds_per_minute=0.01)
@@ -869,8 +872,7 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
             ModelResponse(items=[AssistantMessage(text="clock stopped")]),
         ]
     )
-    agent = make_agent(model, tools, ContextConfig())
-    runtime = make_runtime(agent)
+    agent = Agent(model, tools, ContextConfig())
 
     result = await agent.run_turn(["start periodic work"])
 
@@ -900,7 +902,6 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
     ]
     assert manager.snapshot() == {"enabled": False, "period_m": None}
     assert manager._timer_task is None
-    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -916,9 +917,9 @@ async def test_runtime_shutdown_cancels_clock_after_draining_queued_tools() -> "
             ModelResponse(items=[AssistantMessage(text="done")]),
         ]
     )
-    agent = make_agent(model, tools, ContextConfig())
+    agent = Agent(model, tools, ContextConfig())
     events = []
-    runtime = make_runtime(agent)
+    runtime = AgentRuntime(agent)
     runtime.event_handler = events.append
     await runtime.start()
     try:
@@ -931,12 +932,14 @@ async def test_runtime_shutdown_cancels_clock_after_draining_queued_tools() -> "
         )
         assert completed_event.background_work_count == 1
 
-        _submission_id, pending_turn = runtime.enqueue("set clock again")
+        _submission_id, pending_turn = await runtime.enqueue_user_turn(
+            "set clock again"
+        )
         await runtime.close()
         assert (await pending_turn).output_text == "done"
         await asyncio.gather(pending_timer, return_exceptions=True)
 
-        assert manager.snapshot() == {"enabled": True, "period_m": 1.0}
+        assert manager.snapshot() == {"enabled": False, "period_m": None}
         assert manager._timer_task is None
         assert model.call_count == 3
     finally:
@@ -948,7 +951,7 @@ async def test_agent_turn_completed_counts_background_exec_work() -> "None":
     tools = ToolRegistry()
     manager = UnifiedExecManager()
     tools.register(ExecCommandTool(manager))
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
         tools,
         ContextConfig(),
@@ -965,7 +968,7 @@ async def test_agent_turn_completed_counts_background_exec_work() -> "None":
 
 
 @pytest.mark.asyncio
-async def test_runtime_maybe_invoke_noops_while_active() -> "None":
+async def test_agent_maybe_invoke_noops_while_active() -> "None":
     request_started = asyncio.Event()
     release_request = asyncio.Event()
 
@@ -976,12 +979,11 @@ async def test_runtime_maybe_invoke_noops_while_active() -> "None":
         return ModelResponse(items=[AssistantMessage(text="done")])
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
-    runtime = make_runtime(agent)
+    agent = Agent(model, ToolRegistry(), ContextConfig())
     first_turn = asyncio.create_task(agent.run_turn(["hello"]))
     try:
         await request_started.wait()
-        started = await runtime.maybe_invoke(
+        started = await agent.maybe_invoke(
             {
                 "type": "exec_command_completed",
                 "session_id": 1000,
@@ -997,8 +999,6 @@ async def test_runtime_maybe_invoke_noops_while_active() -> "None":
         assert model.call_count == 1
     finally:
         release_request.set()
-        await asyncio.gather(first_turn, return_exceptions=True)
-        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -1011,7 +1011,6 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
 
     class _DelayedModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.prompts = []
@@ -1042,14 +1041,17 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
     model = _DelayedModelClient()
     tools = ToolRegistry()
     tools.register(_BlockingTool())
-    agent = make_agent(model, tools, ContextConfig())
-    runtime = make_runtime(agent)
+    agent = Agent(model, tools, ContextConfig())
+    runtime = AgentRuntime(agent)
 
     background_turn = asyncio.create_task(agent.run_turn(["background"]))
     await tool_started.wait()
     await runtime.start()
     try:
-        queued = await runtime.submit_input("queued")
+        _submission_id, queued_future = await runtime.enqueue_user_turn(
+            "queued",
+            queue="steer",
+        )
         await asyncio.sleep(0.05)
 
         assert model.call_count == 1
@@ -1058,7 +1060,7 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
         release_tool.set()
         with pytest.raises(TurnInterrupted):
             await background_turn
-        queued_result = await queued.future
+        queued_result = await queued_future
 
         assert queued_result is not None
         assert queued_result.output_text == "queued done"
@@ -1088,7 +1090,6 @@ async def test_runtime_steer_batches_messages_into_next_request() -> "None":
 
     class _DelayedModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.prompts = []
@@ -1107,7 +1108,7 @@ async def test_runtime_steer_batches_messages_into_next_request() -> "None":
             return ModelResponse(items=[AssistantMessage(text="second")])
 
     model = _DelayedModelClient()
-    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    runtime = AgentRuntime(Agent(model, ToolRegistry(), ContextConfig()))
     events = []
     runtime.event_handler = events.append
 
@@ -1115,18 +1116,24 @@ async def test_runtime_steer_batches_messages_into_next_request() -> "None":
     first_turn = asyncio.create_task(runtime.submit_user_turn("hello"))
     try:
         await first_request_started.wait()
-        steer_a = await runtime.submit_input("again")
-        steer_b = await runtime.submit_input("one more")
+        steer_submission_id, steer_future_a = await runtime.enqueue_user_turn(
+            "again",
+            queue="steer",
+        )
+        steer_submission_id_b, steer_future_b = await runtime.enqueue_user_turn(
+            "one more",
+            queue="steer",
+        )
 
-        assert steer_a.submission_id == steer_b.submission_id
+        assert steer_submission_id == steer_submission_id_b
 
         release_first_request.set()
 
         with pytest.raises(RuntimeError, match="submission interrupted"):
             await first_turn
 
-        result_a = await steer_a.future
-        result_b = await steer_b.future
+        result_a = await steer_future_a
+        result_b = await steer_future_b
         assert result_a is result_b
         assert result_a is not None
         assert result_a.output_text == "second"
@@ -1158,13 +1165,12 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> "None":
 
     class FailingModelClient:
         model = "test"
-        reasoning_effort = None
 
         async def complete(self, prompt, event_handler):
             del prompt, event_handler
             raise RuntimeError("synthetic client error")
 
-    agent = make_agent(
+    agent = Agent(
         FailingModelClient(),
         ToolRegistry(),
         ContextConfig(),
@@ -1176,7 +1182,6 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> "None":
 
     assert [event.kind for event in events] == [
         "turn_started",
-        "turn_input_ready",
         "model_called",
         "turn_failed",
     ]
@@ -1192,14 +1197,14 @@ async def test_runtime_recovers_after_pre_turn_compact_failure() -> "None":
         return ModelResponse(items=[AssistantMessage(text="recovered")])
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         _auto_compact_context(1),
         initial_history=(UserMessage(text="older prompt"),),
     )
     agent._last_total_usage_tokens = 1
-    runtime = make_runtime(agent)
+    runtime = AgentRuntime(agent)
     events = []
     runtime.event_handler = events.append
     await runtime.start()
@@ -1248,7 +1253,7 @@ async def test_agent_recovers_after_event_handler_failure(failed_event) -> "None
             raise RuntimeError("synthetic event failure")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=handle_event)
+    agent = Agent(model, ToolRegistry(), ContextConfig(), event_handler=handle_event)
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
     observer_errors = []
@@ -1284,7 +1289,7 @@ async def test_agent_failed_turn_releases_idle_waiters(compact_limit) -> "None":
         raise ValueError("synthetic failure")
 
     events = []
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(response_factory=response_factory),
         ToolRegistry(),
         _auto_compact_context(compact_limit),
@@ -1326,7 +1331,7 @@ async def test_agent_idle_waiters_are_independent_of_turn_result(fail_model) -> 
             raise RuntimeError("synthetic model failure")
         return ModelResponse(items=[AssistantMessage(text="done")])
 
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(response_factory=response_factory),
         ToolRegistry(),
         ContextConfig(),
@@ -1369,14 +1374,14 @@ async def test_agent_run_turn_rejects_overlapping_execution() -> "None":
         return ModelResponse([AssistantMessage("done")])
 
     model = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    agent = Agent(model, ToolRegistry(), ContextConfig())
     turn = asyncio.create_task(agent.run_turn(["first prompt"]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         assert agent.is_running
         with pytest.raises(RuntimeError, match="agent already has an active turn"):
             await agent.run_turn(["overlapping prompt"])
-        assert not await make_runtime(agent).maybe_invoke({"type": "exec_command_completed"})
+        assert not await agent.maybe_invoke({"type": "exec_command_completed"})
         release.set()
         assert (await turn).output_text == "done"
         assert not agent.is_running
@@ -1398,14 +1403,14 @@ async def test_agent_shutdown_does_not_cancel_current_turn() -> "None":
         return ModelResponse([AssistantMessage("done")])
 
     model = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    agent = Agent(model, ToolRegistry(), ContextConfig())
     turn = asyncio.create_task(agent.run_turn(["finish this prompt"]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         agent.shutdown()
         assert agent.is_running
         assert agent.is_shutdown
-        assert not await make_runtime(agent).maybe_invoke({"type": "clock_tick"})
+        assert not await agent.maybe_invoke({"type": "clock_tick"})
         with pytest.raises(RuntimeError, match="shutdown"):
             await agent.run_turn(["new prompt"])
         release.set()
@@ -1418,23 +1423,25 @@ async def test_agent_shutdown_does_not_cancel_current_turn() -> "None":
 
 
 @pytest.mark.asyncio
-async def test_agent_does_not_consume_enqueued_turns_without_a_worker() -> "None":
+async def test_agent_does_not_consume_runtime_inputs_without_a_worker() -> "None":
     model = ScriptedModelClient(
         [
             ModelResponse([AssistantMessage("first")]),
             ModelResponse([AssistantMessage("next")]),
         ]
     )
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
-    queue = make_runtime(agent)
+    agent = Agent(model, ToolRegistry(), ContextConfig())
+    queue = AgentRuntime(agent)
     turn = asyncio.create_task(agent.run_turn(["first prompt"]))
-    _submission_id, queued = queue.enqueue("next prompt")
+    _submission_id, steered = await queue.enqueue_user_turn(
+        "next prompt", queue="steer"
+    )
     result = await turn
 
     assert not agent.is_running
     assert model.call_count == 1
     assert result.output_text == "first"
-    assert not queued.done()
+    assert not steered.done()
     assert [
         item.text for item in model.prompts[0].input if isinstance(item, UserMessage)
     ] == [
@@ -1442,7 +1449,7 @@ async def test_agent_does_not_consume_enqueued_turns_without_a_worker() -> "None
     ]
     await queue.start()
     try:
-        assert (await asyncio.wait_for(queued, 1)).output_text == "next"
+        assert (await asyncio.wait_for(steered, 1)).output_text == "next"
         assert [
             item.text
             for item in model.prompts[1].input
@@ -1461,7 +1468,6 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
 ):
     class PartialThenContinueModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.prompts = []
@@ -1486,7 +1492,7 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
 
     model = PartialThenContinueModelClient()
     events = []
-    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
+    agent = Agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(ResponsesIncompleteError):
         await agent.run_turn(["write a long answer"])
@@ -1516,7 +1522,6 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
 async def test_agent_keeps_reasoning_done_item_from_incomplete_response() -> "None":
     class ReasoningThenContinueModelClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self) -> "None":
             self.prompts = []
@@ -1545,7 +1550,7 @@ async def test_agent_keeps_reasoning_done_item_from_incomplete_response() -> "No
             raise AssertionError(f"unexpected call_count={self.call_count}")
 
     model = ReasoningThenContinueModelClient()
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    agent = Agent(model, ToolRegistry(), ContextConfig())
 
     with pytest.raises(ResponsesIncompleteError):
         await agent.run_turn(["think for a while"])
@@ -1572,13 +1577,12 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
 
     class FailingModelClient:
         model = "test"
-        reasoning_effort = None
 
         async def complete(self, prompt, event_handler):
             del prompt, event_handler
             raise ContextLengthExceeded(error_message)
 
-    agent = make_agent(
+    agent = Agent(
         FailingModelClient(),
         ToolRegistry(),
         ContextConfig(),
@@ -1590,7 +1594,6 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
 
     assert [event.kind for event in events] == [
         "turn_started",
-        "turn_input_ready",
         "model_called",
         "token_count",
         "auto_compact_started",
@@ -1598,14 +1601,14 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
         "token_count",
         "turn_failed",
     ]
-    assert events[3].usage == {
+    assert events[2].usage == {
         "total_tokens": 264568,
         "input_tokens": 264568,
         "output_tokens": 0,
     }
-    assert events[4].phase == "context_length_exceeded"
-    assert events[4].total_tokens == 264568
-    assert events[4].token_limit == 262144
+    assert events[3].phase == "context_length_exceeded"
+    assert events[3].total_tokens == 264568
+    assert events[3].token_limit == 262144
 
 
 @pytest.mark.asyncio
@@ -1622,7 +1625,7 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> "Non
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
+    agent = Agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     result = await agent.run_turn(["hello"])
 
@@ -1674,7 +1677,7 @@ async def test_agent_auto_compacts_on_context_window_error_without_token_counts(
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
+    agent = Agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     result = await agent.run_turn(["hello"])
 
@@ -1722,7 +1725,7 @@ async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() 
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         ContextConfig(),
@@ -1751,7 +1754,6 @@ async def test_agent_relays_stream_error_events() -> "None":
 
     class RetryingModelClient:
         model = "test"
-        reasoning_effort = None
 
         async def complete(self, prompt, event_handler):
             del prompt
@@ -1760,7 +1762,7 @@ async def test_agent_relays_stream_error_events() -> "None":
             )
             return ModelResponse(items=[AssistantMessage(text="done")])
 
-    agent = make_agent(
+    agent = Agent(
         RetryingModelClient(),
         ToolRegistry(),
         ContextConfig(),
@@ -1772,10 +1774,9 @@ async def test_agent_relays_stream_error_events() -> "None":
     assert result.output_text == "done"
     assert [event.kind for event in events] == [
         "turn_started",
-        "turn_input_ready",
         "model_called",
         "stream_error",
         "model_completed",
         "turn_completed",
     ]
-    assert events[3].message == "Reconnecting... 1/5"
+    assert events[2].message == "Reconnecting... 1/5"

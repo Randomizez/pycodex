@@ -7,7 +7,6 @@ import pytest
 
 from pycodex import (
     Agent,
-    AgentsManager,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -27,7 +26,7 @@ from pycodex.utils.session_persist import (
     list_resumable_sessions,
     rollout_path_for_session,
 )
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime, wait_for_runtime_idle
+from tests.fakes import ScriptedModelClient
 
 
 @pytest.mark.asyncio
@@ -37,7 +36,7 @@ async def test_history_write_failure_is_visible_before_mutation(
 ):
     model = ScriptedModelClient([ModelResponse([AssistantMessage("answer")])])
     events = []
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         ContextConfig(),
@@ -91,7 +90,7 @@ async def test_failed_compact_preserves_history_and_rollout(
             raise RuntimeError("synthetic failure")
         return ModelResponse([AssistantMessage("summary")])
 
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(response_factory=response_factory),
         ToolRegistry(),
         ContextConfig(),
@@ -126,7 +125,7 @@ async def test_manual_compact_resets_usage_before_next_turn():
             ModelResponse([AssistantMessage("next answer")]),
         ]
     )
-    agent = make_agent(
+    agent = Agent(
         model,
         ToolRegistry(),
         ContextConfig(model_auto_compact_token_limit=10),
@@ -152,18 +151,17 @@ async def test_manual_compact_occupies_agent_until_finished():
         await release.wait()
         return ModelResponse([AssistantMessage("summary")])
 
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(response_factory=response_factory),
         ToolRegistry(),
         ContextConfig(),
         initial_history=(UserMessage("prompt"),),
     )
-    runtime = make_runtime(agent)
     task = asyncio.create_task(agent.compact())
     try:
         await asyncio.wait_for(started.wait(), 1)
         assert agent.is_running
-        assert not await runtime.maybe_invoke({"type": "exec_command_completed"})
+        assert not await agent.maybe_invoke({"type": "exec_command_completed"})
         with pytest.raises(RuntimeError, match="while agent is running"):
             await agent.compact()
         release.set()
@@ -176,7 +174,7 @@ async def test_manual_compact_occupies_agent_until_finished():
 
 @pytest.mark.asyncio
 async def test_compact_rejects_missing_summary_without_replacing_history():
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([ModelResponse([])]),
         ToolRegistry(),
         ContextConfig(),
@@ -198,7 +196,7 @@ async def test_agent_does_not_classify_arbitrary_exception_text():
         raise RuntimeError("maximum context length exceeded in custom code")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig())
+    agent = Agent(model, ToolRegistry(), ContextConfig())
     with pytest.raises(RuntimeError, match="custom code"):
         await agent.run_turn(["prompt"])
     assert model.call_count == 1
@@ -224,7 +222,7 @@ async def test_tool_follow_up_does_not_depend_on_tool_name():
             ModelResponse([AssistantMessage("done")]),
         ]
     )
-    result = await make_agent(model, tools, ContextConfig()).run_turn(["prompt"])
+    result = await Agent(model, tools, ContextConfig()).run_turn(["prompt"])
     assert isinstance(result.history[-3], ToolResult)
     assert result.history[-2] == UserMessage("follow up: tool output")
 
@@ -243,7 +241,7 @@ async def test_follow_up_failure_keeps_completed_tool_result():
 
     tools = ToolRegistry()
     tools.register(NoticeTool())
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([ModelResponse([ToolCall("notice_call", "notice", {})])]),
         tools,
         ContextConfig(),
@@ -281,7 +279,7 @@ async def test_failed_tool_commit_waits_for_remaining_batch(tmp_path, monkeypatc
     tools = ToolRegistry()
     tools.register(BlockingTool())
     tools.register(FastTool())
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(
             [
                 ModelResponse(
@@ -368,7 +366,7 @@ async def test_shutdown_allows_tool_batch_to_complete_and_commit(tmp_path, paral
             ModelResponse([AssistantMessage("continued")]),
         ]
     )
-    agent = make_agent(
+    agent = Agent(
         client, tools, ContextConfig(), session_file_path=tmp_path / "rollout.jsonl"
     )
     task = asyncio.create_task(agent.run_turn(["start"]))
@@ -401,12 +399,10 @@ def test_agent_requires_context_config_instead_of_manager():
     client = ScriptedModelClient([])
     with pytest.raises(TypeError, match="context_config"):
         Agent(client, ToolRegistry())
-    with pytest.raises(TypeError, match="session_id"):
-        Agent(client, ToolRegistry(), ContextConfig())
     with pytest.raises(TypeError):
-        Agent(client, ToolRegistry(), None, session_id=uuid7_string())
+        Agent(client, ToolRegistry(), None)
     with pytest.raises(TypeError):
-        Agent(client, ToolRegistry(), ContextManager(ContextConfig()), session_id=uuid7_string())
+        Agent(client, ToolRegistry(), ContextManager(ContextConfig()))
 
 
 def test_agent_builds_independent_contexts_from_explicit_config(tmp_path):
@@ -418,8 +414,8 @@ def test_agent_builds_independent_contexts_from_explicit_config(tmp_path):
         extra_contextual_user_messages=("workspace context",),
         cwd=tmp_path,
     )
-    first = make_agent(ScriptedModelClient([], model="first"), ToolRegistry(), config)
-    second = make_agent(ScriptedModelClient([], model="second"), ToolRegistry(), config)
+    first = Agent(ScriptedModelClient([], model="first"), ToolRegistry(), config)
+    second = Agent(ScriptedModelClient([], model="second"), ToolRegistry(), config)
 
     assert first.context_manager is not second.context_manager
     assert first.context_manager.cwd == tmp_path
@@ -439,7 +435,7 @@ def test_runtime_subscribes_to_agent_without_injecting_a_back_reference():
     client = ScriptedModelClient([])
     tools = ToolRegistry()
     events = []
-    agent = make_agent(client, tools, ContextConfig(), event_handler=events.append)
+    agent = Agent(client, tools, ContextConfig(), event_handler=events.append)
     assert vars(agent)["model_client"] is client
     assert vars(agent)["tool_registry"] is tools
     assert vars(agent)["context_manager"] is agent.context_manager
@@ -457,7 +453,7 @@ def test_runtime_subscribes_to_agent_without_injecting_a_back_reference():
     ):
         assert not hasattr(agent, name)
 
-    queue = make_runtime(agent)
+    queue = AgentRuntime(agent)
     queue.event_handler = events.append
     assert vars(queue)["agent"] is agent
     assert not hasattr(queue, "set_event_handler")
@@ -503,7 +499,7 @@ async def test_bare_agent_stop_asap_finishes_issued_tools_and_allows_next_turn(
         ]
     )
     events = []
-    agent = make_agent(
+    agent = Agent(
         client,
         tools,
         ContextConfig(),
@@ -557,7 +553,6 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
 
     class CompactingClient:
         model = "test"
-        reasoning_effort = None
 
         def __init__(self):
             self.call_count = 0
@@ -576,7 +571,7 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
     tools = ToolRegistry()
     tools.register(CountingTool())
     client = CompactingClient()
-    agent = make_agent(
+    agent = Agent(
         client,
         tools,
         ContextConfig(model_auto_compact_token_limit=50),
@@ -623,7 +618,7 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
         AssistantMessage("old answer"),
     )
     session_id = uuid7_string()
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         config,
@@ -664,14 +659,14 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
         entry["payload"]["message"] for entry in entries if entry["type"] == "event_msg"
     ] == ["old prompt", "first prompt", "second prompt"]
     assert len(list_resumable_sessions(home)) == 1
-    other = make_agent(ScriptedModelClient([]), ToolRegistry(), config)
+    other = Agent(ScriptedModelClient([]), ToolRegistry(), config)
     assert other.session_id != agent.session_id
     assert other.session_file_path is None
 
 
 @pytest.mark.asyncio
 async def test_empty_compaction_does_not_create_rollout(tmp_path):
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([]),
         ToolRegistry(),
         ContextConfig(),
@@ -689,7 +684,7 @@ def test_new_session_does_not_overwrite_existing_file(tmp_path):
     client._session_id = "unchanged"
 
     with pytest.raises(FileExistsError):
-        make_agent(client, ToolRegistry(), ContextConfig(), session_file_path=path)
+        Agent(client, ToolRegistry(), ContextConfig(), session_file_path=path)
 
     assert path.read_text(encoding="utf-8") == "existing session"
     assert client._session_id == "unchanged"
@@ -699,7 +694,7 @@ def test_new_session_does_not_overwrite_existing_file(tmp_path):
 async def test_new_session_creation_race_does_not_overwrite_file(tmp_path):
     path = tmp_path / "rollout.jsonl"
     client = ScriptedModelClient([])
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -724,7 +719,7 @@ async def test_first_write_failure_does_not_mark_rollout_initialized(
     monkeypatch,
     failed_write,
 ):
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([]),
         ToolRegistry(),
         ContextConfig(),
@@ -778,14 +773,14 @@ async def test_first_write_failure_does_not_mark_rollout_initialized(
 
 def test_resume_expands_home_and_reopens_closed_agent(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    source = make_agent(
+    source = Agent(
         ScriptedModelClient([ModelResponse([AssistantMessage("saved answer")])]),
         ToolRegistry(),
         ContextConfig(),
         session_file_path="~/sessions/会话.jsonl",
     )
     source.ask("恢复 — ≤ 测试")
-    agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     agent.shutdown()
 
     resumed = agent.resume("~/sessions/会话.jsonl")
@@ -800,7 +795,7 @@ def test_resume_expands_home_and_reopens_closed_agent(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tmp_path):
-    source = make_agent(
+    source = Agent(
         ScriptedModelClient([ModelResponse([AssistantMessage("checkpoint summary")])]),
         ToolRegistry(),
         ContextConfig(),
@@ -817,7 +812,7 @@ async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tm
     assert [
         entry["payload"] for entry in entries if entry["type"] == "response_item"
     ] == [item.serialize() for item in initial_history]
-    agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
     resumed = agent.resume(source.session_file_path)
 
@@ -831,15 +826,15 @@ async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tm
 
 
 @pytest.mark.asyncio
-async def test_continuation_after_compact_keeps_summary_context_on_resume(tmp_path):
+async def test_fork_after_compact_keeps_summary_context_on_resume(tmp_path):
     model = ScriptedModelClient(
         [
             ModelResponse([AssistantMessage("summary")]),
             ModelResponse([AssistantMessage("continued answer")]),
-            ModelResponse([AssistantMessage("next answer")]),
+            ModelResponse([AssistantMessage("forked answer")]),
         ]
     )
-    source = make_agent(
+    source = Agent(
         model,
         ToolRegistry(),
         ContextConfig(),
@@ -848,15 +843,16 @@ async def test_continuation_after_compact_keeps_summary_context_on_resume(tmp_pa
     )
     await source.compact()
     await source.run_turn([])
+    source.fork()
     await source.run_turn(["new prompt"])
-    agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
     resumed = agent.resume(source.session_file_path)
 
     assert agent.history == source.history
     assert resumed["turns"] == (
         ("", "continued answer"),
-        ("new prompt", "next answer"),
+        ("new prompt", "forked answer"),
     )
     assert source.history[0].serialize() in [
         item.serialize() for item in model.prompts[-1].input
@@ -879,7 +875,7 @@ def test_resume_accepts_multiline_records_and_incomplete_tail(tmp_path):
         encoding="utf-8",
     )
     original_bytes = path.read_bytes()
-    agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    agent = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
     agent.resume(path)
 
@@ -909,7 +905,7 @@ async def test_resume_preserves_later_history_after_unfinished_tools(
         UserMessage("latest prompt"),
         AssistantMessage("latest answer"),
     ]
-    source = make_agent(
+    source = Agent(
         ScriptedModelClient([]),
         ToolRegistry(),
         ContextConfig(),
@@ -925,7 +921,7 @@ async def test_resume_preserves_later_history_after_unfinished_tools(
     )
     original_bytes = source.session_file_path.read_bytes()
     client = ScriptedModelClient([ModelResponse([AssistantMessage("new answer")])])
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    agent = Agent(client, ToolRegistry(), ContextConfig())
 
     agent.resume(source.session_file_path)
 
@@ -940,7 +936,7 @@ async def test_resume_preserves_later_history_after_unfinished_tools(
         if isinstance(item, (ToolCall, ToolResult))
     ] == [completed_call.serialize(), completed_result.serialize()]
 
-    restored = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    restored = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     restored.resume(source.session_file_path)
     assert restored.history == agent.history
     assert restored.history[-2:] == (
@@ -954,7 +950,7 @@ async def test_resume_preserves_later_history_after_unfinished_tools(
 def test_resume_without_path_keeps_existing_session_and_history(tmp_path, persisted):
     client = ScriptedModelClient([])
     client._session_id = "provider-created-id"
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -993,7 +989,7 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
     client = ScriptedModelClient([ModelResponse([AssistantMessage("continued")])])
     if session_aware:
         client._session_id = "original-session"
-    source = make_agent(
+    source = Agent(
         ScriptedModelClient([ModelResponse([AssistantMessage("previous answer")])]),
         ToolRegistry(),
         ContextConfig(),
@@ -1002,7 +998,7 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
     )
     await source.run_turn(["restored"])
     original_path = tmp_path / "original.jsonl"
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -1043,7 +1039,7 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
         )
         == 1
     )
-    restored_again = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    restored_again = Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     restored_again.resume(source.session_file_path)
     assert restored_again.history == agent.history
 
@@ -1062,7 +1058,7 @@ def test_resume_failure_preserves_existing_session(
 ):
     client = ScriptedModelClient([])
     client._session_id = "original-session"
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -1115,10 +1111,11 @@ def test_resume_failure_preserves_existing_session(
     assert agent.is_shutdown == closed
 
 
+@pytest.mark.parametrize("operation", ["fork", "resume"])
 def test_recorder_factory_failure_preserves_existing_session(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, operation
 ):
-    source = make_agent(
+    source = Agent(
         ScriptedModelClient([]),
         ToolRegistry(),
         ContextConfig(),
@@ -1129,7 +1126,7 @@ def test_recorder_factory_failure_preserves_existing_session(
     client = ScriptedModelClient([])
     client._session_id = "original-session"
     history = (UserMessage("original"),)
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -1144,10 +1141,14 @@ def test_recorder_factory_failure_preserves_existing_session(
     def fail_recording(*args, **kwargs):
         raise OSError("synthetic recorder failure")
 
-    monkeypatch.setattr(type(recorder), "resume", fail_recording)
+    factory = "create" if operation == "fork" else "resume"
+    monkeypatch.setattr(type(recorder), factory, fail_recording)
 
     with pytest.raises(OSError, match="synthetic recorder failure"):
-        agent.resume(source.session_file_path)
+        if operation == "fork":
+            agent.fork()
+        else:
+            agent.resume(source.session_file_path)
 
     assert agent.history == history
     assert agent._rollout_recorder is recorder
@@ -1172,7 +1173,7 @@ async def test_resume_rejects_active_execution(operation):
 
     client = ScriptedModelClient(response_factory=respond)
     client._session_id = "original-session"
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
@@ -1203,15 +1204,14 @@ async def test_runtime_resume_rejects_pending_submission(queue_kind):
     from pycodex import AgentRuntime
 
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    agent = make_agent(
+    agent = Agent(
         client,
         ToolRegistry(),
         ContextConfig(),
         initial_history=(UserMessage("original"),),
     )
-    queue = make_runtime(agent)
-    receipt = await queue.submit_input("/queue pending" if queue_kind == "enqueue" else "pending")
-    future = receipt.future
+    queue = AgentRuntime(agent)
+    _submission_id, future = await queue.enqueue_user_turn("pending", queue=queue_kind)
     try:
         assert not agent.is_running
         with pytest.raises(RuntimeError, match="running or queued"):
@@ -1235,7 +1235,7 @@ def test_model_switch_updates_provider_context_and_usage_together():
             api_key_env=None,
         )
     )
-    agent = make_agent(client, ToolRegistry(), ContextConfig(model="gpt-5.6"))
+    agent = Agent(client, ToolRegistry(), ContextConfig(model="gpt-5.6"))
     context = agent.context_manager
     agent._last_total_usage_tokens = 123
     agent.set_model("step-3.6")
@@ -1253,7 +1253,7 @@ def test_model_switch_updates_provider_context_and_usage_together():
 
 def test_agent_model_name_uses_required_client_model():
     client = ScriptedModelClient([], model="first")
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    agent = Agent(client, ToolRegistry(), ContextConfig())
     assert agent.model_name == "first"
     client.model = "second"
     assert agent.model_name == "second"
@@ -1273,14 +1273,13 @@ async def test_invoke_awaits_serial_turn_and_skips_busy_notifications():
         return ModelResponse([AssistantMessage("done")])
 
     client = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(client, ToolRegistry(), ContextConfig())
-    runtime = make_runtime(agent)
-    invocation = asyncio.create_task(runtime.maybe_invoke({"type": "wake_up"}))
+    agent = Agent(client, ToolRegistry(), ContextConfig())
+    invocation = asyncio.create_task(agent.maybe_invoke({"type": "wake_up"}))
     try:
         await asyncio.wait_for(started.wait(), 1)
         assert agent.is_running
         assert not invocation.done()
-        assert not await runtime.maybe_invoke({"type": "ignored"})
+        assert not await agent.maybe_invoke({"type": "ignored"})
         release.set()
         assert await invocation
         assert not agent.is_running
@@ -1289,10 +1288,10 @@ async def test_invoke_awaits_serial_turn_and_skips_busy_notifications():
     finally:
         release.set()
         await asyncio.gather(invocation, return_exceptions=True)
-        await runtime.close()
 
 
 def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
+    from pycodex.bootstrap import build_agent
     from pycodex.model import ResponsesModelClient
 
     config_path = tmp_path / "config.toml"
@@ -1304,22 +1303,18 @@ def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
         encoding="utf-8",
     )
     client = ResponsesModelClient.from_codex_config(config_path)
-    manager = AgentsManager(
-        client, ContextConfig(
-            cwd=tmp_path, codex_home=tmp_path,
-            extra_contextual_user_messages=("shared board",),
-        ), toolset=[],
+    agent = build_agent(
+        client,
+        config_path,
+        extra_contextual_user_messages=iter(["shared board"]),
+        cwd=tmp_path,
     )
-    agent = manager.create_root_runtime().agent
-    first = manager._create_runtime(
-        agent.agent_id, "/root/first", "step-3.6", None, (),
-    ).agent
+    builder = agent.tool_registry.runtime_environment.subagent_manager._runtime_builder
+    first = builder("step-3.6", None, (), "first-session").agent
     child_dir = tmp_path / "child"
     child_dir.mkdir()
     agent.set_cwd(child_dir)
-    second = manager._create_runtime(
-        agent.agent_id, "/root/second", None, None, (),
-    ).agent
+    second = builder(None, None, (), "second-session").agent
 
     assert first.context_manager is not second.context_manager
     assert first.context_manager._extra_contextual_user_messages == ("shared board",)
@@ -1329,9 +1324,8 @@ def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
     assert first.context_manager.cwd == tmp_path
     assert second.context_manager.cwd == child_dir
     first.set_cwd(child_dir)
-    grandchild = manager._create_runtime(
-        first.agent_id, "/root/first/grandchild", None, None, (),
-    ).agent
+    nested = first.tool_registry.runtime_environment.subagent_manager._runtime_builder
+    grandchild = nested(None, None, (), "grandchild-session").agent
     assert grandchild.context_manager.cwd == child_dir
     assert (
         first.tool_registry.runtime_environment
@@ -1340,12 +1334,12 @@ def test_subagent_context_is_per_agent_and_uses_model_override(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("fork_turns", ["none", "all"])
-async def test_subagents_keep_turns_compaction_and_followup_in_memory(
-    tmp_path, monkeypatch, fork_turns
+@pytest.mark.parametrize("fork_context", [False, True])
+async def test_subagents_do_not_record_turns_compaction_or_resume(
+    tmp_path, monkeypatch, fork_context
 ):
+    from pycodex.bootstrap import build_agent
     from pycodex.model import ResponsesModelClient
-    from pycodex.protocol import AgentMessage
 
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -1360,44 +1354,44 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
         return ModelResponse([AssistantMessage("answer")])
 
     monkeypatch.setattr(ResponsesModelClient, "complete", complete)
-    manager = AgentsManager(
-        ResponsesModelClient.from_codex_config(config_path),
-        ContextConfig(codex_home=tmp_path, cwd=tmp_path), toolset=[],
+    parent = build_agent(
+        ResponsesModelClient.from_codex_config(config_path), config_path
     )
-    root = manager.create_root_runtime()
-    parent = root.agent
     await parent.run_turn(["parent prompt"])
     parent_bytes = parent.session_file_path.read_bytes()
+    manager = parent.tool_registry.runtime_environment.subagent_manager
     try:
-        path = await manager.spawn_agent(
-            parent.agent_id, "child", "child prompt", fork_turns,
-            history=parent.history,
+        spawned = await manager.spawn_agent(
+            "child prompt", None, None, fork_context, None, None, parent.history
         )
-        runtime = manager.get_runtime(manager._resolve_agent_id(parent.agent_id, path))
-        await wait_for_runtime_idle(runtime)
-        assert runtime._last_agent_status == {"completed": "answer"}
+        agent_id = spawned["agent_id"]
+        result = await manager.wait_agents([agent_id], 1000)
+        assert result["status"][agent_id] == {"completed": "answer"}
+        runtime = manager._agents[agent_id].runtime
         child = runtime.agent
-        expected_history = parent.history if fork_turns == "all" else ()
-        assert child.history[:len(expected_history)] == expected_history
-        assert isinstance(child.history[-2], AgentMessage)
-        assert child.history[-2].text.endswith("child prompt")
-        assert child.history[-1] == AssistantMessage("answer")
+        expected_history = parent.history if fork_context else ()
+        assert child.history == expected_history + (
+            UserMessage("child prompt"),
+            AssistantMessage("answer"),
+        )
         assert child.session_file_path is None
         assert runtime.snapshot()["rollout_path"] is None
 
-        runtime.resume()
         await child.compact()
         assert "Current session file:" not in child.history[0].text
         compacted_history = child.history
-        await manager.send_message(
-            parent.agent_id, path, "continue", trigger_turn=True,
-        )
-        await runtime.close()
-        assert child.history[:len(compacted_history)] == compacted_history
-        assert child.history[-1] == AssistantMessage("answer")
+        await manager.close_agent(agent_id)
+        await manager.resume_agent(agent_id)
+        assert child.history == compacted_history
+        await manager.send_input(agent_id, "continue", False)
+        result = await manager.wait_agents([agent_id], 1000)
+        assert result["status"][agent_id] == {"completed": "answer"}
+        child.fork()
+        await child.run_turn(["after fork"])
         assert child.session_file_path is None
     finally:
-        await root.close()
+        await manager.shutdown()
+        parent.shutdown()
     assert list((tmp_path / "sessions").rglob("rollout-*.jsonl")) == [
         parent.session_file_path
     ]
@@ -1425,15 +1419,13 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
     tools = ToolRegistry()
     tools.register(ClockTool(clock))
     initial_history = (UserMessage("old prompt"),)
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(response_factory=respond),
         tools,
         ContextConfig(),
         initial_history=initial_history,
         event_handler=events.append,
     )
-    runtime = make_runtime(agent)
-    runtime.event_handler = events.append
     clock.arm_after_reply()
     old_timer = clock._timer_task
     task = asyncio.create_task(agent.compact())
@@ -1441,14 +1433,14 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
         await asyncio.wait_for(started.wait(), 1)
         await asyncio.gather(old_timer, return_exceptions=True)
         assert clock._timer_task is None
-        assert not await runtime.maybe_invoke({"type": "clock_tick"})
+        assert not await agent.maybe_invoke({"type": "clock_tick"})
         release.set()
         if failed:
             with pytest.raises(ValueError, match="compact failed"):
                 await task
             assert agent.history == initial_history
             assert clock._timer_task is None
-            assert [event.kind for event in events if event.kind.startswith("compact_")] == [
+            assert [event.kind for event in events] == [
                 "compact_started",
                 "compact_failed",
             ]
@@ -1457,11 +1449,11 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
             result = await task
             assert agent.history == result.history
             assert clock._timer_task is not None
-            assert [event.kind for event in events if event.kind.startswith("compact_")] == [
+            assert [event.kind for event in events] == [
                 "compact_started",
                 "compact_completed",
             ]
-            assert next(event for event in events if event.kind == "compact_completed").background_work_count == 1
+            assert events[-1].background_work_count == 1
     finally:
         release.set()
         agent.shutdown()
@@ -1487,7 +1479,7 @@ async def test_tool_observer_failure_does_not_abort_execution_or_commit():
 
     tools = ToolRegistry()
     tools.register(EchoTool())
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient(
             [
                 ModelResponse([ToolCall("call", "echo", {"value": "done"})]),
@@ -1545,7 +1537,7 @@ async def test_follow_up_messages_do_not_split_tool_call_result_groups():
             ModelResponse([AssistantMessage("done")]),
         ]
     )
-    await make_agent(model, tools, ContextConfig()).run_turn(["start"])
+    await Agent(model, tools, ContextConfig()).run_turn(["start"])
     assert model.prompts[-1].input[-4:] == [
         ToolResult("first", "notice", "first"),
         ToolResult("second", "notice", "second"),
@@ -1577,7 +1569,7 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
     try:
         tools = ToolRegistry()
         tools.register(BrokenObserverTool())
-        agent = make_agent(
+        agent = Agent(
             ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
             tools,
             ContextConfig(),
@@ -1588,13 +1580,11 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
             item["message"].startswith("Agent event observer failed:")
             for item in failures
         )
-        background = make_agent(
+        background = Agent(
             ScriptedModelClient(response_factory=fail), ToolRegistry(), ContextConfig()
         )
-        runtime = make_runtime(background)
         with pytest.raises(RuntimeError, match="background model failed"):
-            await runtime.maybe_invoke({"type": "test_notification", "value": 1})
-        await runtime.close()
+            await background.maybe_invoke({"type": "test_notification", "value": 1})
         assert not background.is_running
         assert len(failures) == 2
     finally:
@@ -1617,7 +1607,7 @@ async def test_background_count_failure_does_not_hide_terminal_event():
     tools.register(BrokenCounterTool())
     events = []
     errors = []
-    agent = make_agent(
+    agent = Agent(
         ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
         tools,
         ContextConfig(),
@@ -1664,7 +1654,7 @@ async def test_context_recovery_is_local_to_each_sample_without_replaying_tools(
     tools = ToolRegistry()
     tools.register(CountingTool())
     client = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(client, tools, ContextConfig(), event_handler=events.append)
+    agent = Agent(client, tools, ContextConfig(), event_handler=events.append)
 
     result = await agent.run_turn(["start"], turn_id="one-turn")
 
@@ -1695,7 +1685,7 @@ async def test_context_recovery_retries_only_once_and_reports_latest_usage():
         raise ContextLengthExceeded("requested {0} tokens".format(call_count * 100))
 
     client = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
+    agent = Agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(ContextLengthExceeded, match="requested 300 tokens"):
         await agent.run_turn(["start"])
@@ -1724,7 +1714,7 @@ async def test_context_recovery_does_not_retry_failed_compaction(failure):
         raise failure("compact stopped")
 
     client = ScriptedModelClient(response_factory=respond)
-    agent = make_agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
+    agent = Agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(failure):
         await agent.run_turn(["start"])

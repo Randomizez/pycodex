@@ -58,8 +58,5 @@ class ExecTool(BaseTool):
     def __init__(self, manager: "CodeModeManager") -> "None":
         self._manager = manager
 
-    def background_work_count(self, after_reply: "bool") -> "int":
-        return self._manager.running_cell_count()
-
     async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         return await self._manager.exec(str(args), context)
