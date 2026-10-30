@@ -153,6 +153,7 @@ class ToolRegistry:
                     output=output.output,
                     content_items=output.content_items,
                     success=output.success,
+                    is_error=output.success is False,
                     tool_type=call.tool_type,
                 )
             return ToolResult(
