@@ -384,13 +384,8 @@ class Agent:
         if self.is_shutdown:
             return
         self.accepts_input = False
-        try:
-            self.tool_registry.runtime_environment.shutdown()
-            self._save_environment_state()
-        finally:
-            self.is_shutdown = True
-            for tool in self.tool_registry.tools():
-                tool.shutdown()
+        self.is_shutdown = True
+        self.tool_registry.runtime_environment.shutdown(self._save_environment_state)
 
     async def _execute_tool_batch(
         self,
@@ -459,14 +454,11 @@ class Agent:
             )
 
     def _emit(self, event: "TurnEvent") -> "None":
-        self.tool_registry.runtime_environment.handle_agent_event(event)
+        environment = self.tool_registry.runtime_environment
+        environment.handle_agent_event(event)
         if isinstance(event, (ToolCompletedEvent, TerminalEvent)):
             self._save_environment_state()
-        handlers = [self.event_handler]
-        if isinstance(event, (TerminalEvent, TurnStartedEvent, CompactStartedEvent)):
-            handlers = [
-                tool.handle_agent_event for tool in self.tool_registry.tools()
-            ] + handlers
+        handlers = environment.event_observers(event) + [self.event_handler]
         for handler in handlers:
             try:
                 handler(event)
@@ -480,11 +472,8 @@ class Agent:
 
     def _background_work_count(self, event_type) -> "typing.Union[int, None]":
         try:
-            return sum(
-                tool.background_work_count(
-                    event_type in (TurnCompletedEvent, CompactCompletedEvent)
-                )
-                for tool in self.tool_registry.tools()
+            return self.tool_registry.runtime_environment.background_work_count(
+                event_type in (TurnCompletedEvent, CompactCompletedEvent)
             )
         except Exception as exc:
             asyncio.get_running_loop().call_exception_handler(

@@ -102,6 +102,18 @@ def get_tools(
         )
     for tool in tools:
         registry.register(tool)
+    for tool in registry.tools():
+        if tool is exec_tool:
+            runtime_environment.register_resource(
+                tool.name, code_mode_manager,
+                restart=code_mode_manager.restart, close=code_mode_manager.close,
+            )
+        elif tool is exec_command_tool:
+            runtime_environment.register_resource(tool.name, unified_exec_manager)
+        elif tool is clock_tool:
+            runtime_environment.register_resource(
+                tool.name, clock_manager, observer=clock_manager.handle_agent_event,
+            )
     return registry
 
 

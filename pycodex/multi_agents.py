@@ -181,8 +181,7 @@ class AgentsManager:
         if parent_agent_id is None:
             return
         runtime = self._runtimes[agent_id]
-        for tool in runtime.agent.tool_registry.tools():
-            tool.set_state_listener(None)
+        runtime.agent.tool_registry.runtime_environment.set_state_listener(None)
         del self._runtimes[agent_id]
         self._runtimes[parent_agent_id].publish_update("agents")
         self._notify_parents(parent_agent_id)

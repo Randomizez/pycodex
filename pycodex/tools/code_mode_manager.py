@@ -63,8 +63,9 @@ class CodeModeManager:
         self._state_listener = None
         self._closed = False
 
-    def set_output_handler(self, handler):
-        self._output_handler = handler
+    def bind(self, invoke, output, state_changed):
+        self._output_handler = output
+        self._state_listener = state_changed
 
     def restart(self):
         self._generation += 1
@@ -82,7 +83,7 @@ class CodeModeManager:
         if self._state_listener is not None:
             self._state_listener()
 
-    def snapshot(self):
+    def background_work_snapshot(self):
         return [
             {
                 "cell_id": cell.cell_id,
@@ -118,7 +119,7 @@ class CodeModeManager:
         self._stop_cell(cell)
         await asyncio.shield(cell.task)
 
-    def running_cell_count(self) -> "int":
+    def background_work_count(self, after_reply) -> "int":
         return sum(not cell.done_event.is_set() for cell in self._cells.values())
 
     async def exec(

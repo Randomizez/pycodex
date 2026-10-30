@@ -1424,6 +1424,7 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
     clock.set_period(1)
     tools = ToolRegistry()
     tools.register(ClockTool(clock))
+    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
     initial_history = (UserMessage("old prompt"),)
     agent = make_agent(
         ScriptedModelClient(response_factory=respond),
@@ -1561,22 +1562,16 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: failures.append(context))
 
-    class BrokenObserverTool(BaseTool):
-        name = "observer"
-        description = "Observes Agent lifecycle."
-
-        async def run(self, context, args):
-            return None
-
-        def handle_agent_event(self, event):
-            raise ValueError("tool observer unavailable")
+    def broken_observer(event):
+        raise ValueError("tool observer unavailable")
 
     async def fail(prompt, call_count):
         raise RuntimeError("background model failed")
 
     try:
         tools = ToolRegistry()
-        tools.register(BrokenObserverTool())
+        manager = tools.runtime_environment.clock_manager
+        tools.runtime_environment.register_resource("clock", manager, observer=broken_observer)
         agent = make_agent(
             ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
             tools,
@@ -1603,18 +1598,11 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
 
 @pytest.mark.asyncio
 async def test_background_count_failure_does_not_hide_terminal_event():
-    class BrokenCounterTool(BaseTool):
-        name = "counter"
-        description = "Reports background activity."
-
-        async def run(self, context, args):
-            return None
-
-        def background_work_count(self, after_reply):
-            raise ValueError("counter failed")
+    def broken_counter(after_reply):
+        raise ValueError("counter failed")
 
     tools = ToolRegistry()
-    tools.register(BrokenCounterTool())
+    tools.runtime_environment.background_work_count = broken_counter
     events = []
     errors = []
     agent = make_agent(

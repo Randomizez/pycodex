@@ -1,7 +1,9 @@
+import asyncio
 import typing
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
+from ..events import CompactStartedEvent, TerminalEvent, TurnStartedEvent
 from ..utils.compat import Literal
 from .clock_manager import ClockManager
 from .goal_manager import GoalManager
@@ -95,6 +97,57 @@ class AgentRuntimeEnvironment:
         self.plan_store = PlanStore()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
+        self._resources = {}
+        self._restart_handlers = []
+        self._close_handlers = []
+        self._event_handlers = []
+        self._bindings = None
+
+    def register_resource(self, name, manager, restart=None, close=None, observer=None):
+        """Register one shared manager, independently of its callable tools."""
+        if name in self._resources or manager in self._resources.values():
+            raise ValueError("resource already registered: " + name)
+        self._resources[name] = manager
+        for handler, handlers in (
+            (restart, self._restart_handlers), (close, self._close_handlers),
+            (observer, self._event_handlers),
+        ):
+            if handler is not None:
+                handlers.append(handler)
+
+    def bind(self, invoke, output, changed, request_input, request_permissions):
+        self._bindings = (invoke, output, lambda: changed("background_work"))
+        self.request_user_input_manager.set_handler(request_input)
+        self.request_permissions_manager.set_handler(request_permissions)
+        self.plan_store.set_listener(lambda _plan: changed("plan"))
+        for manager in self._resources.values():
+            manager.bind(*self._bindings)
+
+    def restart(self):
+        for restart in self._restart_handlers:
+            restart()
+        if self._bindings is not None:
+            for manager in self._resources.values():
+                manager.bind(*self._bindings)
+
+    def set_state_listener(self, listener):
+        for manager in self._resources.values():
+            manager.set_state_listener(listener)
+
+    def background_work_count(self, after_reply):
+        return sum(manager.background_work_count(after_reply) for manager in self._resources.values())
+
+    def background_work_snapshot(self):
+        return [
+            dict(item, tool=name)
+            for name, manager in self._resources.items()
+            for item in manager.background_work_snapshot()
+        ]
+
+    def event_observers(self, event):
+        return self._event_handlers if isinstance(
+            event, (TerminalEvent, TurnStartedEvent, CompactStartedEvent),
+        ) else []
 
     def dump_state(self):
         managers = {"clock": self.clock_manager.dump_state()}
@@ -135,8 +188,34 @@ class AgentRuntimeEnvironment:
     def follow_up_messages(self):
         return self.goal_manager.follow_up_messages()
 
-    def shutdown(self):
-        self.goal_manager.shutdown()
+    def take_continuation(self):
+        return self.goal_manager.take_continuation()
+
+    def shutdown(self, save_state):
+        try:
+            self.goal_manager.shutdown()
+            save_state()
+        finally:
+            for manager in self._resources.values():
+                manager.shutdown()
+
+    async def close(self):
+        await close_resources(self._close_handlers)
+
+
+async def close_resources(handlers):
+    errors = []
+    for handler in handlers:
+        try:
+            await handler()
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        for error in errors[1:]:
+            asyncio.get_running_loop().call_exception_handler(
+                {"message": "Session close handler failed", "exception": error}
+            )
+        raise errors[0]
 
 
 def create_agent_runtime_environment() -> "AgentRuntimeEnvironment":

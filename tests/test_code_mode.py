@@ -17,6 +17,7 @@ def make_manager(tmp_path):
     registry = ToolRegistry()
     manager = CodeModeManager(registry)
     registry.register(ExecTool(manager))
+    registry.runtime_environment.register_resource("exec", manager, restart=manager.restart, close=manager.close)
     return manager, registry, ToolContext("exec-test", (), tmp_path, call_id="exec-call")
 
 
@@ -327,7 +328,7 @@ async def test_errors_remain_cell_results_and_restore_task_factory(tmp_path, sou
 async def test_timers_exit_and_notify(tmp_path):
     manager, _, context = make_manager(tmp_path)
     notifications = []
-    manager.set_output_handler(notifications.append)
+    manager.bind(None, notifications.append, None)
     try:
         result = await manager.exec("""
 def stop():
@@ -456,10 +457,9 @@ async def test_runtime_close_cleans_up_a_yielded_cell(tmp_path):
         await runtime.start()
         receipt = await runtime.submit_input("start a cell")
         assert (await receipt.future).output_text == "done"
-        tool = runtime.agent.tool_registry.get_tool("exec")
-        assert tool.background_work_count(True) == 1
+        assert runtime.agent.tool_registry.runtime_environment.background_work_count(True) == 1
         await runtime.close()
-        assert tool.background_work_count(True) == 0
+        assert runtime.agent.tool_registry.runtime_environment.background_work_count(True) == 0
         assert loop.get_task_factory() is previous_factory
     finally:
         await runtime.close()

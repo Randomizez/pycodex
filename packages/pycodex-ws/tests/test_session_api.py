@@ -253,6 +253,7 @@ async def test_clock_inventory_exposes_deadline_without_changing_tool_output(tmp
     clock = ClockManager()
     tools = ToolRegistry()
     tools.register(ClockTool(clock))
+    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
     session = make_session(tools=tools, cwd=tmp_path)
     await session.start()
     try:

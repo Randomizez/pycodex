@@ -825,6 +825,7 @@ def test_runtime_connects_exec_completion_hook_from_tool_registry(tool_name) -> 
     tool = ExecCommandTool(manager)
     tool.name = tool_name
     tools.register(tool)
+    tools.runtime_environment.register_resource(tool_name, manager)
     agent = make_agent(
         ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
         tools,
@@ -845,6 +846,7 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
     manager = ClockManager(seconds_per_minute=0.01)
     tools = ToolRegistry()
     tools.register(ClockTool(manager))
+    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -912,6 +914,7 @@ async def test_runtime_shutdown_cancels_clock_and_discards_queued_tools() -> "No
     clock = ClockTool(manager)
     clock.exec_only = False
     tools.register(clock)
+    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
     model = ScriptedModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="done")]),
@@ -952,12 +955,13 @@ async def test_agent_turn_completed_counts_background_exec_work() -> "None":
     tools = ToolRegistry()
     manager = UnifiedExecManager()
     tools.register(ExecCommandTool(manager))
+    tools.runtime_environment.register_resource("exec_command", manager)
     agent = make_agent(
         ScriptedModelClient([ModelResponse(items=[AssistantMessage(text="done")])]),
         tools,
         ContextConfig(),
     )
-    manager.running_session_count = lambda: 2
+    manager.background_work_count = lambda after_reply: 2
     events = []
     agent.event_handler = events.append
 

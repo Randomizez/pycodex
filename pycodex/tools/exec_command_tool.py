@@ -22,9 +22,6 @@ from .unified_exec_manager import (
     UnifiedExecManager,
 )
 
-if typing.TYPE_CHECKING:
-    from ..runtime import AgentRuntime
-
 MIN_EXEC_YIELD_TIME_MS = 250
 MAX_EXEC_YIELD_TIME_MS = 30_000
 
@@ -76,21 +73,6 @@ class ExecCommandTool(BaseTool):
 
     def __init__(self, manager: "UnifiedExecManager") -> "None":
         self._manager = manager
-
-    def bind_runtime(self, runtime: "AgentRuntime") -> "None":
-        self._manager.set_notify_hook(runtime.maybe_invoke)
-
-    def shutdown(self) -> "None":
-        self._manager.set_notify_hook(None)
-
-    def background_work_count(self, after_reply: "bool") -> "int":
-        return self._manager.running_session_count()
-
-    def background_work_snapshot(self):
-        return self._manager.snapshot()
-
-    def set_state_listener(self, listener):
-        self._manager.set_state_listener(listener)
 
     async def run(self, context: "ToolContext", args: "JSONDict") -> "JSONValue":
         cmd = str(args.get("cmd", "")).strip()

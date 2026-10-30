@@ -5,6 +5,7 @@ import math
 import typing
 from datetime import datetime, timedelta
 
+from ..events import CompactCompletedEvent, CompactStartedEvent, TurnCompletedEvent, TurnStartedEvent
 from ..protocol import JSONDict
 
 
@@ -22,11 +23,18 @@ class ClockManager:
         self._state_listener = None
         self._notify_hook: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]" = (None)
 
-    def set_notify_hook(
-        self,
-        callback: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]",
-    ) -> "None":
-        self._notify_hook = callback
+    def bind(self, invoke, output, state_changed):
+        self._notify_hook = invoke
+        self._state_listener = state_changed
+
+    def handle_agent_event(self, event):
+        if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
+            self.turn_started()
+        elif isinstance(event, (TurnCompletedEvent, CompactCompletedEvent)):
+            self.arm_after_reply()
+
+    def background_work_count(self, after_reply):
+        return int(self.enabled if after_reply else self.armed)
 
     def set_state_listener(self, listener):
         self._state_listener = listener
@@ -35,8 +43,8 @@ class ClockManager:
         if self._state_listener is not None:
             self._state_listener()
 
-    def background_snapshot(self):
-        return dict(
+    def background_work_snapshot(self):
+        return [dict(
             self.snapshot(),
             kind="clock",
             next_fire_at=self._next_fire_at,
@@ -44,7 +52,7 @@ class ClockManager:
                 "armed" if self._next_fire_at is not None
                 else "paused" if self.enabled else "disabled"
             ),
-        )
+        )]
 
     @staticmethod
     def _parse_period(value):

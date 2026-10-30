@@ -31,6 +31,7 @@ from .events import (
 )
 from .model import ModelControl
 from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
+from .tools.runtime_services import close_resources
 from .utils import uuid7_string
 from .utils.event_helpers import shorten_title
 from .utils.truncation import truncate_tool_result_for_history
@@ -155,12 +156,11 @@ class AgentRuntime:
         self._last_agent_status: "typing.Union[str, dict]" = "pending_init"
         self._recorded_rollout_path = agent.recorded_session_file_path
         environment = agent.tool_registry.runtime_environment
-        environment.request_user_input_manager.set_handler(self._request_user_input)
-        environment.request_permissions_manager.set_handler(self._request_permissions)
-        environment.plan_store.set_listener(lambda _plan: self.publish_update("plan"))
-        for tool in self.agent.tool_registry.tools():
-            tool.bind_runtime(self)
-            tool.set_state_listener(lambda: self.publish_update("background_work"))
+        environment.bind(
+            self.maybe_invoke, self.receive_tool_output, self.publish_update,
+            self._request_user_input, self._request_permissions,
+        )
+        environment.restart()
 
     def attach(self, event_handler, interactive=True):
         frontend_id = uuid7_string()
@@ -221,10 +221,7 @@ class AgentRuntime:
             "max_context_window": agent.context_manager.resolve_model_max_context_window(),
             "auto_compact_token_limit": agent.context_manager.resolve_auto_compact_token_limit(),
             "usage_tokens": execution.usage_tokens,
-            "background_work_count": sum(
-                tool.background_work_count(False)
-                for tool in agent.tool_registry.tools()
-            ),
+            "background_work_count": agent.tool_registry.runtime_environment.background_work_count(False),
             "input_request": self._input_request_event(),
             "plan": agent.tool_registry.runtime_environment.plan_store.snapshot(),
         }
@@ -290,11 +287,7 @@ class AgentRuntime:
         }
 
     def background_work_snapshot(self):
-        return [
-            dict(item, tool=tool.name)
-            for tool in self.agent.tool_registry.tools()
-            for item in tool.background_work_snapshot()
-        ]
+        return self.agent.tool_registry.runtime_environment.background_work_snapshot()
 
     async def list_models(self):
         return await self.agent.model_client.list_models()
@@ -331,8 +324,7 @@ class AgentRuntime:
         self.agents_manager.get_runtime(self.agent.agent_id)
         self.require_idle("resume")
         resumed = self.agent.resume(path)
-        for tool in self.agent.tool_registry.tools():
-            tool.bind_runtime(self)
+        self.agent.tool_registry.runtime_environment.restart()
         if resumed is not None:
             self.title = title or str(resumed["title"])
         if self._worker is not None and not self._worker.done():
@@ -645,10 +637,7 @@ class AgentRuntime:
             and not self._active_commands
             and self._input_request is None
             and not self._steer_queue
-            and not any(
-                tool.background_work_count(True)
-                for tool in self.agent.tool_registry.tools()
-            )
+            and not self.agent.tool_registry.runtime_environment.background_work_count(True)
         )
 
     async def submit_user_turn(self, text: "str") -> "TurnResult":
@@ -787,33 +776,16 @@ class AgentRuntime:
             if self._command_tasks:
                 await asyncio.gather(*tuple(self._command_tasks))
             async with self._get_command_lock():
-                await self._close_resources()
+                await close_resources([
+                    lambda: self.agents_manager.shutdown_children(self.agent.agent_id),
+                    self.agent.tool_registry.runtime_environment.close,
+                ] + self._close_handlers)
         finally:
             try:
                 self.agent.shutdown()
             finally:
                 self._publish(SessionClosedEvent())
                 self.agents_manager.unregister_runtime(self.agent.agent_id)
-
-    async def _close_resources(self):
-        errors = []
-        handlers = [
-            lambda: self.agents_manager.shutdown_children(self.agent.agent_id),
-        ] + self._close_handlers
-        for handler in handlers:
-            try:
-                await handler()
-            except Exception as exc:
-                errors.append(exc)
-        if errors:
-            for error in errors[1:]:
-                asyncio.get_running_loop().call_exception_handler(
-                    {
-                        "message": "Session close handler failed",
-                        "exception": error,
-                    }
-                )
-            raise errors[0]
 
     async def _next_submission(self) -> "typing.Union[typing.Tuple[_QueuedSubmission, typing.List[str]], None]":
         while True:
@@ -827,7 +799,7 @@ class AgentRuntime:
                 queued = self._enqueue_queue.popleft()
                 return queued, list(queued.texts)
             if not self._steer_queue:
-                continuation = self.agent.tool_registry.runtime_environment.goal_manager.take_continuation()
+                continuation = self.agent.tool_registry.runtime_environment.take_continuation()
                 if continuation is not None:
                     # Let reply consumers close or submit input before autonomous work.
                     await asyncio.sleep(0)

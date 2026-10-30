@@ -306,7 +306,7 @@ async def test_capacity_cleanup_failure_is_visible_and_does_not_spawn(tmp_path, 
     if failure == "close_handler":
         child.add_close_handler(fail_cleanup)
     else:
-        monkeypatch.setattr(tool, "shutdown", fail_shutdown)
+        monkeypatch.setattr(tool._manager, "shutdown", fail_shutdown)
     try:
         with pytest.raises(ValueError, match="cleanup failed"):
             await spawn(root, "replacement")
@@ -373,13 +373,13 @@ async def test_capacity_preserves_running_code_mode_cell(tmp_path):
         tool = registry.get_tool("exec")
         cell = next(iter(tool._manager._cells.values()))
         await asyncio.wait_for(entered.wait(), 2)
-        assert tool.background_work_count(True) == 1
+        assert child.agent.tool_registry.runtime_environment.background_work_count(True) == 1
         with pytest.raises(RuntimeError, match="capacity reached"):
             await spawn(root, "blocked")
         assert child.accepts_input
         release.set()
         await asyncio.wait_for(cell.task, 2)
-        assert tool.background_work_count(True) == 0
+        assert child.agent.tool_registry.runtime_environment.background_work_count(True) == 0
         await spawn(root, "replacement")
         assert child.agent.is_shutdown
     finally:

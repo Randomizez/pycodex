@@ -96,32 +96,12 @@ class ExecTool(BaseTool):
 
     def __init__(self, manager: "CodeModeManager") -> "None":
         self._manager = manager
-        self._runtime = None
 
     def spec(self):
         return replace(
             super().spec(),
             description=self.description + self._manager.describe_tools(),
         )
-
-    def bind_runtime(self, runtime):
-        self._manager.restart()
-        self._manager.set_output_handler(runtime.receive_tool_output)
-        if self._runtime is not runtime:
-            runtime.add_close_handler(self._manager.close)
-            self._runtime = runtime
-
-    def shutdown(self):
-        self._manager.shutdown()
-
-    def set_state_listener(self, listener):
-        self._manager.set_state_listener(listener)
-
-    def background_work_snapshot(self):
-        return self._manager.snapshot()
-
-    def background_work_count(self, after_reply: "bool") -> "int":
-        return self._manager.running_cell_count()
 
     async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
         if not isinstance(args, str):

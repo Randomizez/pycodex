@@ -59,7 +59,7 @@ boundaries instead of adding another Session wrapper or `SubmissionQueue` alias.
 | `Agent` | Serial execution, local admission and cooperative stop flags, final shutdown, history, usage, context, rollout, identity and model/tool dependencies |
 | `AgentRuntime` | Frontend interfaces, session commands, enqueue/mailbox/trigger state, receipts, title/state snapshots, subscriptions, interactive requests and worker lifecycle |
 | `ToolRegistry` | Tool instances and their session-local runtime environment |
-| `AgentRuntimeEnvironment` | Clock manager, plan, user-input and permissions services; manager state snapshots |
+| `AgentRuntimeEnvironment` | Tool resource bindings, lifecycle, background work, goal continuation, plan/input services and restorable manager state |
 | `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, lifecycle observation and recursive close |
 | CLI / web / Feishu | Input transport and event rendering; no command interpretation or direct Agent control |
 
@@ -503,7 +503,7 @@ failure, and the Web adapter stops and joins its thread after session cleanup,
 including on failure; startup failure closes the partially started session.
 
 Direct Agent callers can use `ask` and `run_turn` without a submission queue.
-Exec and clock wake-ups require tools bound to a Runtime.
+Exec and clock wake-ups require the environment's explicit Runtime callbacks.
 This does not make arbitrary dependency replacement a supported mid-turn
 operation. `history` remains an immutable snapshot; model-name and admission
 properties still derive their values from the owning component.
@@ -531,8 +531,9 @@ file handle requiring another shutdown task.
 
 Recorded Agents save the environment's restorable manager state alongside the
 rollout in `<rollout-path>.state.json`. The environment aggregates manager-owned
-data; tools have no persistence interface. The current version records only the
-clock's `period_m` (`null` disables it), not timer Tasks, callbacks or deadlines.
+data; tools have no persistence interface. The current version records the
+clock's `period_m` (`null` disables it) and optional goal state, not timer Tasks,
+callbacks or deadlines.
 The Agent saves after committing a tool result and before tool shutdown. The
 recorder skips unchanged snapshots and atomically replaces changed snapshots;
 write errors propagate, and final tool cleanup still runs after a save failure.
@@ -545,7 +546,7 @@ unsupported state fails before replacing the current session. Restoring data
 does not start a timer. Runtime startup, or resume in an already-running Runtime,
 starts a fresh full period after binding callbacks. No-argument resume retains
 the in-memory configuration. Session snapshots count current background work
-directly from tools; attach/history presentation restores `idle: sleeping` for
+from registered resources; attach/history presentation restores `idle: sleeping` for
 an armed clock without requiring another reply. Resuming a session without
 background work clears that status. Keep the snapshot alongside its rollout when
 copying a recorded session; Portable configuration bundles exclude both.
@@ -667,7 +668,8 @@ are rejected; late background outputs and child completion notifications do not
 enqueue work in a closing Runtime. `start()` cannot reopen a closing Runtime;
 explicit `resume()` is required after shutdown.
 The worker then waits for accepted command work and the command lock, closes
-children and connections, and calls `Agent.shutdown()`. Tool shutdown hooks run once at that final boundary,
+children, environment resources and connections, and calls `Agent.shutdown()`.
+Environment shutdown runs once at that final boundary,
 after accepted work can no longer rearm them. Completion comes from the worker,
 not a separate shutdown future. Direct `Agent.shutdown()` disables background
 hooks and rejects new calls without interrupting an active call.
@@ -682,7 +684,7 @@ are reported; this removes serial child-cleanup waits without cancelling turns.
 A closed child Runtime is unregistered after publishing `SessionClosedEvent`,
 including when resource cleanup or tool shutdown reports an error. Its task path
 is released. The root stays registered for the session lifecycle;
-`runtime.resume()` without a path reopens a registered Runtime and rebinds tools.
+`runtime.resume()` without a path reopens a registered Runtime and restarts its environment.
 Runtime and workspace close wait for issued model/tool operations to finish.
 There is no close timeout that cancels a turn: if a request never finishes,
 close keeps waiting.
@@ -1489,11 +1491,20 @@ activity or a cooperative stop. The default is 30000 ms; values below 10000 ms
 are clamped with an explanatory message, and values above 3600000 ms are rejected.
 It does not accept IDs or return a status map.
 
-Tools with background work implement the small `BaseTool.bind_runtime`,
-`handle_agent_event`, `shutdown`, and `background_work_count` hooks.
-Exec/clock tools wire their managers; `ClockManager` is owned by the registry's
-`AgentRuntimeEnvironment` and is shared with its clock tool.
-The Agent does not inspect their names, concrete classes, or private attributes.
+`BaseTool` only provides `spec`, `serialize`, `run` and `follow_up_messages`.
+Factories register shared managers once with
+`environment.register_resource(name, manager, restart=None, close=None, observer=None)`.
+Managers implement `bind(invoke, output, state_changed)`, `shutdown`,
+`set_state_listener`, `background_work_count` and `background_work_snapshot`.
+Optional restart, async cleanup and event callbacks are registered explicitly.
+Environment binds Runtime capabilities without passing a Runtime object to tools;
+binding alone does not retire cells. Runtime construction and resume explicitly
+restart the environment; CodeModeManager retains its generation isolation and
+waits for retired cells during cleanup. `environment.close()` drains registered
+async cleanup; `Agent.shutdown()` accounts and saves state, then stops resources.
+Standalone callers can await environment close as well. Unified exec shutdown
+only disconnects notifications: subprocess survival and output readers retain
+their existing behavior. Goal continuation is requested through the environment.
 Clock countdowns pause on turn/manual-compact start events and rearm on success,
 including successful manual compaction. Terminal events retain the single
 aggregate `background_work_count`.

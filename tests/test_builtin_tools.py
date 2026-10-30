@@ -52,6 +52,8 @@ def make_registry() -> "ToolRegistry":
     registry.register(WriteStdinTool(manager))
     registry.register(ExecTool(code_mode_manager))
     registry.register(WaitTool(code_mode_manager))
+    registry.runtime_environment.register_resource("exec_command", manager)
+    registry.runtime_environment.register_resource("exec", code_mode_manager, restart=code_mode_manager.restart, close=code_mode_manager.close)
     registry.register(WebSearchTool())
     registry.register(UpdatePlanTool(PlanStore()))
     registry.register(ApplyPatchTool())
@@ -408,7 +410,7 @@ async def test_exec_command_notifies_hook_when_background_session_exits(
         notified.set()
 
     manager = UnifiedExecManager()
-    manager.set_notify_hook(on_completed)
+    manager.bind(on_completed, None, None)
     output = await manager.exec_command(
         "printf done",
         cwd=tmp_path,
@@ -474,11 +476,11 @@ async def test_exec_manager_reports_running_sessions(tmp_path) -> "None":
     )
 
     assert "Process running with session ID " in output
-    assert manager.running_session_count() == 1
+    assert manager.background_work_count(False) == 1
 
     await manager.write_stdin(1000, yield_time_ms=1_000)
 
-    assert manager.running_session_count() == 0
+    assert manager.background_work_count(False) == 0
 
 
 @pytest.mark.asyncio
@@ -609,7 +611,7 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
             child_pid = int(pid_path.read_text(encoding="utf-8"))
         assert "Process exited with code 0" in finish
         assert "parent exiting" in finish
-        assert manager.running_session_count() == 0
+        assert manager.background_work_count(False) == 0
         assert await manager.write_stdin(
             session_id, yield_time_ms=1
         ) == "Error: session_id {0} is not running.".format(session_id)
@@ -1411,6 +1413,8 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     registry = ToolRegistry()
     registry.register(ClockTool(clock_manager))
     registry.register(ExecCommandTool(exec_manager))
+    registry.runtime_environment.register_resource("clock", clock_manager, observer=clock_manager.handle_agent_event)
+    registry.runtime_environment.register_resource("exec_command", exec_manager)
     agent = make_agent(
         ScriptedModelClient([]),
         registry,

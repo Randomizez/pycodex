@@ -18,7 +18,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ..events import Event
 from ..protocol import (
     ConversationItem,
     JSONDict,
@@ -30,9 +29,6 @@ from ..protocol import (
 )
 from ..utils import get_debug_dir
 from .runtime_services import AgentRuntimeEnvironment
-
-if typing.TYPE_CHECKING:
-    from ..runtime import AgentRuntime
 
 
 @dataclass(
@@ -103,24 +99,6 @@ class BaseTool(ABC):
         self, output: "JSONValue"
     ) -> "typing.Tuple[UserMessage, ...]":
         return ()
-
-    def bind_runtime(self, runtime: "AgentRuntime") -> "None":
-        pass
-
-    def handle_agent_event(self, event: "Event") -> "None":
-        pass
-
-    def shutdown(self) -> "None":
-        pass
-
-    def background_work_count(self, after_reply: "bool") -> "int":
-        return 0
-
-    def background_work_snapshot(self) -> "typing.List[JSONDict]":
-        return []
-
-    def set_state_listener(self, listener) -> "None":
-        pass
 
 
 class ToolRegistry:

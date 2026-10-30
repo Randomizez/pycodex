@@ -416,12 +416,14 @@ async def test_background_notification_steer_reports_only_failures(source, faile
             1000, CompletedProcess(), 0.0, "completed command", False,
         )
         tools.register(ExecCommandTool(manager))
+        tools.runtime_environment.register_resource("exec_command", manager)
         notification = manager._notify_when_session_completes(1000)
         tag = "exec_command_completed"
     else:
         manager = ClockManager(seconds_per_minute=0.001)
         manager.set_period(1)
         tools.register(ClockTool(manager))
+        tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
         notification = manager._wait_and_notify(manager._generation, 1)
         tag = "clock_tick"
 

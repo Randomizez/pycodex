@@ -129,13 +129,14 @@ class UnifiedExecManager:
         self._state_listener = None
         self._notify_hook: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]" = (None)
 
-    def set_notify_hook(
-        self,
-        callback: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]",
-    ) -> "None":
-        self._notify_hook = callback
+    def bind(self, invoke, output, state_changed):
+        self._notify_hook = invoke
+        self._state_listener = state_changed
 
-    def running_session_count(self) -> "int":
+    def shutdown(self):
+        self._notify_hook = None
+
+    def background_work_count(self, after_reply) -> "int":
         return sum(
             1
             for session in self._sessions.values()
@@ -149,7 +150,7 @@ class UnifiedExecManager:
         if self._state_listener is not None:
             self._state_listener()
 
-    def snapshot(self):
+    def background_work_snapshot(self):
         with self._lock:
             return [
                 {
