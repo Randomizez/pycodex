@@ -41,6 +41,24 @@ steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 ses
 
 ## 配置读取与 profile
 
+启动入口使用 `CodexConfig.from_env(config_path, profile, use_default_profile=True)`。
+它沿用既有 dotenv 加载规则，读取一次选中的 TOML，返回 `path`、实际 `profile`
+和冻结的 `provider` / `context` 配置。`from_env()` 默认仍读取
+`~/.codex/config.toml`；显式路径及其相邻 `.env` 不变。API key 只保存环境变量名，
+每次请求由 `api_key()` 动态读取，不在加载时冻结凭据。
+
+`build_model(config.provider)` 只构造模型及所需服务，不再接收路径或重复加载；
+`AgentsManager(client, config.context)` 接收上下文配置。覆盖参数直接使用
+`dataclasses.replace(config.context, cwd=work_dir)` 或
+`replace(config.provider, reasoning_effort=None)`，省略的字段保留原值，
+显式 `None` 清除原值；不使用特殊的 config `with_overrides`。
+客户端的 `with_overrides` 用于创建子客户端，其 `None` 参数仍表示继承。
+`CompatServerConfig` 同样通过 `replace(config, port=0)` 修改。
+
+单独读取组件时仍可使用 `from_codex_config`；它们和统一入口共用
+`from_mapping` 解码，后者接收已合并的配置。Context 解码仍基于原配置路径
+解析相对文件和读取 home AGENTS，dotenv 只在启动加载边界处理。
+
 `ResponsesProviderConfig` 和 `ContextConfig` 共用
 `pycodex.utils.codex_config.read_codex_config`。先读基础配置，再将同目录的
 `<name>.config.toml` 或基础配置内的 `[profiles.<name>]` 作为覆盖层；显式 `--config`

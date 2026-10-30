@@ -7,6 +7,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python 3.10 and earlier
     import tomli as tomllib
 
+DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
+
 
 def read_codex_config(
     config_path: "typing.Union[str, Path]",

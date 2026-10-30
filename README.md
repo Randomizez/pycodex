@@ -184,17 +184,17 @@ Use the standard model and tool setup from Python:
 ```python
 import atexit
 
-from pycodex import AgentsManager, ContextConfig
+from pycodex import AgentsManager, CodexConfig
 from pycodex.bootstrap import build_model
-from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.utils.async_bridge import run_async
 
 async def main():
-    bootstrap = build_model()
+    config = CodexConfig.from_env()
+    bootstrap = build_model(config.provider)
     if bootstrap.owned_server is not None:
         atexit.register(bootstrap.owned_server.stop)
     runtime = AgentsManager(
-        bootstrap.client, ContextConfig.from_codex_config(DEFAULT_CODEX_CONFIG_PATH),
+        bootstrap.client, config.context,
     ).create_root_runtime()
     await runtime.start()
     try:
@@ -206,6 +206,10 @@ async def main():
 run_async(main())
 ```
 
+`CodexConfig.from_env(path, profile)` loads the selected TOML and adjacent `.env`
+once for startup. Pass `config.provider` to `build_model` and `config.context` to
+`AgentsManager`; use `dataclasses.replace` for explicit overrides, including `None`.
+API keys are still read from the environment when requests are sent.
 `build_model` returns `ModelBootstrapResult(client, owned_server)`. The caller owns
 any locally started compatibility server; `close()` stops only that server.
 CLI and workspace entry points retain process-exit cleanup for these services.

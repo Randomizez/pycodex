@@ -111,9 +111,17 @@ class ContextConfig:
         profile: "typing.Union[str, None]" = None,
         use_default_profile: "bool" = True,
     ) -> "ContextConfig":
-        path = Path(config_path)
-        selected = read_codex_config(path, profile, use_default_profile)
+        return cls.from_mapping(
+            read_codex_config(config_path, profile, use_default_profile), config_path,
+        )
 
+    @classmethod
+    def from_mapping(
+        cls,
+        selected: "typing.Mapping[str, typing.Any]",
+        config_path: "typing.Union[str, Path]",
+    ) -> "ContextConfig":
+        path = Path(config_path)
         model_instructions_file = selected.get("model_instructions_file")
         resolved_file = None
         if model_instructions_file:

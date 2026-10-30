@@ -20,6 +20,7 @@ from pycodex import (
     ToolResult,
 )
 from pycodex.bootstrap import ModelBootstrapResult, build_model
+from pycodex.config import CodexConfig
 from pycodex.multi_agents import AgentsManager
 from pycodex.cli import (
     CliSessionView,
@@ -143,7 +144,8 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
         options["vllm_endpoint"] = "http://127.0.0.1:18000"
     else:
         options["managed_responses_base_url"] = server.base_url
-    bootstrap = build_model(str(config_path), timeout_seconds=17, **options)
+    config = CodexConfig.from_env(config_path)
+    bootstrap = build_model(config.provider, timeout_seconds=17, **options)
     client = bootstrap.client
     assert client._config.base_url == server.base_url
     assert client.endpoint == server.base_url
@@ -161,7 +163,7 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
             "messages" if mode == "messages" else "chat_completions"
         )
     with pytest.raises(ValueError, match="cannot be combined"):
-        build_model(str(config_path), use_chat_completion=True, use_messages=True)
+        build_model(config.provider, use_chat_completion=True, use_messages=True)
 
 
 @pytest.mark.asyncio
@@ -207,7 +209,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
     config_path, monkeypatch, capsys, json_mode
 ):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: ModelBootstrapResult(client))
+    monkeypatch.setattr("pycodex.cli.build_model", lambda config, **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(
         ["--config", str(config_path)] + (["--json"] if json_mode else []) + ["hello"],
     )
@@ -223,7 +225,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
 @pytest.mark.asyncio
 async def test_cli_exit_code_and_command_dispatch(config_path, monkeypatch, capsys):
     client = ScriptedModelClient([])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: ModelBootstrapResult(client))
+    monkeypatch.setattr("pycodex.cli.build_model", lambda config, **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(["--config", str(config_path), "/help"])
     assert await run_cli(args) == 0
     assert "/resume" in capsys.readouterr().out

@@ -118,10 +118,9 @@ async def collect_doctor_report(
     load_codex_dotenv(config_file)
 
     try:
-        report.profile = read_codex_config(config_file, profile)["profile"]
-        provider_config = ResponsesProviderConfig.from_codex_config(
-            config_file, report.profile
-        )
+        selected = read_codex_config(config_file, profile)
+        report.profile = selected["profile"]
+        provider_config = ResponsesProviderConfig.from_mapping(selected)
     except Exception as exc:
         checks.append(
             DoctorCheck("config_parse", False, f"{type(exc).__name__}: {exc}")

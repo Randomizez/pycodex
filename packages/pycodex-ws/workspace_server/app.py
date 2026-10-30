@@ -40,7 +40,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.bootstrap import build_model, configure_loguru
-from pycodex.context import ContextConfig
+from pycodex.config import CodexConfig, DEFAULT_CODEX_CONFIG_PATH
 from pycodex.events import (
     IDLE_SLEEPING_STATUS,
     AssistantDeltaEvent,
@@ -72,7 +72,6 @@ from pycodex.events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
-from pycodex.model import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.multi_agents import AgentsManager
 from pycodex.utils import uuid7_string
 from pycodex.utils.compat import importlib_metadata
@@ -2420,21 +2419,20 @@ def _build_workspace_entry(
     profiles = list_codex_profiles(args.config)
 
     def build_session(profile) -> "WorkspaceInteractiveSession":
+        config = CodexConfig.from_env(
+            args.config, profile, use_default_profile=False,
+        )
         bootstrap = build_model(
-            config_path=args.config,
-            profile=profile,
+            config.provider,
             timeout_seconds=args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion or None,
             use_messages=args.use_messages,
-            use_default_profile=False,
         )
         if bootstrap.owned_server is not None:
             atexit.register(bootstrap.owned_server.stop)
         context_config = replace(
-            ContextConfig.from_codex_config(
-                args.config, profile, use_default_profile=False,
-            ),
+            config.context,
             base_instructions_override=args.system_prompt,
             extra_contextual_user_messages=(
                 (_workspace_context_text(definition.board_path),)

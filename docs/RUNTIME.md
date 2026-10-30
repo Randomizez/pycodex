@@ -126,7 +126,9 @@ CLI / Web / Feishu -> AgentRuntime -> Agent
 VS Code -> workspace_server HTTP -> AgentRuntime
 ```
 
-`pycodex.bootstrap.build_model` returns `ModelBootstrapResult(client, owned_server)`.
+`CodexConfig.from_env(config_path, profile)` loads startup settings once and
+provides frozen provider/context configs. `pycodex.bootstrap.build_model(config.provider)`
+returns `ModelBootstrapResult(client, owned_server)` without reading configuration.
 Callers pass `client` to the runtime tree and own the optional server handle;
 `close()` stops only a server created by that build, never an external endpoint.
 CLI and workspace entry points register the owned server's stop at process exit,

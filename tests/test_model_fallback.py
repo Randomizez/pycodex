@@ -91,7 +91,7 @@ def test_fallback_config(tmp_path):
     config = ResponsesProviderConfig.from_codex_config(path)
     assert config.fallback_models == ("backup", "last")
     assert config.fallback_cooldown_seconds == 900
-    assert config.with_overrides(model="other").fallback_models == ("backup", "last")
+    assert replace(config, model="other").fallback_models == ("backup", "last")
 
 
 @pytest.mark.parametrize("value", ['"backup"', '[""]', "[1]", '["has space"]'])

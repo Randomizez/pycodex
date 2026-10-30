@@ -13,7 +13,7 @@ import threading
 from dataclasses import replace
 from pathlib import Path
 
-from pycodex import AgentsManager, ContextConfig
+from pycodex import AgentsManager, CodexConfig
 from pycodex.bootstrap import build_model
 from pycodex.utils.compat import ThreadingHTTPServer
 from tests.compare_steer_request_bodies import scripted_origin_server
@@ -186,8 +186,9 @@ def run_codex(workspace, capture_root, environment, timeout, resume, codex_binar
 
 async def run_pycodex(config, workspace, resume):
     def new_runtime():
-        context = replace(ContextConfig.from_codex_config(config), cwd=workspace)
-        bootstrap = build_model(str(config))
+        loaded = CodexConfig.from_env(config)
+        context = replace(loaded.context, cwd=workspace)
+        bootstrap = build_model(loaded.provider)
         if bootstrap.owned_server is not None:
             atexit.register(bootstrap.owned_server.stop)
         return AgentsManager(bootstrap.client, context).create_root_runtime()

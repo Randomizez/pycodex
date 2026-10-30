@@ -16,7 +16,7 @@ import requests
 from urllib3.exceptions import ReadTimeoutError
 
 from .utils.compat import Protocol
-from .utils.codex_config import read_codex_config
+from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
 
 from .events import (
     AssistantDeltaEvent,
@@ -40,7 +40,6 @@ from .protocol import (
 )
 from .utils import build_user_agent, uuid7_string
 
-DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 ModelStreamEventHandler = Callable[[ModelEvent], None]
@@ -132,8 +131,14 @@ class ResponsesProviderConfig:
         profile: "typing.Union[str, None]" = None,
         use_default_profile: "bool" = True,
     ) -> "ResponsesProviderConfig":
-        selected = read_codex_config(config_path, profile, use_default_profile)
+        return cls.from_mapping(
+            read_codex_config(config_path, profile, use_default_profile)
+        )
 
+    @classmethod
+    def from_mapping(
+        cls, selected: "typing.Mapping[str, typing.Any]",
+    ) -> "ResponsesProviderConfig":
         provider_name = selected.get("model_provider", "openai")
         provider = selected.get("model_providers", {}).get(provider_name)
         if provider is None:
@@ -202,19 +207,6 @@ class ResponsesProviderConfig:
                 f"missing API key environment variable: {self.api_key_env}"
             )
         return value
-
-    def with_overrides(
-        self,
-        model: "typing.Union[str, None]" = None,
-        reasoning_effort: "typing.Union[str, None]" = None,
-    ) -> "ResponsesProviderConfig":
-        return replace(
-            self,
-            model=self.model if model is None else model,
-            reasoning_effort=(
-                self.reasoning_effort if reasoning_effort is None else reasoning_effort
-            ),
-        )
 
     def effective_stream_max_retries(self) -> "int":
         if self.stream_max_retries is None:
@@ -505,9 +497,13 @@ class ResponsesModelClient:
         openai_subagent: "typing.Union[str, None]" = None,
     ) -> "ResponsesModelClient":
         return ResponsesModelClient(
-            self._config.with_overrides(
-                model or self.model,
-                reasoning_effort,
+            replace(
+                self._config,
+                model=model or self.model,
+                reasoning_effort=(
+                    self._config.reasoning_effort
+                    if reasoning_effort is None else reasoning_effort
+                ),
             ),
             self._timeout_seconds,
             session_id=self._session_id if session_id is None else session_id,

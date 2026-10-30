@@ -1108,7 +1108,7 @@ def test_boardless_workspace_preserves_context_and_tools(
     model_config = tmp_path / "model.toml"
     model_config.write_text('model = "test"\n', encoding="utf-8")
     model = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: ModelBootstrapResult(model))
+    monkeypatch.setattr("workspace_server.app.build_model", lambda config, **kwargs: ModelBootstrapResult(model))
     args = build_parser().parse_args(
         [
             "--workspace-config",

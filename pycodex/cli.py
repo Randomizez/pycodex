@@ -20,9 +20,9 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 
 from .bootstrap import build_model, configure_loguru
-from .context import ContextConfig
+from .config import CodexConfig, DEFAULT_CODEX_CONFIG_PATH
 from .events import DEFAULT_MAIN_PROMPT, EventDisplay
-from .model import DEFAULT_CODEX_CONFIG_PATH, ModelControl
+from .model import ModelControl
 from .multi_agents import AgentsManager
 from .portable import bootstrap_called_home, upload_codex_home
 from .utils import get_debug_dir
@@ -145,9 +145,9 @@ async def run_cli(args):
             phase("bootstrap_called_home:done")
             os.environ["CODEX_HOME"] = str(config_path.parent)
         phase("build_model:start")
+        config = CodexConfig.from_env(config_path, args.profile)
         bootstrap = build_model(
-            config_path=str(config_path),
-            profile=args.profile,
+            config.provider,
             timeout_seconds=args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
             use_chat_completion=args.use_chat_completion or None,
@@ -158,7 +158,7 @@ async def run_cli(args):
         phase("build_model:done")
         phase("create_root_runtime:start")
         context_config = replace(
-            ContextConfig.from_codex_config(config_path, args.profile),
+            config.context,
             base_instructions_override=args.system_prompt,
         )
         runtime = AgentsManager(bootstrap.client, context_config).create_root_runtime()

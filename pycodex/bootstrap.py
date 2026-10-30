@@ -2,14 +2,12 @@ import os
 import sys
 import typing
 from dataclasses import dataclass, replace
-from pathlib import Path
 
 from .model import (
-    DEFAULT_CODEX_CONFIG_PATH,
     ResponsesModelClient,
     ResponsesProviderConfig,
 )
-from .utils import get_debug_dir, load_codex_dotenv
+from .utils import get_debug_dir
 
 if typing.TYPE_CHECKING:
     from responses_server import ManagedResponseServer
@@ -88,21 +86,13 @@ def configure_loguru() -> "None":
 
 
 def build_model(
-    config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
-    profile: "typing.Union[str, None]" = None,
+    provider_config: "ResponsesProviderConfig",
     timeout_seconds: "float" = 120.0,
     managed_responses_base_url: "typing.Union[str, None]" = None,
     vllm_endpoint: "typing.Union[str, None]" = None,
     use_chat_completion: "typing.Union[bool, None]" = None,
     use_messages: "bool" = False,
-    use_default_profile: "bool" = True,
 ) -> "ModelBootstrapResult":
-    load_codex_dotenv(config_path)
-    provider_config = ResponsesProviderConfig.from_codex_config(
-        config_path,
-        profile,
-        use_default_profile,
-    )
     if use_chat_completion is None:
         use_chat_completion = bool(provider_config.use_chat_completion)
     if use_chat_completion and use_messages:
