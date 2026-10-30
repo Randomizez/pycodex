@@ -519,7 +519,7 @@
       bottom: 100%;
       left: -6px;
       z-index: 5;
-      width: 264px;
+      width: 336px;
       max-width: calc(100vw - 48px);
       padding-bottom: 10px;
       color: var(--ink);
@@ -527,32 +527,77 @@
       line-height: 1.5;
     }
     .context-details-card {
-      padding: 12px 14px;
+      padding: 10px 12px;
       border: 1px solid var(--line);
       border-radius: 10px;
       background: var(--panel-raised);
       box-shadow: 0 6px 24px rgba(27, 57, 72, 0.12);
     }
-    .context-details-heading {
-      display: flex;
-      justify-content: space-between;
-      font-weight: 600;
-    }
-    .context-details-heading span { color: var(--muted); font-weight: 400; }
-    .context-details dl {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 4px 12px;
-      margin: 8px 0;
-    }
-    .context-details dt { color: var(--muted); }
-    .context-details dd {
-      margin: 0;
+    .context-usage {
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      white-space: nowrap;
       font-variant-numeric: tabular-nums;
-      text-align: right;
     }
-    .context-details p { margin: 0; color: var(--muted); }
-    .context-details p + p { margin-top: 8px; }
+    .context-usage span { color: var(--ink); }
+    .context-agent-tree,
+    .context-agent-children {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .context-agent-tree {
+      max-height: min(280px, 50dvh);
+      overflow-y: auto;
+      margin-top: 4px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--line) transparent;
+    }
+    .context-agent-tree:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .context-agent { position: relative; min-width: 0; }
+    .context-agent-children {
+      margin-left: 7px;
+      padding-left: 14px;
+      border-left: 1px solid var(--line);
+    }
+    .context-agent-children > .context-agent::before {
+      content: "";
+      position: absolute;
+      left: -14px;
+      top: 14px;
+      width: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .context-agent-row {
+      display: grid;
+      grid-template-columns: 14px minmax(0, 1fr);
+      gap: 7px;
+      align-items: start;
+      padding: 6px 0;
+    }
+    .context-agent-name,
+    .context-agent-message {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .context-agent-name { font-weight: 600; }
+    .context-agent-message { min-height: 18px; color: var(--muted); }
+    .context-agent[data-status="running"] > .context-agent-row .context-agent-message {
+      animation: agent-message-breathe var(--breathing-duration) var(--breathing-ease) infinite;
+    }
+    .context-agent:not([data-status="running"]) > .context-agent-row .tab-status::before {
+      animation: none;
+      background: #a3aeb7;
+      opacity: 1;
+      transform: none;
+    }
+    .context-agent[data-status="completed"] > .context-agent-row .tab-status::before { background: #568a73; }
+    .context-agent[data-status="errored"] > .context-agent-row .tab-status::before { background: var(--danger); }
+    .context-agent[data-status="interrupted"] > .context-agent-row .tab-status::before { background: #c98100; }
+    .context-tree-status { margin: 8px 0 2px; color: var(--muted); }
     .tabs {
       display: flex;
       align-items: center;
@@ -1187,6 +1232,10 @@
       0%, 100% { border-left-color: var(--line); }
       50% { border-left-color: var(--accent); }
     }
+    @keyframes agent-message-breathe {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
     code {
       background: var(--code);
       border: 1px solid var(--line);
@@ -1306,6 +1355,7 @@
       .empty-chat h1 { font-size: 26px; }
     }
     @media (prefers-reduced-motion: reduce) {
+      .context-agent[data-status="running"] > .context-agent-row .context-agent-message,
       .entry.thinking,
       .tab-status::before,
       .spinner:not(:empty)::before { animation: none; }
@@ -1426,21 +1476,16 @@
           </div>
           <div class="composer-box">
             <div id="contextControl" class="context-control">
-              <button id="contextMeter" class="context-meter" type="button" aria-label="Context usage"
-                      aria-expanded="false" aria-controls="contextDetails" aria-describedby="runtimeInfoHint"
+              <button id="contextMeter" class="context-meter" type="button" aria-label="Context and agents"
+                      aria-expanded="false" aria-controls="contextDetails"
                       title="Double-click to add runtime info">
                 <span id="contextMeterValue" class="context-meter-value">—</span>
               </button>
-              <div id="contextDetails" class="context-details" role="region" aria-label="Context usage" hidden>
+              <div id="contextDetails" class="context-details" role="region" aria-label="Context and agents" hidden>
                 <div class="context-details-card">
-                  <div class="context-details-heading">Context usage <span>tokens</span></div>
-                  <dl>
-                    <dt>Current</dt><dd id="contextCurrent">—</dd>
-                    <dt>Compact limit</dt><dd id="contextCompact">—</dd>
-                    <dt>Max length</dt><dd id="contextMax">—</dd>
-                  </dl>
-                  <p id="contextNote"></p>
-                  <p id="runtimeInfoHint">Share to enable agent communication.</p>
+                  <div class="context-usage">To compact: <span id="contextCurrent">—</span>/<span id="contextCompact">—</span></div>
+                  <ul id="contextAgents" class="context-agent-tree" aria-label="Agent tree" tabindex="0"></ul>
+                  <p id="contextAgentsStatus" class="context-tree-status" role="status" hidden></p>
                 </div>
               </div>
             </div>
@@ -1676,6 +1721,8 @@
       ? window.markdownit({html: false, linkify: true, breaks: false})
       : null;
     if (markdownRenderer) {
+      // Bare filenames such as TODO.md must not become http://TODO.md.
+      markdownRenderer.linkify.set({fuzzyLink: false});
       markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
         const token = tokens[index];
         const href = token.attrGet("href");
@@ -2556,26 +2603,111 @@
       contextMeter.style.setProperty("--context-remaining", `${percent == null ? 0 : percent}%`);
       contextMeterValue.textContent = percent == null ? "—" : percent >= 100 ? "" : String(percent);
       contextMeter.setAttribute("aria-label", percent == null
-        ? "Context usage details"
-        : `${percent}% ${remainingLabel}. Context usage details`);
+        ? "Context and agents"
+        : `${percent}% ${remainingLabel}. Context and agents`);
       document.getElementById("contextCurrent").textContent = formatTokens(session.usage_tokens);
       document.getElementById("contextCompact").textContent = compact == null ? "Off" : formatTokens(compact);
-      document.getElementById("contextMax").textContent = formatTokens(session.max_context_window);
-      const note = compact == null
-        ? "Auto-compact is off. The ring shows remaining context."
-        : "The ring reaches 0% at the compact limit. Compaction runs before the next model request.";
-      document.getElementById("contextNote").textContent = session.usage_tokens == null
-        ? `Waiting for current usage. ${note}`
-        : note;
     }
 
     function setupContextDetails() {
       const control = document.getElementById("contextControl");
       const details = document.getElementById("contextDetails");
+      const tree = document.getElementById("contextAgents");
+      const status = document.getElementById("contextAgentsStatus");
+      const rows = new Map();
       let pinned = false;
+      let treeSessionId = "";
+      let structure = "";
+      let request = null;
+      let timer = null;
+      const stop = () => {
+        request?.controller.abort();
+        request = null;
+        clearTimeout(timer);
+        timer = null;
+      };
+      const reset = () => {
+        treeSessionId = activeSessionId;
+        structure = "";
+        rows.clear();
+        tree.replaceChildren();
+        status.textContent = "Loading agents…";
+        status.hidden = false;
+      };
+      const render = payload => {
+        const isActive = agent => agent.status === "running" || agent.status === "pending_init";
+        const agents = [payload.root, ...payload.agents].sort(
+          (left, right) => Number(isActive(right)) - Number(isActive(left))
+        );
+        const nextStructure = JSON.stringify(agents.map(agent => [agent.agent_id, agent.parent_agent_id]));
+        if (nextStructure !== structure) {
+          rows.clear();
+          tree.replaceChildren();
+          for (const agent of agents) {
+            const item = document.createElement("li");
+            item.className = "context-agent";
+            item.dataset.agentId = agent.agent_id;
+            item.innerHTML = '<div class="context-agent-row"><span class="tab-status" role="img"></span>' +
+              '<div><span class="context-agent-name"></span><span class="context-agent-message"></span></div></div>' +
+              '<ul class="context-agent-children"></ul>';
+            rows.set(agent.agent_id, item);
+          }
+          for (const agent of agents) {
+            const parent = agent.agent_id === payload.root.agent_id
+              ? tree
+              : rows.get(agent.parent_agent_id).querySelector(".context-agent-children");
+            parent.append(rows.get(agent.agent_id));
+          }
+          structure = nextStructure;
+        }
+        for (const agent of agents) {
+          const item = rows.get(agent.agent_id);
+          const state = typeof agent.status === "string" ? agent.status : Object.keys(agent.status)[0];
+          item.dataset.status = state;
+          const dot = item.querySelector(".tab-status");
+          dot.title = state.replaceAll("_", " ");
+          dot.setAttribute("aria-label", dot.title);
+          const name = item.querySelector(".context-agent-name");
+          name.textContent = agent.agent_path.split("/").pop();
+          name.title = agent.agent_path;
+          const message = item.querySelector(".context-agent-message");
+          const text = agent.last_message || "—";
+          if (message.textContent !== text) message.textContent = text;
+          message.title = agent.last_message;
+        }
+        status.hidden = true;
+      };
+      const refresh = async () => {
+        clearTimeout(timer);
+        timer = null;
+        if (details.hidden || document.hidden || !activeSessionId || request) return;
+        if (treeSessionId !== activeSessionId) reset();
+        const current = {sessionId: activeSessionId, controller: new AbortController()};
+        request = current;
+        try {
+          const response = await fetch(relativeUrl(
+            `api/sessions/${encodeURIComponent(current.sessionId)}/agents`
+          ), {signal: current.controller.signal});
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const payload = await response.json();
+          if (request !== current || activeSessionId !== current.sessionId) return;
+          render(payload);
+        } catch (error) {
+          if (request !== current || current.controller.signal.aborted) return;
+          status.textContent = `Unable to load agents: ${error.message}`;
+          status.hidden = false;
+        } finally {
+          if (request === current) {
+            request = null;
+            if (!details.hidden) timer = setTimeout(refresh, 2000);
+          }
+        }
+      };
       const show = visible => {
         details.hidden = !visible;
         contextMeter.setAttribute("aria-expanded", String(visible));
+        if (!visible) stop();
+        else if (!request && !timer) refresh();
       };
       const close = () => {
         pinned = false;
@@ -2604,7 +2736,23 @@
         if (!control.contains(event.target)) close();
       });
       document.addEventListener("keydown", event => {
-        if (event.key === "Escape") close();
+        if (event.key === "Escape") {
+          if (details.contains(document.activeElement)) contextMeter.focus({preventScroll: true});
+          close();
+        }
+      });
+      frontendEvents.addEventListener("sessionchange", () => {
+        stop();
+        reset();
+        if (!details.hidden) refresh();
+      });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) stop();
+        else if (!details.hidden) refresh();
+      });
+      window.addEventListener("pagehide", stop);
+      window.addEventListener("pageshow", () => {
+        if (!details.hidden) refresh();
       });
       tabsEl.addEventListener("click", close);
       newTabButton.addEventListener("click", close);
@@ -3080,7 +3228,9 @@
           "so /w/{workspace_id}/ prefixes and existing authentication work. " +
           "{id} is the workspace tab ID " +
           "from GET api/sessions or host.getActiveSessionId(); it is distinct " +
-          "from state.agent_session_id and stays stable across fork/resume.",
+          "from state.agent_id and stays stable across fork/resume. " +
+          "state.agent_id is the stable Agent identity; state.agent_path is its " +
+          "canonical task path. state.agent_session_id identifies its current rollout.",
         "- GET api/sessions/{id}/state -> {state, cursor}: model/effort, " +
           "running/busy/closed/accepts_input, active turn, queued inputs, commands, " +
           "input request, plan, context/usage and background-work count; no completed history.",
@@ -3101,8 +3251,8 @@
           "Items have index/type/payload; response_item includes tool calls/results " +
           "and available reasoning. Recorded rollout history includes pre-compaction " +
           "records; active_history contains only current in-memory history.",
-        "- GET api/sessions/{id}/agents -> {agents}: descendant agent_id, " +
-          "parent_agent_id, nickname and status. Add agent_id to resource/command " +
+        "- GET api/sessions/{id}/agents -> {root, agents}: root and descendants with " +
+          "agent_id, parent_agent_id, agent_path, status and last_message. Add agent_id to resource/command " +
           "queries to target an owned child; submission lookup needs only its ID.",
         "- GET api/sessions/{id}/background-work -> {background_work}: exec " +
           "session_id/pid/tty/status/exit_code and clock enabled/period_m/status/" +
@@ -3535,7 +3685,7 @@
     });
 
     document.addEventListener("animationstart", event => {
-      if (event.animationName !== "spinner-pulse" && event.animationName !== "activity-breathe") return;
+      if (!["spinner-pulse", "activity-breathe", "agent-message-breathe"].includes(event.animationName)) return;
       // Include pseudo-elements and anchor new indicators to the page's breathing phase.
       for (const animation of event.target.getAnimations({subtree: true})) {
         if (animation.animationName === event.animationName) animation.startTime = 0;

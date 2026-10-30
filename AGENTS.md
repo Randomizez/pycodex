@@ -17,7 +17,7 @@
 - 后端保持 `AgentRuntime -> Agent` 两层。CLI/Web/飞书通过
   `AgentRuntime.submit_input` 接入；命令、队列、问答、订阅和关闭由 Runtime
   负责。前端做输入与展示，Agent 不反向持有 Runtime/队列。
-- `Agent(model_client, tool_registry, context_config)` 三项必传；
+- `Agent(model_client, tool_registry, context_config, session_id)` 四项必传；
   每个 Agent 独占 context manager、工具环境和历史，外层 Runtime 可选。
   使用显式协议和普通属性，不为缺字段添加静默兜底或机械 getter/setter。
 - Agent 串行执行普通 async `run_turn`，不持有 turn Task、不提供取消 API。
@@ -27,9 +27,13 @@
 - 上下文装配统一在 `context.py`；固定指令、AGENTS、环境不写回会话历史。
   Rollout recorder 由 Agent 内部管理：默认仅内存，前端显式传记录路径，
   子 Agent 保持仅内存。恢复、fork 和压缩遵循文档中的一致性约束。
+- `AgentsManager` 统一构造和登记整棵 Runtime 树；`agent_id`、`agent_path`
+  标识 Agent，resume 只切换 rollout `session_id`。普通调用方优先使用
+  `AgentsManager(...).create_root_runtime()`；会话 `/fork` 已移除。
 - 工具继承 `BaseTool` 并注册实例；schema 由真实建模层序列化。
   除明确扩展 `clock` 外，逐一对齐上游工具契约。
-  不恢复 collaboration mode；`request_user_input` 固定返回 Default mode
+  不恢复 collaboration mode 切换；保留模型目录提供的 Default 指令文本。
+  `request_user_input` 固定返回 Default mode
   下不可用，通用 Runtime 问答/权限服务仍保留。
 
 ## 开发与验证

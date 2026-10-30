@@ -1,18 +1,19 @@
+import json
 import typing
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from uuid import UUID, uuid5
 from xml.sax.saxutils import escape
 
 import yaml
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
-    import tomli as tomllib
-
+from .utils.codex_config import read_codex_config
 from .utils.model_metadata import model_metadata
-from .protocol import ContextMessage, ConversationItem, JSONDict, Prompt, ToolSpec
+from .protocol import (
+    ContextMessage, ConversationItem, JSONDict, Prompt, ToolCall, ToolResult, ToolSpec,
+)
 from .utils.get_env import (
     get_sandbox_tag,
     get_shell_name,
@@ -81,21 +82,34 @@ class ContextConfig:
     network_access: "str" = "enabled"
     extra_contextual_user_messages: "typing.Tuple[str, ...]" = ()
     cwd: "typing.Union[str, Path, None]" = None
+    multi_agent_max_concurrency: "int" = 16
+    multi_agent_root_instructions: "typing.Union[str, None]" = None
+    multi_agent_subagent_instructions: "typing.Union[str, None]" = None
+    multi_agent_hint: "typing.Union[str, None]" = None
+
+    def __post_init__(self):
+        if (
+            type(self.multi_agent_max_concurrency) is not int
+            or self.multi_agent_max_concurrency < 1
+        ):
+            raise ValueError("multi-agent max concurrency must be a positive integer")
+        for text in (
+            self.multi_agent_root_instructions,
+            self.multi_agent_subagent_instructions,
+            self.multi_agent_hint,
+        ):
+            if text is not None and not isinstance(text, str):
+                raise ValueError("multi-agent instruction overrides must be strings")
 
     @classmethod
     def from_codex_config(
         cls,
         config_path: "typing.Union[str, Path]",
         profile: "typing.Union[str, None]" = None,
+        use_default_profile: "bool" = True,
     ) -> "ContextConfig":
         path = Path(config_path)
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
-        selected = dict(data)
-        if profile is not None:
-            overrides = data.get("profiles", {}).get(profile)
-            if overrides is None:
-                raise ValueError(f"unknown Codex profile: {profile}")
-            selected.update(overrides)
+        selected = read_codex_config(path, profile, use_default_profile)
 
         model_instructions_file = selected.get("model_instructions_file")
         resolved_file = None
@@ -107,6 +121,17 @@ class ContextConfig:
 
         codex_home = path.parent.resolve()
         codex_home_instructions = _read_first_instruction_file(codex_home)
+        multi_agent = selected.get("features", {}).get("multi_agent_v2", {})
+        if isinstance(multi_agent, bool):
+            multi_agent = {}
+        if not isinstance(multi_agent, dict):
+            raise ValueError("features.multi_agent_v2 must be a boolean or table")
+        max_children = selected.get("agents", {}).get("max_concurrent_threads_per_session")
+        if max_children is not None and type(max_children) is not int:
+            raise ValueError("agents.max_concurrent_threads_per_session must be an integer")
+        max_concurrency = multi_agent.get("max_concurrent_threads_per_session")
+        if max_concurrency is None:
+            max_concurrency = 16 if max_children is None else max_children + 1
 
         return cls(
             base_instructions=_normalize_text(selected.get("base_instructions")),
@@ -126,6 +151,10 @@ class ContextConfig:
             personality=_normalize_text(selected.get("personality")),
             approval_policy=_normalize_text(selected.get("approval_policy")),
             sandbox_mode=_normalize_text(selected.get("sandbox_mode")),
+            multi_agent_max_concurrency=max_concurrency,
+            multi_agent_root_instructions=multi_agent.get("root_agent_usage_hint_text"),
+            multi_agent_subagent_instructions=multi_agent.get("subagent_usage_hint_text"),
+            multi_agent_hint=multi_agent.get("multi_agent_mode_hint_text"),
         )
 
 
@@ -140,9 +169,20 @@ class SkillDescriptor:
     root: "Path"
 
 
+@dataclass(frozen=True)
+class ForkContext:
+    """Fixed context blocks anchored to positions in a copied history."""
+
+    history: "typing.Tuple[ConversationItem, ...]"
+    messages: "typing.Tuple[typing.Tuple[int, typing.Tuple[ContextMessage, ...]], ...]"
+    base_instructions: "str"
+    multi_agent: "typing.Tuple[typing.Union[ContextMessage, None], typing.Union[ContextMessage, None]]"
+
+
 class ContextManager:
     def __init__(self, config: "ContextConfig") -> "None":
         self.cwd = Path(config.cwd or Path.cwd()).resolve()
+        self.agent_path: "typing.Union[str, None]" = None
         self._shell = get_shell_name()
         self._current_date = datetime.now().date().isoformat()
         self._timezone_name = get_timezone_name()
@@ -164,8 +204,15 @@ class ContextManager:
         self._default_base_instructions = DEFAULT_BASE_INSTRUCTIONS_PATH.read_text(
             encoding="utf-8"
         )
+        self._developer_defaults = json.loads(
+            (Path(__file__).resolve().parent / "prompts" / "developer_messages.json")
+            .read_text(encoding="utf-8")
+        )
         self._workspace_metadata_turn_id: "typing.Union[str, None]" = None
         self._workspace_metadata_cache: "typing.Union[JSONDict, None]" = None
+        self._fork_context: "typing.Union[ForkContext, None]" = None
+        self._last_context: "typing.Union[ForkContext, None]" = None
+        self._fork_local_context: "typing.Tuple[ContextMessage, ...]" = ()
 
     def get_turn_metadata(self, turn_id: "str") -> "JSONDict":
         metadata: "JSONDict" = {"turn_id": turn_id}
@@ -186,24 +233,131 @@ class ContextManager:
         tools: "typing.List[ToolSpec]",
         parallel_tool_calls: "bool",
         turn_id: "typing.Union[str, None]" = None,
+        reasoning_effort: "typing.Union[str, None]" = None,
+        capture_context: "bool" = True,
     ) -> "Prompt":
-        input_items: "typing.List[ConversationItem]" = []
         turn_metadata = self.get_turn_metadata(turn_id) if turn_id is not None else None
-
-        developer_message = self._build_developer_message()
-        if developer_message is not None:
-            input_items.append(developer_message)
-
-        input_items.extend(self._build_contextual_user_messages())
-        input_items.extend(list(history))
+        multi_agent = self._build_multi_agent_context(tools, reasoning_effort)
+        if self._fork_context is None:
+            messages = ((0, self._build_initial_context(multi_agent)),)
+        else:
+            messages = self._fork_context_messages(history)
+            if capture_context:
+                current_context = self._build_initial_context(multi_agent)
+                updates = tuple(
+                    item for item in current_context
+                    if item not in self._fork_local_context
+                    or (
+                        item is multi_agent[1]
+                        and multi_agent != self._fork_context.multi_agent
+                    )
+                )
+                if updates:
+                    # Keep inherited blocks intact when the child's cwd, model,
+                    # effort or instructions change after the fork.
+                    messages += ((len(history), updates),)
+                    self._fork_context = ForkContext(
+                        tuple(history), messages, self.resolve_base_instructions(),
+                        multi_agent,
+                    )
+                self._fork_local_context = current_context
+        input_items: "typing.List[ConversationItem]" = []
+        position = 0
+        for offset, block in messages:
+            input_items.extend(history[position:offset])
+            input_items.extend(block)
+            position = offset
+        input_items.extend(history[position:])
+        if self._fork_context is not None:
+            input_items = _normalize_fork_calls(input_items)
+        base_instructions = self.resolve_base_instructions()
+        if capture_context:
+            self._last_context = ForkContext(
+                tuple(history), messages, base_instructions, multi_agent,
+            )
         return Prompt(
             input=input_items,
             tools=tools,
             parallel_tool_calls=parallel_tool_calls,
-            base_instructions=self.resolve_base_instructions(),
+            base_instructions=base_instructions,
             turn_id=turn_id,
             turn_metadata=turn_metadata,
         )
+
+    def _build_initial_context(self, multi_agent):
+        messages = []
+        developer_message = self._build_developer_message()
+        if developer_message is not None:
+            messages.append(developer_message)
+        messages.extend(message for message in multi_agent if message is not None)
+        messages.extend(self._build_contextual_user_messages())
+        return tuple(messages)
+
+    def snapshot_for_fork(self, history, tools, reasoning_effort) -> "ForkContext":
+        if self._last_context is None:
+            self.build_prompt(history, tools, False, reasoning_effort=reasoning_effort)
+        context = self._last_context
+        # Calls emitted since the last sample extend its history without changing
+        # the fixed prefix. Copy items and blocks together to keep child ownership.
+        return deepcopy(ForkContext(
+            tuple(history), context.messages, context.base_instructions,
+            context.multi_agent,
+        ))
+
+    def inherit_fork_context(self, context: "ForkContext", tools, reasoning_effort):
+        handoff = [ContextMessage(
+            role="developer",
+            text=(
+                "You are now a newly spawned child agent. The preceding conversation "
+                "is inherited parent context. Follow your own role, identity, and "
+                "task below; earlier identities, tasks, and action-specific approvals "
+                "belong to your ancestors. Inherited tool calls are historical "
+                "records; live tool sessions and process handles are not inherited. "
+                "Report your result to your parent."
+            ),
+        )]
+        multi_agent = self._build_multi_agent_context(tools, reasoning_effort)
+        role, mode = multi_agent
+        if role is not None:
+            handoff.append(role)
+        # Upstream reasserts the mode when either its text or the role changes.
+        if mode is not None and multi_agent != context.multi_agent:
+            handoff.append(mode)
+        self._fork_context = replace(
+            context,
+            messages=context.messages + ((len(context.history), tuple(handoff)),),
+            multi_agent=multi_agent,
+        )
+        self._base_instructions_override = context.base_instructions
+        self._config = replace(
+            self._config, base_instructions_override=context.base_instructions,
+        )
+        self._fork_local_context = self._build_initial_context(multi_agent)
+        self._last_context = None
+
+    def reset_history_context(self) -> "None":
+        """Discard inherited context only when active history is replaced."""
+        self._fork_context = None
+        self._last_context = None
+        self._fork_local_context = ()
+
+    def _fork_context_messages(self, history):
+        context = self._fork_context
+        messages = []
+        original_position = 0
+        position = 0
+        for offset, block in context.messages:
+            while original_position < offset:
+                if (
+                    position < len(history)
+                    and history[position] is context.history[original_position]
+                ):
+                    position += 1
+                original_position += 1
+            messages.append((position, block))
+        # Compaction retries may prune inherited call/result pairs. Anchor blocks
+        # to the surviving items, without replaying removed history from a snapshot.
+        return tuple(messages)
 
     def resolve_base_instructions(self) -> "str":
         if self._base_instructions_override is not None:
@@ -302,12 +456,94 @@ class ContextManager:
             permissions = self._build_permissions_instructions()
             if permissions is not None:
                 sections.append(permissions)
+        default_instructions = self._model_message("collaboration_modes", "default")
+        if default_instructions:
+            sections.append(
+                "<collaboration_mode>{0}</collaboration_mode>".format(
+                    default_instructions
+                )
+            )
         if not sections:
             return None
         return ContextMessage(
             role="developer",
             content_items=tuple(_input_text_item(section) for section in sections),
         )
+
+    def _model_message(self, *keys):
+        metadata = model_metadata(self._config.model)
+        value = metadata.get("model_messages") if metadata is not None else None
+        for key in keys:
+            if value is None:
+                return None
+            value = value.get(key)
+        return value
+
+    def _build_multi_agent_messages(self, tools, reasoning_effort):
+        return [
+            message for message in self._build_multi_agent_context(tools, reasoning_effort)
+            if message is not None
+        ]
+
+    def _build_multi_agent_context(self, tools, reasoning_effort):
+        if self.agent_path is None:
+            return None, None
+        defaults = self._developer_defaults["multi_agent"]
+        root = self.agent_path == "/root"
+        role = "root" if root else "subagent"
+        configured = (
+            self._config.multi_agent_root_instructions
+            if root else self._config.multi_agent_subagent_instructions
+        )
+        if configured is not None:
+            role_text = configured
+        else:
+            base = self._model_message("multi_agent", "role", role)
+            marked = base is not None
+            if base is None:
+                base = defaults[role]
+            role_text = ""
+            if base:
+                wait_guidance = (
+                    defaults["wait"] + "\n\n"
+                    if any(tool.name == "wait_agent" for tool in tools) else ""
+                )
+                role_text = (
+                    "{base}\n{shared}\n{wait}"
+                    "There are {limit} available concurrency slots, meaning that "
+                    "up to {limit} agents can be active at once, including you."
+                ).format(
+                    base=base, shared=defaults["shared"], wait=wait_guidance,
+                    limit=self._config.multi_agent_max_concurrency,
+                )
+                spawn = next(
+                    (tool for tool in tools if tool.name == "spawn_agent"), None,
+                )
+                if spawn is not None and "model" in spawn.input_schema["properties"]:
+                    role_text += "\n\n" + defaults["model_overrides"]
+                if marked:
+                    role_text = "<multi_agent_role>{0}</multi_agent_role>".format(
+                        role_text
+                    )
+        role_message = (
+            ContextMessage(role="developer", text=role_text) if role_text else None
+        )
+
+        hint = self._config.multi_agent_hint
+        if hint is None:
+            hint = self._model_message("multi_agent", "mode", "hint_text")
+        if hint is None:
+            mode = "proactive" if reasoning_effort == "ultra" else "explicit"
+            hint = self._model_message("multi_agent", "mode", mode)
+            if hint is None:
+                hint = defaults[mode]
+        mode_message = (
+            ContextMessage(
+                role="developer",
+                text="<multi_agent_mode>{0}</multi_agent_mode>".format(hint),
+            ) if hint else None
+        )
+        return role_message, mode_message
 
     def _build_permissions_instructions(self) -> "typing.Union[str, None]":
         sandbox_mode = self._config.sandbox_mode or "danger-full-access"
@@ -532,6 +768,44 @@ class ContextManager:
         )
         lines.append("</environment_context>")
         return "\n".join(lines)
+
+
+def _normalize_fork_calls(items):
+    call_ids = {
+        (item.tool_type, item.call_id)
+        for item in items if isinstance(item, ToolCall)
+    }
+    result_ids = {
+        (item.tool_type, item.call_id)
+        for item in items if isinstance(item, ToolResult)
+    }
+    normalized = []
+    for item in items:
+        if (
+            isinstance(item, ToolResult)
+            and (item.tool_type, item.call_id) not in call_ids
+        ):
+            continue
+        normalized.append(item)
+        if (
+            isinstance(item, ToolCall)
+            and (item.tool_type, item.call_id) not in result_ids
+        ):
+            prefix = "ctco" if item.tool_type == "custom" else "fco"
+            output_id = None
+            if item.id:
+                output_id = "{0}_{1}".format(
+                    prefix,
+                    uuid5(
+                        UUID("90d38d3e-6a5b-4d52-bfe2-2f1e634bfac4"),
+                        prefix + ":" + item.id,
+                    ),
+                )
+            normalized.append(ToolResult(
+                call_id=item.call_id, name=None, output="aborted",
+                tool_type=item.tool_type, id=output_id,
+            ))
+    return normalized
 
 
 def _input_text_item(text: "str") -> "JSONDict":

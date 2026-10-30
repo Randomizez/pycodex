@@ -37,6 +37,8 @@ class WorkspaceStateStore:
         tabs = json.loads(self.path.read_text(encoding="utf-8", errors="replace"))["tabs"]
         if not isinstance(tabs, list):
             raise ValueError("workspace state `tabs` must be a list")
+        if any(tab.get("fork") is True for tab in tabs):
+            raise ValueError("workspace state contains unsupported pending fork tabs")
         return tabs
 
     def save_tabs(self, tabs: "typing.Iterable[typing.Dict[str, object]]") -> None:
@@ -269,7 +271,6 @@ class WorkspaceSessionManager:
             await self._create_session(
                 title=tab["title"],
                 rollout_path=tab["rollout_path"],
-                fork=tab.get("fork") is True,
                 cwd=tab.get("cwd"),
                 profile=tab.get("profile", self.default_profile),
             )
@@ -300,11 +301,10 @@ class WorkspaceSessionManager:
         self,
         title: str = "",
         rollout_path: str = "",
-        fork: bool = False,
         profile: "typing.Optional[str]" = None,
     ) -> str:
         session_id = await self._create_session(
-            title, rollout_path, fork,
+            title, rollout_path,
             profile=self.default_profile if profile is None else profile,
         )
         self._subscribe_session_state(session_id)
@@ -315,7 +315,6 @@ class WorkspaceSessionManager:
         self,
         title: str = "",
         rollout_path: str = "",
-        fork: bool = False,
         cwd: "typing.Optional[str]" = None,
         profile: "typing.Optional[str]" = None,
     ) -> str:
@@ -334,7 +333,7 @@ class WorkspaceSessionManager:
             try:
                 if rollout_path or title or cwd is not None:
                     await session.restore_from_rollout(
-                        rollout_path, title=title, fork=fork, cwd=cwd
+                        rollout_path, title=title, cwd=cwd
                     )
             except BaseException:
                 await session.close()
@@ -348,7 +347,6 @@ class WorkspaceSessionManager:
                 "cwd": summary["cwd"],
                 "rollout_path": rollout_path,
                 "profile": profile,
-                **({"fork": True} if fork else {}),
             }
             return session_id
 
@@ -386,23 +384,12 @@ class WorkspaceSessionManager:
                     return
                 if not isinstance(event, dict) or "snapshot" not in event:
                     continue
-                reason = (
-                    event["payload"]["reason"]
-                    if event.get("kind") == "session_state"
-                    else None
-                )
                 previous = self._tab_states[session_id]
                 state = dict(previous)
                 snapshot = event["snapshot"]
                 state["title"] = str(snapshot.get("title") or "")
                 state["cwd"] = snapshot["cwd"]
-                if reason == "identity" and state["rollout_path"]:
-                    # Recreate an unwritten fork from its recorded ancestor.
-                    state["fork"] = True
-                path = str(snapshot["recorded_rollout_path"] or "")
-                if path or not snapshot["rollout_path"]:
-                    state["rollout_path"] = path
-                    state.pop("fork", None)
+                state["rollout_path"] = str(snapshot["recorded_rollout_path"] or "")
                 self._tab_states[session_id] = state
                 if state != previous:
                     self.persist_workspace_state()

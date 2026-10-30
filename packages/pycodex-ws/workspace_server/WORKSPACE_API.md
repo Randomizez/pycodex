@@ -39,8 +39,10 @@ Agent execution permissions, and does not replace Router authentication.
 
 `GET api/sessions` returns `{sessions, profiles, default_profile}`. `profiles`
 contains only names from the server's Codex config; no provider configuration
-or credentials are returned. The catalog is loaded when the workspace is built.
-`default_profile` is the launch `--profile`, or `null` for the base configuration.
+or credentials are returned. The catalog combines adjacent `*.config.toml` files
+and embedded `[profiles.NAME]` tables and rejects duplicate names. It is loaded
+when the workspace is built. `default_profile` is the launch `--profile`, then
+the top-level config `profile`, or `null` for the base configuration.
 Each session list entry includes its effective `profile` name or `null`.
 
 `POST api/sessions` accepts `{title?, prompt?, profile?}`. Title and prompt are
@@ -77,14 +79,15 @@ rejected. `revision` in the iframe URL changes when file metadata changes.
 | `GET api/sessions/{id}/state` | `state`, `cursor` |
 | `GET api/sessions/{id}/models` | `model`, `models` |
 | `GET api/sessions/{id}/history?limit=100&before=...` | `source`, `items`, `next_cursor` |
-| `GET api/sessions/{id}/agents` | `agents` |
+| `GET api/sessions/{id}/agents` | `root`, `agents` |
 | `GET api/sessions/{id}/background-work` | `background_work` |
 | `POST api/sessions/{id}/commands` | `submission_id`, `submission` |
 | `GET api/sessions/{id}/submissions/{submission_id}` | `submission` |
 
-`id` is the tab ID from `GET api/sessions`. It remains stable when `/fork` or
-`/resume` changes the Agent identity. `state.agent_session_id` identifies the
-current Agent/rollout session.
+`id` is the tab ID from `GET api/sessions`. It remains stable across `/resume`.
+`state.agent_id` and `state.agent_path` identify the registered Agent;
+`state.agent_session_id` identifies its current rollout session. Session `/fork`
+is no longer available.
 
 State includes:
 
@@ -105,13 +108,29 @@ Agent is idle. State/model queries do not add control messages or invoke a model
 completion.
 Workspace model clients implement `ModelControl`, including an explicit
 `reasoning_effort` (possibly `None`) and `list_models()`. The core Agent's
-minimal `ModelClient` protocol is unchanged.
+`ModelClient` also supplies effective reasoning effort for context assembly.
 
-`agents` is a flattened descendant tree with `agent_id`, `parent_agent_id`,
-`nickname`, and the existing sub-agent `status` value. The root is identified
-by `state.agent_session_id`. Descendant IDs are assigned by their manager and
-remain stable across that child's fork/resume. Add `?agent_id=...` to state,
+The response's `root` is the selected Agent and `agents` is its flattened
+descendant tree. Each row includes `agent_id`, `parent_agent_id`, canonical
+`agent_path`, `status` and `last_message`. Status is `pending_init`, `running`,
+`interrupted`, `shutdown`, `{completed: text}` or `{errored: text}`.
+`last_message` is the latest assistant text, including accumulated stream deltas;
+tool progress and errors do not replace it. Polling does not start turns,
+change history or grant interactive permissions to descendants.
+Closing a child, including capacity reclamation, unregisters it after cleanup.
+Its row and cached view are removed, and its subscriptions are closed. Requests
+using the old Agent ID return 404. Reusing its task name creates a new Agent ID;
+messages already delivered to the parent remain in that conversation.
+Registered IDs remain fixed across resume. Add `?agent_id=...` to state,
 models, history, agents, background-work or commands to target an owned child.
+
+The built-in context popover uses these rows to render the tree beneath
+`To compact: N/limit`. Within each sibling group, running and initializing Agents
+appear first, preserving source order within active and inactive groups; polling
+updates the order as statuses change. Usage comes from the latest provider token
+count and the limit is the auto-compaction threshold; unknown usage is `—`, and an unset
+threshold is `Off`. The tree exists only for the live root runtime; restoring a
+saved workspace does not restore child runtimes.
 
 Background records have `tool` and `kind`. Exec records include `session_id`,
 `pid`, `tty`, `status` (`running` or `exited`) and `exit_code`. They omit shell

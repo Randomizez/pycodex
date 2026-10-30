@@ -71,8 +71,6 @@ def format_command_result(result: "typing.Dict[str, object]") -> "str":
             result["retained_item_count"],
             result["pruned_tool_results"],
         )
-    if kind == "forked":
-        return "Forked session: " + result["session_id"]
     return "\n".join(result["lines"])
 
 
@@ -140,10 +138,11 @@ def colorize_tool_message(
         color = "\x1b[35m"
     elif tool_name in {
         "spawn_agent",
-        "send_input",
         "wait_agent",
-        "resume_agent",
-        "close_agent",
+        "send_message",
+        "followup_task",
+        "interrupt_agent",
+        "list_agents",
     }:
         color = "\x1b[34m"
     else:
@@ -178,13 +177,6 @@ def agent_status_summary(status: "object") -> "str":
         if "errored" in status:
             return f"errored: {truncate_text(str(status.get('errored', '')), 48)}"
     return truncate_text(json.dumps(status, ensure_ascii=False, separators=(",", ":")))
-
-
-def short_id(value: "str", limit: "int" = 8) -> "str":
-    compact = value.strip()
-    if len(compact) <= limit + 4:
-        return compact
-    return f"{compact[:limit]}...{compact[-4:]}"
 
 
 def truncate_text(text: "str", limit: "int" = 96) -> "str":

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import typing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -26,6 +25,7 @@ from .events import (
     TurnCompletedEvent,
     TurnEvent,
     TurnFailedEvent,
+    TurnInputReadyEvent,
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
@@ -37,6 +37,7 @@ from .model import (
     ResponsesIncompleteError,
 )
 from .protocol import (
+    AgentMessage,
     AssistantMessage,
     ConversationItem,
     ModelResponse,
@@ -52,7 +53,6 @@ from .utils.session_persist import (
     SessionRolloutRecorder,
     load_resumed_session_path,
     resolve_codex_home,
-    rollout_path_for_session,
 )
 from .utils.truncation import truncate_tool_result_for_history
 
@@ -90,11 +90,12 @@ class Agent:
         model_client: "ModelClient",
         tool_registry: "ToolRegistry",
         context_config: "ContextConfig",
+        session_id: "str",
         parallel_tool_calls: "bool" = True,
         event_handler: "EventHandler" = BASE_EVENT_HANDLER,
         initial_history: "typing.Tuple[ConversationItem, ...]" = (),
         session_file_path: "typing.Union[str, Path, None]" = None,
-        session_id: "typing.Union[str, None]" = None,
+        agent_path: "str" = "/root",
     ) -> "None":
         self.model_client = model_client
         self.tool_registry = tool_registry
@@ -104,14 +105,16 @@ class Agent:
         self._parallel_tool_calls = parallel_tool_calls
         self.event_handler = event_handler
         self._history: "typing.List[ConversationItem]" = list(initial_history)
-        self._configure_recording(session_id or uuid7_string(), session_file_path)
+        # Agent identity stays fixed when resume changes the rollout session.
+        self.agent_id = session_id
+        self.agent_path = agent_path
+        self._configure_recording(session_id, session_file_path)
         self._last_total_usage_tokens: "typing.Union[int, None]" = None
         self._idle: "typing.Union[asyncio.Event, None]" = None
         self.is_shutdown = False
         self.accepts_input = True
         self._stop_requested = False
-        for tool in self.tool_registry.tools():
-            tool.bind_agent(self)
+        self._follow_up_requested = False
 
     @property
     def history(self) -> "typing.Tuple[ConversationItem, ...]":
@@ -140,6 +143,17 @@ class Agent:
     def stop_asap(self) -> "None":
         if self.is_running:
             self._stop_requested = True
+
+    def request_follow_up(self) -> "None":
+        """Keep the active turn open for input at its next safe boundary."""
+        if self.is_running:
+            self._follow_up_requested = True
+
+    def receive_messages(
+        self, messages: "typing.Tuple[typing.Union[UserMessage, AgentMessage], ...]",
+    ) -> "None":
+        """Commit messages delivered at a sampling input boundary."""
+        self._append_history(messages)
 
     @property
     def model_name(self) -> "str":
@@ -174,29 +188,16 @@ class Agent:
             restored_history = list(resumed["history"])
             self._configure_recording(session_id, resumed["rollout_path"], resume=True)
             self._history = restored_history
+            self.context_manager.reset_history_context()
             self._last_total_usage_tokens = None
         self.is_shutdown = False
         self.accepts_input = True
-        for tool in self.tool_registry.tools():
-            tool.bind_agent(self)
         return resumed
 
     def ask(self, text: "str") -> "TurnResult":
         from .utils.async_bridge import run_async
 
         return run_async(self.run_turn([text]))
-
-    def fork(self) -> "None":
-        if self.is_running:
-            raise RuntimeError("cannot fork session while agent is running")
-        session_id = uuid7_string()
-        path = None
-        if self._rollout_recorder is not None:
-            path = rollout_path_for_session(
-                self.context_manager._config.codex_home or resolve_codex_home(),
-                session_id,
-            )
-        self._configure_recording(session_id, path)
 
     def _configure_recording(
         self,
@@ -208,6 +209,8 @@ class Agent:
             recorder = None
         elif resume:
             recorder = SessionRolloutRecorder.resume(session_file_path)
+            environment_state = recorder.read_environment_state()
+            self.tool_registry.runtime_environment.validate_state(environment_state)
         else:
             recorder = SessionRolloutRecorder.create(
                 self.context_manager._config.codex_home or resolve_codex_home(),
@@ -224,6 +227,8 @@ class Agent:
             self.model_client._session_id = session_id
         self.session_id = session_id
         self._rollout_recorder = recorder
+        if resume:
+            self.tool_registry.runtime_environment.restore_state(environment_state)
 
     async def compact(
         self,
@@ -254,6 +259,7 @@ class Agent:
         if self.is_running:
             raise RuntimeError("agent already has an active turn")
         self._stop_requested = False
+        self._follow_up_requested = False
         self._idle = asyncio.Event()
         turn = _TurnState(turn_id or uuid7_string())
         try:
@@ -261,12 +267,13 @@ class Agent:
             while True:
                 phase = "pre_turn" if turn.iteration == 0 else "mid_turn"
                 await self._maybe_auto_compact(turn.turn_id, phase)
-                manager = self.tool_registry.runtime_environment.subagent_manager
-                notifications = manager.take_pending_notifications()
-                if notifications:
-                    self._append_history(notifications)
+                self._follow_up_requested = False
+                # Input delivery commits history; its failures must fail the turn.
+                self.event_handler(TurnInputReadyEvent(turn.turn_id))
                 if turn.iteration == 0:
-                    self._append_history(UserMessage(text=text) for text in texts)
+                    self.receive_messages(
+                        tuple(UserMessage(text=text) for text in texts)
+                    )
                 response = await self._sample(turn)
                 self._emit(
                     ModelCompletedEvent(
@@ -285,7 +292,7 @@ class Agent:
                     await self._execute_tool_batch(turn.turn_id, tool_calls)
                 if self._stop_requested:
                     raise TurnInterrupted()
-                if not tool_calls:
+                if not tool_calls and not self._follow_up_requested:
                     break
 
             self._emit(
@@ -330,6 +337,7 @@ class Agent:
             raise
         finally:
             self._stop_requested = False
+            self._follow_up_requested = False
             self._idle.set()
             self._idle = None
 
@@ -357,28 +365,16 @@ class Agent:
                     prune_tool_results_on_context_error=True,
                 )
 
-    async def maybe_invoke(self, event: "typing.Dict[str, object]") -> "bool":
-        if self.is_running or not self.accepts_input:
-            return False
-        tag = event["type"]
-        if not isinstance(tag, str) or not tag.isidentifier():
-            raise ValueError("invoke event type must be an identifier")
-        payload = {key: value for key, value in event.items() if key != "type"}
-        text = (
-            f"<{tag}>\n"
-            f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
-            f"</{tag}>"
-        )
-        await self.run_turn([text])
-        return True
-
     def shutdown(self) -> "None":
         if self.is_shutdown:
             return
         self.accepts_input = False
-        self.is_shutdown = True
-        for tool in self.tool_registry.tools():
-            tool.shutdown()
+        try:
+            self._save_environment_state()
+        finally:
+            self.is_shutdown = True
+            for tool in self.tool_registry.tools():
+                tool.shutdown()
 
     async def _execute_tool_batch(
         self,
@@ -405,16 +401,12 @@ class Agent:
 
         results: "typing.List[ToolResult]" = []
         for batch in batches:
-            context = ToolContext(
-                turn_id=turn_id,
-                history=self.history,
-                cwd=self.context_manager.cwd,
-            )
+            history = self.history
             if len(batch) == 1:
-                results.append(await self._run_single_tool(turn_id, batch[0], context))
+                results.append(await self._run_single_tool(turn_id, batch[0], history))
                 continue
             outcomes = await asyncio.gather(
-                *(self._run_single_tool(turn_id, call, context) for call in batch),
+                *(self._run_single_tool(turn_id, call, history) for call in batch),
                 return_exceptions=True,
             )
             for outcome in outcomes:
@@ -427,13 +419,27 @@ class Agent:
         self,
         turn_id: "str",
         call: "ToolCall",
-        context: "ToolContext",
+        history: "typing.Tuple[ConversationItem, ...]",
     ) -> "ToolResult":
+        context = ToolContext(
+            turn_id=turn_id,
+            history=history,
+            cwd=self.context_manager.cwd,
+            agent_id=self.agent_id,
+            encrypted_messages=call.encrypted_function_args != [],
+        )
         self._emit(ToolStartedEvent(turn_id, call))
         result = await self.tool_registry.execute(call, context)
         self._append_history([truncate_tool_result_for_history(result)])
+        self._save_environment_state()
         self._emit(ToolCompletedEvent(turn_id, call, result))
         return result
+
+    def _save_environment_state(self) -> "None":
+        if self.recorded_session_file_path is not None:
+            self._rollout_recorder.save_environment_state(
+                self.tool_registry.runtime_environment.dump_state()
+            )
 
     def _emit(self, event: "TurnEvent") -> "None":
         handlers = [self.event_handler]
@@ -502,6 +508,7 @@ class Agent:
             self.tool_registry.model_visible_specs(),
             self._parallel_tool_calls,
             turn_id=turn_id,
+            reasoning_effort=self.model_client.reasoning_effort,
         )
         self._emit(
             ModelCalledEvent(turn_id, iteration, len(prompt.input), len(prompt.tools))
@@ -578,6 +585,7 @@ class Agent:
             if recorder is not None:
                 recorder.append_compacted_history(compact_result.history, self._history)
             self._history = list(compact_result.history)
+            self.context_manager.reset_history_context()
             self._last_total_usage_tokens = None
         except Exception as exc:
             if phase == "manual":

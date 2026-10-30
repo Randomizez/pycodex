@@ -9,9 +9,11 @@ import signal
 import subprocess
 import tempfile
 import threading
+from dataclasses import replace
 from pathlib import Path
 
-from pycodex.bootstrap import build_agent, build_model, build_runtime
+from pycodex import AgentsManager, ContextConfig
+from pycodex.bootstrap import build_model
 from pycodex.utils.compat import ThreadingHTTPServer
 from tests.compare_steer_request_bodies import scripted_origin_server
 from tests.fake_responses_server import CaptureStore, build_proxy_handler
@@ -84,16 +86,24 @@ def write_config(path, model, base_url, personality, effort, sandbox):
         "sandbox_mode = {0}".format(json.dumps(sandbox)),
         "model_reasoning_effort = {0}".format(json.dumps(effort)),
         'developer_instructions = "Preserve the fixture context."',
+        "check_for_update_on_startup = false",
     ]
     if personality != "default":
         lines.append("personality = {0}".format(json.dumps(personality)))
     lines.extend(
         [
+            "[features]",
+            "multi_agent_v2 = true",
+            "code_mode = false",
+            "code_mode_only = false",
+            "responses_websockets = false",
+            "responses_websockets_v2 = false",
             "[model_providers.capture]",
             'name = "Offline context capture"',
             "base_url = {0}".format(json.dumps(base_url)),
             'wire_api = "responses"',
             "requires_openai_auth = false",
+            "supports_websockets = false",
             "request_max_retries = 0",
             "stream_max_retries = 0",
         ]
@@ -123,6 +133,18 @@ def run_command(command, workspace, environment, timeout):
     try:
         output, error = process.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc = Path("/proc") / str(process.pid)
+        status = dict(
+            line.split(":", 1)
+            for line in (proc / "status").read_text().splitlines() if ":" in line
+        )
+        if (
+            proc.stat().st_uid != os.getuid()
+            or int(status["PPid"]) != os.getpid()
+            or (proc / "cwd").resolve() != workspace.resolve()
+            or os.getpgid(process.pid) != process.pid
+        ):
+            raise RuntimeError("capture process ownership changed; refusing to stop it")
         os.killpg(process.pid, signal.SIGTERM)
         try:
             output, error = process.communicate(timeout=5)
@@ -136,9 +158,9 @@ def run_command(command, workspace, environment, timeout):
         raise RuntimeError("Codex capture failed: " + error)
 
 
-def run_codex(workspace, capture_root, environment, timeout, resume):
+def run_codex(workspace, capture_root, environment, timeout, resume, codex_binary):
     run_command(
-        ["codex", "exec", "--skip-git-repo-check", "--json", "First fixture prompt."],
+        [codex_binary, "exec", "--skip-git-repo-check", "--json", "First fixture prompt."],
         workspace,
         environment,
         timeout,
@@ -147,7 +169,7 @@ def run_codex(workspace, capture_root, environment, timeout, resume):
         session_id = load_requests(capture_root)[0]["body"]["prompt_cache_key"]
         run_command(
             [
-                "codex",
+                codex_binary,
                 "exec",
                 "resume",
                 "--skip-git-repo-check",
@@ -162,9 +184,11 @@ def run_codex(workspace, capture_root, environment, timeout, resume):
 
 
 async def run_pycodex(config, workspace, resume):
-    runtime = build_runtime(
-        build_agent(build_model(str(config)), config, cwd=workspace)
-    )
+    def new_runtime():
+        context = replace(ContextConfig.from_codex_config(config), cwd=workspace)
+        return AgentsManager(build_model(str(config)), context).create_root_runtime()
+
+    runtime = new_runtime()
     await runtime.start(str(config))
     try:
         receipt = await runtime.submit_input("First fixture prompt.", "cli")
@@ -173,9 +197,7 @@ async def run_pycodex(config, workspace, resume):
         await runtime.close()
     if resume:
         path = runtime.agent.session_file_path
-        runtime = build_runtime(
-            build_agent(build_model(str(config)), config, cwd=workspace)
-        )
+        runtime = new_runtime()
         runtime.resume(path)
         await runtime.start(str(config))
         try:
@@ -193,6 +215,7 @@ def capture(
     personality="pragmatic",
     effort="high",
     sandbox="danger-full-access",
+    codex_binary="codex",
 ):
     home = root / "home"
     codex_home = home / ".codex"
@@ -213,16 +236,11 @@ def capture(
         "---\nname: fixture\ndescription: Fixture skill instructions.\n---\nUse fixture data.\n",
         encoding="utf-8",
     )
-    environment = dict(os.environ, HOME=str(home), CODEX_HOME=str(codex_home))
-    for key in (
-        "HTTP_PROXY",
-        "HTTPS_PROXY",
-        "ALL_PROXY",
-        "http_proxy",
-        "https_proxy",
-        "all_proxy",
-    ):
-        environment.pop(key, None)
+    environment = {
+        "PATH": os.environ["PATH"], "HOME": str(home), "CODEX_HOME": str(codex_home),
+        "SHELL": "/bin/bash", "LANG": "C.UTF-8", "TERM": "dumb",
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+    }
     captured = {}
     for label in ("codex", "pycodex"):
         store = CaptureStore(root / label)
@@ -254,6 +272,7 @@ def capture(
                         environment,
                         timeout,
                         scenario == "resume",
+                        codex_binary,
                     )
                 else:
                     asyncio.run(run_pycodex(config, workspace, scenario == "resume"))
@@ -390,14 +409,18 @@ def main():
         "--scenario", choices=("plain", "resume", "tool"), action="append"
     )
     parser.add_argument("--timeout-seconds", type=float, default=30)
+    parser.add_argument("--codex-bin", type=Path, help="Codex executable to audit; defaults to PATH.")
     args = parser.parse_args()
-    root = args.root or Path(tempfile.mkdtemp(prefix="pycodex-context-compare-"))
+    codex_binary = "codex" if args.codex_bin is None else str(args.codex_bin.expanduser().resolve())
+    root = (args.root or Path(tempfile.mkdtemp(prefix="pycodex-context-compare-"))).resolve()
     root.mkdir(parents=True, exist_ok=True)
     report = {
         "codex_version": subprocess.check_output(
-            ["codex", "--version"],
+            [codex_binary, "--version"],
             universal_newlines=True,
+            env=dict(os.environ, HOME=str(root), CODEX_HOME=str(root)),
         ).strip(),
+        "codex_binary": codex_binary,
         "model": args.model,
         "personality": args.personality,
         "reasoning_effort": args.reasoning_effort,
@@ -413,6 +436,7 @@ def main():
             args.personality,
             args.reasoning_effort,
             args.sandbox,
+            codex_binary,
         )
         identifiers = {"codex": {}, "pycodex": {}}
         contexts = {

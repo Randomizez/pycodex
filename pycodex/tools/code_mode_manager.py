@@ -16,7 +16,7 @@ import math
 import threading
 import typing
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from loguru import logger
@@ -66,6 +66,9 @@ class CodeModeManager:
         self._stored_values: "typing.Dict[str, JSONValue]" = {}
         self._cells: "typing.Dict[str, ExecCell]" = {}
         self._lock = threading.Lock()
+
+    def running_cell_count(self) -> "int":
+        return sum(not cell.done_event.is_set() for cell in self._cells.values())
 
     async def exec(
         self, source: "str", context: "ToolContext"
@@ -208,6 +211,7 @@ class CodeModeManager:
                 if isinstance(stored_values, dict):
                     with self._lock:
                         self._stored_values = stored_values
+                cell.process.stdin.close()
                 cell.done_event.set()
                 cell.output_event.set()
                 continue
@@ -273,7 +277,7 @@ class CodeModeManager:
                 arguments=message.get("arguments"),
                 tool_type=tool.tool_type,
             ),
-            context,
+            replace(context, encrypted_messages=False),
         )
         if result.is_error:
             payload = {
@@ -387,7 +391,9 @@ class CodeModeManager:
         cell: "ExecCell",
         max_tokens: "typing.Union[int, None]",
     ) -> "StructuredToolOutput":
-        if cell.process.returncode is not None and cell.reader_task is not None:
+        if (
+            cell.done_event.is_set() or cell.process.returncode is not None
+        ) and cell.reader_task is not None:
             await cell.reader_task
 
         wall_time = asyncio.get_running_loop().time() - cell.started_at

@@ -12,7 +12,8 @@ from .messages_api import MessagesAPIAdapterError, build_messages_request
 from .messages_api import iter_chat_chunks as iter_chat_chunks_from_messages
 from .messages_api import saw_message_stop as messages_saw_message_stop
 from .session_store import StoredResponse
-from .tools import WebSearchTool, collect_custom_tool_names
+from .stream_events import ResponseOutputStream
+from .tools import WebSearchTool
 from .tools.custom_adapter import CustomToolAdapterError
 from .tools.custom_adapter import build_output_item as build_custom_output_item
 from .tools.custom_adapter import build_tool_call as build_custom_tool_call
@@ -29,6 +30,44 @@ from .trajectory_dump import TrajectoryDumpWriter
 
 class UnsupportedIncommingFeature(ValueError):
     pass
+
+
+class ToolNameMap:
+    """Request-local identities for flattened namespace tools and their calls."""
+
+    def __init__(self) -> "None":
+        self._identities: "typing.Dict[str, typing.Tuple[typing.Optional[str], str]]" = {}
+        self.custom_tool_names: "typing.Set[str]" = set()
+
+    def qualify(self, name: "object", namespace: "object" = None) -> "str":
+        if not isinstance(name, str) or not name.strip():
+            raise UnsupportedIncommingFeature("tool is missing a non-empty `name`")
+        name = name.strip()
+        if namespace is not None:
+            if not isinstance(namespace, str) or not namespace.strip():
+                raise UnsupportedIncommingFeature(
+                    "tool namespace must be a non-empty string"
+                )
+            namespace = namespace.strip()
+        qualified = f"{namespace}__{name}" if namespace is not None else name
+        identity = (namespace, name)
+        if qualified in self._identities and self._identities[qualified] != identity:
+            raise UnsupportedIncommingFeature(
+                f"flattened tool name collision: {qualified!r}"
+            )
+        self._identities[qualified] = identity
+        return qualified
+
+    def restore_output_item(
+        self, item: "typing.Dict[str, object]"
+    ) -> "typing.Dict[str, object]":
+        if item.get("type") not in {"function_call", "custom_tool_call"}:
+            return item
+        name = item["name"]
+        namespace, original_name = self._identities.get(name, (None, name))
+        if namespace is None:
+            return item
+        return dict(item, namespace=namespace, name=original_name)
 
 
 class OutcommingChatError(RuntimeError):
@@ -102,7 +141,9 @@ class StreamRouter:
         self,
         incomming_request: "typing.Dict[str, object]",
     ) -> "typing.Set[str]":
-        return collect_custom_tool_names(incomming_request.get("tools") or [])
+        tool_names = ToolNameMap()
+        self._translate_tools(incomming_request.get("tools") or [], tool_names)
+        return tool_names.custom_tool_names
 
     def list_models(self) -> "typing.Dict[str, object]":
         request = urllib.request.Request(
@@ -115,6 +156,7 @@ class StreamRouter:
     def build_outcomming_request(
         self,
         incomming_request: "typing.Dict[str, object]",
+        tool_names: "typing.Union[ToolNameMap, None]" = None,
     ) -> "typing.Dict[str, object]":
         model = str(incomming_request.get("model", "")).strip()
         if not model:
@@ -131,11 +173,18 @@ class StreamRouter:
         if not isinstance(input_items, list):
             raise UnsupportedIncommingFeature("incomming `input` must be a list")
 
+        if tool_names is None:
+            tool_names = ToolNameMap()
+        tools = incomming_request.get("tools") or []
+        if not isinstance(tools, list):
+            raise UnsupportedIncommingFeature("incomming `tools` must be a list")
+        translated_tools = self._translate_tools(tools, tool_names)
         payload: "typing.Dict[str, object]" = {
             "model": model,
             "messages": self._responses_input_to_chat_messages(
                 instructions,
                 input_items,
+                tool_names,
             ),
             "stream": True,
         }
@@ -160,15 +209,14 @@ class StreamRouter:
         if self._supports_stream_usage():
             payload["stream_options"] = {"include_usage": True}
 
-        tools = incomming_request.get("tools") or []
-        if tools:
-            if not isinstance(tools, list):
-                raise UnsupportedIncommingFeature("incomming `tools` must be a list")
-            payload["tools"] = self._translate_tools(tools)
+        if translated_tools:
+            payload["tools"] = translated_tools
 
         tool_choice = incomming_request.get("tool_choice")
         if tool_choice is not None:
-            payload["tool_choice"] = self._translate_tool_choice(tool_choice)
+            payload["tool_choice"] = self._translate_tool_choice(
+                tool_choice, tool_names,
+            )
 
         parallel_tool_calls = incomming_request.get("parallel_tool_calls")
         if isinstance(parallel_tool_calls, bool):
@@ -349,7 +397,7 @@ class StreamRouter:
         self,
         stored_response: "StoredResponse",
         outcomming_request: "typing.Dict[str, object]",
-        custom_tool_names: "typing.Union[typing.Set[str], None]" = None,
+        tool_names: "ToolNameMap",
         trajectory_dump: "typing.Union[TrajectoryDumpWriter, None]" = None,
     ):
         yield (
@@ -367,6 +415,7 @@ class StreamRouter:
 
         text_parts: "typing.List[str]" = []
         reasoning_parts: "typing.List[str]" = []
+        output_stream = ResponseOutputStream()
         latest_usage: "typing.Dict[str, object]" = {}
         current_request = json.loads(json.dumps(outcomming_request))
         current_stream = self._open_tracked_outcomming_stream(
@@ -390,7 +439,11 @@ class StreamRouter:
                     current_usage,
                     finish_reasons,
                 ):
-                    yield event_name, payload
+                    item_type = (
+                        "reasoning" if event_name == "response.reasoning_text.delta"
+                        else "message"
+                    )
+                    yield from output_stream.text_delta(item_type, payload["delta"])
             if current_usage:
                 latest_usage = json.loads(json.dumps(current_usage))
 
@@ -401,14 +454,9 @@ class StreamRouter:
                 current_request,
             )
             if mock_search_calls and not ordinary_tool_calls:
+                yield from output_stream.finish_text()
                 for item in build_output_items(mock_search_calls):
-                    yield (
-                        "response.output_item.done",
-                        {
-                            "type": "response.output_item.done",
-                            "item": item,
-                        },
-                    )
+                    yield from output_stream.complete_tool(item)
                 try:
                     current_request = build_followup_request(
                         self._mock_web_search,
@@ -437,6 +485,7 @@ class StreamRouter:
                     retried_reasoning_only_output = True
                     del reasoning_parts[reasoning_start:]
                     del text_parts[text_start:]
+                    output_stream.discard_text()
                     current_request = json.loads(json.dumps(current_request))
                     current_stream = self._open_tracked_outcomming_stream(
                         current_request,
@@ -451,27 +500,15 @@ class StreamRouter:
                     error_type="model_output_invalid",
                 )
 
-            for item in self._build_output_items(
-                reasoning_parts,
-                text_parts,
+            tool_items = self._build_tool_output_items(
                 ordinary_tool_calls,
-                custom_tool_names or set(),
-            ):
-                yield (
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "item": item,
-                    },
-                )
+                tool_names.custom_tool_names,
+            )
+            yield from output_stream.finish_text()
+            for item in tool_items:
+                yield from output_stream.complete_tool(tool_names.restore_output_item(item))
             for item in build_output_items(mock_search_calls):
-                yield (
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "item": item,
-                    },
-                )
+                yield from output_stream.complete_tool(item)
             break
 
         yield (
@@ -480,7 +517,10 @@ class StreamRouter:
                 "type": "response.completed",
                 "response": {
                     "id": stored_response.response_id,
-                    "output": [],
+                    "object": "response",
+                    "status": "completed",
+                    "model": stored_response.model,
+                    "output": output_stream.items,
                     **(
                         {"usage": json.loads(json.dumps(latest_usage))}
                         if latest_usage
@@ -559,6 +599,7 @@ class StreamRouter:
         self,
         instructions: "str",
         input_items: "typing.List[object]",
+        tool_names: "ToolNameMap",
     ) -> "typing.List[typing.Dict[str, object]]":
         messages: "typing.List[typing.Dict[str, object]]" = []
         if instructions:
@@ -595,6 +636,28 @@ class StreamRouter:
             item_type = raw_item.get("type")
             if item_type not in {"function_call_output", "custom_tool_call_output"}:
                 flush_pending_tool_images()
+
+            if item_type == "agent_message":
+                if not all(
+                    isinstance(raw_item.get(key), str) for key in ("author", "recipient")
+                ):
+                    raise UnsupportedIncommingFeature(
+                        "agent_message requires string `author` and `recipient`"
+                    )
+                text, image_parts = self._split_content_parts(raw_item.get("content"))
+                if image_parts:
+                    raise UnsupportedIncommingFeature(
+                        "agent_message content must contain only input_text parts"
+                    )
+                flush_pending_assistant()
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Agent message from {raw_item['author']} to "
+                        f"{raw_item['recipient']}:\n{text}"
+                    ),
+                })
+                continue
 
             if item_type == "message":
                 role = str(raw_item.get("role", "")).strip()
@@ -652,7 +715,9 @@ class StreamRouter:
                         "id": str(raw_item.get("call_id", "")).strip(),
                         "type": "function",
                         "function": {
-                            "name": str(raw_item.get("name", "")).strip(),
+                            "name": tool_names.qualify(
+                                raw_item.get("name"), raw_item.get("namespace"),
+                            ),
                             "arguments": str(raw_item.get("arguments", "") or "{}"),
                         },
                     }
@@ -683,9 +748,13 @@ class StreamRouter:
                         "assistant tool calls must be a list"
                     )
                 try:
-                    tool_calls.append(build_custom_tool_call(raw_item))
+                    tool_call = build_custom_tool_call(raw_item)
                 except CustomToolAdapterError as exc:
                     raise UnsupportedIncommingFeature(str(exc)) from exc
+                tool_call["function"]["name"] = tool_names.qualify(
+                    raw_item.get("name"), raw_item.get("namespace"),
+                )
+                tool_calls.append(tool_call)
                 continue
 
             if item_type == "custom_tool_call_output":
@@ -806,44 +875,78 @@ class StreamRouter:
         return ""
 
     def _translate_tools(
-        self, incomming_tools: "typing.List[object]"
+        self,
+        incomming_tools: "typing.List[object]",
+        tool_names: "ToolNameMap",
+        namespace: "typing.Union[str, None]" = None,
+        namespace_description: "str" = "",
     ) -> "typing.List[typing.Dict[str, object]]":
         translated: "typing.List[typing.Dict[str, object]]" = []
         for raw_tool in incomming_tools:
             if not isinstance(raw_tool, dict):
                 raise UnsupportedIncommingFeature("tool definitions must be objects")
             tool_type = raw_tool.get("type")
-            if tool_type == "function":
-                name = str(raw_tool.get("name", "")).strip()
-                translated.append(
-                    {
-                        "type": "function",
-                        "name": name,
-                        "function": {
-                            "name": name,
-                            "description": str(raw_tool.get("description", "") or ""),
-                            "parameters": raw_tool.get("parameters")
-                            or {"type": "object"},
-                            "strict": bool(raw_tool.get("strict", False)),
-                        },
-                    }
+            if namespace is not None and tool_type not in {"function", "custom"}:
+                raise UnsupportedIncommingFeature(
+                    "namespace tools must be function or custom tools"
+                )
+            if tool_type == "namespace":
+                namespace_name = raw_tool.get("name")
+                if not isinstance(namespace_name, str) or not namespace_name.strip():
+                    raise UnsupportedIncommingFeature(
+                        "namespace is missing a non-empty `name`"
+                    )
+                nested_tools = raw_tool.get("tools")
+                if not isinstance(nested_tools, list):
+                    raise UnsupportedIncommingFeature("namespace `tools` must be a list")
+                translated.extend(
+                    self._translate_tools(
+                        nested_tools,
+                        tool_names,
+                        namespace_name,
+                        str(raw_tool.get("description", "") or ""),
+                    )
                 )
                 continue
-            if tool_type == "web_search":
+            if tool_type == "function":
+                name = tool_names.qualify(raw_tool.get("name"), namespace)
+                tool = {
+                    "type": "function",
+                    "name": name,
+                    "function": {
+                        "name": name,
+                        "description": str(raw_tool.get("description", "") or ""),
+                        "parameters": raw_tool.get("parameters") or {"type": "object"},
+                        "strict": bool(raw_tool.get("strict", False)),
+                    },
+                }
+            elif tool_type == "web_search":
+                tool_names.qualify(self._mock_web_search.name)
                 translated.append(build_tool_definition(self._mock_web_search))
                 continue
-            if tool_type == "custom":
+            elif tool_type == "custom":
                 try:
-                    translated.append(build_custom_tool_definition(raw_tool))
+                    tool = build_custom_tool_definition(raw_tool)
                 except CustomToolAdapterError as exc:
                     raise UnsupportedIncommingFeature(str(exc)) from exc
-                continue
-            raise UnsupportedIncommingFeature(
-                f"unsupported incomming tool type: {tool_type!r}"
-            )
+                name = tool_names.qualify(raw_tool.get("name"), namespace)
+                tool["name"] = name
+                tool["function"]["name"] = name
+                tool_names.custom_tool_names.add(name)
+            else:
+                raise UnsupportedIncommingFeature(
+                    f"unsupported incomming tool type: {tool_type!r}"
+                )
+            if namespace_description:
+                tool["function"]["description"] = (
+                    namespace_description + "\n\n" + tool["function"]["description"]
+                )
+            translated.append(tool)
         return translated
 
-    def _translate_tool_choice(self, raw_tool_choice: "object") -> "object":
+    def _translate_tool_choice(
+        self, raw_tool_choice: "object", tool_names: "ToolNameMap",
+    ) -> "object":
         if isinstance(raw_tool_choice, str):
             return raw_tool_choice
         if not isinstance(raw_tool_choice, dict):
@@ -858,7 +961,9 @@ class StreamRouter:
                 )
             return {
                 "type": "function",
-                "function": {"name": name},
+                "function": {
+                    "name": tool_names.qualify(name, raw_tool_choice.get("namespace")),
+                },
             }
         raise UnsupportedIncommingFeature(
             f"unsupported incomming tool_choice type: {choice_type!r}"
@@ -1000,43 +1105,12 @@ class StreamRouter:
             if isinstance(value, dict):
                 current_usage[key] = json.loads(json.dumps(value))
 
-    def _build_output_items(
+    def _build_tool_output_items(
         self,
-        reasoning_parts: "typing.List[str]",
-        text_parts: "typing.List[str]",
         tool_calls: "typing.Dict[int, typing.Dict[str, object]]",
         custom_tool_names: "typing.Set[str]",
     ) -> "typing.List[typing.Dict[str, object]]":
         items: "typing.List[typing.Dict[str, object]]" = []
-        reasoning_text = "".join(reasoning_parts)
-        if reasoning_text:
-            items.append(
-                {
-                    "type": "reasoning",
-                    "summary": [],
-                    "content": [
-                        {
-                            "type": "reasoning_text",
-                            "text": reasoning_text,
-                        }
-                    ],
-                }
-            )
-        text = "".join(text_parts)
-        if text:
-            items.append(
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": text,
-                        }
-                    ],
-                }
-            )
-
         for index in sorted(tool_calls):
             tool_call = tool_calls[index]
             if tool_call.get("type") != "function":
@@ -1074,6 +1148,7 @@ class StreamRouter:
                     "call_id": str(tool_call.get("id", "")).strip() or f"call_{index}",
                     "name": name,
                     "arguments": arguments,
+                    "encrypted_function_args": [],
                 }
             )
 

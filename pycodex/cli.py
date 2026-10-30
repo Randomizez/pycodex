@@ -10,6 +10,7 @@ import threading
 import traceback
 import typing
 from contextlib import contextmanager
+from dataclasses import replace
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.enums import DEFAULT_BUFFER
@@ -17,9 +18,11 @@ from prompt_toolkit.filters import has_focus
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.patch_stdout import patch_stdout
 
-from .bootstrap import build_agent, build_model, build_runtime, configure_loguru
+from .bootstrap import build_model, configure_loguru
+from .context import ContextConfig
 from .events import DEFAULT_MAIN_PROMPT, EventDisplay
 from .model import DEFAULT_CODEX_CONFIG_PATH, ModelControl
+from .multi_agents import AgentsManager
 from .portable import bootstrap_called_home, upload_codex_home
 from .utils import get_debug_dir
 from .utils.event_helpers import format_error, render_result
@@ -50,7 +53,8 @@ def build_parser():
         help="Path to Codex config.toml.",
     )
     parser.add_argument(
-        "--profile", default=None, help="Optional profile name from config.toml."
+        "--profile", default=None,
+        help="Select <name>.config.toml or [profiles.<name>], overriding the config default.",
     )
     parser.add_argument(
         "--vllm-endpoint",
@@ -149,15 +153,13 @@ async def run_cli(args):
             use_messages=args.use_messages,
         )
         phase("build_model:done")
-        phase("build_agent:start")
-        agent = build_agent(
-            model,
-            config_path=str(config_path),
-            profile=args.profile,
-            system_prompt=args.system_prompt,
+        phase("create_root_runtime:start")
+        context_config = replace(
+            ContextConfig.from_codex_config(config_path, args.profile),
+            base_instructions_override=args.system_prompt,
         )
-        phase("build_agent:done")
-        runtime = build_runtime(agent)
+        runtime = AgentsManager(model, context_config).create_root_runtime()
+        phase("create_root_runtime:done")
         if should_run_interactive(args.prompt, sys.stdin.isatty()):
             return await run_interactive_session(runtime, args.json, str(config_path))
         prompt_text = resolve_prompt_text(args.prompt)
