@@ -748,7 +748,10 @@ The [workspace resource API](WORKSPACE_API.md) adds lightweight Runtime state,
 model catalogs, asynchronous commands/results, paginated history, descendant
 Agent and background-work inventories, and cursored WS replay. Queries run on
 the owning session loop; rollout scans run in a thread pool. WS state and
-cursors are captured together in `WebSessionView`.
+cursors are captured together in `WebSessionView`, implemented in
+`workspace_server.session_view` alongside its event JSON encoding. The view keeps
+one lock for state projection, cursor allocation, subscription and publication;
+its existing `workspace_server` and `workspace_server.app` imports remain available.
 
 `AgentRuntime.submit_input(..., wait_for_command=False)` returns an admitted
 command receipt without waiting for completion. Runtime owns these command

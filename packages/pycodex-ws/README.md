@@ -79,6 +79,9 @@ state, model catalogs, asynchronous command results, paginated history, event
 replay and sub-agent/background-work inventories. A `mount(host)` export in
 `custom.js` can access the built-in page's session, draft and view controls.
 
+Backend module ownership and the preserved session interfaces are documented in
+the [runtime guide](../../docs/RUNTIME.md#workspace-session-api).
+
 Ask the Agent to show the [feature catalog](workspace_server/optional_features/README.md)
 in the view area, then choose features by name or ID in chat. The Agent adapts
 their source into your frontend. To share a local change, ask it to publish a
