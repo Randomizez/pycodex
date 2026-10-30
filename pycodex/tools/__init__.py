@@ -14,6 +14,7 @@ from .code_mode_manager import CodeModeManager
 from .exec_command_tool import ExecCommandTool
 from .exec_tool import ExecTool
 from .followup_task_tool import FollowupTaskTool
+from .goal_tool import CreateGoalTool, GetGoalTool, UpdateGoalTool
 from .grep_files_tool import GrepFilesTool
 from .interrupt_agent_tool import InterruptAgentTool
 from .list_agents_tool import ListAgentsTool
@@ -53,6 +54,11 @@ def get_tools(
     clock_manager = runtime_environment.clock_manager
     exec_tool = ExecTool(code_mode_manager)
     wait_tool = WaitTool(code_mode_manager)
+    goal_tools = (
+        CreateGoalTool(runtime_environment.goal_manager),
+        GetGoalTool(runtime_environment.goal_manager),
+        UpdateGoalTool(runtime_environment.goal_manager),
+    )
     request_user_input_tool = RequestUserInputTool()
     agent_tools = (
         SpawnAgentTool(agents_manager),
@@ -76,7 +82,7 @@ def get_tools(
         request_user_input_tool,
         apply_patch_tool,
         view_image_tool,
-    ) + agent_tools
+    ) + goal_tools + agent_tools
     if toolset is not None:
         available_tools = {tool.name: tool for tool in tools}
         available_tools.update({
@@ -105,9 +111,11 @@ __all__ = [
     "ClockManager",
     "ClockTool",
     "CodeModeManager",
+    "CreateGoalTool",
     "ExecTool",
     "FollowupTaskTool",
     "get_tools",
+    "GetGoalTool",
     "ExecCommandTool",
     "GrepFilesTool",
     "InterruptAgentTool",
@@ -124,6 +132,7 @@ __all__ = [
     "ToolContext",
     "ToolRegistry",
     "UnifiedExecManager",
+    "UpdateGoalTool",
     "UpdatePlanTool",
     "ViewImageTool",
     "WaitAgentTool",

@@ -12,7 +12,7 @@ import yaml
 from .utils.codex_config import read_codex_config
 from .utils.model_metadata import model_metadata
 from .protocol import (
-    ContextMessage, ConversationItem, JSONDict, Prompt, ToolCall, ToolResult, ToolSpec,
+    ContextMessage, ConversationItem, JSONDict, Prompt, ToolCall, ToolResult, ToolSpec, UserMessage,
 )
 from .utils.get_env import (
     get_sandbox_tag,
@@ -927,3 +927,18 @@ def _parse_skill_descriptor(
         scope_rank=scope_rank,
         root=root.resolve(),
     )
+
+
+def build_goal_message(goal, budget_limited=False):
+    template_name = "budget_limit.md" if budget_limited else "continuation.md"
+    template = (
+        Path(__file__).resolve().parent / "prompts" / "goals" / template_name
+    ).read_text(encoding="utf-8").rstrip("\n")
+    budget = goal.get("tokenBudget")
+    return UserMessage(template.format(
+        objective=escape(goal["objective"]),
+        tokens_used=goal["tokensUsed"],
+        time_used_seconds=goal["timeUsedSeconds"],
+        token_budget="none" if budget is None else budget,
+        remaining_tokens="unbounded" if budget is None else max(0, budget - goal["tokensUsed"]),
+    ))

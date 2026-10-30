@@ -4,6 +4,7 @@ from typing import Awaitable, Callable
 
 from ..utils.compat import Literal
 from .clock_manager import ClockManager
+from .goal_manager import GoalManager
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
 PlanListener = Callable[[typing.Dict[str, object]], None]
@@ -90,14 +91,19 @@ class RequestPermissionsManager:
 class AgentRuntimeEnvironment:
     def __init__(self) -> "None":
         self.clock_manager = ClockManager()
+        self.goal_manager = GoalManager()
         self.plan_store = PlanStore()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
 
     def dump_state(self):
+        managers = {"clock": self.clock_manager.dump_state()}
+        goal = self.goal_manager.dump_state()
+        if goal is not None:
+            managers["goal"] = goal
         return {
             "version": 1,
-            "managers": {"clock": self.clock_manager.dump_state()},
+            "managers": managers,
         }
 
     def validate_state(self, state):
@@ -105,15 +111,32 @@ class AgentRuntimeEnvironment:
             if state["version"] != 1:
                 raise ValueError("unsupported environment state version")
             self.clock_manager.validate_state(state["managers"]["clock"])
+            self.goal_manager.validate_state(state["managers"].get("goal"))
 
     def restore_state(self, state):
         self.validate_state(state)
         self.clock_manager.restore_state(
             {"period_m": None} if state is None else state["managers"]["clock"]
         )
+        self.goal_manager.restore_state(
+            None if state is None else state["managers"].get("goal")
+        )
 
     def start(self):
         self.clock_manager.arm_after_reply()
+        self.goal_manager.start()
+
+    def handle_agent_event(self, event):
+        self.goal_manager.handle_agent_event(event)
+
+    def tool_completed(self):
+        self.goal_manager.account()
+
+    def follow_up_messages(self):
+        return self.goal_manager.follow_up_messages()
+
+    def shutdown(self):
+        self.goal_manager.shutdown()
 
 
 def create_agent_runtime_environment() -> "AgentRuntimeEnvironment":

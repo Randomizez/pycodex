@@ -844,6 +844,18 @@ class AgentRuntime:
             if self._enqueue_queue:
                 queued = self._enqueue_queue.popleft()
                 return queued, list(queued.texts)
+            if not self._steer_queue:
+                continuation = self.agent.tool_registry.runtime_environment.goal_manager.take_continuation()
+                if continuation is not None:
+                    # Let reply consumers close or submit input before autonomous work.
+                    await asyncio.sleep(0)
+                    if (
+                        not self.accepts_input or self._triggered_submission is not None
+                        or self._enqueue_queue or self._steer_queue
+                    ):
+                        continue
+                    self.message(continuation)
+                    return _QueuedSubmission([]), []
             self._queue_event.clear()
             await self._queue_event.wait()
 

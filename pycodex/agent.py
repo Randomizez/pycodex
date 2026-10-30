@@ -370,6 +370,7 @@ class Agent:
             return
         self.accepts_input = False
         try:
+            self.tool_registry.runtime_environment.shutdown()
             self._save_environment_state()
         finally:
             self.is_shutdown = True
@@ -414,6 +415,7 @@ class Agent:
                     raise outcome
                 results.append(outcome)
         self._append_history(self.tool_registry.follow_up_messages(results))
+        self._append_history(self.tool_registry.runtime_environment.follow_up_messages())
 
     async def _run_single_tool(
         self,
@@ -427,11 +429,11 @@ class Agent:
             cwd=self.context_manager.cwd,
             agent_id=self.agent_id,
             encrypted_messages=call.encrypted_function_args != [],
+            session_id=self.session_id,
         )
         self._emit(ToolStartedEvent(turn_id, call))
         result = await self.tool_registry.execute(call, context)
         self._append_history([truncate_tool_result_for_history(result)])
-        self._save_environment_state()
         self._emit(ToolCompletedEvent(turn_id, call, result))
         return result
 
@@ -442,6 +444,9 @@ class Agent:
             )
 
     def _emit(self, event: "TurnEvent") -> "None":
+        self.tool_registry.runtime_environment.handle_agent_event(event)
+        if isinstance(event, (ToolCompletedEvent, TerminalEvent)):
+            self._save_environment_state()
         handlers = [self.event_handler]
         if isinstance(event, (TerminalEvent, TurnStartedEvent, CompactStartedEvent)):
             handlers = [

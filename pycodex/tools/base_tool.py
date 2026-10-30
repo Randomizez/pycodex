@@ -45,6 +45,7 @@ class ToolContext:
     agent_id: "typing.Union[str, None]" = None
     encrypted_messages: "bool" = True
     call_id: "typing.Union[str, None]" = None
+    session_id: "typing.Union[str, None]" = None
 
     def resolve_path(self, path=None) -> "Path":
         return (self.cwd / Path("." if path is None else path).expanduser()).resolve()
@@ -159,6 +160,7 @@ class ToolRegistry:
     async def execute(self, call: "ToolCall", context: "ToolContext") -> "ToolResult":
         tool = self._tools.get(call.name)
         if tool is None:
+            self.runtime_environment.tool_completed()
             return ToolResult(
                 call_id=call.call_id,
                 name=call.name,
@@ -215,6 +217,8 @@ class ToolRegistry:
                 is_error=True,
                 tool_type=call.tool_type,
             )
+        finally:
+            self.runtime_environment.tool_completed()
 
     def follow_up_messages(
         self, results: "typing.Iterable[ToolResult]"
