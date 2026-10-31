@@ -35,6 +35,7 @@ def test_first_data_timeout_rejects_invalid_values(value):
         ("midstream_stall", "HTTP/1.1"),
     ],
 )
+@pytest.mark.asyncio
 async def test_first_data_and_midstream_timeouts_use_different_budgets(
     mode, protocol, monkeypatch
 ):

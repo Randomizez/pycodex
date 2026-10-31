@@ -216,14 +216,25 @@ class ExecRuntime:
             raise ValueError("delay_ms must be a finite non-negative number")
 
         async def invoke():
-            result = callback()
-            if inspect.isawaitable(result):
-                await result
+            try:
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
+            except asyncio.CancelledError:
+                raise
+            except BaseException as error:
+                # Catch control-flow exceptions before they reach asyncio.Task.
+                if isinstance(error, ExecExit):
+                    self._exited = True
+                else:
+                    self._background_error = "".join(traceback.format_exception(
+                        type(error), error, error.__traceback__,
+                    ))
+                self._main_task.cancel()
 
         def fire():
             self._timers.discard(handle)
-            task = self._factory.create_task(invoke(), self)
-            task.add_done_callback(self._background_done)
+            self._factory.create_task(invoke(), self)
 
         handle = self._loop.call_later(delay_ms / 1000.0, fire)
         self._timers.add(handle)
@@ -233,20 +244,6 @@ class ExecRuntime:
         if handle is not None:
             handle.cancel()
             self._timers.discard(handle)
-
-    def _background_done(self, task):
-        if task.cancelled():
-            return
-        error = task.exception()
-        if error is not None:
-            if isinstance(error, ExecExit):
-                self._exited = True
-            else:
-                self._background_error = "".join(
-                    traceback.format_exception(type(error), error, error.__traceback__)
-                )
-            if self._main_task is not None:
-                self._main_task.cancel()
 
     def _tool_caller(self, spec):
         signature = python_tool_signature(spec)

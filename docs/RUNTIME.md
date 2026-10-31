@@ -1605,6 +1605,9 @@ created through asyncio from owned cell tasks, including `create_task`,
 `ensure_future`, `gather` and `loop.create_task`. It preserves the preceding
 factory and restores it after the last active cell finishes. `set_timeout`
 callbacks run as owned tasks and their timer handles belong to that cell.
+An `exit()` in a timer callback completes its cell successfully. Other callback
+exceptions, including `SystemExit` and `KeyboardInterrupt`, become cell errors
+before reaching the host event loop; this also applies to async callbacks.
 Cleanup cancels and awaits only that cell's Python tasks and timers. Direct
 `asyncio.Task(...)` construction, unmanaged loop callbacks, threads and
 executors require explicit cleanup by the script.

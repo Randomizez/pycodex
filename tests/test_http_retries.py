@@ -23,6 +23,7 @@ class Response:
 
 
 @pytest.mark.parametrize("status", [408, 429, 503])
+@pytest.mark.asyncio
 async def test_http_errors_use_retry_budget(monkeypatch, status):
     attempts = []
     delays = []

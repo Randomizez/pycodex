@@ -106,6 +106,7 @@ def test_invalid_fallback_config(tmp_path, value):
         ResponsesProviderConfig.from_codex_config(path)
 
 
+@pytest.mark.asyncio
 async def test_ordered_fallback_preserves_history_tools_and_primary(monkeypatch):
     model_client = client(monkeypatch, cooldown=0)
     seen = []
@@ -185,6 +186,7 @@ async def test_ordered_fallback_preserves_history_tools_and_primary(monkeypatch)
         "model_not_found",
     ],
 )
+@pytest.mark.asyncio
 async def test_fallback_on_access_transport_and_stream_failures(monkeypatch, failure):
     model_client = client(monkeypatch, retries=0)
     seen = []
@@ -224,6 +226,7 @@ async def test_fallback_on_access_transport_and_stream_failures(monkeypatch, fai
     assert not any(isinstance(item, AssistantMessage) for item in result.items)
 
 
+@pytest.mark.asyncio
 async def test_fallback_exhaustion_is_bounded_and_deduplicated(monkeypatch):
     model_client = client(monkeypatch)
     model_client._config = replace(model_client._config, fallback_models=MODELS * 2)
@@ -260,6 +263,7 @@ async def test_fallback_exhaustion_is_bounded_and_deduplicated(monkeypatch):
         ),
     ],
 )
+@pytest.mark.asyncio
 async def test_fallback_does_not_mask_terminal_errors(monkeypatch, failure, error):
     model_client = client(monkeypatch)
     seen = []
@@ -294,6 +298,7 @@ def test_invalid_cooldown_config(tmp_path, value):
 
 
 @pytest.mark.parametrize("recovers", [True, False])
+@pytest.mark.asyncio
 async def test_cooldown_skips_primary_and_reprobes_only_after_expiry(
     monkeypatch, cooldown_clock, recovers
 ):
@@ -333,6 +338,7 @@ async def test_cooldown_skips_primary_and_reprobes_only_after_expiry(
     assert seen[before:] == [MODELS[0] if recovers else MODELS[1]]
 
 
+@pytest.mark.asyncio
 async def test_unavailable_backups_are_also_cooled_down(monkeypatch, cooldown_clock):
     model_client = client(monkeypatch, retries=0)
     seen = []
@@ -349,6 +355,7 @@ async def test_unavailable_backups_are_also_cooled_down(monkeypatch, cooldown_cl
     assert seen == [MODELS[0], MODELS[1], MODELS[2], MODELS[2]]
 
 
+@pytest.mark.asyncio
 async def test_all_models_cooling_down_resets_and_retries_full_chain(
     monkeypatch, cooldown_clock
 ):
@@ -374,6 +381,7 @@ async def test_all_models_cooling_down_resets_and_retries_full_chain(
 
 
 @pytest.mark.parametrize("recovered_model", [MODELS[0], MODELS[2]])
+@pytest.mark.asyncio
 async def test_user_can_retry_during_cooldown_and_recover(monkeypatch, recovered_model):
     model_client = client(monkeypatch, retries=0)
     seen = []
@@ -397,6 +405,7 @@ async def test_user_can_retry_during_cooldown_and_recover(monkeypatch, recovered
     assert recovered_model not in model_client._model_cooldowns
 
 
+@pytest.mark.asyncio
 async def test_rate_limit_retry_after_is_honored_before_fallback(monkeypatch):
     model_client = client(monkeypatch)
     seen = []
@@ -427,6 +436,7 @@ async def test_rate_limit_retry_after_is_honored_before_fallback(monkeypatch):
     assert retry.message == "Reconnecting... 1/1"
 
 
+@pytest.mark.asyncio
 async def test_fallback_event_uses_provider_reason_and_attempt_timing(monkeypatch):
     model_client = client(monkeypatch)
     seen = []
@@ -457,6 +467,7 @@ async def test_fallback_event_uses_provider_reason_and_attempt_timing(monkeypatc
     assert "retry after 12 seconds" in fallback.error
 
 
+@pytest.mark.asyncio
 async def test_cooldown_is_session_local_and_manual_selection_clears_it(
     monkeypatch, cooldown_clock
 ):

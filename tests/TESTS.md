@@ -458,6 +458,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - 正常完成、terminate、shutdown 和 close 均等待已发工具调用完成；取消观察者不取消 cell。
 - 覆盖并发工具调用、工具错误、语法和运行错误、timer/exit/notify、媒体输出、
   多行字符串，以及 restart 后旧 cell 不污染新会话。
+- 同步和异步 timer 回调的错误（包括 `SystemExit` / `KeyboardInterrupt`）
+  保持为 cell 错误；`exit()` 仍成功结束 cell，不影响宿主事件循环。
 
 ### `tests/test_builtin_tools.py`
 

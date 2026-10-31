@@ -331,6 +331,32 @@ async def test_errors_remain_cell_results_and_restore_task_factory(tmp_path, sou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("callback_prefix", ["def", "async def"])
+@pytest.mark.parametrize("error,expected", [
+    ("ValueError('timer failure')", "ValueError: timer failure"),
+    ("SystemExit(2)", "SystemExit: 2"),
+    ("KeyboardInterrupt()", "KeyboardInterrupt"),
+])
+async def test_timer_failures_remain_cell_errors(tmp_path, callback_prefix, error, expected):
+    manager, registry, context = make_manager(tmp_path)
+    source = "\n".join([
+        callback_prefix + " fail():",
+        "    raise " + error,
+        "set_timeout(fail)",
+        "await asyncio.sleep(60)",
+    ])
+    try:
+        result = await registry.execute(
+            ToolCall("failed-timer", "exec", source, tool_type="custom"), context,
+        )
+        assert result.is_error
+        assert expected in result.output
+        assert output_items(await manager.exec('text("next cell")', context)) == ["next cell"]
+    finally:
+        await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_timers_exit_and_notify(tmp_path):
     manager, _, context = make_manager(tmp_path)
     notifications = []
