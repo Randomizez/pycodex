@@ -221,4 +221,5 @@ uv run --dev pytest
 - [Responses 兼容服务](docs/responses_server/README.md)
 - [Portable 配置契约](docs/PORTABLE.md)
 
-发布记录和实现细节放在 `docs/`。
+相对 0.5.0 的主要改动和 Python 接口迁移见
+[0.6.0 发布说明](https://github.com/Randomizez/pycodex/blob/v0.6.0/docs/RELEASE_0.6.0.md)，实现细节放在 `docs/`。

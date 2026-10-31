@@ -282,7 +282,8 @@ uv run --dev pytest
 - [Responses compatibility server](docs/responses_server/README.md)
 - [Portable configuration contracts](docs/PORTABLE.md)
 
-Release notes and implementation details live in `docs/`.
+See the [0.6.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.6.0/docs/RELEASE_0.6.0.md) for the major changes and
+Python integration migration from 0.5.0. Implementation details live in `docs/`.
 
 ## Markdown view modes
 
