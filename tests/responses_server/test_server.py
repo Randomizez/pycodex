@@ -2042,14 +2042,14 @@ def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
 
 
 @pytest.mark.parametrize(
-    "arguments_parts",
+    "arguments_parts, valid",
     [
-        ['{"input":"', '*** Begin Patch\\n*** End Patch\\n"}'],
-        ["*** Begin Patch\n", "*** End Patch\n"],
+        (['{"input":"', '*** Begin Patch\\n*** End Patch\\n"}'], True),
+        (["*** Begin Patch\n", "*** End Patch\n"], False),
     ],
 )
-def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
-    tmp_path, arguments_parts
+def test_responses_server_validates_adapted_custom_call_arguments(
+    tmp_path, arguments_parts, valid
 ) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
@@ -2106,6 +2106,11 @@ def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
         fake_chat_server.stop()
 
     assert status == 200
+    if not valid:
+        assert '"type": "response.failed"' in body
+        assert "expected JSON arguments containing an `input` string" in body
+        assert '"type": "response.completed"' not in body
+        return
     assert '"type": "custom_tool_call"' in body
     assert '"call_id": "call_1"' in body
     assert '"name": "apply_patch"' in body

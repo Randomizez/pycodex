@@ -5,6 +5,7 @@ import pytest
 
 from pycodex import AssistantMessage, ContextConfig, ModelResponse
 from pycodex.protocol import ToolCall, ToolResult, UserMessage
+from pycodex.runtime import SubmissionInterrupted
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
 
 
@@ -45,7 +46,8 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         assert "<cwd>" + str(destination) + "</cwd>" in repr(client.prompts[0].input)
         assert "new directory instructions" in repr(client.prompts[0].input)
         result = next(item for item in runtime.agent.history if isinstance(item, ToolResult))
-        assert str(destination) in result.output
+        assert result.output["exit_code"] == 0
+        assert result.output["output"].strip() == str(destination)
         assert other.context_manager.cwd == tmp_path
         assert Path.cwd() == original
         assert not any(
@@ -99,4 +101,5 @@ async def test_cd_rejects_active_or_queued_work(tmp_path, active):
     finally:
         release.set()
         await runtime.close()
-        await receipt.future
+        with pytest.raises(SubmissionInterrupted):
+            await receipt.future

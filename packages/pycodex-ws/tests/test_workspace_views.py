@@ -1008,8 +1008,9 @@ def test_content_tab_controller():
 def test_page_imports_match_shipped_module():
     workspace = Path(__file__).parents[1] / "workspace_server"
     # Canvas must not load Monaco's multi-megabyte code or stylesheet.
-    assert (workspace / "content_views.mjs").stat().st_size < 30000
-    assert (workspace / "content_views.css").stat().st_size < 5000
+    # Include the live transcript controller while keeping Monaco lazy-loaded.
+    assert (workspace / "content_views.mjs").stat().st_size < 50000
+    assert (workspace / "content_views.css").stat().st_size < 8000
     page = (workspace / "workspace.html").read_text(encoding="utf-8")
     imports = re.findall(
         r'^\s*import (\{[^\n]+\}) from "\./assets/content_views\.mjs";',

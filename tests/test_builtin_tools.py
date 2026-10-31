@@ -316,13 +316,11 @@ async def test_exec_command_tool_returns_session_for_long_running_process(
     )
 
     assert result.is_error is False
-    assert result.output.startswith("Chunk ID: ")
-    assert "Command: " not in result.output
-    assert "Process running with session ID" in result.output
-    assert "Output:" in result.output
-    marker = "Process running with session ID "
-    session_id_text = result.output.split(marker, 1)[1].splitlines()[0]
-    session_id = int(session_id_text)
+    assert result.output["chunk_id"]
+    assert "command" not in result.output
+    assert "exit_code" not in result.output
+    session_id = result.output["session_id"]
+    assert isinstance(session_id, int)
 
     closed = await registry.execute(
         ToolCall(
@@ -337,8 +335,9 @@ async def test_exec_command_tool_returns_session_for_long_running_process(
     )
 
     assert closed.is_error is False
-    assert "Process exited with code 0" in closed.output
-    combined_output = result.output + closed.output
+    assert closed.output["exit_code"] == 0
+    assert "session_id" not in closed.output
+    combined_output = result.output["output"] + closed.output["output"]
     assert "start" in combined_output
     assert "end" in combined_output
 
@@ -417,7 +416,7 @@ async def test_exec_command_notifies_hook_when_background_session_exits(
         yield_time_ms=1,
     )
 
-    assert "Process running with session ID " in output
+    assert output["session_id"] == 1000
     await asyncio.wait_for(notified.wait(), timeout=1.0)
     assert len(notifications) == 1
     assert notifications[0]["type"] == "exec_command_completed"
@@ -475,7 +474,7 @@ async def test_exec_manager_reports_running_sessions(tmp_path) -> "None":
         yield_time_ms=1,
     )
 
-    assert "Process running with session ID " in output
+    assert output["session_id"] == 1000
     assert manager.background_work_count(False) == 1
 
     await manager.write_stdin(1000, yield_time_ms=1_000)
@@ -510,8 +509,8 @@ async def test_exec_command_starts_process_in_new_session(
     )
 
     assert result.is_error is False
-    assert "Process exited with code 0" in result.output
-    assert "ok" in result.output
+    assert result.output["exit_code"] == 0
+    assert result.output["output"] == "ok"
     assert captured_kwargs["start_new_session"] is True
 
 
@@ -532,10 +531,8 @@ async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata
         ToolContext(turn_id="turn_8", history=(), cwd=tmp_path),
     )
 
-    assert "Process running with session ID " in start.output
-    marker = "Process running with session ID "
-    session_id_text = start.output.split(marker, 1)[1].splitlines()[0]
-    session_id = int(session_id_text)
+    assert start.is_error is False
+    session_id = start.output["session_id"]
 
     finish = await registry.execute(
         ToolCall(
@@ -551,10 +548,11 @@ async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata
     )
 
     assert finish.is_error is False
-    assert finish.output.startswith("Chunk ID: ")
-    assert "Command: " not in finish.output
-    assert "Original token count: " in finish.output
-    if "Process exited with code 0" not in finish.output:
+    assert finish.output["chunk_id"]
+    assert "command" not in finish.output
+    assert finish.output["original_token_count"] >= 0
+    output = finish.output["output"]
+    if "exit_code" not in finish.output:
         finish = await registry.execute(
             ToolCall(
                 call_id="call_9b",
@@ -567,8 +565,9 @@ async def test_write_stdin_tool_reuses_running_session_and_returns_exit_metadata
             ToolContext(turn_id="turn_9b", history=(), cwd=tmp_path),
         )
 
-    assert "Process exited with code 0" in finish.output
-    assert "hello:world" in finish.output
+        output += finish.output["output"]
+    assert finish.output["exit_code"] == 0
+    assert "hello:world" in output
 
 
 @pytest.mark.asyncio
@@ -598,9 +597,7 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
 
     try:
         start = await manager.exec_command(command, cwd=tmp_path, yield_time_ms=10)
-        marker = "Process running with session ID "
-        assert marker in start
-        session_id = int(start.split(marker, 1)[1].splitlines()[0])
+        session_id = start["session_id"]
 
         finish = await asyncio.wait_for(
             manager.write_stdin(session_id, yield_time_ms=1_000),
@@ -609,8 +606,8 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
 
         if pid_path.is_file():
             child_pid = int(pid_path.read_text(encoding="utf-8"))
-        assert "Process exited with code 0" in finish
-        assert "parent exiting" in finish
+        assert finish["exit_code"] == 0
+        assert "parent exiting" in finish["output"]
         assert manager.background_work_count(False) == 0
         assert await manager.write_stdin(
             session_id, yield_time_ms=1
@@ -645,9 +642,9 @@ async def test_exec_command_tool_defaults_to_upstream_truncation_budget(
     )
 
     assert result.is_error is False
-    assert "Process exited with code 0" in result.output
-    assert "Original token count: " in result.output
-    body = result.output.split("Output:\n", 1)[1]
+    assert result.output["exit_code"] == 0
+    assert result.output["original_token_count"] > 10000
+    body = result.output["output"]
     assert body.startswith("Total output lines: 1\n\nHEAD")
     assert "tokens truncated" in body
     assert body.rstrip().endswith("TAIL")
@@ -670,9 +667,7 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(
         ToolContext(turn_id="turn_9_write_start", history=(), cwd=tmp_path),
     )
 
-    marker = "Process running with session ID "
-    session_id_text = start.output.split(marker, 1)[1].splitlines()[0]
-    session_id = int(session_id_text)
+    session_id = start.output["session_id"]
     long_line = "HEAD" + ("A" * 25_000) + ("B" * 25_000) + "TAIL\n"
 
     poll = await registry.execute(
@@ -688,11 +683,11 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(
         ToolContext(turn_id="turn_9_write_finish", history=(), cwd=tmp_path),
     )
 
-    body = poll.output.split("Output:\n", 1)[1]
+    body = poll.output["output"]
     for _ in range(5):
         if "tokens truncated" in body:
             break
-        if "Process exited with code 0" in poll.output:
+        if "exit_code" in poll.output:
             break
         poll = await registry.execute(
             ToolCall(
@@ -705,15 +700,15 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(
             ),
             ToolContext(turn_id="turn_9_write_finish_poll", history=(), cwd=tmp_path),
         )
-        body = poll.output.split("Output:\n", 1)[1]
+        body = poll.output["output"]
 
     assert poll.is_error is False
-    assert "Original token count: " in poll.output
+    assert poll.output["original_token_count"] > 10000
     assert body.startswith("Total output lines: 1\n\nHEAD")
     assert "tokens truncated" in body
     assert body.endswith("TAIL")
 
-    if "Process exited with code 0" not in poll.output:
+    if "exit_code" not in poll.output:
         closed = await registry.execute(
             ToolCall(
                 call_id="call_9_write_close",
@@ -725,7 +720,7 @@ async def test_write_stdin_tool_defaults_to_upstream_truncation_budget(
             ),
             ToolContext(turn_id="turn_9_write_close", history=(), cwd=tmp_path),
         )
-        assert "Process exited with code 0" in closed.output
+        assert closed.output["exit_code"] == 0
 
 
 @pytest.mark.asyncio
@@ -751,9 +746,7 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
         ToolContext(turn_id="turn_9_unread_buffer_start", history=(), cwd=tmp_path),
     )
 
-    marker = "Process running with session ID "
-    session_id_text = start.output.split(marker, 1)[1].splitlines()[0]
-    session_id = int(session_id_text)
+    session_id = start.output["session_id"]
 
     await asyncio.sleep(0.9)
 
@@ -771,8 +764,8 @@ async def test_exec_command_unread_output_preserves_head_and_tail_when_capped(
     )
 
     assert finish.is_error is False
-    assert "Process exited with code 0" in finish.output
-    body = finish.output.split("Output:\n", 1)[1]
+    assert finish.output["exit_code"] == 0
+    body = finish.output["output"]
     assert "Total output lines:" not in body
     assert body.startswith("HEAD") or body.startswith("READYHEAD")
     assert body.endswith("TAIL")
@@ -1016,12 +1009,7 @@ async def test_apply_patch_tool_applies_multiple_operations_atomically(
 
     assert result.is_error is False
     assert result.tool_type == "custom"
-    assert result.output == (
-        "Exit code: 0\n"
-        "Wall time: 0 seconds\n"
-        "Output:\n"
-        "Success: A nested/new.txt M modify.txt D delete.txt\n"
-    )
+    assert result.output == {}
     assert (tmp_path / "nested" / "new.txt").read_text() == "created\n"
     assert target.read_text() == "line1\nchanged\n"
     assert doomed.exists() is False
@@ -1054,8 +1042,8 @@ async def test_apply_patch_tool_does_not_leave_partial_writes_on_failure(
         ToolContext(turn_id="turn_11", history=(), cwd=tmp_path),
     )
 
-    assert result.is_error is False
-    assert result.output.startswith("Exit code: 1\nWall time: 0 seconds\nOutput:\n")
+    assert result.is_error is True
+    assert result.success is False
     assert "apply_patch verification failed" in result.output
     assert (tmp_path / "created.txt").exists() is False
 
@@ -1086,9 +1074,7 @@ async def test_apply_patch_tool_allows_paths_outside_workspace(tmp_path) -> "Non
     )
 
     assert result.is_error is False
-    assert result.output == (
-        "Exit code: 0\n" "Wall time: 0 seconds\n" "Output:\n" f"Success: A {outside}\n"
-    )
+    assert result.output == {}
     assert outside.read_text() == "outside\n"
 
 
@@ -1120,9 +1106,7 @@ async def test_apply_patch_tool_allows_absolute_paths_outside_workspace(
     )
 
     assert result.is_error is False
-    assert result.output == (
-        "Exit code: 0\n" "Wall time: 0 seconds\n" "Output:\n" f"Success: A {outside}\n"
-    )
+    assert result.output == {}
     assert outside.read_text() == "absolute outside\n"
 
 
@@ -1244,7 +1228,7 @@ async def test_agent_tools_deliver_messages_and_followup_tasks(tmp_path):
     manager = root.agents_manager
     try:
         spawned = await registry.execute(
-            ToolCall("spawn", "spawn_agent", {
+            ToolCall("spawn", "collaboration.spawn_agent", {
                 "task_name": "worker", "message": "hello", "fork_turns": "none",
             }), context,
         )
@@ -1254,11 +1238,11 @@ async def test_agent_tools_deliver_messages_and_followup_tasks(tmp_path):
         )
         await wait_for_runtime_idle(child)
         assert child.agent.tool_registry.names() == registry.names()
-        assert child.agent.model_client._session_id == child.agent.agent_id
+        assert child.agent.model_client.prompts[0].session_id == child.agent.session_id
         assert child.agent.model_client._openai_subagent == "collab_spawn"
         assert child.agent.session_file_path is None
         sent = await registry.execute(
-            ToolCall("send", "send_message", {"target": "worker", "message": "note"}),
+            ToolCall("send", "collaboration.send_message", {"target": "worker", "message": "note"}),
             context,
         )
         assert sent.output == ""
@@ -1267,7 +1251,7 @@ async def test_agent_tools_deliver_messages_and_followup_tasks(tmp_path):
         assert not child.is_busy
 
         followed = await registry.execute(
-            ToolCall("followup", "followup_task", {
+            ToolCall("followup", "collaboration.followup_task", {
                 "target": child.agent.agent_id, "message": "second task",
             }), context,
         )
@@ -1284,17 +1268,17 @@ async def test_agent_tools_deliver_messages_and_followup_tasks(tmp_path):
         assert "Message Type: NEW_TASK" in messages[-1].text
         assert "Message Type: MESSAGE" in messages[1].text
 
-        waited = await registry.execute(ToolCall("wait", "wait_agent", {}), context)
+        waited = await registry.execute(ToolCall("wait", "collaboration.wait_agent", {}), context)
         assert waited.output == {"message": "Wait completed.", "timed_out": False}
         assert len(root._steer_queue) == 2
         listed = await registry.execute(
-            ToolCall("list", "list_agents", {"path_prefix": "worker"}), context,
+            ToolCall("list", "collaboration.list_agents", {"path_prefix": "worker"}), context,
         )
         assert listed.output == {"agents": [{
             "agent_name": "/root/worker", "agent_status": {"completed": "done two"},
         }]}
         interrupted = await registry.execute(
-            ToolCall("interrupt", "interrupt_agent", {"target": "worker"}), context,
+            ToolCall("interrupt", "collaboration.interrupt_agent", {"target": "worker"}), context,
         )
         assert interrupted.output == {"previous_status": {"completed": "done two"}}
         assert child.accepts_input
@@ -1317,7 +1301,7 @@ async def test_spawn_agent_rejects_invalid_tasks(tmp_path, arguments, error):
     root, context = make_agent_tools(tmp_path)
     try:
         result = await root.agent.tool_registry.execute(
-            ToolCall("invalid", "spawn_agent", arguments), context,
+            ToolCall("invalid", "collaboration.spawn_agent", arguments), context,
         )
         assert result.is_error
         assert error in str(result.output)
@@ -1377,7 +1361,7 @@ async def test_spawn_agent_fork_projects_aborted_results_without_mutating_histor
     )
     current_spawn_call = ToolCall(
         call_id="call_current_spawn",
-        name="spawn_agent",
+        name="collaboration.spawn_agent",
         arguments={"task_name": "worker", "message": "child"},
     )
 

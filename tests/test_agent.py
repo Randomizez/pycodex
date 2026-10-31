@@ -627,7 +627,7 @@ async def test_wait_agent_does_not_create_notifications_from_its_result() -> "No
                 items=[
                     ToolCall(
                         call_id="call_wait",
-                        name="wait_agent",
+                        name="collaboration.wait_agent",
                         arguments={},
                     )
                 ]
@@ -741,7 +741,7 @@ async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> "None
                 items=[
                     ToolCall(
                         call_id="call_wait",
-                        name="wait_agent",
+                        name="collaboration.wait_agent",
                         arguments={},
                     )
                 ]

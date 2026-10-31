@@ -176,7 +176,8 @@ jobs:
           "$RUNNER_TEMP/pycodex-wheel/bin/python" -m pycodex_ws.feishu_oauth --help
           "$RUNNER_TEMP/pycodex-wheel/bin/python" - <<'PY'
           from importlib.util import find_spec
-          from pycodex_ws import build_runtime
+          from pycodex_ws import register_feishu_commands
+          assert callable(register_feishu_commands)
           assert find_spec("lark_oapi") is None
           PY
           "$RUNNER_TEMP/pycodex-wheel/bin/python" -m pip check

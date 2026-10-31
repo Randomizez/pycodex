@@ -15,6 +15,7 @@ from pycodex import (
     AssistantMessage,
     BaseTool,
     ContextConfig,
+    ModelRecordingMetadata,
     ModelResponse,
     ToolCall,
     ToolRegistry,
@@ -2080,6 +2081,8 @@ def test_threaded_sessions_do_not_block_other_sessions():
     class BlockingClient:
         model = "blocking"
         reasoning_effort = None
+        endpoint = "in-process"
+        recording_metadata = ModelRecordingMetadata("pycodex", None)
 
         async def complete(self, prompt, event_handler):
             workers.append(threading.get_ident())

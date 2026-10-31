@@ -257,6 +257,12 @@ async def test_nested_tools_parallel_errors_and_custom_arguments(tmp_path):
     class PairTool(BaseTool):
         name = "pair"
         description = "Requires concurrent calls."
+        input_schema = {
+            "type": "object",
+            "properties": {"value": {"type": "integer"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
 
         async def run(self, context, args):
             arrived.append(args["value"])
@@ -279,7 +285,7 @@ async def test_nested_tools_parallel_errors_and_custom_arguments(tmp_path):
     registry.register(CustomTool())
     try:
         result = await manager.exec("""
-text(await asyncio.gather(tools.pair(value=1), tools.pair({"value": 2})))
+text(await asyncio.gather(tools.pair(value=1), tools.pair(2)))
 text(await tools.custom("source text"))
 try:
     await tools.custom("fail")

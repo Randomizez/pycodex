@@ -365,7 +365,7 @@ async def test_capacity_preserves_running_code_mode_cell(tmp_path):
         result = await registry.execute(
             ToolCall(
                 "exec", "exec",
-                '# @exec: {"yield_time_ms": 1}\ntext(await tools.held({}))',
+                '# @exec: {"yield_time_ms": 1}\ntext(await tools.held())',
                 tool_type="custom",
             ), context,
         )

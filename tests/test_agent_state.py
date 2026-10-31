@@ -22,6 +22,7 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.events import TokenCountEvent, TurnStartedEvent
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import (
     list_resumable_sessions,
@@ -1223,7 +1224,8 @@ async def test_runtime_resume_rejects_pending_submission(queue_kind):
         assert agent.history == (UserMessage("original"),)
     finally:
         await queue.close()
-        await future
+        with pytest.raises(SubmissionInterrupted):
+            await future
 
 
 def test_model_switch_updates_provider_context_and_usage_together():
@@ -1394,6 +1396,7 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
         await manager.send_message(
             parent.agent_id, path, "continue", trigger_turn=True,
         )
+        await wait_for_runtime_idle(runtime)
         await runtime.close()
         assert child.history[:len(compacted_history)] == compacted_history
         assert child.history[-1] == AssistantMessage("answer")

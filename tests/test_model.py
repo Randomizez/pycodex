@@ -710,11 +710,16 @@ def test_responses_model_client_builds_responses_lite_payload() -> "None":
         "role": "developer",
         "tools": [
             {
-                "type": "function",
-                "name": "echo",
-                "description": "Echo text.",
-                "parameters": {"type": "object"},
-                "strict": False,
+                "type": "namespace",
+                "name": "functions",
+                "description": "",
+                "tools": [{
+                    "type": "function",
+                    "name": "echo",
+                    "description": "Echo text.",
+                    "parameters": {"type": "object"},
+                    "strict": False,
+                }],
             }
         ],
     }

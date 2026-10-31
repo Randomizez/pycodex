@@ -52,7 +52,7 @@ def test_native_message_and_function_metadata_survive_wire_resume_and_checkpoint
         raw_call["encrypted_function_args"].append("source mutation")
         call.serialize()["encrypted_function_args"].append("serialization mutation")
     assert call.serialize() == expected_call
-    history = (UserMessage("start"), message, call, ToolResult("fixture", "send_message", ""))
+    history = (UserMessage("start"), message, call, ToolResult("fixture", "collaboration.send_message", ""))
     payload = client._build_payload(Prompt(history, [], base_instructions="Base."))
     assert next(item for item in payload["input"] if item["type"] == "agent_message") == expected_message
     assert next(item for item in payload["input"] if item["type"] == "function_call") == expected_call
@@ -72,7 +72,7 @@ async def test_only_explicit_empty_encrypted_args_deliver_plaintext(tmp_path, mo
     def respond(prompt, count):
         if count == 1:
             return ModelResponse([ToolCall(
-                "spawn", "spawn_agent",
+                "spawn", "collaboration.spawn_agent",
                 {"task_name": "worker", "message": "payload", "fork_turns": "none"},
                 encrypted_function_args=marker,
             )])

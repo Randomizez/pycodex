@@ -11,6 +11,7 @@ from pycodex import (
     AssistantMessage,
     BaseTool,
     ContextConfig,
+    ModelRecordingMetadata,
     ModelResponse,
     ResponsesModelClient,
     ResponsesProviderConfig,
@@ -506,6 +507,7 @@ async def test_late_frontends_restore_active_stream_and_follow_completion():
         model = "streaming"
         reasoning_effort = None
         endpoint = "in-process"
+        recording_metadata = ModelRecordingMetadata("pycodex", None)
 
         async def list_models(self):
             return [self.model]
