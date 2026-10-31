@@ -124,8 +124,9 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 访问 `http://127.0.0.1:6007`。工作区同时提供对话、实时 HTML Canvas 和只读
 文件/diff 查看器。点击回复中的文件链接打开视图，通过 **Insert into chat**
 把选中的代码插入可编辑草稿。文本和图片视图的单文件上限为 10 MiB。
-上下文圆环可打开 Agent 树，显示包含 root 的 `n running · m failed` 汇总、
+上下文圆环可打开内置 Agent 树，显示包含 root 的 `n running · m failed` 汇总、
 每个 Agent 的本轮耗时（`for x min`）和错误详情。
+点击弹窗中的 root 或子 Agent，可打开其实时 transcript 标签页。
 `diff:left..right` 比较两个本地文件，
 两侧均支持绝对或相对路径。用 `[TODO](TODO.md)` 链接本地文件，
 裸写的文件名保持纯文本。本地 PDF 链接使用浏览器内置阅读器预览，
@@ -136,7 +137,8 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 选择框中的 **Default** 沿用相同默认选择。会话保存 profile 名称，
 重启后按同一名称恢复；已有会话的配置保持不变。增删 profile 后需重启服务器。
 当前 Agent 工作时，空输入框从随机位置开始，每约 6 秒顺序轮换一条简短提示，
-涵盖命令、界面定制、工作区分享、会话间协作和可选功能。可在 `workspace.html` 的 `updatePromptPlaceholder`
+涵盖命令、界面定制、工作区分享、Agent 状态、transcript 和定时唤醒分隔线等可选功能。
+可在 `workspace.html` 的 `updatePromptPlaceholder`
 中编辑 `hints` 字符串列表。已有草稿不受影响。
 点击齿轮按钮，在 **Customize Agent** 中开启界面定制会话，让 Agent 修改
 `~/.pycodex/frontend/` 中的文件；**Share** 可通过链接和密码共享当前工作区。

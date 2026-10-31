@@ -334,8 +334,9 @@ contents or submissions. They wrap inside the composer, stay hidden behind text
 or context-token drafts, and leave the input's accessible model label unchanged.
 Keep each hint short and self-contained; do not split an instruction across
 successive hints. The list covers commands, frontend customization, workspace sharing,
-inter-session collaboration and optional features present in the packaged
-catalog; optional feature hints use “在设置中添加：…” to indicate how to add them.
+the built-in Agent tree, opening live transcripts and optional features present
+in the packaged catalog, including clock tick dividers. Optional feature hints
+use “在设置中添加：…” to indicate how to add them.
 
 Status dots, activity spinners and thinking borders use the same 1.2-second
 breathing cycle and easing. The workspace, workspace list and router set these
@@ -846,6 +847,9 @@ into a coherent frontend, without requiring a plugin registry or runtime
 composition system.
 The packaged `optional_features/README.md` is a Markdown feature catalog opened in the
 existing view area; users choose features by name or ID in ordinary chat text.
+Agent status is built into the context ring popover; clicking a root or child
+Agent opens its live transcript tab. The catalog documents these entry points
+alongside the optional features.
 There are no additional selection controls or chat commands. The context links
 the [feature contribution guide](../packages/pycodex-ws/workspace_server/optional_features/CONTRIBUTING.md),
 which defines the target repository, per-feature source layout, README metadata,

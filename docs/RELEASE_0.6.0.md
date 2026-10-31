@@ -53,9 +53,11 @@ and richer workspace history and session controls.
   root or a child. Transcripts provide paginated history, live updates,
   collapsible records and exec/wait cell identifiers, with retained reading
   position when switching views.
-- The agent tree shows running/failed totals, elapsed turn time and error
-  details. Returning to a visited conversation reuses its rendered messages,
-  draft and reading position; reopening loads the saved session directly.
+- The built-in context popover shows the agent tree with running/failed totals,
+  elapsed turn time and error details. The duplicate `subagent-status` optional
+  feature has been removed. Returning to a visited conversation reuses its
+  rendered messages, draft and reading position; reopening loads the saved
+  session directly.
 - Session profiles can be selected when creating a tab and are restored after
   restart. **Settings → Share** creates a separate visitor password for a
   workspace; changing or disabling sharing revokes access. Sharing remains

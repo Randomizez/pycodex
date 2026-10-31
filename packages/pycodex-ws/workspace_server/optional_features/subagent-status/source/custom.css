@@ -1,8 +1,0 @@
-.example-subagent-status { color: var(--ink, #17313b); font: 12px/1.5 system-ui, sans-serif; min-width: 0; }
-.example-subagent-status p { margin: 0 0 4px; overflow-wrap: anywhere; }
-.example-subagent-status ul { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; max-height: 160px; overflow: auto; }
-.example-subagent-status li { padding: 4px 8px; border: 1px solid var(--line, #cbd5df); border-radius: 6px; min-width: 0; max-width: 100%; }
-.example-subagent-status strong { margin-right: 8px; }
-.example-subagent-status li[data-status="running"] { border-color: var(--accent, #087f9a); }
-.example-subagent-status pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0; max-height: 90px; overflow: auto; }
-.example-subagent-status summary { cursor: pointer; }

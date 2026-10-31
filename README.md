@@ -135,8 +135,9 @@ Open `http://127.0.0.1:6007`. The workspace combines conversations with a live
 HTML Canvas and read-only file/diff viewers. Click file links in replies to open
 them, and use **Insert into chat** to add selected code to an editable draft.
 Text and image views support files up to 10 MiB each.
-The context ring opens the Agent tree with `n running · m failed` counts
+The context ring opens the built-in Agent tree with `n running · m failed` counts
 (including the root), each Agent's turn duration, and error details for failures.
+Click a root or child Agent in the popover to open its live transcript tab.
 Compare local files with `diff:left..right`; either path can be absolute or relative.
 Use `[TODO](TODO.md)` for a local file link; bare filenames stay as text.
 Local PDF links open in the browser's built-in reader, with **Open in new tab**
@@ -152,8 +153,9 @@ The page loads the last selected session directly on reopening. Switching back
 to a visited session immediately restores its rendered messages and scroll
 position, then refreshes its content from the server.
 While the selected Agent is working, the empty composer cycles through usage
-hints about commands, frontend customization, workspace sharing, session collaboration and optional
-features about every six seconds, starting at a random hint. Edit the short
+hints about commands, frontend customization, workspace sharing, Agent status,
+live transcripts and optional features, including clock tick dividers, about every
+six seconds, starting at a random hint. Edit the short
 strings in the `hints` list in `workspace.html`'s `updatePromptPlaceholder` to change the tips.
 The gear button opens **Customize Agent** and **Share**, with a short description of each.
 Customize Agent starts an Agent conversation for editing files in
