@@ -1207,9 +1207,11 @@ deleted side of a diff becomes empty and is marked missing. Recreating or fixing
 the file resumes updates. A storage write or total-budget failure is reported
 to the browser and leaves the previous persisted views intact.
 
-`packages/pycodex-ws/workspace_server/workspace_views.py` owns
-`WorkspaceViewOpener` and `WorkspaceViewStore`.
-It saves open views, explicit file/Git sources, the latest contents, optional
+`workspace_server.view_sources.WorkspaceViewOpener` resolves workspace links and
+Git documents through `WorkspaceViewStore`'s bounded read/decode interface.
+Both classes remain importable from `workspace_server.workspace_views`.
+That module's `WorkspaceViewStore` owns view identity, live-file refresh and
+persistence. It saves open views, explicit file/Git sources, the latest contents, optional
 line targets and the monotonic reveal counter
 atomically in `<state_path>.pycodex-views.json`, separately from
 conversation state. Sources are checked again after a server restart.
