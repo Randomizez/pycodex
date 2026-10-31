@@ -75,6 +75,12 @@ pycodex --profile my_profile --use-messages
 子 Agent 工具），并在调用返回时恢复 namespace。
 正文和 reasoning 流包含完整条目生命周期事件，支持 Codex 实时展示。
 
+使用 Step `step_plan/v1` 端点的 `step-5-preview` 时，在 Step provider 或 profile
+中启用 `use_chat_completion = true`：其原生 Responses 端点未正确暴露 namespace
+内的协作工具。适配器会将它们展开为 `collaboration__spawn_agent` 等普通函数。
+提示词以工具声明中的直接调用名称为准，仅在 `exec` 和协作工具均可见时介绍
+Python `exec` 中的协作调用。
+
 ## CLI
 
 不带 prompt 时进入交互会话，也可以直接运行单轮任务：

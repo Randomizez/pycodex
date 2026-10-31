@@ -146,6 +146,46 @@ def test_role_default_and_mode_blocks_remain_separate(tmp_path, monkeypatch, eff
     assert not any("<multi_agent_mode>" in (getattr(item, "text", None) or "") for item in blocks)
 
 
+@pytest.mark.parametrize("code_mode_only", [False, True])
+@pytest.mark.parametrize("agent_path", ["/root", "/root/review"])
+@pytest.mark.parametrize("toolset", [None, ("exec_command",)])
+def test_multi_agent_tool_guidance_matches_chat_catalog(
+    tmp_path, code_mode_only, agent_path, toolset,
+):
+    from pycodex.tools import get_tools
+    from responses_server.payload_processors import post_process_outcomming_request
+    from responses_server.request_translation import build_outcomming_request
+
+    config = ContextConfig(
+        model="step-5-preview", cwd=tmp_path, codex_home=tmp_path,
+        code_mode_only=code_mode_only,
+        include_permissions_instructions=False, include_skills_instructions=False,
+    )
+    client = ResponsesModelClient(ResponsesProviderConfig(
+        "step-5-preview", "stepfun", "https://example.invalid/v1", None,
+        responses_lite_override=False,
+    ))
+    context = ContextManager(config)
+    context.agent_path = agent_path
+    registry = get_tools(AgentsManager(client, config), toolset=toolset)
+    specs = registry.model_visible_specs(context.resolve_code_mode_only())
+    prompt = context.build_prompt([UserMessage("Review the task.")], specs, True)
+    chat = post_process_outcomming_request(
+        build_outcomming_request(client._build_payload(prompt)), "stepfun",
+    )
+    names = {tool["function"]["name"] for tool in chat["tools"]}
+    role = context._build_multi_agent_context(specs, None)[0].text
+
+    assert ("exec" in names) is code_mode_only
+    assert ("collaboration__spawn_agent" in names) is (toolset is None)
+    assert "current tool declarations" in role
+    assert "functions.collaboration" not in role
+    assert "functions.exec" not in role
+    assert ("await collaboration." in role) is (code_mode_only and toolset is None)
+    assert role in [message["content"] for message in chat["messages"]]
+    assert "multi_tool_use.parallel" not in prompt.base_instructions
+
+
 def test_multi_agent_config_prefers_feature_settings_and_validates_values(tmp_path):
     path = tmp_path / "config.toml"
     path.write_text("", encoding="utf-8")

@@ -81,6 +81,13 @@ The compatibility server supports namespaced function/custom tools, including
 upstream Codex subagent tools, with namespace restoration on returned calls.
 Text and reasoning streams include item lifecycle events for Codex's live display.
 
+For `step-5-preview` on Step's `step_plan/v1` endpoint, enable
+`use_chat_completion = true` in the Step provider or profile: its native Responses
+endpoint does not expose namespaced collaboration tools correctly. The adapter
+presents names such as `collaboration__spawn_agent` as ordinary functions.
+Prompts follow the declared direct-call names and describe Python `exec`
+collaboration only when both `exec` and collaboration tools are visible.
+
 ## CLI
 
 Run `pycodex` without a prompt for an interactive session, or supply a prompt

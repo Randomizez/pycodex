@@ -23,9 +23,13 @@ convert plaintext Agent messages to user text and reject `encrypted_content`
 with HTTP 501. This plaintext-only boundary is accepted; encrypted-input support
 in these adapters is outside the alignment target.
 
-Native MultiAgentV2 requires a provider that supports `agent_message` and the
-encrypted-argument contract. The Step native endpoint's Agent-message limitations
-are a provider capability boundary, outside the pycodex alignment target.
+Native MultiAgentV2 requires a provider that supports tool namespaces,
+`agent_message`, and the encrypted-argument contract. A 2026-10-31 live probe of
+`step-5-preview` at Step's `step_plan/v1/responses` returned a function call for a
+flat tool declaration but only ordinary message text for the same function inside
+a namespace; both requests returned HTTP 200. Use the Chat adapter for this
+endpoint. Step's namespace and Agent-message limitations are provider capability
+boundaries, outside the pycodex alignment target.
 
 ## Current prototype baseline (2026-10-29)
 

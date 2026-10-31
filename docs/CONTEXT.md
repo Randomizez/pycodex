@@ -23,8 +23,9 @@
   `base_instructions`、`model_instructions_file`、模型 prompt、通用默认。
 - 模型专用 prompt 在 `pycodex/prompts/models.json`，不通过字符串补丁或
   另一套 serialized-tools 通道覆盖请求。
-  本地 `step-3.5-flash`、`step-3.5-flash-2603`、`step-3.6` 均通过该表接入；
-  新增模型也应沿用这个入口。
+  本地 `step-3.5-flash`、`step-3.5-flash-2603`、`step-3.7-flash`、
+  `step-5-preview` 均通过该表接入；新增模型也应沿用这个入口。
+  Step 的调用指引使用当前工具接口和声明名称，不引用未注册的并行工具。
 - `AgentsManager` 构造根和子 Runtime，Agent 仍由 Runtime 单向控制；
   低层 `Agent` 构造必须显式传入 `session_id`。不恢复 collaboration mode
   切换、turn cancellation 或固定 iteration cap。
@@ -206,6 +207,9 @@ SKILL frontmatter 和 `agents/openai.yaml` 使用安全 YAML 解析；
 - 模型提供的角色文本用 `<multi_agent_role>` 包裹；通用 fallback 沿用其
   原始文本形状。角色指令附加共享目录说明、并发数，以及仅在相关工具
   可见时加入的 wait/model-override 提示。
+- 公共调用指引以当前工具声明中的名称与可见性为准，不硬编码直接调用的
+  namespace 写法。仅在 `exec` 和 `collaboration` 工具均可见时附加 Python
+  `await collaboration.<name>(...)` 指引；直接工具模式不宣称存在 `exec`。
 - Mode hint 优先采用配置，再取模型 `multi_agent.mode.hint_text`；
   否则 effort 为 `ultra` 时取 `proactive`，其他取 `explicit`，缺项再取
   bundled 默认值。最终用 `<multi_agent_mode>` 包裹。显式空字符串省略该项。

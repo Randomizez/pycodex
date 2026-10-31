@@ -524,16 +524,25 @@ class ContextManager:
                 base = defaults[role]
             role_text = ""
             if base:
+                exec_guidance = (
+                    defaults["exec"] + "\n\n"
+                    if any(
+                        tool.name == "exec" and tool.namespace in (None, "functions")
+                        for tool in tools
+                    ) and any(tool.namespace == "collaboration" for tool in tools)
+                    else ""
+                )
                 wait_guidance = (
                     defaults["wait"] + "\n\n"
                     if any(tool.name == "wait_agent" for tool in tools) else ""
                 )
                 role_text = (
-                    "{base}\n{shared}\n{wait}"
+                    "{base}\n{shared}\n{exec}{wait}"
                     "There are {limit} available concurrency slots, meaning that "
                     "up to {limit} agents can be active at once, including you."
                 ).format(
-                    base=base, shared=defaults["shared"], wait=wait_guidance,
+                    base=base, shared=defaults["shared"],
+                    exec=exec_guidance, wait=wait_guidance,
                     limit=self.config.multi_agent_max_concurrency,
                 )
                 spawn = next(
