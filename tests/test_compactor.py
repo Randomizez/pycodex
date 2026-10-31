@@ -15,8 +15,8 @@ from pycodex.utils.compactor import (
     compact,
     prune_oldest_tool_response,
 )
+from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.session_persist import (
-    conversation_history_to_turns,
     load_resumed_session_path,
 )
 

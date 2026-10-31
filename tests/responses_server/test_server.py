@@ -11,7 +11,8 @@ import pytest
 import requests
 from starlette.testclient import TestClient
 
-from responses_server import CompatServerConfig, ManagedResponseServer, StreamRouter
+from responses_server import CompatServerConfig, ManagedResponseServer
+from responses_server.request_translation import build_outcomming_request
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
@@ -122,6 +123,75 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> "None":
         {"role": "developer", "content": "Be concise."},
         {"role": "user", "content": "hi"},
     ]
+
+
+@pytest.mark.parametrize("outcomming_api", ["chat_completions", "messages"])
+@pytest.mark.parametrize("encrypted", [False, True])
+def test_agent_messages_cross_compat_only_as_plaintext(tmp_path, outcomming_api, encrypted):
+    capture_path = tmp_path / "capture"
+    store = CaptureStore(capture_path)
+    arguments = '{"target":"/root","message":"reply"}'
+    if outcomming_api == "messages":
+        backend = build_fake_messages_server(
+            store, build_messages_tool_use_events("reply", "send_message", [arguments]),
+        )
+    else:
+        backend = build_fake_chat_server(
+            store, build_tool_call_chunks("reply", "send_message", [arguments]),
+        )
+    backend.start()
+    app = ManagedResponseServer.build_app(CompatServerConfig(
+        outcomming_base_url="http://127.0.0.1:{0}/v1".format(backend.server_port),
+        outcomming_api=outcomming_api,
+    ))
+    content = (
+        [{"type": "encrypted_content", "encrypted_content": "opaque-fixture"}]
+        if encrypted else [{"type": "input_text", "text": "task payload"}]
+    )
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/responses", json={
+                "model": "fixture",
+                "input": [{
+                    "type": "agent_message", "id": "amsg_fixture",
+                    "author": "/root", "recipient": "/root/worker", "content": content,
+                }],
+                "tools": [{
+                    "type": "function", "name": "send_message",
+                    "parameters": {"type": "object"}, "strict": False,
+                }],
+                "stream": True,
+            })
+        request_files = list(capture_path.glob("*_POST_*.json"))
+        if encrypted:
+            assert response.status_code == 501
+            assert "opaque-fixture" not in response.text
+            assert request_files == []
+        else:
+            assert response.status_code == 200
+            assert len(request_files) == 1
+            request = json.loads(request_files[0].read_text(encoding="utf-8"))
+            text = "Agent message from /root to /root/worker:\ntask payload"
+            expected_content = (
+                [{"type": "text", "text": text}] if outcomming_api == "messages" else text
+            )
+            assert request["body"]["messages"] == [
+                {"role": "user", "content": expected_content}
+            ]
+            events = [
+                json.loads(line[len("data: "):])
+                for line in response.text.splitlines()
+                if line.startswith("data: ") and line != "data: [DONE]"
+            ]
+            call = next(
+                event["item"] for event in events
+                if event["type"] == "response.output_item.done"
+            )
+            assert call["type"] == "function_call"
+            assert call["encrypted_function_args"] == []
+            assert call["arguments"] == arguments
+    finally:
+        backend.stop()
 
 
 @pytest.mark.parametrize("finish_reason", ["stop", "length"])
@@ -396,9 +466,9 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert all(event["content_index"] == 0 for event in reasoning_deltas)
     assert [event["type"] for event in events[:4]] == [
         "response.created",
+        "response.output_item.added",
         "response.reasoning_text.delta",
         "response.reasoning_text.delta",
-        "response.output_text.delta",
     ]
     reasoning_items = [
         event["item"]
@@ -410,6 +480,8 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
     assert reasoning_items == [
         {
             "type": "reasoning",
+            "id": reasoning_deltas[0]["item_id"],
+            "status": "completed",
             "summary": [],
             "content": [
                 {
@@ -429,7 +501,6 @@ def test_responses_server_vllm_translates_chat_reasoning_to_incomming_items(
 
 
 def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> "None":
-    router = StreamRouter(CompatServerConfig(model_provider="vllm"))
     base_request = {
         "model": "gpt-5.4",
         "input": [
@@ -445,12 +516,12 @@ def test_responses_server_forwards_reasoning_effort_to_outcomming_chat() -> "Non
     for effort in ("none", "low", "medium", "high"):
         request = dict(base_request)
         request["reasoning"] = {"effort": effort}
-        outgoing = router.build_outcomming_request(request)
+        outgoing = build_outcomming_request(request)
         assert outgoing["chat_template_kwargs"] == {
             "reasoning_effort": effort,
         }
 
-    without_reasoning = router.build_outcomming_request(base_request)
+    without_reasoning = build_outcomming_request(base_request)
     assert "chat_template_kwargs" not in without_reasoning
 
 
@@ -1971,14 +2042,14 @@ def test_responses_server_reconstructs_custom_tool_history_for_outcomming_chat(
 
 
 @pytest.mark.parametrize(
-    "arguments_parts",
+    "arguments_parts, valid",
     [
-        ['{"input":"', '*** Begin Patch\\n*** End Patch\\n"}'],
-        ["*** Begin Patch\n", "*** End Patch\n"],
+        (['{"input":"', '*** Begin Patch\\n*** End Patch\\n"}'], True),
+        (["*** Begin Patch\n", "*** End Patch\n"], False),
     ],
 )
-def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
-    tmp_path, arguments_parts
+def test_responses_server_validates_adapted_custom_call_arguments(
+    tmp_path, arguments_parts, valid
 ) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(
@@ -2035,6 +2106,11 @@ def test_responses_server_translates_adapted_custom_calls_back_to_custom_items(
         fake_chat_server.stop()
 
     assert status == 200
+    if not valid:
+        assert '"type": "response.failed"' in body
+        assert "expected JSON arguments containing an `input` string" in body
+        assert '"type": "response.completed"' not in body
+        return
     assert '"type": "custom_tool_call"' in body
     assert '"call_id": "call_1"' in body
     assert '"name": "apply_patch"' in body
@@ -2634,7 +2710,7 @@ def test_responses_server_turns_initial_downstream_timeout_into_response_failed(
         raise TimeoutError("read operation timed out")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_timeout,
     )
     app = ManagedResponseServer.build_app(
@@ -2677,7 +2753,7 @@ def test_responses_server_turns_initial_downstream_disconnect_into_response_fail
     monkeypatch.setenv("PYCODEX_DUMP", str(tmp_path / "trajectory"))
     clock = [100.0]
     monkeypatch.setattr(
-        "responses_server.stream_router.time",
+        "responses_server.transport.time",
         SimpleNamespace(monotonic=lambda: clock[0]),
     )
 
@@ -2686,7 +2762,7 @@ def test_responses_server_turns_initial_downstream_disconnect_into_response_fail
         raise error_class("connection closed before response")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_disconnect,
     )
     app = ManagedResponseServer.build_app(
@@ -2727,7 +2803,7 @@ def test_responses_server_includes_stream_failure_timing(
 ) -> "None":
     clock = [100.0]
     monkeypatch.setattr(
-        "responses_server.stream_router.time",
+        "responses_server.transport.time",
         SimpleNamespace(monotonic=lambda: clock[0]),
     )
 
@@ -2764,7 +2840,7 @@ def test_responses_server_includes_stream_failure_timing(
         return StreamResponse()
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen", open_response
+        "responses_server.transport.urllib.request.urlopen", open_response
     )
     app = ManagedResponseServer.build_app(
         CompatServerConfig(
@@ -2802,7 +2878,7 @@ def test_responses_server_includes_downstream_http_error_status(monkeypatch) -> 
         )
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen", open_response
+        "responses_server.transport.urllib.request.urlopen", open_response
     )
     app = ManagedResponseServer.build_app(
         CompatServerConfig(outcomming_base_url="https://example.invalid/v1")
@@ -2827,7 +2903,7 @@ def test_responses_server_turns_initial_models_disconnect_into_bad_gateway(
         raise http.client.RemoteDisconnected("connection closed before response")
 
     monkeypatch.setattr(
-        "responses_server.stream_router.urllib.request.urlopen",
+        "responses_server.transport.urllib.request.urlopen",
         raise_disconnect,
     )
     app = ManagedResponseServer.build_app(

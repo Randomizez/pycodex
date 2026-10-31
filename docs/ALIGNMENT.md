@@ -4,6 +4,206 @@ This document records the current alignment work between `pycodex` and upstream
 Codex from `https://github.com/openai/codex`: prompt/context assembly,
 model-visible tool schemas, and observed tool round-trip behavior.
 
+The target is upstream behavior with default options for the selected features,
+model and protocol, together with the explicitly retained local differences.
+Implementing every optional configuration branch is outside this target.
+Optional tool arguments that are present in the default declaration still count
+as part of the default schema.
+
+The project deliberately omits sandbox enforcement and collaboration-mode
+switching. Sub-agent model/effort overrides and tool descriptions do not require
+hardcoded OpenAI-specific model, effort or tier allowlists, or complete coverage
+of OpenAI's model catalog. The related declaration and behavior differences are
+intentional local choices.
+
+`responses_server` adapts vLLM `/v1/chat/completions` to a local `/v1/responses`
+endpoint. OpenAI models are evaluated through native Responses; OpenAI/models_proxy
+Chat restrictions are outside this alignment target. Chat/messages adapters
+convert plaintext Agent messages to user text and reject `encrypted_content`
+with HTTP 501. This plaintext-only boundary is accepted; encrypted-input support
+in these adapters is outside the alignment target.
+
+Native MultiAgentV2 requires a provider that supports `agent_message` and the
+encrypted-argument contract. The Step native endpoint's Agent-message limitations
+are a provider capability boundary, outside the pycodex alignment target.
+
+## Current prototype baseline (2026-10-29)
+
+The current workspace is the prototype for the newer MultiAgentV2 protocol.
+Its source reference is upstream commit
+[`9cc14e79882ff8885cd5d33b4adadae014045aef`](https://github.com/openai/codex/tree/9cc14e79882ff8885cd5d33b4adadae014045aef).
+The saved HTTP captures used **Codex CLI 0.165.0**, release source commit
+[`360319d8dee62d87e2d59fc0c21805d79519cfed`](https://github.com/openai/codex/tree/360319d8dee62d87e2d59fc0c21805d79519cfed).
+These are separate references: a match against a release capture does not prove
+parity with every branch in the later source tree.
+
+MultiAgentV2 is an existing project choice. Its upstream feature flag defaults to
+`false` at the source reference above; comparisons here use its default
+sub-options after enabling it. This is not a claim of zero-configuration Codex
+parity.
+
+The implementation now uses these contracts:
+
+| Area | Current prototype |
+| --- | --- |
+| Ownership | One `AgentsManager` owns the runtime tree. Each `AgentRuntime` owns scheduling for one `Agent`; Agents do not own their Runtime. |
+| Construction | `AgentsManager(client, context_config, toolset).create_root_runtime()` builds `/root`. `get_tools` lives in `pycodex.tools` and receives the manager explicitly. |
+| Identity | `agent_id` remains fixed across resume; `agent_path` is a canonical task path such as `/root/review`. `session_id` identifies the current rollout. |
+| Tools | `spawn_agent`, `send_message`, `followup_task`, mailbox-based `wait_agent`, `interrupt_agent`, and `list_agents`. The old `send_input`, `resume_agent`, and `close_agent` tools are removed. |
+| Input | `enqueue` schedules an independent turn; `message` queues accepted input; `trigger` requests execution; `stop_asap` requests a cooperative stop. Frontends still enter through `submit_input`. |
+| Agent messages | `NEW_TASK`, `MESSAGE`, and automatic `FINAL_ANSWER` deliveries use native `agent_message` input items. Message receipt alone does not start an idle recipient. |
+| Wait | Waits for mailbox activity or steered input, without consuming or returning message content. It no longer takes agent IDs or returns a status map. |
+| Capacity | The default total is 16 including the root. Spawn enforces the configured limit and closes eligible idle leaves in least-recently-used order. Closed children are removed from the tree and Workspace views, releasing their task names. |
+| Forked context | `fork_turns="all"` is the default. Fixed context and real history retain their ordering; child identity and task are appended after the inherited prefix. `"none"` starts fresh history. |
+| Persistence | Root recording remains lazy; child agents stay in memory. Session `/fork`, `Agent.fork`, `AgentRuntime.fork`, and pending Workspace fork restoration are removed. |
+| Workspace | Context details show `To compact: N/limit` and the root/descendant tree. `last_message` is the latest assistant text, including streaming text; tool and error status do not replace it. |
+
+Developer instructions, fork assembly, message serialization, model overrides,
+and ordinary/Responses-lite placement are specified in [CONTEXT.md](CONTEXT.md).
+The presence of model-provided Default-mode instructions does not add a
+collaboration-mode switch or enable `request_user_input`.
+
+Frontend steer composes stop/message/trigger: the interrupted receipt fails,
+pending steer receipts share the next execution, and the logical turn ID is
+retained. Agent-to-Agent messages instead join an active turn at an input
+boundary without interrupting it. These paths are tested separately.
+
+### Evidence and comparison limits
+
+The October audit separately checked source contracts, captured requests, and
+local runtime behavior. Its context matrix covered ordinary and lite first
+requests, default/full/empty forks, follow-up messages, changed effort, and nested
+forks. The earlier 38-pair context projection explicitly excluded tool
+declarations, namespaces, selected client IDs, headers, and the unavailable
+asynchronous-question hint. It also projected Agent messages into readable text.
+That projection predates native `AgentMessage` serialization and must not be
+reported as native wire-format parity.
+
+The prototype subsequently preserves native Agent-message fields and encrypted
+payloads, and the compatibility adapter marks its tool arguments as plaintext.
+Repository tests exercise these contracts using synthetic clients and local
+HTTP servers. They do not establish that an arbitrary configured provider accepts
+native Agent messages or encrypted input.
+
+The current offline diagnostic also ran against CLI 0.165.0 with MultiAgentV2
+enabled and direct tools over HTTP. The default `gpt-5.4` fixture produced one
+request per side for `plain`, two for `resume`, and two for `tool`. Raw comparisons
+still report base-instruction text, skills guidance and client-generated IDs,
+as well as separately reported tool/body/header differences. In particular, the
+local base prompt retains a Planning section and skills usage guidance absent
+from that release fixture. These are recorded differences, not passing parity
+checks; the command exits `1` when it writes such a report.
+
+These captures predate the local default-capacity increase to 16 and
+capacity-triggered closing. Those behaviors are covered by local regression
+tests, not by the saved HTTP comparisons.
+
+Capture artifacts are local audit evidence, not required package resources.
+When repeating a comparison, record the executable version and source commit,
+use isolated HOME/CODEX_HOME and fixed SSE fixtures, retain the unmodified
+request comparison, and list every normalization separately. Historical
+0.115/0.138/0.153.4 results below apply only to their stated checkpoints.
+
+### Profile file loading (2026-10-30)
+
+Isolated `codex --profile NAME mcp list --json` checks against CLI **0.166.0**
+confirm adjacent `NAME.config.toml` overlays, recursive table merging, array
+replacement, plain ASCII profile names, and rejection of selected legacy
+profile tables or the legacy default selector. Locally, model/context loading,
+Workspace discovery and Portable bundles support both adjacent files and embedded
+`[profiles.NAME]` tables with the same recursive merge rules. Pycodex deliberately
+retains the top-level default `profile` selector; an explicit `--profile` wins.
+Duplicate names across both sources are errors. Unlike that CLI version, pycodex
+requires a selected profile to exist in one source, preserving the saved-session
+restoration contract. These compatibility choices are local differences.
+The CLI check covers profile
+loading only; it does not update the HTTP or tool-schema baselines above.
+
+### Default-option tool schema audit (2026-10-29)
+
+The saved GPT-6.1 Sol requests were compared with the current serialized Python
+tool classes. `native_lite_first` uses the native model catalog;
+`fork_none` and `ordinary_first` override the catalog to use direct tools.
+All three enable MultiAgentV2 and set fixture-specific transport, instructions,
+effort and sandbox/approval options. Source checks establish which observed
+schema fields also belong to the default options.
+
+The six MultiAgentV2 `parameters` objects match exactly, ignoring JSON object
+key order: `spawn_agent`, `send_message`, `followup_task`, `wait_agent`,
+`interrupt_agent` and `list_agents`. This includes parameter descriptions,
+`required`, `additionalProperties` and `encrypted: true` on message arguments.
+Function declarations use `strict: false` on both sides, and neither serializes
+its internal `output_schema`.
+The complete `apply_patch` declaration, including its description and custom
+grammar, also matches the direct-tool captures.
+
+| Declaration difference | Current behavior | Alignment scope |
+| --- | --- | --- |
+| Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. | Remains in scope. |
+| `spawn_agent` description | Python omits upstream's available model/effort/tier list and retains local inheritance/override guidance. | Intentional: no hardcoded OpenAI-specific capability lists. |
+| `request_user_input` | Python retains `autoResolutionMs` and local description wording, including different quotation marks around `Other`. | Intentional: the tool stays unavailable in Default mode; interaction-mode machinery is not restored to match its declaration. |
+| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, and retains local background-invocation wording. | Intentional: sandbox enforcement and its request parameters are outside the local contract. |
+
+No generic catalog-schema override mechanism is required by this snapshot:
+`model_messages.tools` is null in every bundled model at the source reference,
+so the MAv2 schema-override path is inactive. Native model `tool_mode` is a
+different field: GPT-6.1 Sol selects `code_mode_only` without enabling either
+code-mode feature flag. That default tool-selection difference remains in scope.
+
+MAv2 defaults already match local choices for hiding spawn metadata, exposing
+model/effort arguments, enabling wait, its 30-second default and 10-second/
+one-hour bounds, and omitting `agent_type` without configured roles. Custom
+namespace names, schema overrides, role configurations, alternate wait settings,
+metadata toggles, `wake_on_agent_messages`, token budgets and rollout budgets
+are not requirements merely because upstream supports them. The last three
+feature flags default off.
+
+### Remaining differences
+
+| Area | Boundary of the current prototype |
+| --- | --- |
+| Tool namespaces | Default namespace packaging remains. Inactive optional catalog overrides and configurable namespace/exposure branches are outside the default-options target. |
+| Default tool selection | Native model CodeModeOnly selection remains. Existing local `exec` / `wait` implementations do not supply that automatic selection. |
+| Wire metadata | Client metadata, some user/result IDs, headers, and User-Agent version still differ. Preserving provider fields does not imply all locally generated IDs match. |
+| Prompt selection | Model-dependent prompt shaping is not fully reproduced. The default `gpt-5.4` HTTP fixture still differs from CLI 0.165.0 in Planning and skills usage guidance. |
+
+### Intentional local differences
+
+Python code-mode execution is a local choice. `exec` runs Python with top-level
+`await` in the host process, with a fresh namespace and task ownership per cell.
+There is no interpreter startup per call. Modules and process state are shared,
+and termination is cooperative; bare relative paths use the host cwd while the
+explicit `cwd` Path and nested tools use the cell's workspace.
+Upstream source `f2ac9983552d187aa1c9a53c4707cf3b2c4afde6` (2026-10-30) instead
+reuses a code-mode host process and creates a V8 isolate and thread per cell,
+with isolate-level termination. The source baseline `9cc14e79` uses the same
+core design. Python namespace separation does not reproduce that isolation.
+See [Python exec cells](RUNTIME.md#python-exec-cells) for the local contract.
+
+Spawn/fork model overrides, the `spawn_agent`, `exec_command` and
+`request_user_input` declaration differences above, and model-catalog coverage
+are retained choices. They do not create alignment requirements to add sandbox
+enforcement, restore interaction modes, or hardcode OpenAI model capabilities.
+
+| Area | Retained local behavior |
+| --- | --- |
+| Fork overrides | The manager accepts explicit full-history model/effort overrides and keeps its existing inheritance rules. It does not add OpenAI-specific allowlists for model availability, MultiAgentV2 support or effort; configured values are passed to the provider. |
+| Catalog | Local Step/GPT-OSS entries remain. OpenAI-specific entries such as `codex-auto-review` are not required for catalog completeness. |
+| Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
+
+Intentional local boundaries remain: no bundled system-skill installation, no
+persisted collaboration tree, no session `/fork`, and no asynchronous
+model-facing question tool. `request_user_input` retains Default-mode
+unavailability. A stop waits for issued model/tool work. Normal close signals the
+whole Runtime subtree, discards pending turns and waits for active turns to stop
+cooperatively before cleanup. `clock` remains a local extension.
+
+## Historical audit notes
+
+The remaining sections preserve earlier comparison methods and results. Their
+references to legacy tool membership and prompt exclusions describe those
+checkpoints, not the current MultiAgentV2 prototype above.
+
 ## Scope
 
 The original comparison pass focused on the model-visible prompt assembly:
@@ -228,7 +428,7 @@ been reviewed/refreshed against the latest upstream-facing specs where a current
 upstream builtin exists. The request-visible payload for the compared official
 tools now comes from class-level specs rather than vendored JSON snapshots.
 
-## Current non-prompt status
+## Historical non-prompt status
 
 After prompt/context parity, the next comparison layer is the full outbound
 request shape. That work is still layered:

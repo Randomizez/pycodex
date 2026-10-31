@@ -8,7 +8,7 @@ Expected behavior:
 - Start a long-lived command session for `exec_command`.
 - Preserve unread output between calls.
 - Accept follow-up stdin writes and polling through `write_stdin`.
-- Return summaries in the same textual shape Codex tools expect.
+- Return structured results for nested exec tool calls.
 """
 
 import asyncio
@@ -22,6 +22,7 @@ from pathlib import Path
 
 from loguru import logger
 
+from ..protocol import JSONValue
 from ..utils.compat import shlex_join, stream_writer_is_closing
 from ..utils.truncation import (
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -128,13 +129,14 @@ class UnifiedExecManager:
         self._state_listener = None
         self._notify_hook: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]" = (None)
 
-    def set_notify_hook(
-        self,
-        callback: "typing.Union[typing.Callable[[typing.Dict[str, object]], typing.Awaitable[typing.Any]], None]",
-    ) -> "None":
-        self._notify_hook = callback
+    def bind(self, invoke, output, state_changed):
+        self._notify_hook = invoke
+        self._state_listener = state_changed
 
-    def running_session_count(self) -> "int":
+    def shutdown(self):
+        self._notify_hook = None
+
+    def background_work_count(self, after_reply) -> "int":
         return sum(
             1
             for session in self._sessions.values()
@@ -148,7 +150,7 @@ class UnifiedExecManager:
         if self._state_listener is not None:
             self._state_listener()
 
-    def snapshot(self):
+    def background_work_snapshot(self):
         with self._lock:
             return [
                 {
@@ -173,7 +175,7 @@ class UnifiedExecManager:
         tty: "bool" = DEFAULT_TTY,
         yield_time_ms: "int" = DEFAULT_EXEC_YIELD_TIME_MS,
         max_output_tokens: "typing.Union[int, None]" = None,
-    ) -> "str":
+    ) -> "JSONValue":
         session_id = await self._allocate_session_id()
         command = self._build_shell_command(cmd, shell, login)
         logger.debug(
@@ -222,14 +224,12 @@ class UnifiedExecManager:
         chars: "str" = "",
         yield_time_ms: "int" = DEFAULT_WRITE_STDIN_YIELD_TIME_MS,
         max_output_tokens: "typing.Union[int, None]" = None,
-    ) -> "str":
+    ) -> "JSONValue":
         session = await self._get_session(session_id)
         if session is None:
             return f"Error: session_id {session_id} is not running."
 
         if chars:
-            if session.process.stdin is None:
-                return f"Error: session_id {session_id} does not accept stdin."
             logger.debug(
                 "write_stdin session_id={} chars_len={}", session_id, len(chars)
             )
@@ -261,7 +261,7 @@ class UnifiedExecManager:
         session_id: "int",
         yield_time_ms: "int",
         max_output_tokens: "typing.Union[int, None]",
-    ) -> "str":
+    ) -> "JSONValue":
         session = await self._get_session(session_id)
         if session is None:
             return f"Error: session_id {session_id} is not running."
@@ -298,26 +298,24 @@ class UnifiedExecManager:
         wall_time = asyncio.get_running_loop().time() - start_wait
         output_bytes = session.unread_output.drain_bytes()
         output_text = output_bytes.decode("utf-8", errors="replace")
-        original_token_count = self._estimate_token_count(output_text)
+        original_token_count = approx_token_count(output_text)
         output_text = self._truncate_output(output_text, max_output_tokens)
 
-        lines = [
-            f"Chunk ID: {uuid.uuid4().hex[:6]}",
-            f"Wall time: {wall_time:.4f} seconds",
-        ]
+        result = {
+            "chunk_id": uuid.uuid4().hex[:6],
+            "wall_time_seconds": wall_time,
+            "output": output_text,
+        }
         if session.process.returncode is None:
-            lines.append(f"Process running with session ID {session_id}")
+            result["session_id"] = session_id
         else:
-            lines.append(f"Process exited with code {session.process.returncode}")
-        if original_token_count is not None:
-            lines.append(f"Original token count: {original_token_count}")
-        lines.append("Output:")
-        lines.append(output_text)
+            result["exit_code"] = session.process.returncode
+        result["original_token_count"] = original_token_count
 
         if session.process.returncode is not None:
             await self._close_session(session_id)
 
-        return "\n".join(lines)
+        return result
 
     async def _close_session(self, session_id: "int") -> "None":
         with self._lock:
@@ -325,9 +323,7 @@ class UnifiedExecManager:
         if session is None:
             return
         self._state_changed()
-        if session.process.stdin is not None and not stream_writer_is_closing(
-            session.process.stdin
-        ):
+        if not stream_writer_is_closing(session.process.stdin):
             session.process.stdin.close()
 
     async def _drain_reader_after_exit(
@@ -356,8 +352,6 @@ class UnifiedExecManager:
 
     async def _pump_output(self, session: "UnifiedExecSession") -> "None":
         stream = session.process.stdout
-        if stream is None:
-            return
         while True:
             chunk = await stream.read(4096)
             if not chunk:
@@ -367,7 +361,7 @@ class UnifiedExecManager:
         session.output_event.set()
 
     async def _notify_when_session_completes(self, session_id: "int") -> "None":
-        from ..agent import TurnInterrupted
+        from ..runtime import SubmissionInterrupted
 
         if self._notify_hook is None:
             return
@@ -391,7 +385,7 @@ class UnifiedExecManager:
                     "command": session.command_display,
                 }
             )
-        except TurnInterrupted:
+        except SubmissionInterrupted:
             # A steer ended the notification turn at a safe boundary.
             return
         except asyncio.CancelledError:
@@ -417,9 +411,6 @@ class UnifiedExecManager:
         if "powershell" in shell_name:
             return [shell_path, "-NoProfile", "-Command", cmd]
         return [shell_path, "-lc" if login else "-c", cmd]
-
-    def _estimate_token_count(self, output: "str") -> "typing.Union[int, None]":
-        return approx_token_count(output)
 
     def _truncate_output(
         self, output: "str", max_output_tokens: "typing.Union[int, None]"

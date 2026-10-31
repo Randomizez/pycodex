@@ -7,10 +7,9 @@ import sys
 import pytest
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
     AssistantMessage,
     BaseTool,
+    ClockManager,
     ContextConfig,
     ModelResponse,
     ResponsesModelClient,
@@ -18,9 +17,10 @@ from pycodex import (
     ToolRegistry,
     UserMessage,
 )
+from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 
 
 class ControlClient(ScriptedModelClient):
@@ -30,8 +30,8 @@ class ControlClient(ScriptedModelClient):
 
 def make_queue(client=None):
     session_id = uuid7_string()
-    return AgentRuntime(
-        Agent(
+    return make_runtime(
+        make_agent(
             client or ControlClient([]),
             ToolRegistry(),
             ContextConfig(),
@@ -298,7 +298,8 @@ async def test_effort_changes_reject_queued_or_active_work(active, monkeypatch):
     finally:
         release.set()
         await queue.close()
-        await receipt.future
+        with pytest.raises(SubmissionInterrupted):
+            await receipt.future
 
 
 def question_payload():
@@ -387,9 +388,8 @@ async def test_pending_question_has_bounded_resolution(resolution):
     assert await manager.request(question_payload()) is None
 
 
-@pytest.mark.parametrize("continue_after_fork", [False, True])
 @pytest.mark.asyncio
-async def test_fork_owns_identity_and_lazy_recorder(continue_after_fork):
+async def test_removed_fork_command_preserves_identity_history_and_recording():
     client = ControlClient(
         [
             ModelResponse([AssistantMessage("done")]),
@@ -404,32 +404,30 @@ async def test_fork_owns_identity_and_lazy_recorder(continue_after_fork):
     old_path = queue.agent.session_file_path
     old_bytes = old_path.read_bytes()
     old_id = queue.agent.session_id
+    agent_id = queue.agent.agent_id
     old_history = queue.agent.history
     queue.agent._last_total_usage_tokens = 123
     fork = await queue.submit_input("/fork")
-    assert (await fork.future)["session_id"] == queue.agent.session_id != old_id
-    assert client._session_id == queue.agent.session_id
+    with pytest.raises(ValueError, match="Unknown command: /fork"):
+        await fork.future
+    assert "fork" not in queue.commands()
+    assert queue.agent.session_id == old_id
+    assert queue.agent.agent_id == agent_id
+    assert client._session_id == "provider-created-id"
+    assert client.prompts[-1].session_id == queue.agent.session_id
     assert queue.agent.history == old_history
     assert queue.agent._last_total_usage_tokens == 123
-    assert queue.agent.session_file_path != old_path
-    assert not queue.agent.session_file_path.exists()
-    if continue_after_fork:
-        receipt = await queue.submit_input("after")
-        await receipt.future
-        entries = [
-            json.loads(line)
-            for line in queue.agent.session_file_path.read_text(
-                encoding="utf-8"
-            ).splitlines()
-        ]
-        assert sum(entry["type"] == "session_meta" for entry in entries) == 1
-        assert entries[0]["payload"]["id"] == queue.agent.session_id
-        assert [
-            entry["payload"] for entry in entries if entry["type"] == "response_item"
-        ] == [item.serialize() for item in queue.agent.history]
-    await queue.close()
-    assert queue.agent.session_file_path.exists() == continue_after_fork
+    assert queue.agent.session_file_path == old_path
     assert old_path.read_bytes() == old_bytes
+    receipt = await queue.submit_input("after")
+    assert (await receipt.future).output_text == "continued"
+    await queue.close()
+    entries = [json.loads(line) for line in old_path.read_text(encoding="utf-8").splitlines()]
+    assert sum(entry["type"] == "session_meta" for entry in entries) == 1
+    assert entries[0]["payload"]["id"] == old_id
+    assert [
+        entry["payload"] for entry in entries if entry["type"] == "response_item"
+    ] == [item.serialize() for item in queue.agent.history]
 
 
 @pytest.mark.parametrize("started,cleanup_fails", [(False, False), (True, True)])
@@ -439,19 +437,14 @@ async def test_start_close_are_idempotent_and_errors_do_not_hang_shutdown(
 ):
     hook_calls = []
 
-    class CountingTool(BaseTool):
-        name = "count_shutdown"
-        description = "Records shutdown."
-
+    class CountingResource(ClockManager):
         def shutdown(self):
             hook_calls.append(True)
-
-        async def run(self, context, args):
-            return None
+            super().shutdown()
 
     tools = ToolRegistry()
-    tools.register(CountingTool())
-    queue = AgentRuntime(Agent(ControlClient([]), tools, ContextConfig()))
+    tools.runtime_environment.register_resource("counter", CountingResource())
+    queue = make_runtime(make_agent(ControlClient([]), tools, ContextConfig()))
     if started:
         await queue.start()
         worker = queue._worker

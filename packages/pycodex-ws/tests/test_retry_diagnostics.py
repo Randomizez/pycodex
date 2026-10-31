@@ -1,11 +1,11 @@
-from pycodex import Agent, AgentRuntime, ContextConfig, ToolRegistry
+from pycodex import ContextConfig, ToolRegistry
 from pycodex.events import StreamErrorEvent, TurnStartedEvent
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 from workspace_server import WebSessionView
 
 
 async def test_retry_details_survive_active_turn_reattachment():
-    runtime = AgentRuntime(Agent(
+    runtime = make_runtime(make_agent(
         ScriptedModelClient([], model="primary"), ToolRegistry(), ContextConfig(),
     ))
     view = WebSessionView()

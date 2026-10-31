@@ -11,8 +11,6 @@ from types import SimpleNamespace
 import pytest
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
     AssistantMessage,
     ContextConfig,
     ContextMessage,
@@ -21,7 +19,9 @@ from pycodex import (
     ToolRegistry,
     ToolResult,
 )
-from pycodex.bootstrap import build_agent, build_model, get_subagent_tools, get_tools
+from pycodex.bootstrap import ModelBootstrapResult, build_model
+from pycodex.config import CodexConfig
+from pycodex.multi_agents import AgentsManager
 from pycodex.cli import (
     CliSessionView,
     build_parser,
@@ -37,7 +37,9 @@ from pycodex.events import (
     TurnCompletedEvent,
 )
 from pycodex.portable.server import CodexStorageServer
-from tests.fakes import ScriptedModelClient
+from tests.fakes import (
+    ScriptedModelClient, make_agent, make_runtime, make_tools, wait_for_runtime_idle,
+)
 
 
 @pytest.fixture
@@ -142,11 +144,13 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
         options["vllm_endpoint"] = "http://127.0.0.1:18000"
     else:
         options["managed_responses_base_url"] = server.base_url
-    client = build_model(str(config_path), timeout_seconds=17, **options)
+    config = CodexConfig.from_env(config_path)
+    bootstrap = build_model(config.provider, timeout_seconds=17, **options)
+    client = bootstrap.client
     assert client._config.base_url == server.base_url
     assert client.endpoint == server.base_url
     assert client._config.responses_lite_override is False
-    assert client._originator == "codex-tui"
+    assert client.recording_metadata.originator == "codex-tui"
     assert client._config.api_key_env == "PYCODEX_LOCAL_RESPONSES_SERVER_KEY"
     if mode == "vllm":
         assert probes == ["http://127.0.0.1:18000/v1"]
@@ -159,21 +163,27 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
             "messages" if mode == "messages" else "chat_completions"
         )
     with pytest.raises(ValueError, match="cannot be combined"):
-        build_model(str(config_path), use_chat_completion=True, use_messages=True)
+        build_model(config.provider, use_chat_completion=True, use_messages=True)
 
 
 @pytest.mark.asyncio
 async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_path):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    agent = build_agent(
-        client,
-        config_path,
-        system_prompt="session rules",
-        extra_contextual_user_messages=["workspace context"],
-        cwd=tmp_path,
-        toolset=["apply_patch", "view_image"],
+    from dataclasses import replace
+
+    manager = AgentsManager(
+        client, replace(
+            ContextConfig.from_codex_config(config_path),
+            base_instructions_override="session rules",
+            extra_contextual_user_messages=("workspace context",),
+            cwd=tmp_path,
+        ),
+        toolset=("apply_patch", "view_image"),
     )
-    await agent.run_turn(["hello"])
+    runtime = manager.create_root_runtime()
+    await runtime.start()
+    await runtime.submit_user_turn("hello")
+    await runtime.close()
     prompt = client.prompts[0]
     assert prompt.base_instructions == "session rules"
     assert [tool.name for tool in prompt.tools] == ["apply_patch", "view_image"]
@@ -183,18 +193,10 @@ async def test_bootstrap_preserves_context_and_tool_boundaries(config_path, tmp_
         if isinstance(item, ContextMessage)
     )
     assert str(tmp_path) in repr(prompt.input)
-    assert get_tools(toolset=[]).names() == ()
+    assert make_tools(toolset=[]).names() == ()
     with pytest.raises(ValueError, match="unknown toolset"):
-        get_tools(toolset=["missing"])
-    assert get_subagent_tools().names() == (
-        "exec_command",
-        "write_stdin",
-        "update_plan",
-        "apply_patch",
-        "web_search",
-        "view_image",
-    )
-    defaults = get_tools(exec_mode=True)
+        make_tools(toolset=["missing"])
+    defaults = make_tools()
     assert "clock" in defaults.names()
     assert "shell" not in defaults.names()
     for spec in defaults.model_visible_specs():
@@ -207,7 +209,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
     config_path, monkeypatch, capsys, json_mode
 ):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: client)
+    monkeypatch.setattr("pycodex.cli.build_model", lambda config, **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(
         ["--config", str(config_path)] + (["--json"] if json_mode else []) + ["hello"],
     )
@@ -223,7 +225,7 @@ async def test_cli_one_shot_uses_backend_and_tui_context(
 @pytest.mark.asyncio
 async def test_cli_exit_code_and_command_dispatch(config_path, monkeypatch, capsys):
     client = ScriptedModelClient([])
-    monkeypatch.setattr("pycodex.cli.build_model", lambda **kwargs: client)
+    monkeypatch.setattr("pycodex.cli.build_model", lambda config, **kwargs: ModelBootstrapResult(client))
     args = build_parser().parse_args(["--config", str(config_path), "/help"])
     assert await run_cli(args) == 0
     assert "/resume" in capsys.readouterr().out
@@ -306,9 +308,10 @@ async def test_cli_steer_and_queue_feedback(queued):
             await asyncio.wait_for(started.wait(), 1)
         if text == "":
             release.set()
+            await wait_for_runtime_idle(queue)
 
     client = ScriptedModelClient(response_factory=respond)
-    queue = AgentRuntime(Agent(client, ToolRegistry(), ContextConfig()))
+    queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
     view = InputView(
         ["first", "/queue second" if queued else "second", ""], before_input
     )
@@ -329,8 +332,13 @@ async def test_cli_steer_and_queue_feedback(queued):
 @pytest.mark.asyncio
 async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, json_mode):
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
-    queue = AgentRuntime(Agent(client, ToolRegistry(), ContextConfig()))
-    view = InputView(["", "/queue hello"])
+    queue = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
+
+    async def before_input(text):
+        if text == "":
+            await wait_for_runtime_idle(queue)
+
+    view = InputView(["", "/queue hello", ""], before_input)
     await queue.start()
     tasks = []
     create_task = asyncio.create_task
@@ -349,7 +357,7 @@ async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, jso
     ]
     assert view.lines[3] == (
         "Extra commands: /help, /history, /title, /cd, /model, /effort, /resume, "
-        "/compact, /fork, /queue"
+        "/compact, /queue"
     )
     assert signal.getsignal(signal.SIGINT) == previous_sigint
     results = [json.loads(line) for line in view.lines if line.startswith("{")]
@@ -372,8 +380,8 @@ async def test_cli_detaches_view_when_close_fails():
     async def fail_cleanup():
         raise RuntimeError("cleanup failed")
 
-    queue = AgentRuntime(
-        Agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
+    queue = make_runtime(
+        make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
     )
     queue.add_close_handler(fail_cleanup)
     previous_sigint = signal.getsignal(signal.SIGINT)
@@ -396,7 +404,7 @@ async def test_cli_detaches_view_when_close_fails():
         ),
     ],
 )
-def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_input):
+def test_cli_input_exit_stops_turn_and_discards_queue_without_cancelling_calls(tmp_path, busy, exit_input):
     source = textwrap.dedent("""
         import asyncio
         import os
@@ -406,11 +414,12 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
         from prompt_toolkit.input import create_pipe_input
         from prompt_toolkit.output import DummyOutput
         from pycodex import (
-            Agent, AgentRuntime, AssistantMessage, BaseTool, ContextConfig,
+            Agent, AgentRuntime, AssistantMessage, ClockManager, ContextConfig,
             ModelResponse, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
-        from tests.fakes import ScriptedModelClient
+        from pycodex.runtime import SubmissionInterrupted
+        from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 
         async def run(pipe):
             busy = sys.argv[1] == "True"
@@ -419,15 +428,10 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             release = asyncio.Event()
             cleaned = []
 
-            class CleanupTool(BaseTool):
-                name = "cleanup"
-                description = "Records final cleanup."
-
-                async def run(self, context, args):
-                    return None
-
+            class CleanupResource(ClockManager):
                 def shutdown(self):
                     cleaned.append(True)
+                    super().shutdown()
 
             async def respond(prompt, call_count):
                 started.set()
@@ -436,9 +440,9 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
                 return ModelResponse([AssistantMessage("finished")])
 
             tools = ToolRegistry()
-            tools.register(CleanupTool())
+            tools.runtime_environment.register_resource("cleanup", CleanupResource())
             client = ScriptedModelClient(response_factory=respond)
-            runtime = AgentRuntime(Agent(client, tools, ContextConfig()))
+            runtime = make_runtime(make_agent(client, tools, ContextConfig()))
             view = CliSessionView()
             receipts = []
 
@@ -467,9 +471,9 @@ def test_cli_input_exit_closes_without_cancelling_work(tmp_path, busy, exit_inpu
             assert runtime._worker.done() and not runtime._worker.cancelled()
             assert not runtime._frontends
             assert cleaned == [True]
-            assert client.call_count == (2 if busy else 0)
+            assert client.call_count == (1 if busy else 0)
             for receipt in receipts:
-                assert receipt.future.result().output_text == "finished"
+                assert isinstance(receipt.future.exception(), SubmissionInterrupted)
             print("CLI_EXIT_OK")
 
         with create_pipe_input() as pipe:
@@ -519,7 +523,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
             ModelResponse, ToolCall, ToolRegistry,
         )
         from pycodex.cli import CliSessionView, run_interactive_session
-        from tests.fakes import ScriptedModelClient
+        from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 
         async def run(pipe):
             started = asyncio.Event()
@@ -528,6 +532,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
             class BlockingTool(BaseTool):
                 name = "blocking"
                 description = "Waits until the test releases it."
+                exec_only = False
 
                 async def run(self, context, args):
                     started.set()
@@ -543,7 +548,7 @@ def test_cli_sigint_while_closing_exits_with_running_tool(
                 ModelResponse([ToolCall("call1", "blocking", {})]),
                 ModelResponse([AssistantMessage("finished")]),
             ])
-            runtime = AgentRuntime(Agent(client, tools, ContextConfig()))
+            runtime = make_runtime(make_agent(client, tools, ContextConfig()))
             view = CliSessionView()
             view._line_output = lambda text: print(text, flush=True)
 

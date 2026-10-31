@@ -16,7 +16,6 @@ import requests
 import pycodex.utils.get_env as get_env
 from pycodex import (
     NOOP_MODEL_STREAM_EVENT_HANDLER,
-    Agent,
     AssistantMessage,
     BaseTool,
     ContextConfig,
@@ -54,8 +53,13 @@ from tests.fake_responses_server import CaptureStore, build_handler
 
 EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
   "model": "demo-model",
-  "instructions": "Be concise.",
   "input": [
+    {
+      "type": "message",
+      "id": "msg_e7555c33-ec11-5ccb-a610-0958049677ff",
+      "role": "developer",
+      "content": [{"type": "input_text", "text": "Be concise."}]
+    },
     {
       "type": "message",
       "role": "developer",
@@ -234,10 +238,6 @@ def test_provider_config_reads_codex_style_config_with_profile_override(
                 'model_verbosity = "medium"',
                 'service_tier = "fast"',
                 "",
-                "[profiles.fast]",
-                'model = "fast-model"',
-                'model_provider = "backup"',
-                "",
                 "[model_providers.primary]",
                 'base_url = "https://example.com/v1"',
                 'env_key = "PRIMARY_KEY"',
@@ -255,6 +255,10 @@ def test_provider_config_reads_codex_style_config_with_profile_override(
                 "guardian_approval = true",
             ]
         )
+    )
+    (tmp_path / "fast.config.toml").write_text(
+        'model = "fast-model"\nmodel_provider = "backup"\n',
+        encoding="utf-8",
     )
     monkeypatch.setenv("BACKUP_KEY", "test-key")
 
@@ -318,8 +322,10 @@ def test_provider_config_profile_selects_builtin_openai(tmp_path) -> "None":
         'model = "base-model"\n'
         'model_provider = "local"\n'
         "[model_providers.local]\n"
-        'base_url = "http://localhost:8000/v1"\n'
-        "[profiles.openai]\n"
+        'base_url = "http://localhost:8000/v1"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "openai.config.toml").write_text(
         'model = "gpt-5.4"\n'
         'model_provider = "openai"\n'
         'openai_base_url = "https://example.invalid/v1"\n',
@@ -393,10 +399,6 @@ def test_provider_config_allows_provider_without_env_key(tmp_path) -> "None":
                 'model = "demo-model"',
                 'model_provider = "local"',
                 "",
-                "[profiles.step]",
-                'model = "step-3.5-flash-2603"',
-                'model_provider = "example-chat"',
-                "",
                 "[model_providers.local]",
                 'base_url = "http://localhost:8000/v1"',
                 'wire_api = "responses"',
@@ -406,6 +408,10 @@ def test_provider_config_allows_provider_without_env_key(tmp_path) -> "None":
                 'wire_api = "responses"',
             ]
         )
+    )
+    (tmp_path / "step.config.toml").write_text(
+        'model = "step-3.5-flash-2603"\nmodel_provider = "example-chat"\n',
+        encoding="utf-8",
     )
 
     provider = ResponsesProviderConfig.from_codex_config(config_path, "step")
@@ -600,31 +606,34 @@ def test_responses_model_client_builds_responses_payload() -> "None":
     payload = client._build_payload(prompt)
 
     assert payload["model"] == "demo-model"
-    assert payload["instructions"] == "Be concise."
+    assert "instructions" not in payload
     assert payload["parallel_tool_calls"] is True
     assert payload["prompt_cache_key"] is not None
     assert payload["reasoning"] == {"effort": "medium", "summary": "detailed"}
     assert payload["text"] == {"verbosity": "low"}
     assert payload["input"][0]["role"] == "developer"
     assert payload["input"][0]["content"][0]["type"] == "input_text"
-    assert payload["input"][0]["content"][0]["text"] == "first developer block"
-    assert payload["input"][0]["content"][1]["text"] == "second developer block"
+    assert payload["input"][0]["content"][0]["text"] == "Be concise."
+    assert payload["input"][0]["id"].startswith("msg_")
+    assert payload["input"][1]["content"][0]["text"] == "first developer block"
+    assert payload["input"][1]["content"][1]["text"] == "second developer block"
     assert payload["input"][1]["content"][0]["type"] == "input_text"
-    assert payload["input"][2]["content"][0]["type"] == "output_text"
-    assert payload["input"][3]["type"] == "function_call"
-    assert json.loads(payload["input"][3]["arguments"]) == {"text": "hello"}
-    assert payload["input"][4] == {
+    assert payload["input"][2]["content"][0]["type"] == "input_text"
+    assert payload["input"][3]["content"][0]["type"] == "output_text"
+    assert payload["input"][4]["type"] == "function_call"
+    assert json.loads(payload["input"][4]["arguments"]) == {"text": "hello"}
+    assert payload["input"][5] == {
         "type": "function_call_output",
         "call_id": "call_1",
         "output": '{"text":"hello"}',
     }
-    assert payload["input"][5] == {
+    assert payload["input"][6] == {
         "type": "custom_tool_call",
         "name": "apply_patch",
         "input": "*** Begin Patch\n*** End Patch",
         "call_id": "call_2",
     }
-    assert payload["input"][6] == {
+    assert payload["input"][7] == {
         "type": "custom_tool_call_output",
         "call_id": "call_2",
         "name": "apply_patch",
@@ -701,11 +710,16 @@ def test_responses_model_client_builds_responses_lite_payload() -> "None":
         "role": "developer",
         "tools": [
             {
-                "type": "function",
-                "name": "echo",
-                "description": "Echo text.",
-                "parameters": {"type": "object"},
-                "strict": False,
+                "type": "namespace",
+                "name": "functions",
+                "description": "",
+                "tools": [{
+                    "type": "function",
+                    "name": "echo",
+                    "description": "Echo text.",
+                    "parameters": {"type": "object"},
+                    "strict": False,
+                }],
             }
         ],
     }
@@ -896,9 +910,13 @@ def test_responses_model_client_can_disable_lite_for_compat_transport() -> "None
     headers = client._build_headers(prompt)
 
     assert provider.use_responses_lite() is False
-    assert payload["instructions"] == "Be concise."
+    assert "instructions" not in payload
     assert payload["tools"] == []
     assert payload["input"][0]["type"] == "message"
+    assert payload["input"][0]["role"] == "developer"
+    assert payload["input"][0]["content"] == [
+        {"type": "input_text", "text": "Be concise."}
+    ]
     assert RESPONSES_LITE_HEADER not in headers
 
 
@@ -1831,7 +1849,9 @@ async def test_responses_model_client_retries_compat_function_argument_errors(
     monkeypatch.setattr(requests.Session, "send", send_response)
     tools = ToolRegistry()
     tools.register(RecordingTool())
-    agent = Agent(
+    from tests.fakes import make_agent
+
+    agent = make_agent(
         client,
         tools,
         ContextConfig(base_instructions="Fixture.", codex_home=tmp_path, cwd=tmp_path),
@@ -2017,7 +2037,7 @@ async def test_responses_model_client_receives_long_compat_reasoning_without_idl
 async def test_responses_model_client_retries_initial_compat_backend_disconnect(
     tmp_path, monkeypatch
 ) -> "None":
-    import responses_server.stream_router as stream_router
+    import responses_server.transport as transport
     from responses_server import CompatServerConfig, ManagedResponseServer
     from tests.responses_server.fake_chat_completions_server import (
         CaptureStore as ChatCaptureStore,
@@ -2036,7 +2056,7 @@ async def test_responses_model_client_retries_initial_compat_backend_disconnect(
         )
     )
     compat_server.start()
-    urlopen = stream_router.urllib.request.urlopen
+    urlopen = transport.urllib.request.urlopen
     requests_seen = []
 
     def open_response(request, **kwargs):
@@ -2047,7 +2067,7 @@ async def test_responses_model_client_retries_initial_compat_backend_disconnect(
             )
         return urlopen(request, **kwargs)
 
-    monkeypatch.setattr(stream_router.urllib.request, "urlopen", open_response)
+    monkeypatch.setattr(transport.urllib.request, "urlopen", open_response)
     client = ResponsesModelClient(
         ResponsesProviderConfig(
             model="demo-model",

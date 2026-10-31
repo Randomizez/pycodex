@@ -71,8 +71,9 @@ The settings button in the chat header opens two actions:
   `bin/python` (`Scripts/python.exe` on Windows). The selection is validated before
   saving; installation happens when you start a chat.
 - **Profile** lets you edit the profile name from the workspace host's Codex
-  configuration. For example, `step` selects `[profiles.step]`; leave it empty
-  to use the default configuration.
+  configuration. For example, `step` selects `step.config.toml` beside the base
+  `config.toml` or its `[profiles.step]` table. Leave it empty to inherit the
+  configuration's default profile selection.
 
 Selections are saved for the displayed chat's project, or the current workspace
 folder before a chat is opened. They can also be edited as VS Code settings:
@@ -200,7 +201,8 @@ code --extensionDevelopmentPath="$PWD" /absolute/path/to/your/project
 - The minus button collapses the conversation; its task continues in Python.
   Hiding the sidebar releases its polling subscriptions.
 - The **×** button on an expanded or collapsed chat closes that session. It
-  displays a closing state while Python drains accepted work, then removes the
+  displays a closing state while Python discards pending turns and waits for
+  active turns in the session tree to stop and clean up, then removes the
   chat from the list. Other sessions keep running. A rejected close keeps the
   chat visible and displays the backend error.
 - Type `/model` to list available models, or `/model <name>` to switch.
@@ -232,7 +234,8 @@ apply changes to unsaved regions.
 
 Session connections are in memory. Removing a folder or closing/reloading the
 extension closes its backend's stdin pipe. The `pycodex-ws` CLI detects EOF
-by default, drains accepted work and exits. Extension deactivation waits for
+by default, stops its session trees cooperatively and exits after cleanup.
+Extension deactivation waits for
 the processes it started,
 including any already closing after a folder was removed. If the extension host
 crashes, the operating system closes the pipe and triggers the same cleanup.

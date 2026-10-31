@@ -2,11 +2,13 @@ from .app import ManagedResponseServer, launch_chat_completion_compat_server, ru
 from .config import CompatServerConfig
 from .server import ResponseServer
 from .stream_router import StreamRouter
+from .transport import OutcommingTransport
 
 __all__ = [
     "CompatServerConfig",
     "ManagedResponseServer",
     "ResponseServer",
+    "OutcommingTransport",
     "launch_chat_completion_compat_server",
     "run_server",
     "StreamRouter",

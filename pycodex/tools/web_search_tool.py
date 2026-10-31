@@ -16,6 +16,7 @@ from .base_tool import BaseTool, ToolContext
 
 class WebSearchTool(BaseTool):
     name = "web_search"
+    exec_only = False
     description = ""
     tool_type = "web_search"
     options = {

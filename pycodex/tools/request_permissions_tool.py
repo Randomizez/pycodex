@@ -52,6 +52,7 @@ REQUEST_PERMISSION_PROFILE_SCHEMA = {
 
 
 class RequestPermissionsTool(BaseTool):
+    exec_only = False
     name = "request_permissions"
     description = (
         "Request additional filesystem or network permissions from the user "

@@ -13,9 +13,10 @@ from PIL import Image
 from starlette.testclient import TestClient
 
 import workspace_server.app as workspace_app
+import workspace_server.routes as workspace_routes
+from pycodex.bootstrap import ModelBootstrapResult
 from pycodex import AssistantMessage, ModelResponse
-from pycodex.bootstrap import get_tools
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_tools
 from test_workspace_server import make_session, wait_snapshot
 from workspace_server import (
     WorkspaceDefinition,
@@ -198,6 +199,30 @@ def test_native_diff_paths_keep_parent_components_and_encoded_separators(tmp_pat
     literal = opener.open("diff:old%2E%2Efile.py..../new.py#L1")
     assert literal["documents"][0]["text"] == "literal dots\n"
     assert literal["title"] == "old..file.py <-> ../new.py"
+
+
+@pytest.mark.parametrize("left_absolute,right_absolute", [
+    (True, True), (False, True), (True, False),
+])
+def test_native_diff_absolute_paths_reuse_relative_comparison(
+    tmp_path, left_absolute, right_absolute
+):
+    left = tmp_path / "old.py"
+    right = tmp_path / "new.py"
+    left.write_text("old\n", encoding="utf-8")
+    right.write_text("new\n", encoding="utf-8")
+    views = WorkspaceViewStore()
+    opener = WorkspaceViewOpener(views, tmp_path)
+    relative = opener.open("diff:old.py..new.py")
+    href = "diff:{0}..{1}#R1".format(
+        left if left_absolute else left.name,
+        right if right_absolute else right.name,
+    )
+    selected = opener.open(href)
+    assert selected["id"] == relative["id"]
+    assert len(views.list_views()) == 1
+    assert [document["text"] for document in selected["documents"]] == ["old\n", "new\n"]
+    assert selected["selection"] == {"document": 1, "line": 1}
 
 
 def test_windows_drive_links_keep_the_drive_and_line(tmp_path):
@@ -831,14 +856,14 @@ def test_opening_view_does_not_block_session_polling(tmp_path, monkeypatch, mult
         prefix = ""
     entered = threading.Event()
     release = threading.Event()
-    original = workspace_app._open_view_response
+    original = workspace_routes._open_view_response
 
     def blocked_open(*args):
         entered.set()
         assert release.wait(5), "view operation was not released"
         return original(*args)
 
-    monkeypatch.setattr(workspace_app, "_open_view_response", blocked_open)
+    monkeypatch.setattr(workspace_routes, "_open_view_response", blocked_open)
     with TestClient(app) as browser, ThreadPoolExecutor(max_workers=2) as executor:
         opened = executor.submit(
             browser.post, prefix + "/api/views/open", json={"href": "A.py"}
@@ -855,18 +880,18 @@ def test_opening_view_does_not_block_session_polling(tmp_path, monkeypatch, mult
 
 
 def test_view_asset_compression_cache_and_revalidation(tmp_path, monkeypatch):
-    monkeypatch.setattr(workspace_app, "__file__", str(tmp_path / "app.py"))
+    monkeypatch.setattr(workspace_routes, "__file__", str(tmp_path / "routes.py"))
     source = tmp_path / "editor.mjs"
     original = b"export const source = 'original';\n" * 100
     source.write_bytes(original)
     compressions = []
-    compress = workspace_app.gzip.compress
+    compress = workspace_routes.gzip.compress
 
     def tracked_compress(body, compresslevel):
         compressions.append(body)
         return compress(body, compresslevel)
 
-    monkeypatch.setattr(workspace_app.gzip, "compress", tracked_compress)
+    monkeypatch.setattr(workspace_routes.gzip, "compress", tracked_compress)
     app = create_app(make_session, None, work_dir=tmp_path)
     with TestClient(app) as browser:
         path = "/assets/editor.mjs"
@@ -937,7 +962,7 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
     (target / "A.py").write_text("source body\n", encoding="utf-8")
     reply = "[Source](A.py:1)"
     model = ScriptedModelClient([ModelResponse([AssistantMessage(reply)])])
-    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: model)
+    monkeypatch.setattr("workspace_server.app.build_model", lambda config, **kwargs: ModelBootstrapResult(model))
     args = build_parser().parse_args(["--config", str(config), "--toolset"] + toolset)
     entry = _build_workspace_entry(
         WorkspaceDefinition("first", tmp_path / "board", tmp_path), args
@@ -967,7 +992,7 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
         assert opened["view"]["documents"][0]["text"] == "source body\n"
         assert browser.get("/w/first/api/session").json()["snapshot"] == before
         assert len(model.prompts) == 1
-    assert "workspace_display" not in get_tools(toolset=["apply_patch"])
+    assert "workspace_display" not in make_tools(toolset=["apply_patch"])
     assert len(WorkspaceViewStore(tmp_path / "board.pycodex-views.json").list_views()) == 1
 
 
@@ -983,8 +1008,9 @@ def test_content_tab_controller():
 def test_page_imports_match_shipped_module():
     workspace = Path(__file__).parents[1] / "workspace_server"
     # Canvas must not load Monaco's multi-megabyte code or stylesheet.
-    assert (workspace / "content_views.mjs").stat().st_size < 30000
-    assert (workspace / "content_views.css").stat().st_size < 5000
+    # Include the live transcript controller while keeping Monaco lazy-loaded.
+    assert (workspace / "content_views.mjs").stat().st_size < 50000
+    assert (workspace / "content_views.css").stat().st_size < 8000
     page = (workspace / "workspace.html").read_text(encoding="utf-8")
     imports = re.findall(
         r'^\s*import (\{[^\n]+\}) from "\./assets/content_views\.mjs";',

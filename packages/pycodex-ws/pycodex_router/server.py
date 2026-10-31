@@ -15,15 +15,15 @@ from starlette.requests import HTTPConnection
 from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect, WebSocketState
-from pycodex.portable.client import _base58_encode
+from pycodex.portable.protocol import base58_encode
 from pycodex.utils.session_persist import resolve_codex_home
-from workspace_server.app import (
-    _auth_cookie_matches,
-    _install_auth,
-    _json_object_body,
+from pycodex_ws.server_support import (
+    auth_cookie_matches,
+    install_auth,
+    json_object_body,
     parse_listen,
 )
-from workspace_server.workspaces import normalize_workspace_id
+from pycodex_ws.workspace_config import normalize_workspace_id
 
 from .browser import BrowserAccess, require_login
 from .protocol import (
@@ -52,7 +52,7 @@ def load_registration_key(path):
     except FileExistsError:
         value = path.read_bytes().strip()
     else:
-        value = _base58_encode(os.urandom(16)).encode("ascii")
+        value = base58_encode(os.urandom(16)).encode("ascii")
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(value + b"\n")
     if not re.fullmatch(b"[1-9A-HJ-NP-Za-km-z]{1,22}", value):
@@ -162,7 +162,7 @@ class Router:
         self.api_url = normalize_api_url(api_url) if api_url is not None else None
         self.api_port = api_port
         self.registration_key = (
-            _base58_encode(os.urandom(16))
+            base58_encode(os.urandom(16))
             if registration_key is None
             else registration_key
         )
@@ -208,11 +208,11 @@ class Router:
         self.aliases = aliases
 
     async def reorder_devices(self, request):
-        if not self.browser_token or not _auth_cookie_matches(
+        if not self.browser_token or not auth_cookie_matches(
             self.browser_token, request.cookies.get("pycodex_router_auth")
         ):
             raise HTTPException(401, "Authentication required.")
-        payload = await _json_object_body(request, max_bytes=64 * 1024)
+        payload = await json_object_body(request, max_bytes=64 * 1024)
         order = payload.get("order")
         if (
             not isinstance(order, list)
@@ -235,14 +235,14 @@ class Router:
         return JSONResponse({"order": order})
 
     async def rename_device(self, request):
-        if not self.browser_token or not _auth_cookie_matches(
+        if not self.browser_token or not auth_cookie_matches(
             self.browser_token, request.cookies.get("pycodex_router_auth")
         ):
             raise HTTPException(401, "Authentication required.")
         node_id = request.path_params["node_id"]
         if node_id not in self.nodes:
             raise HTTPException(404, "Device is not connected.")
-        payload = await _json_object_body(request)
+        payload = await json_object_body(request)
         try:
             alias = normalize_alias(payload.get("alias"))
         except ValueError as exc:
@@ -407,7 +407,7 @@ class Router:
         agent_access = trusted_agent_request(scope)
         if blocked or not (
             agent_access
-            or _auth_cookie_matches(
+            or auth_cookie_matches(
                 self.browser_token, connection.cookies.get("pycodex_router_auth")
             )
         ):
@@ -535,7 +535,7 @@ def create_app(
         )
 
     async def registration_key_info(request):
-        if not router.browser_token or not _auth_cookie_matches(
+        if not router.browser_token or not auth_cookie_matches(
             router.browser_token, request.cookies.get("pycodex_router_auth")
         ):
             return JSONResponse({"error": "authentication required"}, status_code=401)
@@ -553,7 +553,7 @@ def create_app(
             Route("/api/nodes/{node_id}/alias", router.rename_device, methods=["POST"]),
         ]
     )
-    router.browser_token = _install_auth(
+    router.browser_token = install_auth(
         web,
         password,
         cookie_name="pycodex_router_auth",

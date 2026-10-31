@@ -57,20 +57,27 @@ boundaries instead of adding another Session wrapper or `SubmissionQueue` alias.
 | Component | Owns |
 | --- | --- |
 | `Agent` | Serial execution, local admission and cooperative stop flags, final shutdown, history, usage, context, rollout, identity and model/tool dependencies |
-| `AgentRuntime` | Frontend interfaces, session commands, normal/steer queues, receipts, title/state snapshots, subscriptions, interactive requests and worker lifecycle |
+| `AgentRuntime` | Frontend interfaces, session commands, enqueue/mailbox/trigger state, receipts, title/state snapshots, subscriptions, interactive requests and worker lifecycle |
 | `ToolRegistry` | Tool instances and their session-local runtime environment |
-| `AgentRuntimeEnvironment` | Plan, sub-agent, user-input and permissions services |
-| `SubAgentManager` | Child runtimes, terminal event status and status waiters; each runtime owns its worker |
+| `AgentRuntimeEnvironment` | Tool resource bindings, lifecycle, background work, goal continuation, plan/input services and restorable manager state |
+| `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, lifecycle observation and recursive close |
 | CLI / web / Feishu | Input transport and event rendering; no command interpretation or direct Agent control |
 
-Construction takes three required arguments:
-`Agent(model_client, tool_registry, context_config)`. `ContextConfig` includes
+`Agent.execution_snapshot()` derives immutable running, stop, usage and session
+facts from current execution state. Runtime shares common snapshot fields while
+preserving distinct session-history and live-state projections. Slash parsing
+is pure; each pending input request owns its question progress and answer mapping.
+
+Construction takes four required arguments:
+`Agent(model_client, tool_registry, context_config, session_id)`. `ContextConfig` includes
 cwd, instruction overrides and extra contextual messages
 as well as configuration-file values. The Agent constructs its own
 `ContextManager` with the client's model identifier, without modifying the
 caller's config. Context managers are never implicitly supplied or shared between
 Agents. Standalone callers use `ContextManager(config)` and load configuration
 through `ContextConfig.from_codex_config`.
+`ContextManager.config` exposes the frozen configuration for child construction;
+model and cwd changes still use the context operations that maintain its caches.
 
 Agent, runtime, tool-manager and workspace-manager construction does not require
 a current event loop. Async locks and conditions are created when their async
@@ -80,26 +87,30 @@ it when the operation ends. This supports constructing objects after
 `asyncio.run()` has closed a loop, or before the eventual execution loop starts,
 including on Python 3.8. Running workers and active resources still belong to
 their execution loop; Web subscription queues are created in the consuming
-loop when `subscribe()` is called. The exec managers use ordinary locks only around
-synchronous data updates, with no `await` inside those sections.
+loop when `subscribe()` is called. Unified exec uses ordinary locks only around
+synchronous data updates, with no `await` inside those sections. Code-mode cells
+and their task ownership belong to the event loop that executes them.
 
-Sub-agent status waits finish cancelling their condition waiter before leaving
-the condition lock on timeout or caller cancellation. Python 3.6's
+Mailbox waits finish cancelling their event waiter on timeout or caller
+cancellation. Python 3.6's
 `asyncio.wait_for()` returns before that cleanup completes, so this path uses
 `asyncio.wait()` with explicit waiter cleanup to keep later notifications usable.
-Only the status waiter is cancelled; child turns continue running.
+Only the waiter is cancelled; child turns continue running.
 The Python 3.6 asyncio compatibility layer also supplies `all_tasks()` with the
 same unfinished-task filtering used by modern Python, including during workspace
 thread cleanup.
 
-There is no collaboration-mode state or prompt injection. CLI and workspace use
-the same context-building path. `request_user_input` retains its declaration but
+There is no collaboration-mode switching state. The model catalog's Default
+developer instructions are retained when present, alongside separate MultiAgentV2
+role and operating-mode blocks. CLI and workspace use the same context-building
+path. `request_user_input` retains its declaration but
 always returns `request_user_input is unavailable in Default mode`; registered
 input handlers do not enable it. The tool has no request-manager dependency.
 The generic runtime input service, sub-agents, `update_plan` and ordinary
 interactive sessions remain available.
-Do not restore a mode enum, mode fields in `ContextConfig` / `ToolContext`, or
-`build_agent`'s removed `session_mode` parameter.
+Do not restore the old collaboration-mode enum or `session_mode` parameter.
+MultiAgentV2's explicit/proactive operating mode is a separate context contract;
+see [Context](CONTEXT.md#multiagentv2-developer-context).
 
 `model_client`, `tool_registry`, `context_manager` and `event_handler` are ordinary
 attributes. `AgentRuntime` holds its Agent and subscribes to events, but the Agent
@@ -115,15 +126,25 @@ CLI / Web / Feishu -> AgentRuntime -> Agent
 VS Code -> workspace_server HTTP -> AgentRuntime
 ```
 
-`pycodex.bootstrap` owns model/tool/Agent/session assembly. It imports neither
-CLI nor Web nor Feishu presentation code. Its `build_runtime(agent)` provides
-core commands. `pycodex_ws.build_runtime(agent)` adds `/link`, `/unlink` and
+`CodexConfig.from_env(config_path, profile)` loads startup settings once and
+provides frozen provider/context configs. `pycodex.bootstrap.build_model(config.provider)`
+returns `ModelBootstrapResult(client, owned_server)` without reading configuration.
+Callers pass `client` to the runtime tree and own the optional server handle;
+`close()` stops only a server created by that build, never an external endpoint.
+CLI and workspace entry points register the owned server's stop at process exit,
+preserving its lifetime across runtime closure. A failed client construction
+releases a server whose ownership could not be returned.
+`pycodex.tools.get_tools` constructs
+a registry with an explicit manager and per-Agent environment.
+`AgentsManager(model_client, context_config, toolset)` constructs and registers
+the root through `create_root_runtime()` and all descendants through the same
+pipeline. `AgentRuntime(agent, agents_manager)` provides core commands.
+`pycodex_ws.register_feishu_commands(runtime)` adds `/link`, `/unlink` and
 connection cleanup for workspace sessions; the Feishu adapter is imported only
 when linking. `/link` first attempts to import the optional `lark_oapi` SDK.
 An import failure reports that the command is unavailable and gives a manual
 installation command, before reading credentials or creating a card or connection.
-Both return the same
-`AgentRuntime`, which can register
+The same `AgentRuntime` can register
 application-specific async handlers with `register_command`.
 
 The `python-codex` distribution owns `pycodex`, `responses_server` and the
@@ -144,11 +165,16 @@ The VS Code extension in `packages/pycodex-ws/extensions/vscode/` is a workspace
 own Node tests and VSIX build, separate from both Python distributions.
 
 Both HTTP services use Starlette and Uvicorn directly, without Pydantic.
+They share authentication, JSON-body parsing and listener address parsing through
+`pycodex_ws.server_support`. Workspace definitions and configuration path handling
+live in `pycodex_ws.workspace_config`; `workspace_server.workspaces` retains its
+public configuration imports and owns the session managers and registry.
+Router imports these shared modules without loading the workspace app.
 Workspace routes parse JSON objects explicitly and return HTTP 422 with a
 `detail` message for invalid bodies or content types. HTTP errors retain their
 JSON `detail`, status and headers. File/Git view operations run in the thread
 pool so they do not block session polling or WebSocket delivery. Startup and
-shutdown continue to start and drain the same runtime managers.
+shutdown continue to start and close the same runtime managers.
 
 Portable AES-256-GCM runs through `pycodex.utils.crypto`, using the bundled pure
 Python subset of pyaes and tlslite-ng. It uses no optional crypto backend or
@@ -161,17 +187,17 @@ See the [vendored source notes](../pycodex/utils/_aes_gcm/README.md).
 Every frontend calls `await runtime.submit_input(text, sender)`. The returned
 `SubmittedInput` carries a submission id, kind and future. Normal text uses
 steer; `/queue <text>` uses the ordinary queue. The backend parses `/help`,
-`/history`, `/title`, `/cd`, `/model`, `/effort`, `/resume`, `/compact` and `/fork`.
+`/history`, `/title`, `/cd`, `/model`, `/effort`, `/resume` and `/compact`.
+The session `/fork` command is removed and returns an unknown-command error.
 `/cd` reports the session directory; `/cd <directory>` resolves a directory
 against the current one (with `~` expansion) and requires idle, accepting state.
 It updates the Agent's context and broadcasts `cwd`, preserving the latest usage
 so the next turn can still trigger auto-compaction. Each tool invocation receives
 the current directory as the required `ToolContext.cwd`; existing exec processes and code cells
 keep their original directory. New subagents inherit their parent's current
-directory. No process-wide `chdir` is used. `/resume` and `/fork` retain the
-current directory.
-Configure the initial directory once in `ContextConfig(cwd=...)` or
-`build_agent(cwd=...)`. Tool constructors, `get_tools` and `get_subagent_tools`
+directory. No process-wide `chdir` is used. `/resume` retains the current directory.
+Configure the initial directory once in `ContextConfig(cwd=...)`.
+Tool constructors and `get_tools`
 do not store or accept a default directory. Standalone tool calls supply
 `ToolContext(turn_id, history, cwd)`, where `cwd` is an absolute `Path`;
 `UnifiedExecManager.exec_command(cmd, cwd, ...)` likewise takes its directory
@@ -184,7 +210,7 @@ metadata-only empty sessions. Ordinary recorded sessions use UUIDv7 identities
 and append to `CODEX_HOME/sessions/.../rollout-*.jsonl`.
 Each queued request is one private record of submission id, turn id, texts and
 futures. The unused public `Submission` / `UserTurnOp` wrappers are removed;
-callers submit text through `submit_input` or `enqueue_user_turn`.
+callers submit frontend text through `submit_input`, or independent turns through `enqueue`.
 The workspace keeps queued submissions out of its displayed conversation.
 `TurnStartedEvent` adds the actual user texts in execution order, including
 coalesced steer inputs; enqueue admission alone does not create a user block.
@@ -243,7 +269,7 @@ chat's draft. All opened entries retain live status while the
 sidebar is visible; hiding it stops observation without closing sessions.
 Model changes use typed `/model` commands; the model label is read-only.
 Closing an entry uses the existing session DELETE endpoint and waits for normal
-backend draining before removing the entry. HTTP snapshot polling uses the
+backend stop and cleanup before removing the entry. HTTP snapshot polling uses the
 existing Web projection. In remote workspaces, the extension host starts Python
 and makes HTTP requests on the remote machine; the webview only exchanges
 messages with the extension host.
@@ -260,8 +286,9 @@ crash can leave the temporary files behind. The `pycodex-ws` CLI always
 shuts down on stdin EOF. Stdin stays open for the backend's lifetime.
 EOF on folder removal, deactivation,
 or extension-host death starts normal server shutdown, including when EOF arrives
-before startup finishes. Accepted turns and queues drain through existing Runtime
-closure; no turn timeout or forced cancellation is added. Deactivation waits for
+before startup finishes. Runtime closure interrupts pending turns and stops
+active turns cooperatively across each session tree; no turn timeout or forced
+cancellation is added. Deactivation waits for
 all owned processes to exit. A temporary remote disconnection leaves sessions
 running if their extension host remains alive.
 Other CLI launchers must also keep stdin open; closed stdin (including
@@ -307,8 +334,9 @@ contents or submissions. They wrap inside the composer, stay hidden behind text
 or context-token drafts, and leave the input's accessible model label unchanged.
 Keep each hint short and self-contained; do not split an instruction across
 successive hints. The list covers commands, frontend customization, workspace sharing,
-inter-session collaboration and optional features present in the packaged
-catalog; optional feature hints use “在设置中添加：…” to indicate how to add them.
+the built-in Agent tree, opening live transcripts and optional features present
+in the packaged catalog, including clock tick dividers. Optional feature hints
+use “在设置中添加：…” to indicate how to add them.
 
 Status dots, activity spinners and thinking borders use the same 1.2-second
 breathing cycle and easing. The workspace, workspace list and router set these
@@ -360,6 +388,14 @@ limit and maximum context length (the config override or model metadata value,
 before effective-window scaling). A click pins the details; another click,
 an outside click or Escape dismisses them. With auto-compaction disabled, the
 ring instead uses the maximum context length and the details say `Off`.
+The details also show the live Agent tree and an `n running · m failed` count
+across the root and all retained descendants. Each name shows `for x min`,
+the current or most recent turn's elapsed time in minutes to one decimal place.
+Runtime records turn start and end using a monotonic clock; the duration freezes
+on completion, failure or interruption and resets when another turn starts.
+Before the first turn it is zero. Errored rows show the error from their
+status in red, with wrapping and the full text available in a tooltip, even
+when the Agent has an earlier assistant message.
 After compaction or history restore, current usage is unknown until the next
 token report; the ring resets and the details show that usage is pending.
 Queue hints use neutral backgrounds and running status uses a small activity dot.
@@ -409,10 +445,11 @@ serialization omits it from Responses input and new rollout response items.
 Older rollout entries can still load that field, but replay never sends it to
 the API.
 
-`start()` is idempotent and owns the one queue worker. `close()` stops admission,
-resolves waiting input, drains turns and child sessions, and runs injected
-connection cleanup; it never cancels an Agent turn. Detach alone does not close
-the backend. The CLI process and workspace session manager close sessions they
+`start()` is idempotent and owns the one queue worker. `close()` stops admission
+across its Runtime subtree, interrupts pending turns, requests cooperative stop
+for active turns, resolves waiting input, and runs injected connection cleanup.
+It never cancels an Agent Task or an issued model/tool operation. Detach alone
+does not close the backend. The CLI process and workspace session manager close sessions they
 own; unlinking a Feishu card only detaches that frontend. Web submits directly
 to the backend, including across its worker-thread boundary: it does not run a
 CLI shell or maintain an extra prompt queue.
@@ -429,28 +466,28 @@ configuration. Restore uses that selection even if the launch default changed.
 Legacy tabs without this field use the current launch default. Profile names
 resolve against the current config; the state file does not copy configuration
 or credentials. A removed profile fails restoration instead of silently changing
-the session's provider. Fork and resume retain the tab's profile.
-Once a fork's first turn or successful compact creates its rollout, the saved tab
-points to that file, including when the model subsequently fails. Before the
-file exists, the tab stores the recorded ancestor's path with an explicit
-`fork: true` marker. Restart resumes that source and calls `runtime.fork()` to
-allocate a fresh identity and lazy destination; further work never appends to
-the source. Repeated pending forks retain the same recorded ancestor. An empty
-titled tab saves just its title until it has a recording. These are explicit
-restore states: an invalid saved source path still raises an error and closes
-the partially created session.
+the session's provider. Resume retains the tab's profile.
+Saved tabs point only to a successfully recorded or resumed rollout. An empty
+titled tab saves its title with an empty rollout path. Legacy pending-fork
+entries are rejected explicitly; startup leaves the state file intact.
+An invalid saved source path raises an error and closes the partially created
+session. Only root sessions are restored; descendant runtimes remain in memory.
 `Agent.recorded_session_file_path` and the snapshot's `recorded_rollout_path`
 identify a successfully written or explicitly resumed recording. A lazy
 destination has no recorded path yet. The runtime broadcasts a `recording`
 state change after the first successful write; an unrelated file at the
 destination does not count as that write.
 The workspace manager keeps its persistence subscriber attached while sessions
-drain during close, then waits for the final events before releasing its state.
+stop during close, then waits for the final events before releasing its state.
 
 The queue has no separate public `shutdown()` or worker-start entry point.
 Do not restore `run_forever()`, `begin_shutdown` or a separate `draining` state.
-`close()` switches off `accepts_input` and wakes the worker. The worker exits when
-the queues are empty; there is no special shutdown submission. Its result carries
+`close()` asks `AgentsManager` to signal every Runtime in the subtree before
+awaiting any of them. Each Runtime switches off `accepts_input`, calls
+`stop_asap()`, clears its enqueue/mailbox queues and pending trigger, resolves
+discarded submission futures with `SubmissionInterrupted`, and wakes its worker.
+The current submission reaches its cooperative stop boundary before cleanup;
+there is no special shutdown submission. The worker's result carries
 cleanup errors for concurrent and repeated close callers. Closing also works
 before `start()`. A cancelled close caller does not cancel the worker.
 Cleanup visits every child and connection handler even if one fails; the first
@@ -460,8 +497,9 @@ prompt, and calls `runtime.close()`. The prompt toolkit
 `c-c` and `<sigint>` bindings exit with `EOFError`, including on version 3.0.36
 which has no `interrupt_exception` constructor parameter, so an input task cannot
 leak `KeyboardInterrupt` into the event-loop runner. One Ctrl+C initiates normal exit;
-the admission event renders a `[closing]` notice while accepted work and cleanup
-finish. It does not interrupt model/tool calls or bypass their completion.
+the admission event renders a `[closing]` notice while active turns stop and
+cleanup finishes. Pending turns do not start. Issued model/tool operations finish
+and persist their results before the turn stops.
 While closing, another Ctrl+C immediately terminates the CLI process with status
 130. This also works after Ctrl+D starts closing. The CLI
 installs a SIGINT handler for its interactive session and reinstalls it after
@@ -471,7 +509,7 @@ Normal completion and cleanup errors restore the
 original handler. Forced exit happens at the process boundary, without cancelling
 the turn or re-entering asyncio shutdown waits. It skips remaining cleanup and
 does not guarantee termination of external tool processes. Runtime close itself
-still waits for accepted work.
+still waits for issued operations and cleanup.
 The prompt uses `set_exception_handler=False` so prompt_toolkit does not replace
 the event loop's exception handler with its blocking "Press ENTER to continue"
 screen. Background notification failures (including provider rate limits) remain
@@ -480,8 +518,8 @@ The CLI still detaches its view on cleanup
 failure, and the Web adapter stops and joins its thread after session cleanup,
 including on failure; startup failure closes the partially started session.
 
-Direct Agent callers can use `ask`, `run_turn` and idle-only background hooks
-without a submission queue.
+Direct Agent callers can use `ask` and `run_turn` without a submission queue.
+Exec and clock wake-ups require the environment's explicit Runtime callbacks.
 This does not make arbitrary dependency replacement a supported mid-turn
 operation. `history` remains an immutable snapshot; model-name and admission
 properties still derive their values from the owning component.
@@ -490,8 +528,8 @@ properties still derive their values from the owning component.
 
 `session_file_path=None` is the default and means no recorder: history stays in
 memory. Passing a path creates an internal recorder. Session identity is
-independent of recording; the Agent allocates a UUIDv7 id unless one is supplied.
-`build_agent` supplies the id and default recording path for ordinary frontend
+independent of recording; callers supply the required session id.
+`AgentsManager` supplies a UUIDv7 id and default recording path for ordinary frontend
 sessions, using the configured Codex home. Sub-agent construction leaves the path
 as `None`, including for nested children and forked context.
 
@@ -507,10 +545,32 @@ before the first write changes what gets recorded.
 The recorder opens and closes the file for each append, so there is no persistent
 file handle requiring another shutdown task.
 
+Recorded Agents save the environment's restorable manager state alongside the
+rollout in `<rollout-path>.state.json`. The environment aggregates manager-owned
+data; tools have no persistence interface. The current version records the
+clock's `period_m` (`null` disables it) and optional goal state, not timer Tasks,
+callbacks or deadlines.
+The Agent saves after committing a tool result and before tool shutdown. The
+recorder skips unchanged snapshots and atomically replaces changed snapshots;
+write errors propagate, and final tool cleanup still runs after a save failure.
+Unused lazy recordings and unrecorded Agents, including children, create no
+state file.
+
+Explicit resume reads this small snapshot independently of model history and
+compaction. A missing snapshot starts with the clock disabled; malformed or
+unsupported state fails before replacing the current session. Restoring data
+does not start a timer. Runtime startup, or resume in an already-running Runtime,
+starts a fresh full period after binding callbacks. No-argument resume retains
+the in-memory configuration. Session snapshots count current background work
+from registered resources; attach/history presentation restores `idle: sleeping` for
+an armed clock without requiring another reply. Resuming a session without
+background work clears that status. Keep the snapshot alongside its rollout when
+copying a recorded session; Portable configuration bundles exclude both.
+
 Unrecorded sessions update only in-memory history during turns and compaction.
 Compaction omits the rollout-file reference from the handoff, and runtime
-snapshots expose `rollout_path=None`. Fork preserves whether the session records;
-no-argument resume preserves the current recorder. Explicit `resume(path)` loads
+snapshots expose `rollout_path=None`. No-argument resume preserves the current
+recorder. Explicit `resume(path)` loads
 the selected file and enables recording to that file.
 
 The outer queue remains optional: direct `ask` / `run_turn` calls need no worker.
@@ -527,11 +587,12 @@ Agent cancellation API.
 
 Creating a `run_turn` coroutine does not start work. The host may schedule it,
 but the Agent itself simply executes in its caller's coroutine. Queue submissions
-await `run_turn` directly. `maybe_invoke` returns `False` while busy or closed;
-otherwise it formats the notification, awaits `run_turn`, and returns `True`.
+await `run_turn` directly. `AgentRuntime.maybe_invoke` returns `False` while busy
+or closed; otherwise it formats the notification, starts the worker, delivers a
+message, triggers execution, awaits its receipt and returns `True`.
 Failures propagate to the invoking caller; exec/clock notification sources
 report their own failures. When steer ends a notification turn with
-`TurnInterrupted`, those sources treat it as a normal interruption and do not
+`SubmissionInterrupted`, those sources treat it as a normal interruption and do not
 report a notification failure. Runtime still owns the pending user input, and
 the clock waits for the next successful reply before arming again.
 Background events are not queued or cached.
@@ -563,8 +624,17 @@ a stop during pre-turn or follow-up compaction does not count an unsent sample.
 The other stop boundary is after model output and all issued tool results have
 been committed. There is no separate pre-sampling wrapper or stop-check helper.
 
-Steer and ordinary input remain two internal queues. Enqueuing steer calls
-`agent.stop_asap()`. The Agent only records a local stop request: it finishes the
+Runtime exposes four coordination primitives:
+
+- `enqueue(text)` schedules an independent turn and returns `(submission_id, future)`.
+- `message(str_or_agent_message)` queues mailbox input without waking an idle Agent.
+  An active Agent consumes it at the next safe input boundary and samples again.
+- `trigger()` requests execution and merges repeated pending triggers. It returns
+  a receipt tuple, or `None` when execution is already active without a stop request.
+- `stop_asap()` requests a cooperative stop and wakes a pending mailbox wait.
+
+Frontend steer combines stop, message and trigger. The Agent records the stop
+request, finishes the
 in-flight model request and all tool calls already issued in that response,
 persists their results, then emits `TurnInterruptedEvent` and raises
 `TurnInterrupted` before another sample. It also checks after compaction, including
@@ -581,10 +651,14 @@ its result. If more steer arrives during the new execution's pre-turn compact,
 that execution can stop before sampling too; committed inputs remain in history.
 Ordinary `/queue` input does not request a stop.
 
-Direct `run_turn`/`maybe_invoke` callers receive `TurnInterrupted` if a Runtime
-requests a stop. The Agent never consumes pending runtime input or completes
-its futures, even when no worker is running; processing that input requires
-`runtime.start()` (or a draining `close()`). There are no separate
+Direct `run_turn` callers receive `TurnInterrupted` if a Runtime requests a stop.
+Runtime delivers messages through `TurnInputReadyEvent`, including during direct
+Agent execution. This synchronous coordination propagates delivery errors to the
+turn; ordinary event observers report errors to the loop without failing the
+turn. The Agent does not own or complete Runtime receipts; executing
+enqueued or triggered turns requires `runtime.start()`; `close()` discards
+pending turns.
+There are no separate
 input-inserted/submission-interrupted events: presentation uses the actual
 turn-started/interrupted lifecycle and the existing queued-input feedback.
 
@@ -594,24 +668,42 @@ lock. Cross-thread callers must
 schedule operations on that loop rather than mutate the queue directly.
 Worker notification is scheduled after enqueue returns, allowing cross-thread
 submission receipts to be delivered before model execution can block that loop.
+Deferred queue notifications stop once the Agent is shut down, so a worker that
+closes immediately cannot publish updates after its child Runtime is unregistered.
 
 `runtime.is_busy` includes pending submissions, direct Agent work and closing
 resource cleanup. Destructive
-interactive commands such as resume/model/fork/compact use that same state.
-Exec/clock notifications remain Agent-idle-only; they do not create a third queue.
+interactive commands such as resume/model/compact use that same state.
+Exec/clock notifications require an idle Runtime with no queued work.
 
 `Agent.accepts_input` is a local admission flag; `runtime.accepts_input` reads it
-without a reverse Agent-to-Runtime dependency. `runtime.close()` clears it,
-resolves pending questions and drains existing entries. Background invocations
-observe that same flag, while accepted work can still run until final shutdown.
-The worker then waits for the command lock, closes children and connections, and
-calls `Agent.shutdown()`. Tool shutdown hooks run once at that final boundary,
+without a reverse Agent-to-Runtime dependency. `runtime.close()` clears it across
+the subtree, resolves pending questions, discards pending turns and requests
+cooperative stop. New submissions, mailbox messages, triggers and child spawns
+are rejected; late background outputs and child completion notifications do not
+enqueue work in a closing Runtime. `start()` cannot reopen a closing Runtime;
+explicit `resume()` is required after shutdown.
+The worker then waits for accepted command work and the command lock, closes
+children, environment resources and connections, and calls `Agent.shutdown()`.
+Environment shutdown runs once at that final boundary,
 after accepted work can no longer rearm them. Completion comes from the worker,
 not a separate shutdown future. Direct `Agent.shutdown()` disables background
 hooks and rejects new calls without interrupting an active call.
-`Agent.resume()` without a path explicitly reopens it. `close_agent` and workspace close wait
-for accepted work to finish. There is no close timeout that cancels a turn:
-if a request never finishes, close keeps waiting.
+Manager owns the closing child references; only Manager calls
+`Runtime.request_close()` to signal a node after capturing its children. Callers
+close a subtree with `Runtime.close()`. References are captured before any await, so children that
+finish and unregister while their parent is stopping are still awaited and
+their cleanup errors remain visible. Direct children close concurrently, each
+waiting for its current operation and closing its descendants. Closing a child
+only signals that child's subtree. All child closes finish before cleanup errors
+are reported; this removes serial child-cleanup waits without cancelling turns.
+A closed child Runtime is unregistered after publishing `SessionClosedEvent`,
+including when resource cleanup or tool shutdown reports an error. Its task path
+is released. The root stays registered for the session lifecycle;
+`runtime.resume()` without a path reopens a registered Runtime and restarts its environment.
+Runtime and workspace close wait for issued model/tool operations to finish.
+There is no close timeout that cancels a turn: if a request never finishes,
+close keeps waiting.
 
 Sub-agent services observe ordinary Agent lifecycle events. They retain the last
 completed/failed status, but active execution and pending inputs take precedence
@@ -619,6 +711,12 @@ when reporting busy. Direct calls and background invokes produce the same events
 status observers no longer inspect raw Task results.
 
 ### Feishu connection lifecycle
+
+`pycodex_ws.feishu_link.PycodexRuntimeLink` owns Runtime attachment and card
+updates, including the existing 0.5-second flush interval.
+`pycodex_ws.feishu_connection` owns the shared listener, callback routing and
+SDK threads/loops. Links reuse a compatible listener; releasing the last link
+stops it and clears the shared reference.
 
 `lark_oapi.ws.client` creates a module-level asyncio `loop` during import,
 and `Client.start()` always uses it. A `/link` listener owns a thread and loop;
@@ -634,11 +732,15 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 
 `GET api/sessions` returns the session list (including each tab's `profile`),
 the available profile names in `profiles`, and `default_profile`. The CLI
-loads the profile catalog from its Codex config when building each workspace.
+loads the sorted profile catalog from valid adjacent `*.config.toml` files and
+embedded `[profiles.NAME]` tables when building each workspace. Duplicate names
+across the two formats are errors. Provider and context settings share the
+[profile loader](CONTEXT.md#配置读取与-profile).
 `POST api/sessions` creates a session with optional string fields `title` and
 `prompt`, plus an optional `profile` name. Title and prompt default to an empty
 string; requests with no body still create an empty session. An omitted or null
-profile uses the launch `--profile`, or the base config when unset. Unknown
+profile uses the launch `--profile`, then the top-level config `profile`, then
+the base config. Unknown
 names fail before creating a session. The selected profile is passed to both
 model and Agent construction on the session's worker thread. CLI overrides
 continue to apply. A nonempty prompt is submitted unchanged through the Runtime.
@@ -658,7 +760,21 @@ The [workspace resource API](WORKSPACE_API.md) adds lightweight Runtime state,
 model catalogs, asynchronous commands/results, paginated history, descendant
 Agent and background-work inventories, and cursored WS replay. Queries run on
 the owning session loop; rollout scans run in a thread pool. WS state and
-cursors are captured together in `WebSessionView`.
+cursors are captured together in `WebSessionView`, implemented in
+`workspace_server.session_view` alongside its event JSON encoding. The view keeps
+one lock for state projection, cursor allocation, subscription and publication;
+its existing `workspace_server` and `workspace_server.app` imports remain available.
+`workspace_server.sessions` contains the ordinary and threaded Session adapters.
+Each ordinary Session owns one submission store shared by its observed Runtime
+tree; it retains pending receipts and the last 500 completed results. The threaded
+adapter dispatches operations to its worker loop and drains Runtime before stopping
+that loop. Session imports and method signatures remain available through the
+package and app entry points.
+`workspace_server.routes` constructs the shared route set for single and multi
+workspaces from an explicit manager/board/directory context. HTTP responses,
+WebSocket delivery and packaged resource handling live with those routes;
+`app` composes the services, workspace registry and CLI. Both URL families retain
+their route order, methods, validation, response fields and resource headers.
 
 `AgentRuntime.submit_input(..., wait_for_command=False)` returns an admitted
 command receipt without waiting for completion. Runtime owns these command
@@ -731,6 +847,9 @@ into a coherent frontend, without requiring a plugin registry or runtime
 composition system.
 The packaged `optional_features/README.md` is a Markdown feature catalog opened in the
 existing view area; users choose features by name or ID in ordinary chat text.
+Agent status is built into the context ring popover; clicking a root or child
+Agent opens its live transcript tab. The catalog documents these entry points
+alongside the optional features.
 There are no additional selection controls or chat commands. The context links
 the [feature contribution guide](../packages/pycodex-ws/workspace_server/optional_features/CONTRIBUTING.md),
 which defines the target repository, per-feature source layout, README metadata,
@@ -925,6 +1044,7 @@ Use Git-style expressions for comparisons:
 | `[versions](diff:HEAD~1..HEAD:src/app.py)` | Two revisions of the same file |
 | `[rename](diff:HEAD~1:old.py..HEAD:new.py)` | Two Git files with different paths |
 | `[files](diff:old.py..new.py)` | Two local files |
+| `[files](diff:/data/project/old.py../data/project/new.py)` | Two absolute local paths |
 | `[left](diff:HEAD:src/app.py#L12)` | Diff, left line 12 |
 | `[right](diff:HEAD:src/app.py#R42)` | Diff, right line 42 |
 | `[Canvas](workspace://canvas)` | The existing live HTML Canvas |
@@ -943,6 +1063,10 @@ Canvas HTML file path opens a preview tab; adding a line number opens its source
 `workspace://canvas` selects the existing live page. External URLs, `mailto:` links and plain `#anchor` links keep their browser
 behavior. The renderer preserves recognized view destinations through sanitizing
 without permitting executable URL protocols.
+Bare filenames such as `TODO.md` remain text; use `[TODO](TODO.md)` to open them.
+Bare domain names are not automatically linked, so `.md` filenames are not
+mistaken for websites. Explicit Markdown links, URLs with a scheme or `//`
+prefix, and automatic email links still work.
 
 Percent-encode literal special characters in paths: space as `%20`, `#` as `%23`,
 `?` as `%3F`, `%` as `%25`, and a literal colon as `%3A`. For example,
@@ -1083,7 +1207,7 @@ or a tab switch invalidates an older pending request. Ordinary content refreshes
 and manual tab switches do not replay an earlier line request; another click
 can explicitly reveal even the same line again.
 
-Text and image snapshots are limited to 2 MiB each, text to 20,000 lines and raster images to
+Text and image snapshots are limited to 10 MiB each, text to 20,000 lines and raster images to
 20 megapixels. View storage is limited to 64 MiB per workspace; exceeding a
 limit when opening a view is reported in the browser and does not create or replace a tab.
 Local PDFs stream directly and are not subject to the text/image size limit.
@@ -1093,9 +1217,11 @@ deleted side of a diff becomes empty and is marked missing. Recreating or fixing
 the file resumes updates. A storage write or total-budget failure is reported
 to the browser and leaves the previous persisted views intact.
 
-`packages/pycodex-ws/workspace_server/workspace_views.py` owns
-`WorkspaceViewOpener` and `WorkspaceViewStore`.
-It saves open views, explicit file/Git sources, the latest contents, optional
+`workspace_server.view_sources.WorkspaceViewOpener` resolves workspace links and
+Git documents through `WorkspaceViewStore`'s bounded read/decode interface.
+Both classes remain importable from `workspace_server.workspace_views`.
+That module's `WorkspaceViewStore` owns view identity, live-file refresh and
+persistence. It saves open views, explicit file/Git sources, the latest contents, optional
 line targets and the monotonic reveal counter
 atomically in `<state_path>.pycodex-views.json`, separately from
 conversation state. Sources are checked again after a server restart.
@@ -1210,9 +1336,19 @@ Not calling a status executor preserves it; passing `None` explicitly clears it.
 The terminal owns only input/output, locking and refresh scheduling; even spinner
 frame formatting belongs to `EventDisplay`. Shared text/color/summary formatting,
 non-event errors and one-shot/JSON output helpers live in `utils/event_helpers.py`.
+Tool summaries use the pure `summarize_tool_result(call, result)` projection;
+structured exec metadata is displayed from the result object, without parsing
+legacy `Process running...` text. Conversation pairs are projected by
+`utils.history.conversation_history_to_turns`, independently of rollout storage.
 That helper module depends only on the standard library, never events or
 frontends. The compactor's event type import is type-checking-only so loading
 the utils package cannot create an events/utils initialization cycle.
+
+Feishu event projection and request/token caches remain on
+`pycodex_ws.feishu_card.PycodexCard`; `pycodex_ws.feishu_render` builds card JSON
+from that state without changing it. `pycodex_ws.feishu_auth` supplies the shared
+refresh-token file operations and endpoints to the card and OAuth helper.
+The card's API response parsing and OAuth's nested-data handling remain separate.
 
 There is no display-handler mapping, action bus or per-tool event subclass.
 Presentation never mutates an event or its nested data and is not invoked by
@@ -1315,14 +1451,22 @@ restore loose name/description/handler registration, prompt-level
 Function-tool `output_schema` remains local metadata and is omitted on the wire,
 matching upstream's skipped field.
 
-`get_tools()` exposes the following available tools; the interactive exec-mode
-toolset selects a subset:
+`AgentsManager(..., tools_factory=get_tools)` uses the same
+`factory(manager, environment, toolset) -> ToolRegistry` for root and child
+construction. A custom factory reconstructs the requested selection using new
+instances and registers any shared managers with that node's environment.
+Direct `registry.register(tool)` only changes that node; inherited tools must be
+constructible by the shared factory. Child selection is the parent's registered
+tool names, including custom namespaces.
+
+`get_tools(agents_manager, runtime_environment=None, toolset=None)` constructs
+the default tools below. A nonempty selection includes `exec` and `wait`:
 
 ```text
-shell shell_command exec_command write_stdin clock exec wait web_search
-update_plan request_user_input request_permissions spawn_agent send_input
-resume_agent wait_agent close_agent apply_patch grep_files read_file list_dir
-view_image
+exec wait exec_command write_stdin clock request_user_input apply_patch view_image
+create_goal get_goal update_goal
+collaboration.spawn_agent collaboration.send_message collaboration.followup_task
+collaboration.wait_agent collaboration.interrupt_agent collaboration.list_agents
 ```
 
 Except for the documented `clock` extension, each supported tool corresponds
@@ -1331,15 +1475,46 @@ semantics rather than combining different tools' contracts.
 Ordinary function tools and freeform/custom tools such as `apply_patch` share
 the protocol; tool results can carry structured `input_image` content items.
 `web_search` is a provider-native Responses declaration, not a local registry
-execution. `exec` / `wait` run JavaScript in a Node subprocess with `text`,
-`image`, `store`, `load`, `exit`, `notify`, `yield_control` and `tools.<name>(...)`.
-Sub-agent tools share an in-process `SubAgentManager` that drives child
-`AgentRuntime` instances, independently of the host CLI's multi-agent harness.
+execution. `exec` / `wait` run Python in the host process with top-level `await`,
+`text`, `print`, `image`, `audio`, `generated_image`, `store`, `load`, `exit`,
+`notify`, `yield_control` and `tools.<name>(...)`.
+MultiAgentV2 tools share the tree's in-process `AgentsManager`. Spawn takes
+`task_name`, `message` and optional `fork_turns`, `model`, `reasoning_effort`;
+it returns the canonical `task_name`. Relative targets are resolved below the
+caller, and canonical paths or Agent IDs address nodes elsewhere in the tree.
+Children inherit their parent's visible toolset, model and current directory.
+Each owns a new tool environment and model client.
+
+`ContextConfig.multi_agent_max_concurrency` limits open Agents across the whole
+tree, including the root. The default is 16; the corresponding TOML setting is
+`features.multi_agent_v2.max_concurrent_threads_per_session`. Spawn serializes
+capacity checks, reclamation and registration so parallel calls cannot claim the
+same slot. Closing Agents keep their slot until cleanup finishes.
+
+At capacity, spawn closes the least recently used eligible child before creating
+the new one. Creation, message delivery and turn/compaction/command starts update
+recency. A candidate must have completed, failed or been interrupted, with no
+running/queued work, mailbox messages, commands, input request or background tool
+work. Enabled clocks and running `exec` cells also prevent reclamation. The root,
+the caller and nodes with live descendants are excluded: normal close is
+recursive, so capacity reclamation only closes leaves. If no child qualifies,
+spawn fails with a capacity error and leaves existing work running. Cleanup
+errors propagate before a replacement is created.
+
+Capacity reclamation permanently closes and unregisters the child. The node is
+removed from the tree and `list_agents`; Workspace detaches its observer, drops
+its child view and closes subscriptions. Old Agent IDs are no longer queryable,
+and reusing the task name creates a new Agent with a new ID. Messages already
+delivered to the parent remain in its conversation. There is no automatic
+reopening or idle-timeout reclamation.
 
 Unified exec has two separate output bounds: an omitted `max_output_tokens`
 still applies the default `10_000`-token response limit, and unread process
 output retains a bounded `1 MiB` head/tail buffer between polls.
 
+The registry owns the registered catalog, model visibility and `exec_tools()`
+metadata. Namespace qualification and Python identifiers have shared pure rules;
+duplicate Python identifiers fail when the cell catalog is built.
 Tools implement async `BaseTool.run`. The registry converts execution failures
 to `ToolResult` errors. Existing explicitly parallel tool batches remain parallel:
 the Agent waits for every operation in a batch before advancing or propagating
@@ -1356,34 +1531,105 @@ Tools may provide `follow_up_messages(output)`. These hooks receive untruncated
 outputs after all tool results have been committed, so a notification cannot
 split an outstanding call/result group.
 This local hook does not change tool request schemas or result serialization.
+Top-level and nested cell calls both use `ToolRegistry.execute`, including error
+conversion and accounting. Nested calls return their output to the cell without
+adding follow-up messages; outer Agent batches still own history and follow-up
+delivery.
 
-Sub-agent notifications come from `SubAgentManager`, which queues a status
-snapshot for each terminal event. Before each normal sampling iteration, after
-auto-compaction and before appending a new turn's user messages, the parent
-consumes pending snapshots as `<subagent_notification>` user messages. Tool
-batches finish before this boundary. Each event is delivered once, even if
-successive turns return identical text; repeated `wait_agent` calls do not
-generate additional notifications. Results arriving while the parent is idle
-or producing its final reply wait for the next normal turn, without starting a
-turn automatically. `wait_agent` keeps its existing status result format.
+`AgentsManager` delivers child completion and failure as a native `AgentMessage`
+with message type `FINAL_ANSWER`; interruption only updates status. Each terminal
+event is delivered once, even when successive answers are identical. Runtime
+consumes mailbox items at input boundaries after issued tool batches complete.
+A message arriving during active execution requests a follow-up sample; an idle
+recipient keeps it until execution is triggered.
 
-Tools with background work implement the small `BaseTool.bind_agent`,
-`handle_agent_event`, `shutdown`, and `background_work_count` hooks.
-Exec/clock tools wire their own managers;
-the Agent does not inspect their names, concrete classes, or private attributes.
+`send_message` only delivers a message. `followup_task` also triggers an idle
+non-root recipient; it does not stop active execution. `interrupt_agent` requests
+a cooperative stop and returns `previous_status`, leaving the Agent available.
+It rejects the root and self-targets. `list_agents` reports live task paths and
+statuses, optionally filtered by a path prefix. Closed children are unregistered
+and disappear from both this list and Workspace observation.
+
+`wait_agent` takes only optional integer `timeout_ms` and returns
+`{message, timed_out}` without consuming message content. It wakes on mailbox
+activity or a cooperative stop. The default is 30000 ms; values below 10000 ms
+are clamped with an explanatory message, and values above 3600000 ms are rejected.
+It does not accept IDs or return a status map.
+
+`BaseTool` only provides `spec`, `serialize`, `run` and `follow_up_messages`.
+Factories register shared managers once with
+`environment.register_resource(name, manager, restart=None, close=None, observer=None)`.
+Managers implement `bind(invoke, output, state_changed)`, `shutdown`,
+`set_state_listener`, `background_work_count` and `background_work_snapshot`.
+Optional restart, async cleanup and event callbacks are registered explicitly.
+Environment binds Runtime capabilities without passing a Runtime object to tools;
+binding alone does not retire cells. Runtime construction and resume explicitly
+restart the environment; CodeModeManager retains its generation isolation and
+waits for retired cells during cleanup. `environment.close()` drains registered
+async cleanup; `Agent.shutdown()` accounts and saves state, then stops resources.
+Standalone callers can await environment close as well. Unified exec shutdown
+only disconnects notifications: subprocess survival and output readers retain
+their existing behavior. Goal continuation is requested through the environment.
 Clock countdowns pause on turn/manual-compact start events and rearm on success,
 including successful manual compaction. Terminal events retain the single
 aggregate `background_work_count`.
 
 An exiting exec session can invoke `<exec_command_completed>` through
-`Agent.maybe_invoke` only while that Agent is idle; Runtime must not queue or
-cache the wake-up. `clock` likewise uses `maybe_invoke`, with one period per
+`AgentRuntime.maybe_invoke` only while that Runtime is idle and accepting input;
+busy notifications are dropped. `clock` likewise uses `maybe_invoke`, with one period per
 Agent/session and a timezone-aware ISO 8601 `current_time` captured when the
 timer expires. Starting a turn cancels the pending countdown; a successful
-reply rearms it. `clock(null)` and shutdown cancel it. The aggregate background
-count includes running exec sessions and an enabled clock after a successful
+reply rearms it. `clock(null)` disables the clock; shutdown stops the timer and
+unbinds callbacks while retaining the configured period for restoration.
+The aggregate background count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
-loop.
+loop. Running code-mode `exec` cells also report background work; a completed
+cell finishes after its Python tasks are cleaned up and issued host tools settle.
+
+### Python exec cells
+
+`CodeModeManager` owns each cell's execution task, output events and lifecycle.
+`ExecRuntime` compiles the source into an async function with a fresh namespace
+and runs it on the host event loop. There is no interpreter subprocess, worker
+protocol or per-cell PID. A yielded cell can keep running alongside later cells
+and other Agents. `wait` returns only new output and closes completed cells.
+`notify` sends an additional output through the attached Runtime with the
+original exec call ID.
+
+Plain `print()` in cell code writes to its own output buffer through the cell's
+builtins mapping. `sys.stdout` is never redirected; imported modules' prints,
+explicit writes to stdout/stderr and explicit `print(file=...)` use their usual
+streams. Each cell exposes `cwd` as its captured workspace `Path`; use
+`(cwd / "file").read_text()` for direct file access. Nested tools receive that
+same directory in `ToolContext`. Python's process cwd is not changed: bare
+relative paths resolve against the host cwd.
+
+A task factory shared by active cells on the event loop records descendants
+created through asyncio from owned cell tasks, including `create_task`,
+`ensure_future`, `gather` and `loop.create_task`. It preserves the preceding
+factory and restores it after the last active cell finishes. `set_timeout`
+callbacks run as owned tasks and their timer handles belong to that cell.
+An `exit()` in a timer callback completes its cell successfully. Other callback
+exceptions, including `SystemExit` and `KeyboardInterrupt`, become cell errors
+before reaching the host event loop; this also applies to async callbacks.
+Cleanup cancels and awaits only that cell's Python tasks and timers. Direct
+`asyncio.Task(...)` construction, unmanaged loop callbacks, threads and
+executors require explicit cleanup by the script.
+
+Nested tools execute through the registry in separate host tasks. These tasks
+and their descendants are excluded from cell cancellation. Cell completion,
+`wait(terminate=True)` and manager close wait for already issued tool calls.
+Cancelling an exec/wait observer does not cancel the cell. Shutdown requests
+stop; async close waits for cleanup. Restart retires old cells and gives the new
+session a fresh store; retired cells cannot publish output or mutate that store.
+
+`store/load` share JSON-serializable values across cells of one manager, with
+copy semantics; ordinary variables and definitions remain cell-local. Imported
+modules, environment variables and other process state are shared with the host.
+This is intentionally not V8-style isolation. Stop is cooperative cancellation:
+blocking I/O and non-yielding CPU loops block the event loop and cannot be
+independently terminated. Use async operations for orchestration and
+`tools.exec_command` for blocking work.
 
 Host session workers, notification watchers, timer cancellation and I/O cleanup
 still use asyncio where appropriate. Those resource mechanisms are not per-turn
@@ -1393,11 +1639,16 @@ Use a fresh registry per Agent. To supply runtime services explicitly:
 
 ```python
 environment = AgentRuntimeEnvironment()
-tools = get_tools(environment)
-agent = Agent(client, tools, ContextConfig())
+config = ContextConfig.from_codex_config(config_path)
+manager = AgentsManager(client, config)
+tools = get_tools(manager, environment)
+agent = Agent(client, tools, config, session_id=uuid7_string())
 assert agent.tool_registry.runtime_environment is environment
 ```
 
+For an operational tree, use `manager.create_root_runtime()` so the Agent is
+registered before tools can address it. The example above only demonstrates
+explicit standalone dependency construction.
 There is no process-global default runtime environment. The former global getter
 is removed; the Agent's environment comes from its registry, not a second
 constructor argument or forwarding Agent property.
@@ -1406,21 +1657,33 @@ but child agents receive separate context managers and their own metadata cache.
 
 ## Model and history contracts
 
-Keep `UserMessage`, `AssistantMessage`, `ToolCall` and `ToolResult` as the basic
+Keep `UserMessage`, `AgentMessage`, `AssistantMessage`, `ToolCall` and `ToolResult` as the basic
 conversation contracts when extending the richer item/event model. The
 test-only `ScriptedModelClient` belongs in `tests/fakes.py`, not the runtime
 package; the model boundary must remain replaceable and testable.
 Construction and first-write requirements are in
-[Recording lifecycle](#recording-lifecycle); they also apply to fork and resume.
+[Recording lifecycle](#recording-lifecycle); they also apply to child context
+inheritance and resume.
 
-`ModelClient` requires both a read-only `model: str` identifier and async
-`complete`. `Agent.model_name` reads `client.model` directly; test clients must
-provide that property too. There is no missing-property fallback or second
+`ModelClient` requires `model`, `reasoning_effort`, `recording_metadata`, async `complete`, and
+`with_overrides` for child construction. `Agent.model_name` reads `client.model`
+directly; test clients must supply the properties used by their integration.
+Recording metadata is `ModelRecordingMetadata(originator, provider_name)`;
+Agent does not inspect provider internals. Recorder's `recorded_path` reports
+whether its lazy initial write has completed.
+There is no missing-property fallback or second
 model-name field. `ModelResponse` checks its item
 types at construction instead of allowing the loop to silently discard invalid
-internal values. Clients used for interactive model controls additionally expose
-`ModelControl`. Switching through `Agent.set_model` updates both the client and
+internal values. Runtime/Manager clients implement `ModelControl`, which extends
+`ModelClient` with writable model/effort, endpoint and model listing.
+Switching through `Agent.set_model` updates both the client and
 context; `ResponsesModelClient.model` uses the same provider config as metadata.
+
+Agent passes `Prompt.session_id` explicitly for sampling and all compaction
+requests. Headers, cache keys, stable prefix IDs and request diagnostics use that
+identity through retry, fallback and resume. An omitted Prompt session ID uses
+the client's constructor default for standalone requests; Agent never rewrites
+that client field. Tool serialization and response-item decoding use pure codecs.
 
 The CLI startup header reads the client's model, effective reasoning effort and
 display-safe `endpoint` directly. `endpoint` is the active API base URL with
@@ -1510,24 +1773,25 @@ assistant/reasoning items and subsequent user turns. Repeated resume and append
 operations therefore retain later history even while the incomplete call remains
 in the source file.
 
-Without a path, `resume()` re-enables the same in-memory Agent and rebinds tool
-callbacks without reading or writing a file or changing history, session
-identity, recorder or usage. It returns `None`. Sub-agent services use this form
-after close to reopen their in-memory history. These forms are selected by the
+Without a path, `resume()` re-enables the same Agent without reading or writing
+a file or changing history, session identity, recorder or usage. It returns
+`None`. `runtime.resume()` additionally rebinds background tool callbacks.
+These forms are selected by the
 argument, not by whether a file happens to exist;
 an invalid explicit path never falls back to reopening the in-memory session.
 There is no separate `reopen()` method.
-Construction, `fork()` and `resume(path)` share one private recorder setup path
+Construction and `resume(path)` share one private recorder setup path
 with explicit create/resume selection. It constructs the recorder before
 updating session identity and does not change history, usage or admission.
-`fork()` preserves history, usage and recording behavior. Recorded sessions
-allocate a new path, with the file created only on first write; in-memory
-sessions keep `session_file_path=None`.
+`agent_id` and `agent_path` stay fixed when `session_id` changes on resume.
+The session `fork()` APIs are removed. Child `fork_turns="all"` uses
+`ForkContext` to inherit history and preserve the fixed-context prefix;
+see [fork context](CONTEXT.md#子-agent-的-fork-context).
 The old recorder constructor argument and
 `restore_session`/`set_rollout_recorder`/`replace_history` interfaces are removed.
 Recording is controlled solely by the path argument, never a separate enable
 flag or the provider's `_openai_subagent` marker. In-memory child turns,
-compaction, fork and no-argument resume must never write a rollout; filtering
+compaction and no-argument resume must never write a rollout; filtering
 records after a write is not a substitute.
 `history` is read-only; `set_model` remains an operation with consistency checks
 rather than a mechanical setter wrapper.

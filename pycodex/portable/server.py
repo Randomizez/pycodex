@@ -8,11 +8,11 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 from ..utils.compat import ThreadingHTTPServer
-from .client import (
+from .protocol import (
     DEFAULT_STORAGE_SERVER,
     HEALTHCHECK_PATH,
     STORAGE_API_PREFIX,
-    _call_id_from_payload,
+    call_id_from_payload,
 )
 
 
@@ -120,7 +120,7 @@ class CodexStorageServer:
                 if expected_sha256 and expected_sha256 != sha256:
                     self._send_json(400, {"error": "checksum mismatch"})
                     return
-                call_id = _call_id_from_payload(payload)
+                call_id = call_id_from_payload(payload)
                 object_path = server._object_path(call_id)
                 if not object_path.is_file():
                     object_path.write_bytes(payload)

@@ -2,11 +2,9 @@
 
 from importlib import import_module
 
-from pycodex.bootstrap import build_runtime as build_core_runtime
 
-
-def build_runtime(agent):
-    runtime = build_core_runtime(agent)
+def register_feishu_commands(runtime):
+    """Attach Feishu commands and connection cleanup to an existing runtime."""
     link = None
 
     async def unlink(argument):
@@ -52,4 +50,3 @@ def build_runtime(agent):
     runtime.register_command("link", connect)
     runtime.register_command("unlink", unlink)
     runtime.add_close_handler(close_link)
-    return runtime

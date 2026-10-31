@@ -11,6 +11,7 @@ import pytest
 from starlette.applications import Starlette
 from starlette.testclient import TestClient
 
+from pycodex.bootstrap import ModelBootstrapResult
 from tests.fakes import ScriptedModelClient
 from workspace_server.app import build_parser, run_serve_cli
 from workspace_server.owned_process import run_owned_server
@@ -24,7 +25,7 @@ def test_cli_reads_config_from_a_file_and_uses_stdin_ownership_by_default(
     project.mkdir()
     model_config = tmp_path / "model.toml"
     model_config.write_text('model = "scripted"\n', encoding="utf-8")
-    monkeypatch.setattr("workspace_server.app.build_model", lambda **kwargs: ScriptedModelClient([]))
+    monkeypatch.setattr("workspace_server.app.build_model", lambda config, **kwargs: ModelBootstrapResult(ScriptedModelClient([])))
     workspace = {"id": "vscode", "work_dir": "项目"}
     workspace.update(
         {"board": False} if legacy else

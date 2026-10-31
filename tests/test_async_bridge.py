@@ -49,12 +49,14 @@ def test_run_async_with_py36_get_running_loop_polyfill(monkeypatch) -> "None":
 def test_sync_construction_uses_the_execution_loop(tmp_path, construction_loop):
     source = textwrap.dedent("""
         import asyncio
+        import os
         import sys
+        from pathlib import Path
         from pycodex import (
-            Agent, AgentRuntime, AssistantMessage, CodeModeManager,
+            AgentsManager, AssistantMessage, CodeModeManager,
             ContextConfig, ModelResponse, ToolRegistry, UnifiedExecManager,
         )
-        from tests.fakes import ScriptedModelClient
+        from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 
         def main():
             asyncio.run(asyncio.sleep(0))
@@ -69,7 +71,11 @@ def test_sync_construction_uses_the_execution_loop(tmp_path, construction_loop):
                 model = ScriptedModelClient([
                     ModelResponse([AssistantMessage("parent done")]),
                 ])
-                runtime = AgentRuntime(Agent(model, tools, ContextConfig()))
+                manager = AgentsManager(
+                    model, ContextConfig(codex_home=Path(os.environ["CODEX_HOME"])),
+                    toolset=[],
+                )
+                runtime = manager.create_root_runtime()
             finally:
                 asyncio.set_event_loop(None)
                 if old_loop is not None:
@@ -77,41 +83,37 @@ def test_sync_construction_uses_the_execution_loop(tmp_path, construction_loop):
 
             async def exercise():
                 release_child = asyncio.Event()
-                children = tools.runtime_environment.subagent_manager
-
                 async def respond(prompt, call_count):
                     await release_child.wait()
                     return ModelResponse([AssistantMessage("child done")])
 
-                def build_child(model, effort, history, session_id):
-                    return AgentRuntime(Agent(
-                        ScriptedModelClient(response_factory=respond),
-                        ToolRegistry(), ContextConfig(),
-                    ))
-
-                children.set_runtime_builder(build_child)
+                model.with_overrides = lambda *args, **kwargs: ScriptedModelClient(
+                    response_factory=respond,
+                )
                 try:
                     await runtime.start()
                     # Let the worker block before waking it with a submission.
                     await asyncio.sleep(0)
                     receipt = await runtime.submit_input("hello")
                     assert (await receipt.future).output_text == "parent done"
-                    child = await children.spawn_agent(
-                        "hello", None, None, False, None, None, ()
+                    child_path = await manager.spawn_agent(
+                        runtime.agent.agent_id, "worker", "hello", fork_turns="none",
                     )
-                    agent_id = child["agent_id"]
+                    child = manager.get_runtime(
+                        manager._resolve_agent_id(runtime.agent.agent_id, child_path)
+                    )
                     waiter = asyncio.create_task(
-                        children.wait_agents([agent_id], timeout_ms=1000)
+                        manager.wait_for_activity(runtime.agent.agent_id, 1000)
                     )
                     await asyncio.sleep(0)
                     assert not waiter.done()
                     release_child.set()
                     result = await waiter
-                    assert result["status"][agent_id] == {
-                        "completed": "child done"
-                    }
+                    assert result == {"message": "Wait completed.", "timed_out": False}
+                    await wait_for_runtime_idle(child)
+                    assert child.agent_status == {"completed": "child done"}
                     assert "not running" in await exec_manager.write_stdin(999)
-                    assert code_manager.enabled_tools() == []
+                    assert tools.exec_tools() == []
                 finally:
                     release_child.set()
                     await runtime.close()

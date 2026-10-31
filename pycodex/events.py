@@ -1,24 +1,20 @@
 """Typed events, plain-text views and stateful presentation without frontend I/O."""
 
 import json
-import re
-import shlex
 import typing
 from dataclasses import dataclass
 from typing import ClassVar
 
 from .protocol import JSONDict, ToolCall, ToolResult
 from .utils.event_helpers import (
-    agent_status_summary,
     colorize_cli_message,
     colorize_tool_message,
     compact_summary,
     format_command_result,
     format_error,
     percent_of_context_window_remaining,
-    short_id,
     shorten_title,
-    truncate_text,
+    summarize_tool_result,
 )
 
 DEFAULT_MAIN_PROMPT = "pycodex> "
@@ -44,7 +40,6 @@ class EventDisplay:
         self.stream_buffer = ""
         self.queued_steer_prompts = {}
         self.inserted_steer_prompts = {}
-        self.agent_names = {}
         self.closed = False
         self.set_context_window_tokens(context_window_tokens)
 
@@ -115,24 +110,6 @@ class EventDisplay:
             return DEFAULT_MAIN_PROMPT
         return f"pyco({self.context_remaining_percent}%)> "
 
-    def remember_agent_name(self, summary):
-        if " (" not in summary or not summary.endswith(")"):
-            return
-        nickname, rest = summary.rsplit(" (", 1)
-        agent_short_id = rest[:-1].strip()
-        nickname = nickname.strip()
-        if nickname and agent_short_id:
-            self.agent_names[agent_short_id] = nickname
-
-    def replace_agent_ids_with_names(self, message):
-        for agent_short_id, nickname in sorted(
-            self.agent_names.items(),
-            key=lambda item: len(item[0]),
-            reverse=True,
-        ):
-            message = message.replace(agent_short_id, nickname)
-        return message
-
     @staticmethod
     def status_frame(text, frame_index):
         if text is None:
@@ -179,6 +156,15 @@ class TurnStartedEvent(TurnEvent):
 
     def render(self, display: "EventDisplay") -> "None":
         display.begin_turn(self)
+
+
+@dataclass(frozen=True)
+class TurnInputReadyEvent(TurnEvent):
+    """Synchronous input coordination; delivery failures must fail the turn."""
+
+    turn_id: "str"
+    submission_id: "typing.Union[str, None]" = None
+    kind: ClassVar[str] = "turn_input_ready"
 
 
 @dataclass(frozen=True)
@@ -379,20 +365,12 @@ class ToolCompletedEvent(TurnEvent):
         message = self.visualize()
         if name:
             display.set_status("called " + name)
-        if name in {"wait_agent", "send_input", "resume_agent", "close_agent"}:
-            message = display.replace_agent_ids_with_names(message)
-        if name == "spawn_agent":
-            summary = message
-            prefix = "[spawn_agent] spawned "
-            if summary.startswith(prefix):
-                summary = summary[len(prefix) :]
-            display.remember_agent_name(summary)
         for line in message.splitlines() or [""]:
             display.log(colorize_tool_message(line, display.color_enabled, name))
 
     def visualize(self) -> "str":
         name = self.call.name
-        summary = self._summary()
+        summary = summarize_tool_result(self.call, self.result)
         if self.result.is_error:
             return f"[error] {name} failed" + (f": {summary}" if summary else "")
         if name == "spawn_agent":
@@ -419,159 +397,6 @@ class ToolCompletedEvent(TurnEvent):
                         lines.append(f"  {marker} {step}")
             return "\n".join(lines)
         return f"[{name}]" + (f" {summary}" if summary else "")
-
-    def _summary(self) -> "str":
-        name = self.call.name
-        arguments = self.call.arguments if isinstance(self.call.arguments, dict) else {}
-        output = self.result.output
-        call_summary = ""
-        result_summary = None
-        if name == "exec_command":
-            command = arguments.get("cmd")
-            if command not in (None, ""):
-                command = str(command)
-                call_summary = truncate_text(command, 200)
-                lines = command.splitlines()
-                match = re.search(
-                    r"\bpython(?:\d+(?:\.\d+)?)?\s+-\s+<<[-]?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1",
-                    lines[0] if lines else "",
-                )
-                if match is not None:
-                    for index, line in enumerate(lines[1:], 1):
-                        if line.strip() == match.group(2):
-                            call_summary = "\n".join(lines[: index + 1])
-                            break
-            marker = "Process running with session ID "
-            for line in self.result.output_text().splitlines():
-                line = line.strip()
-                if line.startswith(marker) and line[len(marker) :].strip():
-                    result_summary = "session_id=" + line[len(marker) :].strip()
-                    break
-        elif name == "shell_command":
-            command = arguments.get("command")
-            if command not in (None, ""):
-                call_summary = truncate_text(str(command), 200)
-        elif name == "shell":
-            command = arguments.get("command")
-            if isinstance(command, list) and command:
-                call_summary = truncate_text(
-                    " ".join(shlex.quote(str(part)) for part in command), 200
-                )
-        elif name == "write_stdin":
-            session_id = arguments.get("session_id")
-            if session_id not in (None, ""):
-                session_id = str(session_id)
-                chars = arguments.get("chars") or ""
-                call_summary = (
-                    f"session {session_id} <- {truncate_text(str(chars), 32)}"
-                    if chars
-                    else f"poll session {session_id}"
-                )
-        elif name in {"read_file", "list_dir", "view_image"}:
-            key = (
-                "file_path"
-                if name == "read_file"
-                else ("dir_path" if name == "list_dir" else "path")
-            )
-            path = arguments.get(key)
-            if path not in (None, ""):
-                call_summary = truncate_text(str(path), 200)
-            if name == "view_image" and isinstance(output, list):
-                result_summary = f"{len(output)} image item(s)"
-        elif name == "grep_files":
-            pattern, path = arguments.get("pattern"), arguments.get("path")
-            if pattern not in (None, ""):
-                call_summary = truncate_text(
-                    f"{pattern} @ {path}" if path not in (None, "") else str(pattern),
-                    200,
-                )
-        elif name == "update_plan":
-            plan = arguments.get("plan")
-            if isinstance(plan, list):
-                total = len(plan)
-                completed = 0
-                in_progress = 0
-                for item in plan:
-                    if isinstance(item, dict):
-                        status = str(item.get("status", "")).strip()
-                        completed += status == "completed"
-                        in_progress += status == "in_progress"
-                if not total:
-                    return "0 steps"
-                if completed >= total:
-                    return f"Done {completed}/{total}"
-                if in_progress:
-                    return f"Working on {completed + in_progress}/{total}"
-                return f"Planned {completed}/{total}"
-            if isinstance(output, dict) and isinstance(output.get("plan"), list):
-                return f"{len(output['plan'])} steps"
-        elif name == "spawn_agent":
-            if isinstance(output, dict):
-                agent_id = str(output.get("agent_id", "")).strip()
-                nickname = str(output.get("nickname", "")).strip()
-                if nickname and agent_id:
-                    return f"{nickname} ({short_id(agent_id)})"
-        elif name == "send_input":
-            agent_id, message = arguments.get("id"), arguments.get("message")
-            prefix = f"{short_id(str(agent_id))} <- " if agent_id else ""
-            call_summary = (
-                prefix + truncate_text(str(message), 40)
-                if message not in (None, "")
-                else prefix.rstrip()
-            )
-            if isinstance(output, dict):
-                submission_id = str(output.get("submission_id", "")).strip()
-                if submission_id:
-                    result_summary = "queued " + short_id(submission_id)
-        elif name == "wait_agent":
-            if isinstance(output, dict):
-                if output.get("timed_out") is True:
-                    return "timed out"
-                status = output.get("status")
-                if isinstance(status, dict):
-                    parts = [
-                        f"{short_id(agent_id)}={agent_status_summary(agent_status)}"
-                        for agent_id, agent_status in status.items()
-                        if isinstance(agent_id, str)
-                    ]
-                    if parts:
-                        return truncate_text(", ".join(parts))
-        elif name in {"resume_agent", "close_agent"}:
-            agent_id = arguments.get("id")
-            if agent_id not in (None, ""):
-                call_summary = short_id(str(agent_id))
-            if isinstance(output, dict):
-                result_summary = agent_status_summary(output.get("status"))
-        if result_summary is None:
-            if isinstance(output, (dict, list)):
-                result_summary = truncate_text(
-                    json.dumps(output, ensure_ascii=False, separators=(",", ":"))
-                )
-            else:
-                lines = [
-                    line.strip() for line in self.result.output_text().splitlines()
-                ]
-                if "Output:" in lines:
-                    result_summary = next(
-                        (line for line in lines[lines.index("Output:") + 1 :] if line),
-                        None,
-                    )
-                if result_summary is None:
-                    result_summary = next(
-                        (
-                            line
-                            for line in lines
-                            if line
-                            and not line.startswith(
-                                ("Exit code:", "Wall time:", "Command:")
-                            )
-                        ),
-                        "",
-                    )
-                result_summary = truncate_text(result_summary)
-        if call_summary and result_summary:
-            return f"{call_summary} -> {result_summary}"
-        return call_summary or result_summary
 
 
 @dataclass(frozen=True)
@@ -745,6 +570,8 @@ class SessionStateEvent(Event):
                     active["submission_id"],
                 ).render(display)
                 display.stream_buffer = active["assistant_text"]
+            elif not state["busy"]:
+                display.set_idle_status(state["background_work_count"])
         if self.reason == "auto_title":
             display.show_title()
         if self.reason == "attach" and state["input_request"] is not None:

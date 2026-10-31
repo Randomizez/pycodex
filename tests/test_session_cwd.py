@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
-from pycodex import Agent, AgentRuntime, AssistantMessage, ContextConfig, ModelResponse
-from pycodex.bootstrap import get_tools
+from pycodex import AssistantMessage, ContextConfig, ModelResponse
 from pycodex.protocol import ToolCall, ToolResult, UserMessage
-from tests.fakes import ScriptedModelClient
+from pycodex.runtime import SubmissionInterrupted
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
 
 
 @pytest.mark.asyncio
@@ -24,8 +24,8 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         ModelResponse([AssistantMessage("done")]),
     ]
     client = ScriptedModelClient(calls)
-    runtime = AgentRuntime(Agent(client, get_tools(), ContextConfig(cwd=tmp_path)))
-    other = Agent(ScriptedModelClient([]), get_tools(), ContextConfig(cwd=tmp_path))
+    runtime = make_runtime(make_agent(client, make_tools(), ContextConfig(cwd=tmp_path)))
+    other = make_agent(ScriptedModelClient([]), make_tools(), ContextConfig(cwd=tmp_path))
     observers = [[], []]
     for events in observers:
         runtime.attach(events.append)
@@ -36,7 +36,7 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         assert (await read.future)["cwd"] == str(tmp_path)
         change = await runtime.submit_input("/cd other project")
         assert (await change.future) == {"kind": "cwd", "cwd": str(destination)}
-        assert runtime.agent.context_manager._config.cwd == destination
+        assert runtime.agent.context_manager.config.cwd == destination
         assert runtime.agent.context_manager._workspace_metadata_turn_id is None
         for events in observers:
             assert events[-2].state["cwd"] == str(destination)
@@ -46,7 +46,8 @@ async def test_cd_updates_context_tools_and_observers_without_changing_process_c
         assert "<cwd>" + str(destination) + "</cwd>" in repr(client.prompts[0].input)
         assert "new directory instructions" in repr(client.prompts[0].input)
         result = next(item for item in runtime.agent.history if isinstance(item, ToolResult))
-        assert str(destination) in result.output
+        assert result.output["exit_code"] == 0
+        assert result.output["output"].strip() == str(destination)
         assert other.context_manager.cwd == tmp_path
         assert Path.cwd() == original
         assert not any(
@@ -82,8 +83,8 @@ async def test_cd_rejects_active_or_queued_work(tmp_path, active):
         await release.wait()
         return ModelResponse([AssistantMessage("done")])
 
-    runtime = AgentRuntime(Agent(
-        ScriptedModelClient(response_factory=respond), get_tools(),
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient(response_factory=respond), make_tools(),
         ContextConfig(cwd=tmp_path),
     ))
     receipt = await runtime.submit_input("pending")
@@ -100,4 +101,5 @@ async def test_cd_rejects_active_or_queued_work(tmp_path, active):
     finally:
         release.set()
         await runtime.close()
-        await receipt.future
+        with pytest.raises(SubmissionInterrupted):
+            await receipt.future

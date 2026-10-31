@@ -2,8 +2,8 @@
 
 Each downstream chat-completions provider may have its own payload quirks:
 extra fields, removed fields, role normalization, tool-shape tweaks, etc.
-Keep all of those provider-specific rewrites here so `StreamRouter` can keep
-building one canonical `outcomming_request`, while `server.py` selects the
+Keep all of those provider-specific rewrites here so request translation produces
+one canonical `outcomming_request`, while `server.py` selects the
 appropriate hook from `CompatServerConfig.model_provider`.
 """
 
@@ -20,7 +20,7 @@ class OutgoingRequest(TypedDict):
     """Canonical downstream `/v1/chat/completions` request shape.
 
     `model`, `messages`, and `stream` are always populated by
-    `StreamRouter.build_outcomming_request(...)`. Provider-specific fields that
+    `request_translation.build_outcomming_request(...)`. Provider-specific fields that
     may be omitted use `Optional[...]` here so the schema stays simple and does
     not rely on TypedDict inheritance.
     """

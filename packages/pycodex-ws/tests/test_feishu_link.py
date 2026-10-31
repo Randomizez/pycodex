@@ -8,6 +8,7 @@ import types
 import pytest
 
 from pycodex.events import TurnCompletedEvent, TurnStartedEvent
+import pycodex_ws.feishu_connection as feishu_connection
 import pycodex_ws.feishu_link as feishu_link
 from pycodex_ws.feishu_card import PycodexCard
 from pycodex_ws.feishu_link import _FeishuCardActionListener, _release_feishu_listener
@@ -154,13 +155,13 @@ def test_feishu_listener_stops_when_last_link_is_released(monkeypatch) -> None:
     stopped = []
     listener.stop = lambda: stopped.append(True)
     listener.register(link)
-    monkeypatch.setattr(feishu_link, "_LISTENER", listener)
+    monkeypatch.setattr(feishu_connection, "_LISTENER", listener)
 
     _release_feishu_listener(listener, link)
 
     assert listener.empty()
     assert stopped == [True]
-    assert feishu_link._LISTENER is None
+    assert feishu_connection._LISTENER is None
 
 
 def test_feishu_listener_does_not_stop_until_all_links_are_released(
@@ -173,18 +174,18 @@ def test_feishu_listener_does_not_stop_until_all_links_are_released(
     listener.stop = lambda: stopped.append(True)
     listener.register(first)
     listener.register(second)
-    monkeypatch.setattr(feishu_link, "_LISTENER", listener)
+    monkeypatch.setattr(feishu_connection, "_LISTENER", listener)
 
     _release_feishu_listener(listener, first)
 
     assert stopped == []
-    assert feishu_link._LISTENER is listener
+    assert feishu_connection._LISTENER is listener
     assert listener._resolve_link("om_second") is second
 
     _release_feishu_listener(listener, second)
 
     assert stopped == [True]
-    assert feishu_link._LISTENER is None
+    assert feishu_connection._LISTENER is None
 
 
 def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
@@ -192,7 +193,7 @@ def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
     link = _Object(message_id="om_first")
     first.stop = lambda: None
     first.register(link)
-    monkeypatch.setattr(feishu_link, "_LISTENER", first)
+    monkeypatch.setattr(feishu_connection, "_LISTENER", first)
 
     _release_feishu_listener(first, link)
     second = feishu_link._feishu_listener(
@@ -200,7 +201,7 @@ def test_feishu_listener_relink_creates_fresh_listener(monkeypatch) -> None:
     )
 
     assert second is not first
-    assert feishu_link._LISTENER is second
+    assert feishu_connection._LISTENER is second
 
 
 def test_feishu_listener_routes_card_action_by_message_id(monkeypatch) -> None:

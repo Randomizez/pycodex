@@ -2,7 +2,6 @@ import json
 import os
 import time
 import typing
-from pathlib import Path
 
 import requests
 
@@ -22,12 +21,21 @@ from pycodex.events import (
 )
 from pycodex.utils.event_helpers import completed_history
 
-FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
-FEISHU_DOMAIN = "https://open.feishu.cn"
-FEISHU_REFRESH_TOKEN_FILE = "~/.codex/.feishu_refresh_token"
-CARD_OUTPUT_LIMIT = 6500
-CARD_OUTPUT_MODE_MARKDOWN = "markdown"
-CARD_OUTPUT_MODE_CODE = "code"
+from .feishu_auth import (
+    FEISHU_API_BASE,
+    FEISHU_DOMAIN,
+    FEISHU_REFRESH_TOKEN_FILE,
+    read_refresh_token as _read_refresh_token,
+    refresh_token_path as _refresh_token_path,
+    write_refresh_token as _write_refresh_token,
+)
+from .feishu_render import (
+    CARD_OUTPUT_LIMIT,
+    CARD_OUTPUT_MODE_CODE,
+    CARD_OUTPUT_MODE_MARKDOWN,
+    render_card,
+)
+
 CARD_CONTENT_ERROR_MARKER = "Failed to create card content"
 
 
@@ -240,97 +248,7 @@ class PycodexCard:
     def render(
         self, output_mode: str = CARD_OUTPUT_MODE_MARKDOWN
     ) -> "typing.Dict[str, object]":
-        status = "Closed" if self.display.closed else self.status
-        input_disabled = not self.accepts_input or self.detached or self.display.closed
-        output = _truncate(self.output_text, CARD_OUTPUT_LIMIT) or "Ready."
-        working_output = _truncate(self.working_output, CARD_OUTPUT_LIMIT)
-        color = _status_color("Detached" if self.detached else status or "Idle")
-        body_elements = [
-            _output_box(
-                "answer_box",
-                "answer_md",
-                _render_output_content(output, output_mode),
-                "grey-50",
-            ),
-        ]
-        if working_output:
-            body_elements.append(
-                _output_box(
-                    "working_output_box",
-                    "working_output_md",
-                    _render_output_content(working_output, output_mode),
-                    "green-50",
-                )
-            )
-        if self.activity_text:
-            body_elements.append(
-                {
-                    "tag": "markdown",
-                    "element_id": "activity_md",
-                    "content": _render_output_content(
-                        _truncate(self.activity_text, CARD_OUTPUT_LIMIT), output_mode
-                    ),
-                }
-            )
-        if self.user_prompt:
-            body_elements.insert(
-                0,
-                {
-                    "tag": "markdown",
-                    "element_id": "user_prompt_md",
-                    "content": _render_output_content(
-                        "user> " + _truncate(self.user_prompt, CARD_OUTPUT_LIMIT),
-                        output_mode,
-                    ),
-                },
-            )
-        history = self.earlier_turns()
-        if history:
-            index = (
-                len(history) - 1 if self.history_index is None else self.history_index
-            )
-            body_elements.insert(
-                0,
-                _history_panel(
-                    history,
-                    index,
-                    self.history_index is not None,
-                    output_mode,
-                    not self.detached,
-                ),
-            )
-        card = {
-            "schema": "2.0",
-            "config": {"update_multi": True},
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": self.display.title or "pycodex",
-                },
-                "template": color,
-            },
-            "body": {
-                "elements": body_elements,
-            },
-        }
-        if not self.detached:
-            card["body"]["elements"].append(
-                {
-                    "tag": "input",
-                    "element_id": "prompt_input",
-                    "name": "prompt",
-                    "input_type": "text",
-                    "width": "fill",
-                    "disabled": input_disabled,
-                    "placeholder": {
-                        "tag": "plain_text",
-                        "content": self.prompt_text + (status or self.model_name),
-                    },
-                    "behaviors": [{"type": "callback", "value": {"action": "send"}}],
-                    "value": {"action": "send"},
-                },
-            )
-        return card
+        return render_card(self, output_mode)
 
     def earlier_turns(self):
         if self._active_turn_id is not None:
@@ -389,9 +307,7 @@ class PycodexCard:
         aliases = _user_id_aliases()
         if normalized in aliases:
             return aliases[normalized]
-        if normalized.startswith("ou_"):
-            return normalized
-        if normalized.startswith("oc_"):
+        if normalized.startswith(("ou_", "oc_")):
             return normalized
         if normalized.isnumeric():
             return self._lookup_user({"mobiles": [normalized]})
@@ -477,7 +393,7 @@ class PycodexCard:
                 use_user_token=use_user_token,
             )
         except Exception as exc:
-            if not _is_card_content_error(exc):
+            if CARD_CONTENT_ERROR_MARKER not in str(exc):
                 raise
             return self._request(
                 method,
@@ -616,126 +532,6 @@ def _display_user_name(user: "typing.Any") -> "typing.Union[str, None]":
     return None
 
 
-def _status_color(status: str) -> str:
-    normalized = status.lower()
-    if normalized in {"detached", "closed"}:
-        return "grey"
-    if normalized in {"idle", "idle: sleeping"}:
-        return "green"
-    return "blue"
-
-
-def _truncate(text: str, limit: int) -> str:
-    value = str(text or "")
-    if len(value) <= limit:
-        return value
-    return value[: max(0, limit - 32)] + "\n...[truncated]"
-
-
-def _escape_code_block(text: str) -> str:
-    return str(text or "").replace("```", "'''")
-
-
-def _render_output_content(output: str, output_mode: str) -> str:
-    if output_mode == CARD_OUTPUT_MODE_CODE:
-        return "```text\n{0}\n```".format(_escape_code_block(output))
-    return output
-
-
-def _history_panel(history, index, expanded, output_mode, interactive):
-    prompt, response = history[index]
-    content = _truncate(
-        "user> {0}\n\nassistant> {1}".format(prompt, response), CARD_OUTPUT_LIMIT
-    )
-    columns = []
-    for label, target, disabled in (
-        ("Previous", index - 1, index == 0),
-        ("Next", index + 1, index == len(history) - 1),
-    ):
-        columns.append(
-            {
-                "tag": "column",
-                "width": "auto",
-                "elements": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": label},
-                        "type": "default",
-                        "disabled": disabled or not interactive,
-                        "behaviors": [
-                            {
-                                "type": "callback",
-                                "value": {
-                                    "action": "history",
-                                    "history_index": target,
-                                },
-                            }
-                        ],
-                    }
-                ],
-            }
-        )
-    return {
-        "tag": "collapsible_panel",
-        "element_id": "history_panel",
-        "expanded": expanded,
-        "header": {
-            "icon": {
-                "tag": "standard_icon",
-                "token": "down-small-ccm_outlined",
-                "size": "16px 16px",
-            },
-            "title": {
-                "tag": "plain_text",
-                "content": "History · {0} / {1}".format(index + 1, len(history)),
-            },
-        },
-        "elements": [
-            {
-                "tag": "markdown",
-                "element_id": "history_md",
-                "content": _render_output_content(content, output_mode),
-            },
-            {"tag": "column_set", "columns": columns},
-        ],
-    }
-
-
-def _output_box(
-    box_id: str,
-    markdown_id: str,
-    content: str,
-    background_style: str,
-) -> "typing.Dict[str, object]":
-    return {
-        "tag": "column_set",
-        "element_id": box_id,
-        "background_style": background_style,
-        "horizontal_spacing": "8px",
-        "horizontal_align": "left",
-        "columns": [
-            {
-                "tag": "column",
-                "width": "auto",
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "element_id": markdown_id,
-                        "content": content,
-                    },
-                ],
-                "vertical_spacing": "8px",
-                "horizontal_align": "left",
-                "vertical_align": "top",
-            }
-        ],
-    }
-
-
-def _is_card_content_error(exc: "BaseException") -> bool:
-    return CARD_CONTENT_ERROR_MARKER in str(exc)
-
-
 def _dig(value: "typing.Any", *path: str) -> "typing.Any":
     current = value
     for key in path:
@@ -751,27 +547,6 @@ def _env(*names: str) -> "typing.Union[str, None]":
         if value:
             return value
     return None
-
-
-def _refresh_token_path() -> Path:
-    return Path(FEISHU_REFRESH_TOKEN_FILE).expanduser()
-
-
-def _read_refresh_token() -> "typing.Union[str, None]":
-    path = _refresh_token_path()
-    if not path.exists():
-        return None
-    value = path.read_text(encoding="utf-8", errors="replace").strip()
-    return value or None
-
-
-def _write_refresh_token(value: str) -> None:
-    path = _refresh_token_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-        path.chmod(0o600)
-        stream.write("{0}\n".format(value))
 
 
 def _api_base_to_domain(api_base: str) -> str:

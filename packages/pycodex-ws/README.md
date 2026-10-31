@@ -5,6 +5,9 @@ optional Feishu integration for
 [`python-codex`](https://pypi.org/project/python-codex/).
 Requires Python 3.7+ and installs the matching core version.
 
+See the [0.6.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.6.0/docs/RELEASE_0.6.0.md) for changes and
+integration migration from 0.5.0.
+
 ## Quick start
 
 ```bash
@@ -79,6 +82,11 @@ state, model catalogs, asynchronous command results, paginated history, event
 replay and sub-agent/background-work inventories. A `mount(host)` export in
 `custom.js` can access the built-in page's session, draft and view controls.
 
+Backend module ownership and the preserved session interfaces are documented in
+the [runtime guide](../../docs/RUNTIME.md#workspace-session-api).
+File/Git source resolution and view storage retain their existing public classes;
+see [content views](../../docs/RUNTIME.md#workspace-content-views).
+
 Ask the Agent to show the [feature catalog](workspace_server/optional_features/README.md)
 in the view area, then choose features by name or ID in chat. The Agent adapts
 their source into your frontend. To share a local change, ask it to publish a
@@ -133,6 +141,11 @@ token in `~/.codex/.feishu_refresh_token`. In a workspace session, use
 `/link <feishu-email|open_id|chat_id>` to connect a card and `/unlink` to disconnect.
 Other workspace features work without the SDK.
 
+The adapter separates card rendering, refresh-token storage and SDK connections.
+`PycodexCard` and `PycodexRuntimeLink` keep their existing imports and interfaces;
+see [connection lifecycle](../../docs/RUNTIME.md#feishu-connection-lifecycle)
+and [event presentation](../../docs/RUNTIME.md#observation).
+
 ## Development
 
 From the repository root:
@@ -144,6 +157,9 @@ uv run --dev pytest packages/pycodex-ws/tests
 uv build packages/pycodex-ws
 ```
 
-Python integrations use `pycodex_ws.build_runtime(agent)` to include workspace
-commands. See [runtime contracts](../../docs/RUNTIME.md) and
+Python integrations construct a runtime through `AgentsManager.create_root_runtime()`
+and call `pycodex_ws.register_feishu_commands(runtime)` to include `/link` and
+`/unlink`. The context indicator shows tokens against the auto-compaction limit;
+its expandable Agent tree shows each task's status and latest assistant text.
+See [runtime contracts](../../docs/RUNTIME.md) and
 [test documentation](../../tests/TESTS.md).

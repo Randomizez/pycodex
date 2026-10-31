@@ -1,5 +1,6 @@
 // Workspace content tabs, live updates and editor lifecycle.
 import {tabLabels} from "./view_labels.mjs";
+import {TranscriptView} from "./transcript.mjs";
 export {Composer} from "./composer.mjs";
 export {PromptHistory} from "./prompt_history.mjs";
 
@@ -25,6 +26,7 @@ export class ContentTabs {
     this.onSelect = onSelect;
     this.enableBoard = enableBoard;
     this.views = [];
+    this.transcripts = new Map();
     this.activeId = enableBoard ? "board" : null;
     this.snapshot = null;
     this.selection = null;
@@ -98,8 +100,8 @@ export class ContentTabs {
   }
 
   updateViews(views) {
-    this.views = views;
-    const revisions = new Map(views.map(view => [view.id, view.revision]));
+    this.views = views.concat(Array.from(this.transcripts.values()));
+    const revisions = new Map(this.views.map(view => [view.id, view.revision]));
     for (const [id, snapshot] of this.cache) {
       if (!revisions.has(id) || snapshot.revision < revisions.get(id)) this.cache.delete(id);
     }
@@ -108,6 +110,21 @@ export class ContentTabs {
   cancelOpen() {
     if (this.openRequest) this.openRequest.abort();
     this.openRequest = null;
+  }
+
+  openTranscript(sessionId, agentId, agentPath) {
+    const id = `transcript:${sessionId}:${agentId}`;
+    if (!this.transcripts.has(id)) {
+      const view = {
+        id, kind: "transcript", title: agentPath, sessionId, agentId,
+        revision: 1, documents: [],
+      };
+      this.transcripts.set(id, view);
+      this.views.push(view);
+      this.cache.set(id, view);
+    }
+    this.initialized = true;
+    return this.select(id);
   }
 
   async open(href, srcPath, sessionId) {
@@ -212,7 +229,8 @@ export class ContentTabs {
     this.mutation += 1;
     this.onChange(this);
     try {
-      await this.request("api/views/" + encodeURIComponent(id), {method: "DELETE"});
+      if (this.transcripts.has(id)) this.transcripts.delete(id);
+      else await this.request("api/views/" + encodeURIComponent(id), {method: "DELETE"});
       this.mutation += 1;
       const index = this.views.findIndex(view => view.id === id);
       this.views = this.views.filter(view => view.id !== id);
@@ -307,10 +325,14 @@ class HtmlPreview {
 
 export class SnapshotDisplay {
   constructor({content, renderMarkdown, loadEditor = null, onInsertContext = null, onChangeMode = null,
+    request = null,
     createHtmlPreview = (parent, position) => new HtmlPreview(parent, position)}) {
     this.content = content;
     this.document = content.ownerDocument;
     this.renderMarkdown = renderMarkdown;
+    this.request = request;
+    this.transcripts = new Map();
+    this.transcript = null;
     this.onInsertContext = onInsertContext;
     this.onChangeMode = onChangeMode;
     this.loadEditor = loadEditor || (() => this.loadEditorAssets());
@@ -356,6 +378,12 @@ export class SnapshotDisplay {
 
   retain(ids) {
     this.remaining = new Set(ids);
+    for (const [id, transcript] of this.transcripts) {
+      if (!this.remaining.has(id)) {
+        transcript.stop();
+        this.transcripts.delete(id);
+      }
+    }
     for (const cache of [this.editorStates, this.previews, this.scrollPositions, this.sourceViews]) {
       for (const id of cache.keys()) {
         if (!this.remaining.has(id)) cache.delete(id);
@@ -365,6 +393,13 @@ export class SnapshotDisplay {
 
   clear(message = "") {
     this.generation += 1;
+    if (this.transcript) {
+      if (this.remaining.has(this.activeId)) {
+        this.scrollPositions.set(this.activeId, [this.content.scrollLeft, this.content.scrollTop]);
+      }
+      this.transcript.stop();
+      this.transcript = null;
+    }
     if (this.editor) {
       if (this.remaining.has(this.activeId)) {
         this.editorStates.set(this.activeId, this.editor.capture());
@@ -384,7 +419,7 @@ export class SnapshotDisplay {
     this.pdfFrame = null;
     this.content.classList.remove("code-view");
     this.content.classList.remove("html-view");
-    this.content.classList.remove("pdf-view");
+    this.content.classList.remove("pdf-view", "transcript-view");
     this.content.textContent = "";
     if (message) {
       this.content.appendChild(element(this.document, "div", "content-placeholder", message));
@@ -403,6 +438,25 @@ export class SnapshotDisplay {
   }
 
   async show(id, snapshot, selection = null, displayMode = null) {
+    if (snapshot.kind === "transcript") {
+      if (this.activeId === id && this.transcript) return;
+      this.clear();
+      this.activeId = id;
+      this.content.classList.add("transcript-view");
+      if (!this.transcripts.has(id)) {
+        this.transcripts.set(id, new TranscriptView({
+          viewport: this.content, request: this.request, renderMarkdown: this.renderMarkdown,
+          sessionId: snapshot.sessionId, agentId: snapshot.agentId, agentPath: snapshot.title,
+        }));
+      }
+      this.transcript = this.transcripts.get(id);
+      this.content.appendChild(this.transcript.root);
+      const [left, top] = this.scrollPositions.get(id) || [0, 0];
+      this.content.scrollLeft = left;
+      this.content.scrollTop = top;
+      this.transcript.start();
+      return;
+    }
     if (selection && snapshot.revision < selection.contentRevision) selection = null;
     this.pendingSelection = selection;
     if (displayMode === "preview") this.sourceViews.delete(id);
@@ -552,7 +606,7 @@ export function mountContentViews({
 }) {
   const document = tabs.ownerDocument;
   const display = new SnapshotDisplay({
-    content, renderMarkdown, onInsertContext,
+    content, renderMarkdown, onInsertContext, request,
     onChangeMode: mode => controller.setDisplayMode(mode),
   });
   let displayedId;
@@ -578,7 +632,12 @@ export function mountContentViews({
     status.hidden = !status.textContent;
     const existing = new Map(Array.from(tabs.children, tab => [tab.dataset.viewId, tab]));
     const descriptors = (enableBoard ? [{id: "board", title: "Canvas", kind: "board"}] : []).concat(state.views);
-    const labels = tabLabels(state.views);
+    const labels = tabLabels(state.views.filter(view => view.kind !== "transcript"));
+    for (const view of state.views) {
+      if (view.kind === "transcript") {
+        labels.set(view.id, {name: view.title.split("/").pop(), description: "Transcript"});
+      }
+    }
     labels.set("board", {name: "Canvas", description: ""});
     descriptors.forEach((view, index) => {
       let tab = existing.get(view.id);
@@ -637,6 +696,7 @@ export function mountContentViews({
       tab.className = "tab content-tab" + (view.id === state.activeId ? " active" : "");
       tab.tabIndex = view.id === state.activeId ? 0 : -1;
       tab.title = view.id === "board" ? tabs.dataset.boardTitle :
+        view.kind === "transcript" ? `${view.title}\nAgent transcript` :
         view.title + (view.live ? "\nRead only · follows file changes · " : "\nRead-only snapshot · ") +
         new Date(view.created_at).toLocaleString();
       tab.setAttribute("aria-selected", String(view.id === state.activeId));
@@ -708,5 +768,8 @@ export function mountContentViews({
     },
     poll() { return controller.poll(); },
     open(href, srcPath, sessionId) { return controller.open(href, srcPath, sessionId); },
+    openTranscript(sessionId, agentId, agentPath) {
+      return controller.openTranscript(sessionId, agentId, agentPath);
+    },
   };
 }

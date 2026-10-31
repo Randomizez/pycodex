@@ -25,6 +25,10 @@ JSONValue: "TypeAlias" = Any
 JSONDict: "TypeAlias" = typing.Dict[str, Any]
 
 
+def qualified_tool_name(name, namespace):
+    return name if namespace in (None, "", "functions") else f"{namespace}.{name}"
+
+
 @dataclass(
     frozen=True,
 )
@@ -42,6 +46,8 @@ class ToolSpec:
     options: "typing.Union[JSONDict, None]" = None
     output_schema: "typing.Union[JSONDict, None]" = None
     supports_parallel: "bool" = True
+    namespace: "typing.Union[str, None]" = None
+    namespace_description: "str" = ""
 
     def serialize(self) -> "JSONDict":
         if self.tool_type == "web_search":
@@ -94,6 +100,51 @@ class UserMessage:
         }
         if self.id is not None:
             payload["id"] = self.id
+        return payload
+
+
+@dataclass(frozen=True)
+class AgentMessage:
+    """Agent 间的原生输入；加密内容只透传，不转换成用户文本。"""
+
+    author: "str"
+    recipient: "str"
+    content_items: "typing.Tuple[JSONDict, ...]"
+    id: "typing.Union[str, None]" = None
+    internal_chat_message_metadata_passthrough: "typing.Union[JSONDict, None]" = None
+
+    @property
+    def text(self) -> "str":
+        """Only the locally readable parts are available for display."""
+        return "\n".join(
+            part["text"] for part in self.content_items if part["type"] == "input_text"
+        )
+
+    @classmethod
+    def from_response_item(cls, payload: "JSONDict") -> "AgentMessage":
+        return cls(
+            author=payload["author"],
+            recipient=payload["recipient"],
+            content_items=tuple(deepcopy(payload["content"])),
+            id=payload.get("id"),
+            internal_chat_message_metadata_passthrough=deepcopy(
+                payload.get("internal_chat_message_metadata_passthrough")
+            ),
+        )
+
+    def serialize(self) -> "JSONDict":
+        payload = {
+            "type": "agent_message",
+            "author": self.author,
+            "recipient": self.recipient,
+            "content": deepcopy(list(self.content_items)),
+        }
+        if self.id is not None:
+            payload["id"] = self.id
+        if self.internal_chat_message_metadata_passthrough is not None:
+            payload["internal_chat_message_metadata_passthrough"] = deepcopy(
+                self.internal_chat_message_metadata_passthrough
+            )
         return payload
 
 
@@ -192,19 +243,27 @@ class ToolCall:
     raw_arguments: "typing.Union[str, None]" = None
     namespace: "typing.Union[str, None]" = None
     status: "typing.Union[str, None]" = None
+    encrypted_function_args: "typing.Union[typing.List[str], None]" = None
 
     def serialize(self) -> "JSONDict":
+        name = self.name
+        namespace = self.namespace
+        if "." in name:
+            inferred_namespace, name = name.rsplit(".", 1)
+            if namespace is not None and namespace != inferred_namespace:
+                raise ValueError("tool call namespace does not match its name")
+            namespace = inferred_namespace
         if self.tool_type == "custom":
             payload = {
                 "type": "custom_tool_call",
-                "name": self.name,
+                "name": name,
                 "input": str(self.arguments),
                 "call_id": self.call_id,
             }
         else:
             payload = {
                 "type": "function_call",
-                "name": self.name,
+                "name": name,
                 "arguments": (
                     self.raw_arguments
                     if self.raw_arguments is not None
@@ -218,8 +277,10 @@ class ToolCall:
             }
         if self.id is not None:
             payload["id"] = self.id
-        if self.namespace is not None:
-            payload["namespace"] = self.namespace
+        if namespace is not None:
+            payload["namespace"] = namespace
+        if self.tool_type == "function" and self.encrypted_function_args is not None:
+            payload["encrypted_function_args"] = deepcopy(self.encrypted_function_args)
         if self.tool_type == "custom" and self.status is not None:
             payload["status"] = self.status
         return payload
@@ -259,7 +320,7 @@ class ToolResult:
     """
 
     call_id: "str"
-    name: "str"
+    name: "typing.Union[str, None]"
     output: "JSONValue"
     content_items: "typing.Union[typing.Tuple[JSONDict, ...], None]" = None
     # Local execution metadata; not part of a Responses API input item.
@@ -288,7 +349,7 @@ class ToolResult:
     def serialize(self) -> "JSONDict":
         payload_output: "JSONValue"
         if self.content_items is not None:
-            payload_output = list(self.content_items)
+            payload_output = deepcopy(list(self.content_items))
         elif isinstance(self.output, str):
             payload_output = self.output
         else:
@@ -310,19 +371,18 @@ class ToolResult:
         }
         if self.id is not None:
             payload["id"] = self.id
-        if self.tool_type == "custom":
-            payload["name"] = self.name
+        if self.tool_type == "custom" and self.name is not None:
+            payload["name"] = self.name.rsplit(".", 1)[-1]
         return payload
 
 
 ConversationItem: "TypeAlias" = typing.Union[
-    typing.Union[
-        typing.Union[
-            typing.Union[typing.Union[UserMessage, AssistantMessage], ContextMessage],
-            ToolCall,
-        ],
-        ReasoningItem,
-    ],
+    UserMessage,
+    AgentMessage,
+    AssistantMessage,
+    ContextMessage,
+    ToolCall,
+    ReasoningItem,
     ToolResult,
 ]
 ModelOutputItem: "TypeAlias" = typing.Union[
@@ -345,6 +405,7 @@ class Prompt:
     base_instructions: "typing.Union[str, None]" = None
     turn_id: "typing.Union[str, None]" = None
     turn_metadata: "typing.Union[JSONDict, None]" = None
+    session_id: "typing.Union[str, None]" = None
 
 
 @dataclass(

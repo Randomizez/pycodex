@@ -38,14 +38,12 @@ from workspace_server import (
 )
 
 from pycodex import (
-    Agent,
-    AgentRuntime,
     AssistantMessage,
     ContextConfig,
     ModelResponse,
     ToolRegistry,
 )
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 from workspace_server.owned_process import run_owned_server
 
 
@@ -194,7 +192,7 @@ def workspace_app(directory, password=None, response_factory=None):
             or (lambda prompt, count: ModelResponse([AssistantMessage("done")]))
         )
         return WorkspaceInteractiveSession(
-            AgentRuntime(Agent(model, ToolRegistry(), ContextConfig()))
+            make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
         )
 
     registry = WorkspaceRegistry(
@@ -574,7 +572,7 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
 
 @pytest.mark.parametrize("root", ["", "/remote"])
 async def test_router_and_workspace_passwords_protect_remote_visitors(tmp_path, root, monkeypatch):
-    monkeypatch.setattr("workspace_server.app.socket.gethostname", lambda: "test<device>")
+    monkeypatch.setattr("pycodex_ws.server_support.socket.gethostname", lambda: "test<device>")
     gate = create_app("router-password")
     app, registry = workspace_app(tmp_path / "workspace", "local-password")
     async with serve_router(gate, root) as (address, target):

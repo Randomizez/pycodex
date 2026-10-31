@@ -1,139 +1,18 @@
 import asyncio
-import json
-import random
 import typing
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import Awaitable, Callable
 
-from ..events import (
-    CompactCompletedEvent,
-    CompactFailedEvent,
-    CompactStartedEvent,
-    Event,
-    RuntimeUpdatedEvent,
-    SessionClosedEvent,
-    TurnCompletedEvent,
-    TurnFailedEvent,
-    TurnInterruptedEvent,
-    TurnStartedEvent,
-)
-from ..protocol import ConversationItem, ToolCall, ToolResult, UserMessage
-from ..utils import uuid7_string
+from ..events import CompactStartedEvent, TerminalEvent, TurnStartedEvent
 from ..utils.compat import Literal
-
-if TYPE_CHECKING:
-    from ..runtime import AgentRuntime
+from .clock_manager import ClockManager
+from .goal_manager import GoalManager
 
 PlanStatus = Literal["pending", "in_progress", "completed"]
-AgentStatus = typing.Union[
-    Literal["pending_init", "running", "shutdown", "not_found"],
-    typing.Dict[str, typing.Union[str, None]],
-]
 PlanListener = Callable[[typing.Dict[str, object]], None]
-AgentRuntimeBuilder = Callable[
-    [
-        typing.Union[str, None],
-        typing.Union[str, None],
-        typing.Tuple[ConversationItem, ...],
-        str,
-    ],
-    "AgentRuntime",
-]
 AsyncJSONHandler = Callable[
     [typing.Dict[str, object]], Awaitable[typing.Union[typing.Dict[str, object], None]]
 ]
-
-DEFAULT_AGENT_NICKNAME_CANDIDATES = (
-    "Bacon",
-    "Descartes",
-    "Pascal",
-    "Fermat",
-    "Huygens",
-    "Leibniz",
-    "Newton",
-    "Halley",
-    "Euler",
-    "Lagrange",
-    "Laplace",
-    "Volta",
-    "Gauss",
-    "Ampere",
-    "Faraday",
-    "Darwin",
-    "Lovelace",
-    "Boole",
-    "Pasteur",
-    "Maxwell",
-    "Mendel",
-    "Curie",
-    "Planck",
-    "Tesla",
-    "Poincare",
-    "Noether",
-    "Hilbert",
-    "Einstein",
-    "Raman",
-    "Bohr",
-    "Turing",
-    "Hubble",
-    "Feynman",
-    "Franklin",
-    "McClintock",
-    "Meitner",
-    "Herschel",
-    "Linnaeus",
-    "Wegener",
-    "Chandrasekhar",
-    "Sagan",
-    "Goodall",
-    "Carson",
-    "Carver",
-    "Socrates",
-    "Plato",
-    "Aristotle",
-    "Epicurus",
-    "Cicero",
-    "Confucius",
-    "Mencius",
-    "Zeno",
-    "Locke",
-    "Hume",
-    "Kant",
-    "Hegel",
-    "Kierkegaard",
-    "Mill",
-    "Nietzsche",
-    "Peirce",
-    "James",
-    "Dewey",
-    "Russell",
-    "Popper",
-    "Sartre",
-    "Beauvoir",
-    "Arendt",
-    "Rawls",
-    "Singer",
-    "Anscombe",
-    "Parfit",
-    "Kuhn",
-    "Boyle",
-    "Hooke",
-    "Harvey",
-    "Dalton",
-    "Helmholtz",
-    "Gibbs",
-    "Lorentz",
-    "Schrodinger",
-    "Heisenberg",
-    "Pauli",
-    "Dirac",
-    "Bernoulli",
-    "Godel",
-    "Nash",
-    "Banach",
-    "Ramanujan",
-    "Erdos",
-)
 
 
 @dataclass(
@@ -211,339 +90,132 @@ class RequestPermissionsManager:
         return await handler(payload)
 
 
-@dataclass
-class ManagedAgent:
-    agent_id: "str"
-    runtime: '"AgentRuntime"'
-    nickname: "typing.Union[str, None]" = None
-    last_status: "AgentStatus" = "pending_init"
-
-
-class SubAgentManager:
-    def __init__(self) -> "None":
-        self._runtime_builder: "typing.Union[AgentRuntimeBuilder, None]" = None
-        self._agents: "typing.Dict[str, ManagedAgent]" = {}
-        self._pending_notifications: "typing.List[UserMessage]" = []
-        self._condition = None
-        self._available_nicknames: "typing.List[str]" = []
-        self._nickname_random = random.Random()
-        self._state_listener = None
-
-    def set_state_listener(self, listener):
-        self._state_listener = listener
-
-    def _state_changed(self):
-        if self._state_listener is not None:
-            self._state_listener()
-
-    def list_agents(self, parent_agent_id):
-        agents = []
-        for managed in self._agents.values():
-            agents.append({
-                "agent_id": managed.agent_id,
-                "parent_agent_id": parent_agent_id,
-                "nickname": managed.nickname,
-                "status": self._status_payload(managed),
-            })
-            agents.extend(
-                managed.runtime.agent.tool_registry.runtime_environment
-                .subagent_manager.list_agents(managed.agent_id)
-            )
-        return agents
-
-    def get_runtime(self, agent_id):
-        if agent_id in self._agents:
-            return self._agents[agent_id].runtime
-        for managed in self._agents.values():
-            manager = managed.runtime.agent.tool_registry.runtime_environment.subagent_manager
-            try:
-                return manager.get_runtime(agent_id)
-            except KeyError:
-                continue
-        raise KeyError(agent_id)
-
-    def _get_condition(self):
-        if self._condition is None:
-            self._condition = asyncio.Condition()
-        return self._condition
-
-    def set_runtime_builder(
-        self, builder: "typing.Union[AgentRuntimeBuilder, None]"
-    ) -> "None":
-        self._runtime_builder = builder
-
-    def take_pending_notifications(self) -> "typing.Tuple[UserMessage, ...]":
-        messages = tuple(self._pending_notifications)
-        self._pending_notifications.clear()
-        return messages
-
-    async def spawn_agent(
-        self,
-        message: "typing.Union[str, None]",
-        items: "typing.Union[typing.List[typing.Dict[str, object]], None]",
-        agent_type: "typing.Union[str, None]",
-        fork_context: "bool",
-        model: "typing.Union[str, None]",
-        reasoning_effort: "typing.Union[str, None]",
-        history: "typing.Tuple[ConversationItem, ...]",
-    ) -> "typing.Dict[str, object]":
-        builder = self._runtime_builder
-        if builder is None:
-            raise RuntimeError(
-                "spawn_agent is unavailable before runtime initialization"
-            )
-
-        initial_history = _fork_context_history(history) if fork_context else ()
-        agent_id = uuid7_string()
-        runtime = builder(model, reasoning_effort, initial_history, agent_id)
-        await runtime.start()
-        nickname = self._next_nickname()
-        managed = ManagedAgent(
-            agent_id=agent_id,
-            runtime=runtime,
-            nickname=nickname,
-        )
-        runtime.event_handler = lambda event: self._handle_agent_event(managed, event)
-        async with self._get_condition():
-            self._agents[agent_id] = managed
-            self._condition.notify_all()
-        self._state_changed()
-
-        initial_prompt = self._compose_prompt(message, items)
-        if initial_prompt:
-            await self.send_input(agent_id, initial_prompt, interrupt=False)
-
-        return {
-            "agent_id": agent_id,
-            "nickname": nickname,
-        }
-
-    async def send_input(
-        self,
-        agent_id: "str",
-        prompt_text: "str",
-        interrupt: "bool",
-    ) -> "typing.Dict[str, object]":
-        managed = self._agents.get(agent_id)
-        if managed is None:
-            raise RuntimeError(f"unknown agent: {agent_id}")
-        if managed.runtime.agent.is_shutdown:
-            raise RuntimeError(f"agent is shutdown: {agent_id}")
-
-        submission_id, future = await managed.runtime.enqueue_user_turn(
-            prompt_text,
-            queue="steer" if interrupt else "enqueue",
-        )
-        future.add_done_callback(self._submission_finished)
-        async with self._get_condition():
-            self._condition.notify_all()
-        self._state_changed()
-        return {"submission_id": submission_id}
-
-    async def resume_agent(self, agent_id: "str") -> "typing.Dict[str, object]":
-        managed = self._agents.get(agent_id)
-        if managed is None:
-            return {"status": "not_found"}
-        if managed.runtime.agent.is_shutdown:
-            managed.runtime.resume()
-            managed.last_status = "pending_init"
-            await managed.runtime.start()
-        async with self._get_condition():
-            self._condition.notify_all()
-        self._state_changed()
-        return {"status": self._status_payload(managed)}
-
-    async def close_agent(self, agent_id: "str") -> "typing.Dict[str, object]":
-        managed = self._agents.get(agent_id)
-        if managed is None:
-            return {"previous_status": "not_found"}
-        previous_status = self._status_payload(managed)
-        await managed.runtime.close()
-        async with self._get_condition():
-            self._condition.notify_all()
-        self._state_changed()
-        return {"previous_status": previous_status}
-
-    async def shutdown(self) -> "None":
-        errors = []
-        for agent_id in tuple(self._agents):
-            try:
-                await self.close_agent(agent_id)
-            except Exception as exc:
-                errors.append(exc)
-        if errors:
-            for error in errors[1:]:
-                asyncio.get_running_loop().call_exception_handler(
-                    {
-                        "message": "Sub-agent close failed",
-                        "exception": error,
-                    }
-                )
-            raise errors[0]
-
-    def _next_nickname(self) -> "str":
-        if not self._available_nicknames:
-            self._available_nicknames = list(DEFAULT_AGENT_NICKNAME_CANDIDATES)
-            self._nickname_random.shuffle(self._available_nicknames)
-        return self._available_nicknames.pop()
-
-    async def wait_agents(
-        self,
-        agent_ids: "typing.List[str]",
-        timeout_ms: "int" = 30_000,
-    ) -> "typing.Dict[str, object]":
-        timeout_seconds = max(timeout_ms, 1) / 1000.0
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_seconds
-
-        async with self._get_condition():
-            while True:
-                snapshot = {
-                    agent_id: self._status_payload(self._agents.get(agent_id))
-                    for agent_id in agent_ids
-                }
-                if any(self._is_final_status(status) for status in snapshot.values()):
-                    return {"status": snapshot, "timed_out": False}
-                remaining = deadline - loop.time()
-                if remaining <= 0:
-                    return {"status": {}, "timed_out": True}
-                waiter = asyncio.create_task(self._condition.wait())
-                try:
-                    done, _pending = await asyncio.wait({waiter}, timeout=remaining)
-                    if not done:
-                        return {"status": {}, "timed_out": True}
-                    await waiter
-                finally:
-                    if not waiter.done():
-                        waiter.cancel()
-                        # Condition.wait() must reacquire the lock before we leave
-                        # the context. Python 3.6 wait_for() does not await that.
-                        try:
-                            await waiter
-                        except asyncio.CancelledError:
-                            pass
-
-    def _submission_finished(self, future: "asyncio.Future") -> "None":
-        if not future.cancelled():
-            future.exception()
-        asyncio.create_task(self._notify_waiters())
-
-    def _handle_agent_event(self, managed: "ManagedAgent", event: "Event") -> "None":
-        if isinstance(event, (RuntimeUpdatedEvent, SessionClosedEvent)):
-            self._state_changed()
-            return
-        if isinstance(event, TurnCompletedEvent):
-            managed.last_status = {"completed": event.output_text}
-        elif isinstance(event, CompactCompletedEvent):
-            managed.last_status = {"completed": None}
-        elif isinstance(event, (TurnFailedEvent, CompactFailedEvent)):
-            managed.last_status = {
-                "errored": "{0}: {1}".format(
-                    event.error_type,
-                    event.error,
-                )
-            }
-        elif isinstance(event, TurnInterruptedEvent):
-            managed.last_status = {"errored": "TurnInterrupted: turn interrupted"}
-        elif isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
-            asyncio.create_task(self._notify_waiters())
-            return
-        else:
-            return
-        self._pending_notifications.append(
-            UserMessage(
-                text=(
-                    "<subagent_notification>\n"
-                    + json.dumps(
-                        {
-                            "agent_id": managed.agent_id,
-                            "status": managed.last_status,
-                        },
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    + "\n</subagent_notification>"
-                )
-            )
-        )
-        asyncio.create_task(self._notify_waiters())
-
-    async def _notify_waiters(self) -> "None":
-        self._state_changed()
-        async with self._get_condition():
-            self._condition.notify_all()
-
-    def _compose_prompt(
-        self,
-        message: "typing.Union[str, None]",
-        items: "typing.Union[typing.List[typing.Dict[str, object]], None]",
-    ) -> "str":
-        parts: "typing.List[str]" = []
-        if message:
-            parts.append(message.strip())
-        for item in items or []:
-            item_type = str(item.get("type", ""))
-            if item_type == "text":
-                text = str(item.get("text", "")).strip()
-                if text:
-                    parts.append(text)
-            elif item_type == "image":
-                image_url = str(item.get("image_url", "")).strip()
-                if image_url:
-                    parts.append(f"[image] {image_url}")
-            else:
-                parts.append(json.dumps(item, ensure_ascii=False))
-        return "\n\n".join(part for part in parts if part)
-
-    def _status_payload(
-        self, managed: "typing.Union[ManagedAgent, None]"
-    ) -> "AgentStatus":
-        if managed is None:
-            return "not_found"
-        agent = managed.runtime.agent
-        if agent.is_shutdown:
-            return "shutdown"
-        if managed.runtime.is_busy:
-            return "running"
-        status = managed.last_status
-        return dict(status) if isinstance(status, dict) else status
-
-    def _is_final_status(self, status: "AgentStatus") -> "bool":
-        if isinstance(status, str):
-            return status in {"shutdown", "not_found"}
-        if isinstance(status, dict):
-            return "completed" in status or "errored" in status
-        return False
-
-
-def _fork_context_history(
-    history: "typing.Tuple[ConversationItem, ...]",
-) -> "typing.Tuple[ConversationItem, ...]":
-    call_ids = set()
-    result_ids = set()
-    for item in history:
-        if isinstance(item, ToolCall):
-            call_ids.add(item.call_id)
-        elif isinstance(item, ToolResult):
-            result_ids.add(item.call_id)
-
-    paired_call_ids = call_ids & result_ids
-    filtered = []
-    for item in history:
-        if isinstance(item, ToolCall) and item.call_id not in paired_call_ids:
-            continue
-        if isinstance(item, ToolResult) and item.call_id not in paired_call_ids:
-            continue
-        filtered.append(item)
-    return tuple(filtered)
-
-
 class AgentRuntimeEnvironment:
     def __init__(self) -> "None":
+        self.clock_manager = ClockManager()
+        self.goal_manager = GoalManager()
         self.plan_store = PlanStore()
-        self.subagent_manager = SubAgentManager()
         self.request_user_input_manager = RequestUserInputManager()
         self.request_permissions_manager = RequestPermissionsManager()
+        self._resources = {}
+        self._restart_handlers = []
+        self._close_handlers = []
+        self._event_handlers = []
+        self._bindings = None
+
+    def register_resource(self, name, manager, restart=None, close=None, observer=None):
+        """Register one shared manager, independently of its callable tools."""
+        if name in self._resources or manager in self._resources.values():
+            raise ValueError("resource already registered: " + name)
+        self._resources[name] = manager
+        for handler, handlers in (
+            (restart, self._restart_handlers), (close, self._close_handlers),
+            (observer, self._event_handlers),
+        ):
+            if handler is not None:
+                handlers.append(handler)
+
+    def bind(self, invoke, output, changed, request_input, request_permissions):
+        self._bindings = (invoke, output, lambda: changed("background_work"))
+        self.request_user_input_manager.set_handler(request_input)
+        self.request_permissions_manager.set_handler(request_permissions)
+        self.plan_store.set_listener(lambda _plan: changed("plan"))
+        for manager in self._resources.values():
+            manager.bind(*self._bindings)
+
+    def restart(self):
+        for restart in self._restart_handlers:
+            restart()
+        if self._bindings is not None:
+            for manager in self._resources.values():
+                manager.bind(*self._bindings)
+
+    def set_state_listener(self, listener):
+        for manager in self._resources.values():
+            manager.set_state_listener(listener)
+
+    def background_work_count(self, after_reply):
+        return sum(manager.background_work_count(after_reply) for manager in self._resources.values())
+
+    def background_work_snapshot(self):
+        return [
+            dict(item, tool=name)
+            for name, manager in self._resources.items()
+            for item in manager.background_work_snapshot()
+        ]
+
+    def event_observers(self, event):
+        return self._event_handlers if isinstance(
+            event, (TerminalEvent, TurnStartedEvent, CompactStartedEvent),
+        ) else []
+
+    def dump_state(self):
+        managers = {"clock": self.clock_manager.dump_state()}
+        goal = self.goal_manager.dump_state()
+        if goal is not None:
+            managers["goal"] = goal
+        return {
+            "version": 1,
+            "managers": managers,
+        }
+
+    def validate_state(self, state):
+        if state is not None:
+            if state["version"] != 1:
+                raise ValueError("unsupported environment state version")
+            self.clock_manager.validate_state(state["managers"]["clock"])
+            self.goal_manager.validate_state(state["managers"].get("goal"))
+
+    def restore_state(self, state):
+        self.validate_state(state)
+        self.clock_manager.restore_state(
+            {"period_m": None} if state is None else state["managers"]["clock"]
+        )
+        self.goal_manager.restore_state(
+            None if state is None else state["managers"].get("goal")
+        )
+
+    def start(self):
+        self.clock_manager.arm_after_reply()
+        self.goal_manager.start()
+
+    def handle_agent_event(self, event):
+        self.goal_manager.handle_agent_event(event)
+
+    def tool_completed(self):
+        self.goal_manager.account()
+
+    def follow_up_messages(self):
+        return self.goal_manager.follow_up_messages()
+
+    def take_continuation(self):
+        return self.goal_manager.take_continuation()
+
+    def shutdown(self, save_state):
+        try:
+            self.goal_manager.shutdown()
+            save_state()
+        finally:
+            for manager in self._resources.values():
+                manager.shutdown()
+
+    async def close(self):
+        await close_resources(self._close_handlers)
+
+
+async def close_resources(handlers):
+    errors = []
+    for handler in handlers:
+        try:
+            await handler()
+        except Exception as exc:
+            errors.append(exc)
+    if errors:
+        for error in errors[1:]:
+            asyncio.get_running_loop().call_exception_handler(
+                {"message": "Session close handler failed", "exception": error}
+            )
+        raise errors[0]
 
 
 def create_agent_runtime_environment() -> "AgentRuntimeEnvironment":

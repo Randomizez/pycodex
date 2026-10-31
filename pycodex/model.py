@@ -6,6 +6,7 @@ import threading
 import typing
 import urllib.parse
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic
@@ -15,11 +16,7 @@ import requests
 from urllib3.exceptions import ReadTimeoutError
 
 from .utils.compat import Protocol
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python 3.10 path
-    import tomli as tomllib
+from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
 
 from .events import (
     AssistantDeltaEvent,
@@ -38,10 +35,11 @@ from .protocol import (
     Prompt,
     ReasoningItem,
     ToolCall,
+    ToolSpec,
+    qualified_tool_name,
 )
 from .utils import build_user_agent, uuid7_string
 
-DEFAULT_CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 DEFAULT_ORIGINATOR = "pycodex"
 RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 ModelStreamEventHandler = Callable[[ModelEvent], None]
@@ -55,10 +53,25 @@ RATE_LIMIT_RETRY_AFTER_RE = re.compile(
 )
 
 
+@dataclass(frozen=True)
+class ModelRecordingMetadata:
+    originator: "str"
+    provider_name: "typing.Union[str, None]"
+
+
 class ModelClient(Protocol):
-    @property
-    def model(self) -> "str":
-        """Return the current model identifier."""
+    model: "str"
+    reasoning_effort: "typing.Union[str, None]"
+    recording_metadata: "ModelRecordingMetadata"
+
+    def with_overrides(
+        self,
+        model: "typing.Union[str, None]",
+        reasoning_effort: "typing.Union[str, None]",
+        session_id: "typing.Union[str, None]" = None,
+        openai_subagent: "typing.Union[str, None]" = None,
+    ) -> "ModelClient":
+        """Construct an independent client for a child Agent."""
 
     async def complete(
         self,
@@ -68,10 +81,7 @@ class ModelClient(Protocol):
         """Return the next batch of model output items for the current prompt."""
 
 
-class ModelControl(Protocol):
-    model: "str"
-    reasoning_effort: "typing.Union[str, None]"
-
+class ModelControl(ModelClient, Protocol):
     @property
     def endpoint(self) -> "str":
         """Return the active API base URL, safe for display."""
@@ -119,17 +129,18 @@ class ResponsesProviderConfig:
         cls,
         config_path: "typing.Union[str, Path]" = DEFAULT_CODEX_CONFIG_PATH,
         profile: "typing.Union[str, None]" = None,
+        use_default_profile: "bool" = True,
     ) -> "ResponsesProviderConfig":
-        data = tomllib.loads(Path(config_path).read_text(encoding="utf-8"))
-        selected = dict(data)
-        if profile is not None:
-            overrides = data.get("profiles", {}).get(profile)
-            if overrides is None:
-                raise ValueError(f"unknown Codex profile: {profile}")
-            selected.update(overrides)
+        return cls.from_mapping(
+            read_codex_config(config_path, profile, use_default_profile)
+        )
 
+    @classmethod
+    def from_mapping(
+        cls, selected: "typing.Mapping[str, typing.Any]",
+    ) -> "ResponsesProviderConfig":
         provider_name = selected.get("model_provider", "openai")
-        provider = data.get("model_providers", {}).get(provider_name)
+        provider = selected.get("model_providers", {}).get(provider_name)
         if provider is None:
             if provider_name != "openai":
                 raise ValueError(f"unknown Codex model provider: {provider_name}")
@@ -196,19 +207,6 @@ class ResponsesProviderConfig:
                 f"missing API key environment variable: {self.api_key_env}"
             )
         return value
-
-    def with_overrides(
-        self,
-        model: "typing.Union[str, None]" = None,
-        reasoning_effort: "typing.Union[str, None]" = None,
-    ) -> "ResponsesProviderConfig":
-        return replace(
-            self,
-            model=self.model if model is None else model,
-            reasoning_effort=(
-                self.reasoning_effort if reasoning_effort is None else reasoning_effort
-            ),
-        )
 
     def effective_stream_max_retries(self) -> "int":
         if self.stream_max_retries is None:
@@ -334,6 +332,22 @@ def _strip_image_detail_from_content_items(items: "typing.Iterable[object]") -> 
             item.pop("detail", None)
 
 
+def _filter_audio_inputs(items, metadata):
+    if metadata is None or "audio" in metadata.get("input_modalities", ()):
+        return
+    for item in items:
+        for key in ("content", "output"):
+            content = item.get(key)
+            if not isinstance(content, list):
+                continue
+            for index, part in enumerate(content):
+                if part.get("type") == "input_audio":
+                    content[index] = {
+                        "type": "input_text",
+                        "text": "audio content omitted because you do not support audio input",
+                    }
+
+
 class ResponsesApiError(RuntimeError):
     pass
 
@@ -426,7 +440,7 @@ class ResponsesModelClient:
         self._config = config
         self._timeout_seconds = timeout_seconds
         self._session_id = session_id or uuid7_string()
-        self._originator = originator
+        self.recording_metadata = ModelRecordingMetadata(originator, config.provider_name)
         self._user_agent = user_agent or build_user_agent(originator)
         self._openai_subagent = openai_subagent
         self._model_cooldowns: "typing.Dict[str, float]" = {}
@@ -483,13 +497,17 @@ class ResponsesModelClient:
         openai_subagent: "typing.Union[str, None]" = None,
     ) -> "ResponsesModelClient":
         return ResponsesModelClient(
-            self._config.with_overrides(
-                model or self.model,
-                reasoning_effort,
+            replace(
+                self._config,
+                model=model or self.model,
+                reasoning_effort=(
+                    self._config.reasoning_effort
+                    if reasoning_effort is None else reasoning_effort
+                ),
             ),
             self._timeout_seconds,
             session_id=self._session_id if session_id is None else session_id,
-            originator=self._originator,
+            originator=self.recording_metadata.originator,
             user_agent=self._user_agent,
             openai_subagent=(
                 self._openai_subagent if openai_subagent is None else openai_subagent
@@ -613,6 +631,7 @@ class ResponsesModelClient:
         event_handler: "ModelStreamEventHandler",
     ) -> "ModelResponse":
         payload = self._build_payload(prompt)
+        session_id = payload["prompt_cache_key"]
         body = json.dumps(payload).encode("utf-8")
         url = self.responses_url()
         prepared = requests.PreparedRequest()
@@ -688,6 +707,7 @@ class ResponsesModelClient:
                         tracked_lines,
                         event_handler,
                         diagnostics=diagnostics,
+                        session_id=session_id,
                     )
                     completed = True
                     return result
@@ -702,7 +722,7 @@ class ResponsesModelClient:
                 )
             ):
                 error_type = ResponsesFirstDataTimeout
-            error = error_type(self._format_transport_error(url, exc, diagnostics))
+            error = error_type(self._format_transport_error(url, exc, diagnostics, session_id))
             error.elapsed_seconds = monotonic() - diagnostics.started_at
             error.first_data_seconds = diagnostics.first_data_seconds
             raise error from exc
@@ -716,13 +736,70 @@ class ResponsesModelClient:
                 diagnostics.first_data_seconds, "completed" if completed else "failed",
             ))
 
+    @staticmethod
+    def _serialize_tools(
+        tools: "typing.Iterable[ToolSpec]", use_responses_lite: "bool",
+    ) -> "typing.List[JSONDict]":
+        declarations = []
+        namespaces = {}
+        for tool in tools:
+            declaration = tool.serialize()
+            if not tool.namespace:
+                declarations.append(declaration)
+                continue
+            if tool.tool_type not in ("function", "custom"):
+                raise ValueError("tool namespaces only contain function/custom tools")
+            if tool.namespace not in namespaces:
+                namespace = {
+                    "type": "namespace",
+                    "name": tool.namespace,
+                    "description": tool.namespace_description,
+                    "tools": [],
+                }
+                namespaces[tool.namespace] = namespace
+                declarations.append(namespace)
+            namespace = namespaces[tool.namespace]
+            if not namespace["description"].strip():
+                namespace["description"] = tool.namespace_description
+            namespace["tools"].append(declaration)
+        for namespace in namespaces.values():
+            namespace["tools"].sort(key=lambda tool: tool["name"])
+        if not use_responses_lite:
+            return declarations
+
+        functions = {
+            "type": "namespace", "name": "functions", "description": "", "tools": [],
+        }
+        functions_index = None
+        payload = []
+        for declaration in declarations:
+            if declaration["type"] in ("function", "custom"):
+                functions["tools"].append(declaration)
+            elif (
+                declaration["type"] == "namespace"
+                and declaration["name"] == "functions"
+            ):
+                functions["tools"].extend(declaration["tools"])
+                if declaration["description"].strip():
+                    functions["description"] = declaration["description"]
+            else:
+                payload.append(declaration)
+                continue
+            if functions_index is None:
+                functions_index = len(payload)
+        if functions["tools"]:
+            payload.insert(functions_index, functions)
+        return payload
+
     def _build_payload(self, prompt: "Prompt") -> "typing.Dict[str, object]":
+        session_id = self._session_id if prompt.session_id is None else prompt.session_id
         use_responses_lite = self._config.use_responses_lite()
         input_items = [item.serialize() for item in prompt.input]
+        _filter_audio_inputs(input_items, model_metadata(self.model))
         if use_responses_lite:
             _strip_image_details(input_items)
 
-        tools = [tool.serialize() for tool in prompt.tools]
+        tools = self._serialize_tools(prompt.tools, use_responses_lite)
         payload: "typing.Dict[str, object]" = {
             "model": self.model,
             "input": input_items,
@@ -731,9 +808,9 @@ class ResponsesModelClient:
             "store": False,
             "stream": True,
             "include": ["reasoning.encrypted_content"],
-            "prompt_cache_key": self._session_id,
+            "prompt_cache_key": session_id,
         }
-        prefix_namespace = uuid.uuid5(uuid.NAMESPACE_OID, self._session_id)
+        prefix_namespace = uuid.uuid5(uuid.NAMESPACE_OID, session_id)
         prefix: "typing.List[typing.Dict[str, object]]" = []
         if use_responses_lite:
             prefix.append(
@@ -847,12 +924,13 @@ class ResponsesModelClient:
         return models
 
     def _build_headers(self, prompt: "Prompt") -> "typing.Dict[str, str]":
+        session_id = self._session_id if prompt.session_id is None else prompt.session_id
         headers = {
             "content-type": "application/json",
             "accept": "text/event-stream",
-            "x-client-request-id": self._session_id,
-            "session_id": self._session_id,
-            "originator": self._originator,
+            "x-client-request-id": session_id,
+            "session_id": session_id,
+            "originator": self.recording_metadata.originator,
             "user-agent": self._user_agent,
         }
         api_key = self._config.api_key()
@@ -874,7 +952,7 @@ class ResponsesModelClient:
     def _build_model_list_headers(self) -> "typing.Dict[str, str]":
         headers = {
             "accept": "application/json",
-            "originator": self._originator,
+            "originator": self.recording_metadata.originator,
             "user-agent": self._user_agent,
         }
         api_key = self._config.api_key()
@@ -891,6 +969,7 @@ class ResponsesModelClient:
         response,
         event_handler: "ModelStreamEventHandler",
         diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
+        session_id: "typing.Union[str, None]" = None,
     ) -> "ModelResponse":
         items: "typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]" = ([])
         saw_completed = False
@@ -903,7 +982,7 @@ class ResponsesModelClient:
                 payload = json.loads(data)
             except json.JSONDecodeError as exc:
                 raise ResponsesRetryableError(
-                    self._format_invalid_event_error(event_name, data, exc)
+                    self._format_invalid_event_error(event_name, data, exc, session_id)
                 ) from exc
             event_type = payload.get("type", event_name)
             last_event_type = str(event_type)
@@ -990,23 +1069,24 @@ class ResponsesModelClient:
                         payload,
                         len(partial_items),
                         reason,
+                        session_id,
                     ),
                     partial_items,
                     reason=reason,
                 )
 
             if event_type == "response.failed":
-                self._raise_response_failed_error(payload)
+                self._raise_response_failed_error(payload, session_id)
 
         if not saw_completed:
             raise ResponsesRetryableError(
-                self._format_incomplete_stream_error(last_event_type, len(items))
+                self._format_incomplete_stream_error(last_event_type, len(items), session_id)
             )
 
         return ModelResponse(items=items)
 
+    @staticmethod
     def _parse_output_item(
-        self,
         item: "typing.Dict[str, object]",
     ) -> "typing.Union[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem], None]":
         item_type = item.get("type")
@@ -1015,6 +1095,13 @@ class ResponsesModelClient:
 
         if item_type == "message" and item.get("role") == "assistant":
             return AssistantMessage.from_response_item(item)
+
+        if item_type in ("function_call", "custom_tool_call"):
+            name = str(item["name"])
+            if "." in name:
+                raise ResponsesApiError("tool call names must not contain '.'")
+            namespace = item.get("namespace")
+            name = qualified_tool_name(name, namespace)
 
         if item_type == "function_call":
             raw_arguments = item["arguments"]
@@ -1025,17 +1112,18 @@ class ResponsesModelClient:
                 )
             return ToolCall(
                 call_id=str(item["call_id"]),
-                name=str(item["name"]),
+                name=name,
                 arguments=arguments,
                 id=item.get("id"),
                 raw_arguments=raw_arguments,
                 namespace=item.get("namespace"),
+                encrypted_function_args=deepcopy(item.get("encrypted_function_args")),
             )
 
         if item_type == "custom_tool_call":
             return ToolCall(
                 call_id=str(item["call_id"]),
-                name=str(item["name"]),
+                name=name,
                 arguments=str(item.get("input", "")),
                 tool_type="custom",
                 id=item.get("id"),
@@ -1114,16 +1202,17 @@ class ResponsesModelClient:
     def _base_error_details(
         self,
         url: "str",
+        session_id: "typing.Union[str, None]" = None,
     ) -> "typing.List[typing.Tuple[str, str]]":
         return [
             ("provider", self._config.provider_name),
             ("model", self.model),
             ("request", f"POST {url}"),
-            ("session_id", self._session_id),
+            ("session_id", self._session_id if session_id is None else session_id),
         ]
 
+    @staticmethod
     def _format_error_message(
-        self,
         summary: "str",
         details: "typing.Iterable[typing.Tuple[str, str]]",
     ) -> "str":
@@ -1140,8 +1229,9 @@ class ResponsesModelClient:
         url: "str",
         exc: "BaseException",
         diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
+        session_id: "typing.Union[str, None]" = None,
     ) -> "str":
-        details = self._base_error_details(url)
+        details = self._base_error_details(url, session_id)
         if diagnostics is not None:
             details.extend(self._transport_diagnostics_details(diagnostics))
             details.append(("elapsed_seconds", round(monotonic() - diagnostics.started_at, 3)))
@@ -1179,8 +1269,9 @@ class ResponsesModelClient:
         self,
         message: "str",
         code: "str" = "",
+        session_id: "typing.Union[str, None]" = None,
     ) -> "str":
-        details = self._base_error_details(self.responses_url())
+        details = self._base_error_details(self.responses_url(), session_id)
         details.append(("detail", message))
         if code:
             details.append(("code", code))
@@ -1201,8 +1292,9 @@ class ResponsesModelClient:
         payload: "typing.Dict[str, object]",
         output_item_count: "int",
         reason: "typing.Union[str, None]" = None,
+        session_id: "typing.Union[str, None]" = None,
     ) -> "str":
-        details = self._base_error_details(self.responses_url())
+        details = self._base_error_details(self.responses_url(), session_id)
         if reason:
             details.append(("reason", reason))
         details.append(("output_items_received", str(output_item_count)))
@@ -1228,35 +1320,34 @@ class ResponsesModelClient:
         return str(incomplete_details.get("reason") or "").strip()
 
     def _raise_response_failed_error(
-        self, payload: "typing.Dict[str, object]"
+        self, payload: "typing.Dict[str, object]", session_id=None,
     ) -> "None":
         response = payload.get("response")
         error = response.get("error") if isinstance(response, dict) else None
         if not isinstance(error, dict):
             raise ResponsesRetryableError(
-                self._format_response_failed_error("responses stream failed")
+                self._format_response_failed_error("responses stream failed", session_id=session_id)
             )
 
         message = str(error.get("message") or "responses stream failed")
         code = str(error.get("code") or error.get("type") or "").strip()
+        formatted = self._format_response_failed_error(message, code, session_id)
         if code == "context_length_exceeded" or _is_context_length_error_message(
             message
         ):
-            raise ContextLengthExceeded(
-                self._format_response_failed_error(message, code)
-            )
+            raise ContextLengthExceeded(formatted)
         if code in {"model_not_found", "model_not_available", "permission_denied"}:
-            raise ResponsesModelUnavailableError(self._format_response_failed_error(message, code))
+            raise ResponsesModelUnavailableError(formatted)
         if code in {
             "insufficient_quota",
             "invalid_prompt",
             "model_output_invalid",
             "usage_not_included",
         }:
-            raise ResponsesApiError(self._format_response_failed_error(message, code))
+            raise ResponsesApiError(formatted)
 
         raise ResponsesRetryableError(
-            self._format_response_failed_error(message, code),
+            formatted,
             retry_delay_seconds=self._try_parse_retry_after_seconds(code, message),
         )
 
@@ -1264,8 +1355,9 @@ class ResponsesModelClient:
         self,
         last_event_type: "str",
         output_item_count: "int",
+        session_id: "typing.Union[str, None]" = None,
     ) -> "str":
-        details = self._base_error_details(self.responses_url())
+        details = self._base_error_details(self.responses_url(), session_id)
         if last_event_type:
             details.append(("last_event", last_event_type))
         details.append(("output_items_received", str(output_item_count)))
@@ -1292,8 +1384,9 @@ class ResponsesModelClient:
         event_name: "str",
         raw_data: "str",
         exc: "json.JSONDecodeError",
+        session_id: "typing.Union[str, None]" = None,
     ) -> "str":
-        details = self._base_error_details(self.responses_url())
+        details = self._base_error_details(self.responses_url(), session_id)
         details.append(("event", event_name or "message"))
         details.append(("exception", type(exc).__name__))
         details.append(("detail", str(exc)))

@@ -15,10 +15,9 @@ import json
 import traceback
 import typing
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from ..events import Event
 from ..protocol import (
     ConversationItem,
     JSONDict,
@@ -27,12 +26,11 @@ from ..protocol import (
     ToolResult,
     ToolSpec,
     UserMessage,
+    qualified_tool_name,
 )
 from ..utils import get_debug_dir
 from .runtime_services import AgentRuntimeEnvironment
-
-if typing.TYPE_CHECKING:
-    from ..agent import Agent
+from .python_tool_schema import python_tool_identifier
 
 
 @dataclass(
@@ -42,6 +40,10 @@ class ToolContext:
     turn_id: "str"
     history: "typing.Tuple[ConversationItem, ...]"
     cwd: "Path"
+    agent_id: "typing.Union[str, None]" = None
+    encrypted_messages: "bool" = True
+    call_id: "typing.Union[str, None]" = None
+    session_id: "typing.Union[str, None]" = None
 
     def resolve_path(self, path=None) -> "Path":
         return (self.cwd / Path("." if path is None else path).expanduser()).resolve()
@@ -62,6 +64,9 @@ class StructuredToolOutput:
 class BaseTool(ABC):
     name: "str"
     description: "str"
+    namespace: "typing.Union[str, None]" = None
+    namespace_description: "str" = ""
+    exec_only: "bool" = True
     input_schema: "typing.Union[JSONDict, None]" = None
     tool_type: "str" = "function"
     format: "typing.Union[JSONDict, None]" = None
@@ -79,6 +84,8 @@ class BaseTool(ABC):
             options=self.options,
             output_schema=self.output_schema,
             supports_parallel=self.supports_parallel,
+            namespace=self.namespace,
+            namespace_description=self.namespace_description,
         )
 
     def serialize(self) -> "JSONDict":
@@ -95,24 +102,6 @@ class BaseTool(ABC):
     ) -> "typing.Tuple[UserMessage, ...]":
         return ()
 
-    def bind_agent(self, agent: "Agent") -> "None":
-        pass
-
-    def handle_agent_event(self, event: "Event") -> "None":
-        pass
-
-    def shutdown(self) -> "None":
-        pass
-
-    def background_work_count(self, after_reply: "bool") -> "int":
-        return 0
-
-    def background_work_snapshot(self) -> "typing.List[JSONDict]":
-        return []
-
-    def set_state_listener(self, listener) -> "None":
-        pass
-
 
 class ToolRegistry:
     def __init__(
@@ -122,10 +111,44 @@ class ToolRegistry:
         self.runtime_environment = runtime_environment or AgentRuntimeEnvironment()
 
     def register(self, tool: "BaseTool") -> "None":
-        self._tools[tool.name] = tool
+        if "." in tool.name:
+            raise ValueError("tool names must not contain '.'")
+        self._tools[qualified_tool_name(tool.name, tool.namespace)] = tool
 
-    def model_visible_specs(self) -> "typing.List[ToolSpec]":
-        return [tool.spec() for tool in self._tools.values()]
+    def model_visible_specs(self, code_mode_only: "bool" = False) -> "typing.List[ToolSpec]":
+        if not code_mode_only:
+            return [
+                tool.spec() for name, tool in self._tools.items()
+                if name not in ("exec", "wait")
+            ]
+        direct_tools = {
+            name: tool for name, tool in self._tools.items() if not tool.exec_only
+        }
+        if len(direct_tools) != len(self._tools):
+            if not {"exec", "wait"}.issubset(direct_tools):
+                raise ValueError("CodeModeOnly requires registered exec and wait tools")
+        return [tool.spec() for tool in direct_tools.values()]
+
+    def exec_tools(self) -> "typing.List[JSONDict]":
+        enabled = []
+        identifiers = set()
+        for tool_name, tool in self._tools.items():
+            if not tool.exec_only and tool.namespace != "collaboration":
+                continue
+            if tool.tool_type not in {"function", "custom"}:
+                continue
+            namespace, name = python_tool_identifier(tool.name, tool.namespace)
+            identifier = namespace + "." + name
+            if identifier in identifiers:
+                raise ValueError("duplicate exec tool identifier: " + identifier)
+            identifiers.add(identifier)
+            enabled.append({
+                "tool_name": tool_name, "namespace": namespace, "name": name,
+                "description": tool.description, "tool_type": tool.tool_type,
+                "parameters": tool.input_schema, "output_schema": tool.output_schema,
+                "format": tool.format,
+            })
+        return sorted(enabled, key=lambda item: (item["namespace"], item["name"]))
 
     def supports_parallel(self, tool_name: "str") -> "bool":
         tool = self._tools.get(tool_name)
@@ -134,6 +157,7 @@ class ToolRegistry:
     async def execute(self, call: "ToolCall", context: "ToolContext") -> "ToolResult":
         tool = self._tools.get(call.name)
         if tool is None:
+            self.runtime_environment.tool_completed()
             return ToolResult(
                 call_id=call.call_id,
                 name=call.name,
@@ -143,21 +167,23 @@ class ToolRegistry:
             )
 
         try:
-            output = await tool.run(context, call.arguments)
+            output = await tool.run(
+                replace(context, call_id=call.call_id),
+                call.arguments,
+            )
+            metadata = {}
             if isinstance(output, StructuredToolOutput):
-                return ToolResult(
-                    call_id=call.call_id,
-                    name=call.name,
-                    output=output.output,
-                    content_items=output.content_items,
-                    success=output.success,
-                    tool_type=call.tool_type,
+                metadata = dict(
+                    content_items=output.content_items, success=output.success,
+                    is_error=output.success is False,
                 )
+                output = output.output
             return ToolResult(
                 call_id=call.call_id,
                 name=call.name,
                 output=output,
                 tool_type=call.tool_type,
+                **metadata,
             )
         except asyncio.CancelledError:
             raise
@@ -186,6 +212,8 @@ class ToolRegistry:
                 is_error=True,
                 tool_type=call.tool_type,
             )
+        finally:
+            self.runtime_environment.tool_completed()
 
     def follow_up_messages(
         self, results: "typing.Iterable[ToolResult]"

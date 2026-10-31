@@ -5,12 +5,13 @@ import time
 import pytest
 from starlette.testclient import TestClient
 
-from pycodex import Agent, AgentRuntime, AssistantMessage, ContextConfig, ModelResponse, ToolRegistry, UserMessage
+from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolRegistry, UserMessage
 from pycodex.events import AssistantDeltaEvent
 from pycodex.tools import ClockManager, ClockTool
-from tests.fakes import ScriptedModelClient
+from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
-    ThreadedWorkspaceInteractiveSession, WebSessionView, WorkspaceDefinition,
+    ThreadedWorkspaceInteractiveSession, WorkspaceInteractiveSession,
+    WebSessionView, WorkspaceDefinition,
     WorkspaceEntry, WorkspaceRegistry, WorkspaceSessionManager,
     create_app, create_multi_workspace_app,
 )
@@ -209,26 +210,24 @@ def test_active_history_cursor_detects_compaction():
 
 @pytest.mark.asyncio
 async def test_child_queries_and_subscriptions_do_not_enable_interactive_requests(tmp_path):
-    session = make_session(cwd=tmp_path)
-    children = session.runtime.agent.tool_registry.runtime_environment.subagent_manager
-
-    def builder(model, effort, history, agent_id):
-        return AgentRuntime(Agent(
-            ScriptedModelClient([ModelResponse([AssistantMessage("child done")])]),
-            ToolRegistry(), ContextConfig(cwd=tmp_path),
-            initial_history=history, session_id=agent_id,
-        ))
-
-    children.set_runtime_builder(builder)
+    children = AgentsManager(
+        ScriptedModelClient(response_factory=lambda prompt, count: ModelResponse([
+            AssistantMessage("child done"),
+        ])), ContextConfig(cwd=tmp_path, codex_home=tmp_path), toolset=[],
+    )
+    session = WorkspaceInteractiveSession(children.create_root_runtime())
     await session.start()
     try:
-        child_id = (await children.spawn_agent(None, None, None, False, None, None, ()))["agent_id"]
+        root_id = session.runtime.agent.agent_id
+        path = await children.spawn_agent(root_id, "worker", "first", fork_turns="none")
+        child_id = children._resolve_agent_id(root_id, path)
+        child = children.get_runtime(child_id)
+        await wait_for_runtime_idle(child)
         listed = await session.api_query("agents", {})
         assert listed["agents"][0]["agent_id"] == child_id
-        assert listed["agents"][0]["parent_agent_id"] == session.runtime.agent.session_id
+        assert listed["agents"][0]["parent_agent_id"] == root_id
         state = await session.api_query("state", {"agent_id": child_id})
         assert state["state"]["agent_session_id"] == child_id
-        child = children.get_runtime(child_id)
         assert await child._request_permissions({"reason": "read-only observer"}) is None
         view = await session.event_view(child_id)
         queue = view.subscribe(state["cursor"])
@@ -242,9 +241,8 @@ async def test_child_queries_and_subscriptions_do_not_enable_interactive_request
         assert any(event.get("kind") == "assistant_delta" for event in events)
         assert (await session.api_query("history", {"agent_id": child_id, "limit": 10}))["source"] == "active_history"
         assert child.agent.session_file_path is None
-        child.fork()
         children_state = await session.api_query("state", {"agent_id": child_id})
-        assert children_state["state"]["agent_session_id"] != child_id
+        assert children_state["state"]["agent_session_id"] == child_id
         assert (await session.api_query("agents", {}))["agents"][0]["agent_id"] == child_id
     finally:
         await session.close()
@@ -255,6 +253,7 @@ async def test_clock_inventory_exposes_deadline_without_changing_tool_output(tmp
     clock = ClockManager()
     tools = ToolRegistry()
     tools.register(ClockTool(clock))
+    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
     session = make_session(tools=tools, cwd=tmp_path)
     await session.start()
     try:

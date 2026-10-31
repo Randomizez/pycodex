@@ -13,10 +13,9 @@ import requests
 
 from pycodex.utils import load_codex_dotenv
 
-from .feishu_card import _refresh_token_path, _write_refresh_token
+from .feishu_auth import FEISHU_API_BASE, refresh_token_path, write_refresh_token
 
 AUTHORIZE_URL = "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
-FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
 DEFAULT_REDIRECT_URI = "https://httpbin.org/get"
 DEFAULT_SCOPES = (
     "offline_access",
@@ -105,9 +104,9 @@ def print_token_result(payload: "typing.Dict[str, object]") -> None:
                 scope
             )
         )
-    _write_refresh_token(str(refresh_token))
+    write_refresh_token(str(refresh_token))
     print("")
-    print("Wrote refresh token to: {0}".format(_refresh_token_path()))
+    print("Wrote refresh token to: {0}".format(refresh_token_path()))
 
     expires_in = payload.get("refresh_token_expires_in")
     if expires_in is None:

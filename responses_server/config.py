@@ -40,17 +40,6 @@ class CompatServerConfig:
         value = str(self.outcomming_api or "").strip().lower()
         return value or "chat_completions"
 
-    def with_ephemeral_port(self) -> "CompatServerConfig":
-        return CompatServerConfig(
-            host=self.host,
-            port=0,
-            outcomming_base_url=self.outcomming_base_url,
-            outcomming_api=self.outcomming_api,
-            outcomming_api_key_env=self.outcomming_api_key_env,
-            model_provider=self.model_provider,
-            timeout_seconds=self.timeout_seconds,
-        )
-
     @classmethod
     def from_base_url(
         cls,

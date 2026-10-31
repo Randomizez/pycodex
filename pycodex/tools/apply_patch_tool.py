@@ -5,10 +5,8 @@ Original Codex mapping:
 
 Expected behavior:
 - Accept the same freeform patch envelope used by Codex main.
-- Verify the whole patch before mutating the filesystem so failed patches do not
-  leave partial edits behind.
-- Apply add/delete/update/move operations inside the workspace and return the
-  same success/error text shape Codex expects.
+- Verify patch contents before writing files.
+- Apply add/delete/update/move operations and return structured results for exec.
 """
 
 import typing
@@ -18,7 +16,7 @@ from pathlib import Path
 from loguru import logger
 
 from ..protocol import JSONValue
-from .base_tool import BaseTool, ToolContext
+from .base_tool import BaseTool, StructuredToolOutput, ToolContext
 
 APPLY_PATCH_LARK_GRAMMAR = """start: begin_patch hunk+ end_patch
 begin_patch: \"*** Begin Patch\" LF
@@ -81,7 +79,7 @@ class _UpdateFileOp:
 class ApplyPatchTool(BaseTool):
     name = "apply_patch"
     description = (
-        "Use the `apply_patch` tool to edit files. This is a FREEFORM tool, "
+        "The `apply_patch` tool can be used to edit files. This is a FREEFORM tool, "
         "so do not wrap the patch in JSON."
     )
     tool_type = "custom"
@@ -92,27 +90,33 @@ class ApplyPatchTool(BaseTool):
     }
     supports_parallel = False
 
-    async def run(self, context: "ToolContext", args: "JSONValue") -> "JSONValue":
+    async def run(self, context: "ToolContext", args: "JSONValue") -> "typing.Union[JSONValue, StructuredToolOutput]":
         cwd = context.cwd
-        patch_text = str(args)
+        if not isinstance(args, str):
+            raise ValueError("apply_patch expects patch text as a string")
+        patch_text = args
         logger.debug(
             "apply_patch workspace={} bytes={}", cwd, len(patch_text)
         )
         try:
             operations = self._parse_patch(patch_text)
-            return self._format_result(self._apply_operations(operations, cwd), exit_code=0)
+            self._apply_operations(operations, cwd)
+            return {}
         except ApplyPatchError as exc:
-            return self._format_result(str(exc), exit_code=1)
+            return StructuredToolOutput(str(exc), success=False)
 
     def _parse_patch(
         self, patch_text: "str"
     ) -> "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]":
-        lines = patch_text.splitlines()
+        lines = patch_text.strip().splitlines()
         if not lines:
             raise ApplyPatchError("patch rejected: empty patch")
+        lines[0] = lines[0].strip()
+        lines[-1] = lines[-1].strip()
         if lines[0] != "*** Begin Patch":
             raise ApplyPatchError(
-                "apply_patch verification failed: missing '*** Begin Patch' header"
+                "apply_patch verification failed: invalid patch: "
+                "The first line of the patch must be '*** Begin Patch'"
             )
 
         operations: "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]" = ([])
@@ -235,22 +239,19 @@ class ApplyPatchTool(BaseTool):
         self,
         operations: "typing.List[typing.Union[typing.Union[_AddFileOp, _DeleteFileOp], _UpdateFileOp]]",
         cwd: "Path",
-    ) -> "str":
+    ) -> "None":
         preview: "typing.Dict[Path, typing.Union[str, None]]" = {}
-        summaries: "typing.Dict[Path, str]" = {}
 
         for operation in operations:
             if isinstance(operation, _AddFileOp):
                 path = self._resolve_workspace_path(operation.path, cwd)
                 preview[path] = operation.content
-                summaries[path] = "A"
                 continue
 
             if isinstance(operation, _DeleteFileOp):
                 path = self._resolve_workspace_path(operation.path, cwd)
                 self._read_preview_file(path, preview, cwd)
                 preview[path] = None
-                summaries[path] = "D"
                 continue
 
             path = self._resolve_workspace_path(operation.path, cwd)
@@ -260,12 +261,9 @@ class ApplyPatchTool(BaseTool):
             if operation.move_to is not None:
                 destination = self._resolve_workspace_path(operation.move_to, cwd)
                 preview[path] = None
-                summaries.pop(path, None)
             preview[destination] = updated
-            summaries[destination] = "M"
 
         self._write_preview(preview)
-        return self._format_success(summaries, cwd)
 
     def _read_preview_file(
         self, path: "Path", preview: "typing.Dict[Path, typing.Union[str, None]]",
@@ -347,21 +345,6 @@ class ApplyPatchTool(BaseTool):
                 continue
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
-
-    def _format_success(self, summaries: "typing.Dict[Path, str]", cwd: "Path") -> "str":
-        buckets = {"A": [], "M": [], "D": []}
-        for path, status in summaries.items():
-            buckets[status].append(self._display_path(path, cwd))
-        lines = ["Success:"]
-        for status in ("A", "M", "D"):
-            for rel_path in sorted(buckets[status]):
-                lines.append(f"{status} {rel_path}")
-        return " ".join(lines) + "\n"
-
-    def _format_result(self, output: "str", exit_code: "int") -> "str":
-        return (
-            f"Exit code: {exit_code}\n" "Wall time: 0 seconds\n" "Output:\n" f"{output}"
-        )
 
     def _resolve_workspace_path(self, path_text: "str", cwd: "Path") -> "Path":
         path = Path(path_text).expanduser()
