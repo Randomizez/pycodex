@@ -575,6 +575,7 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
     manager = UnifiedExecManager()
     pid_path = tmp_path / "stdout-holder.pid"
     child_pid = None
+    process = None
     command = "\n".join(
         [
             "{0} - <<'PY'".format(shlex.quote(sys.executable)),
@@ -598,6 +599,7 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
     try:
         start = await manager.exec_command(command, cwd=tmp_path, yield_time_ms=10)
         session_id = start["session_id"]
+        process = (await manager._get_session(session_id)).process
 
         finish = await asyncio.wait_for(
             manager.write_stdin(session_id, yield_time_ms=1_000),
@@ -620,6 +622,9 @@ async def test_write_stdin_returns_when_child_keeps_stdout_open(tmp_path) -> "No
                 os.kill(child_pid, 15)
             except ProcessLookupError:
                 pass
+        if process is not None:
+            # Drain inherited pipes before the fixture closes its event loop.
+            await asyncio.wait_for(process.communicate(), timeout=3.0)
 
 
 @pytest.mark.asyncio
