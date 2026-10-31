@@ -5,6 +5,14 @@ import typing
 from ..protocol import AgentMessage, AssistantMessage, ConversationItem, UserMessage
 
 
+def serialize_history_item(item: "ConversationItem") -> "typing.Dict[str, object]":
+    """Include local message metadata without changing model serialization."""
+    payload = item.serialize()
+    if isinstance(item, UserMessage):
+        payload["name"] = item.name
+    return payload
+
+
 def conversation_history_to_turns(
     history: "typing.Iterable[ConversationItem]",
 ) -> "typing.Tuple[typing.Tuple[str, str], ...]":

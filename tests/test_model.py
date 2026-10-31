@@ -368,6 +368,32 @@ def test_provider_config_rejects_unknown_provider(tmp_path) -> "None":
         ResponsesProviderConfig.from_codex_config(config_path)
 
 
+@pytest.mark.parametrize("model", ["gpt-test", "gpt-5.6-sol"])
+def test_user_message_names_survive_rollouts_but_never_enter_model_payload(tmp_path, model):
+    history = [
+        UserMessage("first", name="reviewer"), UserMessage("unnamed"),
+        UserMessage("empty name", name=""), AssistantMessage("done"),
+    ]
+    recorder = SessionRolloutRecorder.create(
+        tmp_path, "00000000-0000-7000-8000-000000000000", tmp_path, "test", None, "",
+    )
+    recorder.append_history_items(history)
+    resumed = load_resumed_session_path(recorder.rollout_path)["history"]
+    assert resumed == tuple(history)
+    recorder.append_compacted_history(history)
+    tail = UserMessage("after checkpoint", name="planner")
+    recorder.append_history_items([tail])
+    restored = load_resumed_session_path(recorder.rollout_path)["history"]
+    assert restored == tuple(history + [tail])
+    client = ResponsesModelClient(ResponsesProviderConfig(
+        model=model, provider_name="demo", base_url="https://example.com/v1", api_key_env=None,
+    ))
+    plain = [replace(item, name="user") if isinstance(item, UserMessage) else item for item in restored]
+    assert client._build_payload(Prompt(input=list(restored), tools=[])) == client._build_payload(
+        Prompt(input=plain, tools=[])
+    )
+
+
 def test_build_payload_omits_tool_choice_when_no_tools() -> "None":
     client = ResponsesModelClient(
         ResponsesProviderConfig(

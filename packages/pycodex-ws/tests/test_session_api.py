@@ -73,6 +73,74 @@ def session_base(client, prefix):
     return prefix + "/api/sessions/" + session_id
 
 
+def test_user_message_names_in_http_websocket_and_initial_prompt(api_setup):
+    app, prefix = api_setup()
+    with TestClient(app) as client:
+        base = session_base(client, prefix)
+        messages = [
+            {"prompt": "first", "name": "reviewer"},
+            {"prompt": "/queue second", "name": "planner"},
+            {"prompt": "third", "name": ""},
+            {"prompt": "fourth", "name": "user"},
+            {"prompt": "fifth"},
+        ]
+        for message in messages:
+            response = client.post(prefix + "/api/session/message", json=message)
+            assert response.status_code == 200
+            assert wait_submission(client, base, response.json()["submission_id"])["status"] == "completed"
+        with client.websocket_connect(prefix + "/ws/session") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "send", "prompt": "sixth", "name": "审阅者"})
+            while True:
+                response = ws.receive_json()
+                if response["type"] == "send_result":
+                    break
+            assert response["result"]["ok"]
+            wait_submission(client, base, response["result"]["submission_id"])
+        history = client.get(base + "/history").json()["items"]
+        users = [item["payload"] for item in history if item["payload"].get("role") == "user"]
+        assert [item["name"] for item in users] == ["reviewer", "planner", "", "user", "user", "审阅者"]
+        assert [item["content"][0]["text"] for item in users] == [
+            "first", "second", "third", "fourth", "fifth", "sixth",
+        ]
+        created = client.post(prefix + "/api/sessions", json={
+            "prompt": "initial", "name": "owner",
+        }).json()
+        created_base = prefix + "/api/sessions/" + created["session_id"]
+        wait_submission(client, created_base, created["submission_id"])
+        assert client.get(created_base + "/history").json()["items"][0]["payload"]["name"] == "owner"
+
+
+def test_user_message_names_reject_invalid_types_without_admitting_input(api_setup):
+    app, prefix = api_setup()
+    with TestClient(app) as client:
+        base = session_base(client, prefix)
+        sessions = client.get(prefix + "/api/sessions").json()["sessions"]
+        for name in [None, False, 42, [], {}]:
+            message = {"prompt": "rejected", "name": name}
+            for endpoint in ["/api/session/message", "/api/sessions"]:
+                assert client.post(prefix + endpoint, json=message).status_code == 422
+        with client.websocket_connect(prefix + "/ws/session") as ws:
+            ws.receive_json()
+            ws.send_json({"type": "send", "prompt": "rejected", "name": 42})
+            result = ws.receive_json()
+            assert result["type"] == "send_result"
+            assert result["result"]["ok"] is False
+            ws.send_json({"type": "ping"})
+            assert ws.receive_json()["type"] == "pong"
+        assert client.get(base + "/history").json()["items"] == []
+        assert client.get(prefix + "/api/sessions").json()["sessions"] == sessions
+
+
+def test_user_message_names_in_unrecorded_history():
+    from workspace_server.session_api import history_page
+
+    history = (UserMessage("named", name="reviewer"), UserMessage("unnamed"))
+    items = history_page("memory", None, history, None, 100)["items"]
+    assert items[0]["payload"]["name"] == "reviewer"
+    assert items[1]["payload"]["name"] == "user"
+
+
 def test_state_and_models_are_read_only_and_match_websocket(api_setup):
     app, prefix = api_setup()
     with TestClient(app) as client:

@@ -23,7 +23,7 @@ from ..protocol import (
 )
 from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
-from .history import conversation_history_to_turns
+from .history import conversation_history_to_turns, serialize_history_item
 from .get_env import get_package_version
 
 SESSION_INDEX_FILENAME = "session_index.jsonl"
@@ -151,13 +151,14 @@ class SessionRolloutRecorder:
                 # Preserve compact summaries as context when replayed.
                 yield "compacted", _compacted_payload(history)
                 continue
-            serialized = item.serialize()
+            serialized = serialize_history_item(item)
             if isinstance(serialized, dict):
                 yield "response_item", serialized
             if isinstance(item, UserMessage):
                 yield "event_msg", {
                     "type": "user_message",
                     "message": item.text,
+                    "name": item.name,
                     "images": [],
                     "local_images": [],
                     "text_elements": [],
@@ -320,7 +321,9 @@ def load_resumed_session_path(
 
         if item_type == "event_msg" and isinstance(payload, dict):
             if payload.get("type") == "user_message":
-                history.append(UserMessage(text=str(payload.get("message", ""))))
+                history.append(UserMessage(
+                    text=str(payload.get("message", "")), name=payload.get("name", "user")
+                ))
                 saw_input = True
             continue
 
@@ -377,6 +380,8 @@ def read_rollout_history_page(rollout_path, before=None, limit=100):
         payload = entry["payload"]
         if kind == "compacted":
             payload = {"message": payload.get("message", "")}
+        elif payload.get("type") == "message" and payload.get("role") == "user":
+            payload.setdefault("name", "user")
         entries.append({"index": index, "type": kind, "payload": payload})
         index += 1
     if before is not None and before > index:
@@ -578,7 +583,7 @@ def _compacted_payload(
 ) -> "typing.Dict[str, object]":
     payload: "typing.Dict[str, object]" = {"replacement_history": []}
     for item in history:
-        serialized = item.serialize()
+        serialized = serialize_history_item(item)
         if isinstance(serialized, dict):
             payload["replacement_history"].append(serialized)
         if isinstance(item, ContextMessage) and item.role == "user":
@@ -630,7 +635,8 @@ def _append_deserialized_response_item(
         if include_user_messages and role == "user":
             history.append(
                 UserMessage(
-                    text=_extract_response_message_text(payload), id=payload.get("id")
+                    text=_extract_response_message_text(payload), id=payload.get("id"),
+                    name=payload.get("name", "user"),
                 )
             )
         return

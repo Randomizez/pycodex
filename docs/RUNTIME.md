@@ -1661,6 +1661,12 @@ Keep `UserMessage`, `AgentMessage`, `AssistantMessage`, `ToolCall` and `ToolResu
 conversation contracts when extending the richer item/event model. The
 test-only `ScriptedModelClient` belongs in `tests/fakes.py`, not the runtime
 package; the model boundary must remain replaceable and testable.
+`UserMessage.name` is local string metadata, defaulting to `"user"`. Runtime
+retains each message's name through steer delivery and queued turns. History API
+responses and rollout records use `serialize_history_item` to include it; `UserMessage.serialize()`
+deliberately excludes it from model requests. Rollout replay and retained
+compaction-checkpoint messages restore the name. Display projections remain
+text-only, and `sender` continues to identify the input transport.
 Construction and first-write requirements are in
 [Recording lifecycle](#recording-lifecycle); they also apply to child context
 inheritance and resume.

@@ -8,6 +8,7 @@ from starlette.exceptions import HTTPException
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
+from pycodex.utils.history import serialize_history_item
 from pycodex.utils.session_persist import read_rollout_history_page
 
 
@@ -55,7 +56,7 @@ def history_page(session_id, path, history, before, limit):
             raise HTTPException(409, str(error)) from error
         next_before = page.pop("next_before")
     else:
-        items = [item.serialize() for item in history]
+        items = [serialize_history_item(item) for item in history]
         end = len(items) if offset is None else offset
         if cursor is not None and (
             end > len(items) or cursor.get("prefix") != _history_digest(items[:end])

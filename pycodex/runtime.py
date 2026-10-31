@@ -52,10 +52,11 @@ class SubmissionInterrupted(RuntimeError):
 
 
 class _QueuedSubmission:
-    def __init__(self, texts: "typing.List[str]") -> "None":
+    def __init__(self, texts: "typing.List[str]", name: "str" = "user") -> "None":
         self.submission_id = uuid7_string()
         self.turn_id = self.submission_id
         self.texts = texts
+        self.name = name
         self.futures: "typing.List[asyncio.Future[TurnResult]]" = []
 
 
@@ -380,7 +381,7 @@ class AgentRuntime:
         self.publish_state("admission")
         self._wake_worker()
 
-    async def submit_input(self, text, sender="user", wait_for_command=True):
+    async def submit_input(self, text, sender="user", wait_for_command=True, name="user"):
         """Route frontend text to a pending answer, slash command or steer input."""
         if not self.agent.accepts_input:
             raise RuntimeError("agent is shutting down")
@@ -395,11 +396,11 @@ class AgentRuntime:
             future.set_result(None)
             return SubmittedInput(uuid7_string(), "empty", future)
         if command is None:
-            return self._submit_turn(text, "steer", sender)
+            return self._submit_turn(text, "steer", sender, name)
         if command == "/queue":
             if not argument.strip():
                 raise ValueError("Usage: /queue <message>")
-            return self._submit_turn(argument.strip(), "enqueue", sender)
+            return self._submit_turn(argument.strip(), "enqueue", sender, name)
         submission_id = uuid7_string()
         future = asyncio.get_running_loop().create_future()
         future.add_done_callback(self._observe_completion)
@@ -512,14 +513,14 @@ class AgentRuntime:
             raise ValueError("Unknown command: /{0}".format(command))
         return await handler(argument)
 
-    def _submit_turn(self, text, queue, sender):
+    def _submit_turn(self, text, queue, sender, name):
         busy = self.is_busy
         if queue == "enqueue":
-            submission_id, future = self.enqueue(text)
+            submission_id, future = self.enqueue(text, name=name)
         else:
             current = self._current_submission if self.agent.is_running else None
             self.stop_asap()
-            self.message(text)
+            self.message(UserMessage(text, name=name))
             submission_id, future = self.trigger()
             self._triggered_submission.texts.append(text)
             if current is not None:
@@ -681,11 +682,11 @@ class AgentRuntime:
         self._last_agent_status = "interrupted"
         self.publish_update("interrupt")
 
-    def enqueue(self, text: "str") -> "typing.Tuple[str, asyncio.Future[TurnResult]]":
+    def enqueue(self, text: "str", name: "str" = "user") -> "typing.Tuple[str, asyncio.Future[TurnResult]]":
         """Schedule an independent user turn without affecting active execution."""
         if not self.accepts_input:
             raise RuntimeError("agent is shutting down")
-        queued = _QueuedSubmission([text])
+        queued = _QueuedSubmission([text], name=name)
         self._enqueue_queue.append(queued)
         return self._submission_receipt(queued)
 
@@ -762,7 +763,7 @@ class AgentRuntime:
             queued, texts = pending
             self._current_submission = queued
             try:
-                result = await self.agent.run_turn(texts, turn_id=queued.turn_id)
+                result = await self.agent.run_turn(texts, turn_id=queued.turn_id, name=queued.name)
             except TurnInterrupted:
                 self._finish_submission_exception(queued, SubmissionInterrupted())
             except Exception as exc:

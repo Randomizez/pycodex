@@ -45,12 +45,13 @@ when the workspace is built. `default_profile` is the launch `--profile`, then
 the top-level config `profile`, or `null` for the base configuration.
 Each session list entry includes its effective `profile` name or `null`.
 
-`POST api/sessions` accepts `{title?, prompt?, profile?}`. Title and prompt are
+`POST api/sessions` accepts `{title?, prompt?, profile?, name?}`. Title and prompt are
 strings and default to empty. Profile is a string name; omission or `null` uses
 the server default. An unknown name returns HTTP 400; an invalid field type
 returns HTTP 422. An empty body still creates a default session.
 The selected profile configures both the model and Agent instructions; CLI
 overrides still apply. A nonempty prompt is submitted through Runtime.
+`name` labels that initial user message using the metadata contract below.
 The response contains `ok`, `session_id`, `sessions`, and `snapshot`, plus the
 submission receipt when a prompt was supplied.
 
@@ -183,6 +184,29 @@ communication example that posts plain text to `api/session/message` by default.
 Plain text uses steer; `/queue <message>` schedules an independent follow-up turn.
 The same behavior applies through the router. These requests reuse the frontend
 input contract, so plain text answers a pending input request when one exists.
+
+`POST api/session/message` accepts an optional `name` alongside `session_id`,
+`prompt` and `sender`, for example:
+
+```json
+{"session_id":"<target>","prompt":"Review this change","name":"reviewer"}
+```
+
+`name` is a string and defaults to `"user"` when omitted. Strings are preserved
+as supplied, including empty strings. `null` and other non-string values return
+HTTP 422.
+WebSocket `send` accepts the same field; an invalid name returns a failed
+`send_result` without closing the connection. Names apply to user messages from
+ordinary input and `/queue`, including each message in a merged steer batch.
+They do not apply to slash-command results, empty input or input-request answers.
+
+This is local metadata, separate from transport `sender` and the `user` role.
+It is returned as `payload.name` on user messages in the history API; old records
+without the field use `"user"`. Recording-enabled sessions persist it in the
+rollout and restore it on resume, including retained messages in compaction
+checkpoints. Unrecorded sessions keep it in memory. Model request serialization omits `name`, including
+after resume and during compaction. The built-in frontend does not display it;
+its aggregated conversation snapshots remain unchanged.
 
 Regular workspace message receipts are also queryable. Their successful result
 contains `turn_id`, `output_text`, and `iterations`. Command events observed

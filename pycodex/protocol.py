@@ -91,6 +91,8 @@ class UserMessage:
     text: "str"
     role: 'Literal["user"]' = "user"
     id: "typing.Union[str, None]" = None
+    # Local history metadata; serialize() is the model-facing representation.
+    name: "str" = "user"
 
     def serialize(self) -> "JSONDict":
         payload = {

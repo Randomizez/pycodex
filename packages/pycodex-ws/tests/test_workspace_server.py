@@ -1998,11 +1998,11 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
     model = ScriptedModelClient(response_factory=respond)
     session = await make_session(model).start()
     try:
-        first = await session.runtime.submit_input("first")
+        first = await session.runtime.submit_input("first", name="owner")
         await asyncio.wait_for(started[0].wait(), 1)
-        queued = await session.runtime.submit_input("/queue last", "cli")
-        steered = await session.runtime.submit_input("steer one")
-        merged = await session.runtime.submit_input("steer two")
+        queued = await session.runtime.submit_input("/queue last", "cli", name="planner")
+        steered = await session.runtime.submit_input("steer one", name="reviewer")
+        merged = await session.runtime.submit_input("steer two", name="observer")
 
         assert steered.submission_id == merged.submission_id
         assert [turn["prompt"] for turn in session.snapshot()["turns"]] == ["first"]
@@ -2037,6 +2037,11 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
         assert session.snapshot()["queued_inputs"] == []
         release[2].set()
         await asyncio.gather(queued.future, steered.future, merged.future)
+        assert [(item.text, item.name) for item in session.runtime.agent.history
+                if isinstance(item, UserMessage)] == [
+            ("first", "owner"), ("steer one", "reviewer"),
+            ("steer two", "observer"), ("last", "planner"),
+        ]
     finally:
         for event in release:
             event.set()

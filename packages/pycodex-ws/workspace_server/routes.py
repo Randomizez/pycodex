@@ -390,6 +390,13 @@ def _read_session_response(
     return _sessions_response(manager)
 
 
+def _user_message_name(payload):
+    name = payload.get("name", "user")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=422, detail="name must be a string")
+    return name
+
+
 async def _new_session_response(
     manager: "WorkspaceSessionManager", request: Request,
 ) -> JSONResponse:
@@ -397,6 +404,7 @@ async def _new_session_response(
     title = payload.get("title", "")
     prompt = payload.get("prompt", "")
     profile = payload.get("profile")
+    name = _user_message_name(payload)
     if not isinstance(title, str) or not isinstance(prompt, str):
         raise HTTPException(status_code=422, detail="title and prompt must be strings")
     if profile is not None and not isinstance(profile, str):
@@ -405,7 +413,7 @@ async def _new_session_response(
         raise HTTPException(status_code=400, detail="unknown Codex profile: " + profile)
     session_id = await manager.create_session(title=title, profile=profile)
     result = (
-        await manager.get(session_id).submit(prompt, sender="web")
+        await manager.get(session_id).submit(prompt, sender="web", name=name)
         if prompt else {"ok": True}
     )
     return JSONResponse(
@@ -463,6 +471,7 @@ async def _message_response(
     payload: "typing.Dict[str, object]",
 ) -> JSONResponse:
     session_id = str(payload.get("session_id") or "")
+    name = _user_message_name(payload)
     try:
         link = manager.get(session_id or None)
     except KeyError:
@@ -473,6 +482,7 @@ async def _message_response(
         result = await link.submit(
             str(payload.get("prompt") or ""),
             sender=str(payload.get("sender") or "web"),
+            name=name,
         )
     if isinstance(result, dict):
         result.setdefault("sessions", manager.list_sessions())
@@ -538,9 +548,17 @@ async def _websocket_session_handler(
                         payload.get("answer"),
                     )
                 else:
+                    try:
+                        name = _user_message_name(payload)
+                    except HTTPException as error:
+                        await websocket.send_json({
+                            "type": "send_result", "result": {"ok": False, "error": error.detail},
+                        })
+                        continue
                     result = await target_link.submit(
                         str(payload.get("prompt") or ""),
                         sender=str(payload.get("sender") or "web"),
+                        name=name,
                     )
                 await websocket.send_json({"type": "send_result", "result": result})
             elif action == "ping":

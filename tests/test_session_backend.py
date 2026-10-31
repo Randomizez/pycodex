@@ -19,6 +19,7 @@ from pycodex import (
 )
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
+from pycodex.utils.history import serialize_history_item
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 
@@ -427,7 +428,7 @@ async def test_removed_fork_command_preserves_identity_history_and_recording():
     assert entries[0]["payload"]["id"] == old_id
     assert [
         entry["payload"] for entry in entries if entry["type"] == "response_item"
-    ] == [item.serialize() for item in queue.agent.history]
+    ] == [serialize_history_item(item) for item in queue.agent.history]
 
 
 @pytest.mark.parametrize("started,cleanup_fails", [(False, False), (True, True)])

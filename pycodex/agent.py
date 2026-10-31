@@ -260,7 +260,8 @@ class Agent:
             self._idle = None
 
     async def run_turn(
-        self, texts: "typing.List[str]", turn_id: "typing.Union[str, None]" = None
+        self, texts: "typing.List[str]", turn_id: "typing.Union[str, None]" = None,
+        name: "str" = "user",
     ) -> "TurnResult":
         if self.is_shutdown:
             raise RuntimeError("agent is shutdown")
@@ -280,7 +281,7 @@ class Agent:
                 self.event_handler(TurnInputReadyEvent(turn.turn_id))
                 if turn.iteration == 0:
                     self.receive_messages(
-                        tuple(UserMessage(text=text) for text in texts)
+                        tuple(UserMessage(text=text, name=name) for text in texts)
                     )
                 response = await self._sample(turn)
                 self._emit(
