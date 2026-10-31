@@ -39,8 +39,10 @@ def runtime_info_prompt(
         "B=target workspace URL (no trailing /); use its session_id.",
         "GET B/api/sessions -> sessions[].id/title",
         "POST B/api/session/message "
-        + json.dumps({"session_id": "<target>", "prompt": "/queue From " + session_id + ": <task; reply address>"})
+        + json.dumps({"session_id": "<target>", "prompt": "From " + session_id + ": <task; reply address>"})
         + " -> submission_id (accepted)",
+        "Use plain messages (steer) by default. Add /queue only for an independent follow-up task "
+        "that should wait for current work to finish.",
         "GET B/api/session?session_id=<target> -> snapshot.turns; match submission_id for status/response/error.",
     ]
     return "\n".join(lines)

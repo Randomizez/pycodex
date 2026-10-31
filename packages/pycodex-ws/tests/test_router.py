@@ -569,6 +569,19 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
                 assert gate.state.router.registration_key not in text
                 assert app.state.router_client._identity_key not in text
 
+                example = next(line for line in text.splitlines()
+                               if line.startswith("POST B/api/session/message "))
+                message = json.loads(example.split(" ", 2)[2].rsplit(" -> ", 1)[0])
+                message["session_id"] = response.json()["session_id"]
+                sent = await browser.post(prefix + "/api/session/message", json=message)
+                assert sent.status_code == 200
+                await eventually(lambda: link.snapshot()["turns"] and
+                                 link.snapshot()["turns"][-1]["status"] == "completed")
+                turn = link.snapshot()["turns"][-1]
+                assert turn["submission_id"] == sent.json()["submission_id"]
+                assert turn["prompt"] == message["prompt"]
+                assert turn["queue"] == "steer"
+
 
 @pytest.mark.parametrize("root", ["", "/remote"])
 async def test_router_and_workspace_passwords_protect_remote_visitors(tmp_path, root, monkeypatch):

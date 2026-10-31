@@ -60,6 +60,10 @@ When using a router, its directory groups workspaces by device and lists unread
 workspaces at the top. Device handles reorder the list; pencil buttons edit
 device names.
 
+The runtime information shared between Agents recommends plain messages, which
+steer active work at the next safe boundary. Use `/queue` explicitly for an
+independent follow-up task that should wait for current work to finish.
+
 The [VS Code extension](extensions/vscode/README.md) uses this backend and is
 distributed separately as a VSIX.
 

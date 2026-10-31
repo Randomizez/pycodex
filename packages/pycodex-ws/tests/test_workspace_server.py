@@ -208,7 +208,7 @@ def test_runtime_info_uses_current_identity_and_local_frontend_api(tmp_path, mul
         assert "L=http://127.0.0.1:12345; current workspace=L" + prefix in text
         assert ("GET L/api/workspaces" in text) == multi
         assert "router" not in text.lower()
-        assert "/queue From " + own in text
+        assert '"prompt": "From ' + own in text
         assert "B/api/session/message" in text
         assert "B/api/session?session_id=" in text
         assert "login" not in text.lower()

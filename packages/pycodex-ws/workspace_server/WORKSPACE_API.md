@@ -178,6 +178,12 @@ Operations retain their idle/admission requirements. Runtime owns serialization
 and draining. HTTP request completion or disconnect does not cancel an accepted
 command. This adds no turn cancellation, queue editing or arbitrary tool execution.
 
+`GET api/session?session_id=<id>&runtime_info=true` includes a cross-Agent
+communication example that posts plain text to `api/session/message` by default.
+Plain text uses steer; `/queue <message>` schedules an independent follow-up turn.
+The same behavior applies through the router. These requests reuse the frontend
+input contract, so plain text answers a pending input request when one exists.
+
 Regular workspace message receipts are also queryable. Their successful result
 contains `turn_id`, `output_text`, and `iterations`. Command events observed
 from other frontends are retained as well. Retention is **all pending submissions
