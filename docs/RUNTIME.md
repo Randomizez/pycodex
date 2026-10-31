@@ -711,6 +711,12 @@ status observers no longer inspect raw Task results.
 
 ### Feishu connection lifecycle
 
+`pycodex_ws.feishu_link.PycodexRuntimeLink` owns Runtime attachment and card
+updates, including the existing 0.5-second flush interval.
+`pycodex_ws.feishu_connection` owns the shared listener, callback routing and
+SDK threads/loops. Links reuse a compatible listener; releasing the last link
+stops it and clears the shared reference.
+
 `lark_oapi.ws.client` creates a module-level asyncio `loop` during import,
 and `Client.start()` always uses it. A `/link` listener owns a thread and loop;
 bind the SDK global to that loop before constructing its client. `/unlink`
@@ -1333,6 +1339,12 @@ legacy `Process running...` text. Conversation pairs are projected by
 That helper module depends only on the standard library, never events or
 frontends. The compactor's event type import is type-checking-only so loading
 the utils package cannot create an events/utils initialization cycle.
+
+Feishu event projection and request/token caches remain on
+`pycodex_ws.feishu_card.PycodexCard`; `pycodex_ws.feishu_render` builds card JSON
+from that state without changing it. `pycodex_ws.feishu_auth` supplies the shared
+refresh-token file operations and endpoints to the card and OAuth helper.
+The card's API response parsing and OAuth's nested-data handling remain separate.
 
 There is no display-handler mapping, action bus or per-tool event subclass.
 Presentation never mutates an event or its nested data and is not invoked by

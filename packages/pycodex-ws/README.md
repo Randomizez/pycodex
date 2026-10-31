@@ -81,6 +81,8 @@ replay and sub-agent/background-work inventories. A `mount(host)` export in
 
 Backend module ownership and the preserved session interfaces are documented in
 the [runtime guide](../../docs/RUNTIME.md#workspace-session-api).
+File/Git source resolution and view storage retain their existing public classes;
+see [content views](../../docs/RUNTIME.md#workspace-content-views).
 
 Ask the Agent to show the [feature catalog](workspace_server/optional_features/README.md)
 in the view area, then choose features by name or ID in chat. The Agent adapts
@@ -135,6 +137,11 @@ Authorization reads app credentials from `~/.codex/.env` and stores the refresh
 token in `~/.codex/.feishu_refresh_token`. In a workspace session, use
 `/link <feishu-email|open_id|chat_id>` to connect a card and `/unlink` to disconnect.
 Other workspace features work without the SDK.
+
+The adapter separates card rendering, refresh-token storage and SDK connections.
+`PycodexCard` and `PycodexRuntimeLink` keep their existing imports and interfaces;
+see [connection lifecycle](../../docs/RUNTIME.md#feishu-connection-lifecycle)
+and [event presentation](../../docs/RUNTIME.md#observation).
 
 ## Development
 
