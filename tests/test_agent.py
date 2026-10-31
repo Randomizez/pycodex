@@ -1215,8 +1215,11 @@ async def test_runtime_recovers_after_pre_turn_compact_failure() -> "None":
         with pytest.raises(RuntimeError, match="synthetic compact failure"):
             await asyncio.wait_for(runtime.submit_user_turn("new prompt"), timeout=1.0)
 
-        assert [event.kind for event in events] == [
-            "runtime_updated",
+        # Queue notifications use call_soon and can follow a fast failed turn.
+        assert [
+            event.kind for event in events
+            if event.kind != "runtime_updated" or event.reason != "queue"
+        ] == [
             "session_state",
             "turn_started",
             "auto_compact_started",
@@ -1224,9 +1227,9 @@ async def test_runtime_recovers_after_pre_turn_compact_failure() -> "None":
             "turn_failed",
             "runtime_updated",
         ]
-        assert [
+        assert sorted(
             event.reason for event in events if event.kind == "runtime_updated"
-        ] == ["queue", "idle"]
+        ) == ["idle", "queue"]
         assert not agent.is_running
         assert agent.history == (UserMessage(text="older prompt"),)
         await asyncio.wait_for(agent.wait_until_idle(), timeout=1.0)

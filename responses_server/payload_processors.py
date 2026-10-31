@@ -11,7 +11,7 @@ import typing
 from copy import deepcopy
 from typing import Callable, Optional
 
-from typing_extensions import TypedDict
+from pycodex.utils.compat import TypedDict
 
 ChatMessage = typing.Dict[str, object]
 

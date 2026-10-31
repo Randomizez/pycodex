@@ -24,6 +24,7 @@ from pycodex import (
 from pycodex.events import TokenCountEvent, TurnStartedEvent
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
+from pycodex.utils.history import serialize_history_item
 from pycodex.utils.session_persist import (
     list_resumable_sessions,
     rollout_path_for_session,
@@ -661,7 +662,7 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
     assert entries[0]["payload"]["base_instructions"] == {"text": "session rules"}
     assert [
         entry["payload"] for entry in entries if entry["type"] == "response_item"
-    ] == [item.serialize() for item in agent.history]
+    ] == [serialize_history_item(item) for item in agent.history]
     assert [
         entry["payload"]["message"] for entry in entries if entry["type"] == "event_msg"
     ] == ["old prompt", "first prompt", "second prompt"]
@@ -818,7 +819,7 @@ async def test_resume_compacted_custom_filename_keeps_metadata_and_checkpoint(tm
     assert entries[-1]["type"] == "compacted"
     assert [
         entry["payload"] for entry in entries if entry["type"] == "response_item"
-    ] == [item.serialize() for item in initial_history]
+    ] == [serialize_history_item(item) for item in initial_history]
     agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
     resumed = agent.resume(source.session_file_path)

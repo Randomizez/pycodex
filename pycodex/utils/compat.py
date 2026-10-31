@@ -20,9 +20,9 @@ except ImportError:  # pragma: no cover - Python 3.6 path
     import importlib_metadata  # type: ignore
 
 try:
-    from typing import Literal, Protocol, TypeAlias
+    from typing import Literal, Protocol, TypeAlias, TypedDict
 except ImportError:  # pragma: no cover - Python 3.6 path
-    from typing_extensions import Literal, Protocol  # type: ignore
+    from typing_extensions import Literal, Protocol, TypedDict  # type: ignore
 
     try:
         from typing_extensions import TypeAlias  # type: ignore
