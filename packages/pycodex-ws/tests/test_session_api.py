@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolRegistry, UserMessage
 from pycodex.events import AssistantDeltaEvent
-from pycodex.tools import ClockManager, ClockTool
+from pycodex.tools import ClockManager
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
     ThreadedWorkspaceInteractiveSession, WorkspaceInteractiveSession,
@@ -320,7 +320,6 @@ async def test_child_queries_and_subscriptions_do_not_enable_interactive_request
 async def test_clock_inventory_exposes_deadline_without_changing_tool_output(tmp_path):
     clock = ClockManager()
     tools = ToolRegistry()
-    tools.register(ClockTool(clock))
     tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
     session = make_session(tools=tools, cwd=tmp_path)
     await session.start()

@@ -145,7 +145,7 @@ grammar, also matches the direct-tool captures.
 | --- | --- | --- |
 | Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. | Remains in scope. |
 | `spawn_agent` description | Python omits upstream's available model/effort/tier list and retains local inheritance/override guidance. | Intentional: no hardcoded OpenAI-specific capability lists. |
-| `request_user_input` | Python retains `autoResolutionMs` and local description wording, including different quotation marks around `Other`. | Intentional: the tool stays unavailable in Default mode; interaction-mode machinery is not restored to match its declaration. |
+| `request_user_input` | The earlier audit retained an unavailable tool; the model-facing declaration and stub were removed on 2026-10-31. | Intentional: generic Runtime input services remain, without restoring interaction-mode machinery. |
 | `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, and retains local background-invocation wording. | Intentional: sandbox enforcement and its request parameters are outside the local contract. |
 
 No generic catalog-schema override mechanism is required by this snapshot:
@@ -185,7 +185,7 @@ core design. Python namespace separation does not reproduce that isolation.
 See [Python exec cells](RUNTIME.md#python-exec-cells) for the local contract.
 
 Spawn/fork model overrides, the `spawn_agent`, `exec_command` and
-`request_user_input` declaration differences above, and model-catalog coverage
+`request_user_input` omission above, and model-catalog coverage
 are retained choices. They do not create alignment requirements to add sandbox
 enforcement, restore interaction modes, or hardcode OpenAI model capabilities.
 
@@ -196,11 +196,46 @@ enforcement, restore interaction modes, or hardcode OpenAI model capabilities.
 | Capacity reclamation | Local spawn enforces `multi_agent_max_concurrency` (default 16 including root) and permanently closes eligible idle leaves. Local child close also unregisters the node and releases its task path. Upstream can unload and later reload idle runtimes and retains closed tree entries. Local nodes with mailbox or background work are preserved; there is no automatic reload or idle-timeout unloading. |
 
 Intentional local boundaries remain: no bundled system-skill installation, no
-persisted collaboration tree, no session `/fork`, and no asynchronous
-model-facing question tool. `request_user_input` retains Default-mode
-unavailability. A stop waits for issued model/tool work. Normal close signals the
+persisted collaboration tree, no session `/fork`, and no built-in model-facing
+question tools, including `request_user_input`. A stop waits for issued
+model/tool work. Normal close signals the
 whole Runtime subtree, discards pending turns and waits for active turns to stop
-cooperatively before cleanup. `clock` remains a local extension.
+cooperatively before cleanup. `clock.set_period` remains a local extension.
+
+### Clock namespace (2026-10-31)
+
+The former local `clock(period_m)` is now `clock.set_period(period_m)`, retaining
+the same periodic wake-up behavior and persisted `managers.clock` state.
+`clock.sleep(duration_ms)` matches the function parameters, description, duration
+bounds, direct-only exposure and interruption/result semantics in upstream source
+`483d98a441ee21e05fa81b07048040c6b1f1f234` (2026-10-30).
+It uses the existing Runtime activity wait for input and stop requests.
+Local tests cover timeout, pending/new messages, steer, stop and close.
+Both local clock tools are excluded from `exec`. Upstream `clock.curr_time` is
+deliberately omitted; Python cells can read system time directly.
+
+An isolated HTTP capture on 2026-10-31 compared installed Codex CLI **0.166.0**
+and the local implementation using `gpt-6.1-sol`, high reasoning and fixture
+inputs, with MultiAgentV2 enabled. Both sent one Responses-lite request with
+native CodeModeOnly selection. The complete `clock.sleep` function declaration
+matched exactly and was absent from both exec catalogs; the local request
+additionally exposed `clock.set_period`. This validates first-request exposure,
+not a live sleep round trip. The full bodies still differ in Python/JavaScript
+exec, nested collaboration exposure, 4/16 concurrency hints, upstream-only
+async question/MCP resource tools, spawn description, IDs and client metadata.
+
+### Removal of the ineffective question tool (2026-10-31)
+
+The model-facing `request_user_input` declaration, unavailable-response stub,
+question schema and public tool exports are removed. It is absent from the
+default registry and from both direct and code-mode tool selections.
+This is an intentional difference from upstream. The clock request capture
+above predates this removal; its request_user_input declaration comparison is
+historical evidence, not the current catalog.
+
+Generic Runtime question/permission services remain available to custom tools,
+including frontend answer transport, cancellation and timeouts. Existing
+question tool history still restores without requiring the removed tool class.
 
 ## Historical audit notes
 

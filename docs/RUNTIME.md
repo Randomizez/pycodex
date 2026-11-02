@@ -103,11 +103,11 @@ thread cleanup.
 There is no collaboration-mode switching state. The model catalog's Default
 developer instructions are retained when present, alongside separate MultiAgentV2
 role and operating-mode blocks. CLI and workspace use the same context-building
-path. `request_user_input` retains its declaration but
-always returns `request_user_input is unavailable in Default mode`; registered
-input handlers do not enable it. The tool has no request-manager dependency.
-The generic runtime input service, sub-agents, `update_plan` and ordinary
-interactive sessions remain available.
+path. The ineffective `request_user_input` tool, its declaration and its
+unavailable-response stub are removed. Generic Runtime question/permission
+services and frontend answer transport remain available to custom tools.
+Old question tool calls/results still load as ordinary history items.
+Sub-agents, `update_plan` and ordinary interactive sessions remain available.
 Do not restore the old collaboration-mode enum or `session_mode` parameter.
 MultiAgentV2's explicit/proactive operating mode is a separate context contract;
 see [Context](CONTEXT.md#multiagentv2-developer-context).
@@ -1463,15 +1463,16 @@ tool names, including custom namespaces.
 the default tools below. A nonempty selection includes `exec` and `wait`:
 
 ```text
-exec wait exec_command write_stdin clock request_user_input apply_patch view_image
+exec wait exec_command write_stdin apply_patch view_image
+clock.set_period clock.sleep
 create_goal get_goal update_goal
 collaboration.spawn_agent collaboration.send_message collaboration.followup_task
 collaboration.wait_agent collaboration.interrupt_agent collaboration.list_agents
 ```
 
-Except for the documented `clock` extension, each supported tool corresponds
-to one upstream built-in: preserve its name, parameters, interaction and output
-semantics rather than combining different tools' contracts.
+Except for the documented `clock.set_period` extension, each supported tool
+corresponds to one upstream built-in: preserve its name, parameters, interaction
+and output semantics rather than combining different tools' contracts.
 Ordinary function tools and freeform/custom tools such as `apply_patch` share
 the protocol; tool results can carry structured `input_image` content items.
 `web_search` is a provider-native Responses declaration, not a local registry
@@ -1576,15 +1577,32 @@ aggregate `background_work_count`.
 
 An exiting exec session can invoke `<exec_command_completed>` through
 `AgentRuntime.maybe_invoke` only while that Runtime is idle and accepting input;
-busy notifications are dropped. `clock` likewise uses `maybe_invoke`, with one period per
-Agent/session and a timezone-aware ISO 8601 `current_time` captured when the
-timer expires. Starting a turn cancels the pending countdown; a successful
-reply rearms it. `clock(null)` disables the clock; shutdown stops the timer and
-unbinds callbacks while retaining the configured period for restoration.
+busy notifications are dropped. `clock.set_period` likewise uses `maybe_invoke`,
+with one period per Agent/session and a timezone-aware ISO 8601 `current_time`
+captured when the timer expires. Starting a turn cancels the pending countdown;
+a successful reply rearms it. `clock.set_period(period_m=null)` disables the
+clock; shutdown stops the timer and unbinds callbacks while retaining the
+configured period for restoration.
 The aggregate background count includes running exec sessions and an enabled clock after a successful
 reply; frontends consume that one field, without another queue or shell sleep
 loop. Running code-mode `exec` cells also report background work; a completed
 cell finishes after its Python tasks are cleaned up and issued host tools settle.
+
+`clock.sleep(duration_ms)` follows upstream's interruptible active-turn wait.
+It accepts integer milliseconds from 1 to 43200000 (12 hours), waits through the
+Runtime's existing mailbox/stop activity signal, and returns elapsed wall time
+with `Sleep completed.` or `Sleep interrupted by new input.`. Pending messages
+also wake it immediately; waiting does not consume messages or block other
+Agents. Steer and shutdown request a cooperative stop, allowing the tool result
+to be recorded before the turn ends. Explicitly queued independent turns do not
+wake this wait. Sleep does not configure or persist a periodic timer.
+
+Both clock tools are model-direct only, including in CodeModeOnly sessions.
+There is no `clock.curr_time`; Python cells can read system time with `datetime`.
+The old callable `clock` and class `ClockTool` are replaced by `clock.set_period`
+and `SetPeriodTool`; `SleepTool` supplies `clock.sleep`. Tool selections use the
+new names. The shared resource and persisted state remain named `clock`, so
+existing recorded clock periods still restore without rewriting history.
 
 ### Python exec cells
 

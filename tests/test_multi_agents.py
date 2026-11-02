@@ -5,7 +5,7 @@ import pytest
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
 from pycodex.protocol import AgentMessage, ToolResult
 from pycodex.runtime import SubmissionInterrupted
-from pycodex.tools import ClockTool
+from pycodex.tools import BaseTool, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 
 
@@ -71,6 +71,27 @@ async def test_child_drains_pending_work_after_failure_or_interruption(tmp_path,
 async def test_completion_is_delivered_once_after_issued_tool_batch(tmp_path, monkeypatch, wait_first):
     release_child = asyncio.Event()
 
+    class BarrierTool(BaseTool):
+        name = "barrier_fixture"
+        description = "Wait for the fixture child to finish."
+        input_schema = {"type": "object", "properties": {}}
+        supports_parallel = False
+
+        async def run(self, context, args):
+            if context.turn_id == model.prompts[0].turn_id and len(model.prompts) == 1:
+                assert not messages(context.history)
+            await wait_for_runtime_idle(child)
+            return "ready"
+
+    def tools_factory(manager, environment, toolset):
+        registry = get_tools(
+            manager, environment,
+            [name for name in toolset if name != BarrierTool.name],
+        )
+        if BarrierTool.name in toolset:
+            registry.register(BarrierTool())
+        return registry
+
     async def finish_child(prompt, count):
         await release_child.wait()
         return ModelResponse([AssistantMessage("child result")])
@@ -79,30 +100,30 @@ async def test_completion_is_delivered_once_after_issued_tool_batch(tmp_path, mo
         if count == 1:
             release_child.set()
             calls = [
-                ToolCall("wait", "wait_agent", {}),
-                ToolCall("clock", "clock", {"period_m": None}),
+                ToolCall("wait", "collaboration.wait_agent", {}),
+                ToolCall("barrier", BarrierTool.name, {}),
             ]
             return ModelResponse(calls if wait_first else list(reversed(calls)))
         if count == 2:
-            return ModelResponse([ToolCall("again", "clock", {"period_m": None})])
+            return ModelResponse([ToolCall("again", BarrierTool.name, {})])
         return ModelResponse([AssistantMessage("parent result")])
 
     model = ScriptedModelClient(response_factory=respond)
     child_model = ScriptedModelClient(response_factory=finish_child)
     monkeypatch.setattr(model, "with_overrides", lambda *args, **kwargs: child_model)
-    root = make_tree(tmp_path, model, ("clock", "wait_agent"))
+    root = AgentsManager(
+        model, ContextConfig(cwd=tmp_path, codex_home=tmp_path),
+        toolset=(BarrierTool.name, "collaboration.wait_agent"),
+        tools_factory=tools_factory,
+    ).create_root_runtime()
     child = await spawn(root)
 
-    async def clock(self, context, args):
-        if context.turn_id == model.prompts[0].turn_id and len(model.prompts) == 1:
-            assert not messages(context.history)
-        await wait_for_runtime_idle(child)
-        return {"enabled": False, "period_m": None}
-
-    monkeypatch.setattr(ClockTool, "run", clock)
     await root.start()
     try:
         assert (await root.submit_user_turn("work")).output_text == "parent result"
+        assert all(
+            not item.is_error for item in root.agent.history if isinstance(item, ToolResult)
+        )
         notifications = messages(root.agent.history)
         assert len(notifications) == 1
         assert notifications[0].author == "/root/worker"

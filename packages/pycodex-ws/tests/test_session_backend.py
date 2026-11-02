@@ -166,11 +166,11 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
 async def test_frontends_restore_clock_idle_status(tmp_path, restore_before_start):
     source = AgentsManager(
         ScriptedModelClient([
-            ModelResponse([ToolCall("set_clock", "clock", {"period_m": 5})]),
+            ModelResponse([ToolCall("set_clock", "clock.set_period", {"period_m": 5})]),
             ModelResponse([AssistantMessage("done")]),
         ]),
         ContextConfig(cwd=tmp_path, codex_home=tmp_path),
-        toolset=("clock",),
+        toolset=("clock.set_period",),
     ).create_root_runtime()
     await source.start()
     try:
@@ -183,7 +183,7 @@ async def test_frontends_restore_clock_idle_status(tmp_path, restore_before_star
     runtime = AgentsManager(
         ScriptedModelClient([]),
         ContextConfig(cwd=tmp_path, codex_home=tmp_path),
-        toolset=("clock",),
+        toolset=("clock.set_period",),
     ).create_root_runtime()
     if restore_before_start:
         runtime.resume(rollout)

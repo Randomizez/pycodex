@@ -74,7 +74,7 @@ def make_session(model=None, tools=None, cwd=None):
         make_runtime(
             make_agent(
                 model,
-                tools or ToolRegistry(),
+                ToolRegistry() if tools is None else tools,
                 ContextConfig(cwd=cwd),
                 session_file_path=rollout_path_for_session(
                     resolve_codex_home(), session_id

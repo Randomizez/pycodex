@@ -21,7 +21,7 @@ def make_runtime(tmp_path, responses):
     return AgentsManager(
         ScriptedModelClient(responses),
         ContextConfig(cwd=tmp_path, codex_home=tmp_path),
-        toolset=("clock",),
+        toolset=("clock.set_period",),
     ).create_root_runtime()
 
 
@@ -39,7 +39,7 @@ def state(period):
 
 def set_clock_responses(period):
     return [
-        ModelResponse([ToolCall("set_clock", "clock", {"period_m": period})]),
+        ModelResponse([ToolCall("set_clock", "clock.set_period", {"period_m": period})]),
         ModelResponse([AssistantMessage("done")]),
     ]
 
@@ -239,7 +239,7 @@ async def test_child_clock_state_remains_in_memory(tmp_path):
 def test_unused_or_unrecorded_agent_does_not_create_snapshot(tmp_path):
     manager = AgentsManager(ScriptedModelClient([]), ContextConfig(codex_home=tmp_path))
     for path in (None, tmp_path / "unused" / "rollout.jsonl"):
-        tools = get_tools(manager, toolset=("clock",))
+        tools = get_tools(manager, toolset=("clock.set_period",))
         agent = make_agent(
             ScriptedModelClient([]), tools, ContextConfig(codex_home=tmp_path),
             session_file_path=path,

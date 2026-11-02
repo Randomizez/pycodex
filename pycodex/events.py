@@ -698,7 +698,7 @@ class InputRequestedEvent(Event):
         question = self.question
         return "\n".join(
             [
-                "[request_user_input] waiting for user response",
+                "[input] waiting for user response",
                 "[{0}] {1}".format(question["header"], question["question"]),
             ]
             + [

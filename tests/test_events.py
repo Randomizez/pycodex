@@ -477,7 +477,7 @@ def test_input_request_text():
         },
     )
     assert event.visualize() == (
-        "[request_user_input] waiting for user response\n[Choice] Which?\n"
+        "[input] waiting for user response\n[Choice] Which?\n"
         "  1. First - Use first\n  0. Other"
     )
     assert (

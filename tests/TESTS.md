@@ -20,6 +20,12 @@ core 及测试收集/import 时执行的共享辅助代码必须能由 Python 3.
 依赖；生产构造仍要求 `Agent(..., session_id)` 与 `AgentRuntime(agent, manager)`。
 多 Agent 行为测试直接使用 `AgentsManager.create_root_runtime()`。
 
+工具名称、schema、默认注册和调用语义集中在对应工具的契约测试中；
+clock 的这些检查及周期唤醒/关闭测试统一放在 `test_clock_tools.py`。
+Agent/Workspace 测试若只需要控制工具完成时机，使用本地 fixture 工具，
+不要 monkeypatch 无关的生产工具。只验证资源生命周期时，直接登记资源，
+无需注册或调用它的模型工具。持久化和前端恢复保留必要的真实集成用例。
+
 在仓库根目录运行全部测试或仅 workspace 测试：
 
 ```bash
@@ -251,6 +257,11 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 
 ### 新版协议原型（2026-10-29）
 
+`request_user_input` 模型工具已于 2026-10-31 删除，其固定不可用测试一并移除。
+默认工具集合验证不再注册该工具；通用问答服务仍由 core/workspace 的
+`test_session_backend.py` 覆盖回答、取消、超时和自定义工具调用。
+`test_model.py` 继续覆盖旧问答 rollout 恢复及本地 `success` 不进入模型请求。
+
 当前源码基线和 CLI 0.165.0 抓包的适用范围见
 [ALIGNMENT](../docs/ALIGNMENT.md#current-prototype-baseline-2026-10-29)。
 以下回归使用合成客户端或 localhost HTTP，不调用真实模型：
@@ -481,8 +492,6 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   - 预期：按 provider-native tool 形式序列化到 Responses API payload 中，而不是走本地 handler round-trip。
 - `update_plan`
   - 预期：更新 `PlanStore`，并返回固定确认文本 `Plan updated`。
-- `request_user_input`
-  - 预期：保留工具声明，调用固定返回 `request_user_input is unavailable in Default mode`；无论是否注册 handler 都不收集答案。CLI/Web/飞书集成测试验证不会产生 `input_requested`，模型下一轮能收到不可用结果。通用输入服务独立验证回答传输；`test_model.py` 继续覆盖本地 `success` 不进入请求及旧问答 rollout 的恢复。
 - `request_permissions`
   - 预期：把权限请求转发给交互层，并返回带 `scope` 的权限响应。
 - `apply_patch`
@@ -606,7 +615,6 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 | `wait` | 先 `exec` 运行一次会先 `yield_control()` 再输出 `WAIT_OK` 的脚本，再 `wait` 拿到后续输出 | 应依次调用 `exec`、`wait`，最终回复 `WAIT_OK` |
 | `web_search` | 只调用 `web_search` 搜索一个明确问题，再基于搜索结果简短作答 | 应调用 `web_search`，并基于搜索结果回复 |
 | `update_plan` | 先调用 `update_plan` 设两步计划，再只回复 `TOOL_OK` | 应调用 `update_plan`，最终回复 `TOOL_OK` |
-| `request_user_input` | 调用一次 `request_user_input` | 返回 `request_user_input is unavailable in Default mode`，不弹出问题、不等待答案，Responses input 中没有 `success` |
 | `request_permissions` | 只调用 `request_permissions`，请求 `network.enabled=true`；CLI 侧输入 `t` | 应调用 `request_permissions`，最终回复 `REQUEST_PERMISSIONS_OK` |
 | `apply_patch` | 只调用 `apply_patch`，把目标文件里的 `before` 改成 `APPLY_PATCH_OK` | 应调用 `apply_patch`，最终回复 `APPLY_PATCH_OK` |
 | `grep_files` | 只调用 `grep_files` 搜索 `NEEDLE_123` | 应调用 `grep_files`，最终回复 `grep_target.txt` |

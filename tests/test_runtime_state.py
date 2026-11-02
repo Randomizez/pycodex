@@ -8,7 +8,7 @@ from pycodex import (
 )
 from pycodex.events import TokenCountEvent
 from pycodex.runtime import SubmissionInterrupted
-from pycodex.tools import ClockManager, ClockTool, ExecCommandTool, UnifiedExecManager
+from pycodex.tools import ClockManager, ExecCommandTool, UnifiedExecManager
 from pycodex.tools.runtime_services import AgentRuntimeEnvironment
 from pycodex.tools.unified_exec_manager import UnifiedExecSession
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
@@ -422,7 +422,6 @@ async def test_background_notification_steer_reports_only_failures(source, faile
     else:
         manager = ClockManager(seconds_per_minute=0.001)
         manager.set_period(1)
-        tools.register(ClockTool(manager))
         tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
         notification = manager._wait_and_notify(manager._generation, 1)
         tag = "clock_tick"

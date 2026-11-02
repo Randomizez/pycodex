@@ -4,11 +4,11 @@ import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
 from pycodex.protocol import AgentMessage
-from pycodex.tools import BaseTool, ListAgentsTool, ToolContext
+from pycodex.tools import BaseTool, ListAgentsTool, ToolContext, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 
 
-def make_tree(tmp_path, capacity, response_factory=None, toolset=()):
+def make_tree(tmp_path, capacity, response_factory=None, toolset=(), tools_factory=get_tools):
     model = ScriptedModelClient(
         response_factory=response_factory or (
             lambda prompt, count: ModelResponse([AssistantMessage("done " + str(count))])
@@ -18,9 +18,16 @@ def make_tree(tmp_path, capacity, response_factory=None, toolset=()):
         model, ContextConfig(
             cwd=tmp_path, codex_home=tmp_path,
             multi_agent_max_concurrency=capacity,
-        ), toolset=toolset,
+        ), toolset=toolset, tools_factory=tools_factory,
     )
     return manager.create_root_runtime()
+
+
+def clock_resources(manager, environment, toolset):
+    registry = get_tools(manager, environment, toolset)
+    clock = environment.clock_manager
+    environment.register_resource("clock", clock, observer=clock.handle_agent_event)
+    return registry
 
 
 async def spawn(parent, name):
@@ -297,22 +304,22 @@ async def test_capacity_cleanup_failure_is_visible_and_does_not_spawn(tmp_path, 
     def fail_shutdown():
         raise ValueError("cleanup failed")
 
-    root = make_tree(tmp_path, 2, toolset=("clock",))
+    root = make_tree(tmp_path, 2, tools_factory=clock_resources)
     child = await spawn(root, "child")
     await wait_for_runtime_idle(child)
-    tool = child.agent.tool_registry.get_tool("clock")
+    resource = child.agent.tool_registry.runtime_environment.clock_manager
     events = []
     child.attach(events.append, interactive=False)
     if failure == "close_handler":
         child.add_close_handler(fail_cleanup)
     else:
-        monkeypatch.setattr(tool._manager, "shutdown", fail_shutdown)
+        monkeypatch.setattr(resource, "shutdown", fail_shutdown)
     try:
         with pytest.raises(ValueError, match="cleanup failed"):
             await spawn(root, "replacement")
         assert child.agent.is_shutdown
         assert [event.kind for event in events].count("session_closed") == 1
-        assert tool._manager._state_listener is None
+        assert resource._state_listener is None
         assert len(root.agents_manager.list_agents(root.agent.agent_id)) == 1
         with pytest.raises(KeyError):
             root.agents_manager.get_runtime(child.agent.agent_id)
@@ -322,17 +329,16 @@ async def test_capacity_cleanup_failure_is_visible_and_does_not_spawn(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_capacity_preserves_enabled_clock(tmp_path):
-    root = make_tree(tmp_path, 2, toolset=("clock",))
+    root = make_tree(tmp_path, 2, tools_factory=clock_resources)
     child = await spawn(root, "child")
     try:
         await wait_for_runtime_idle(child)
-        context = ToolContext("clock", (), tmp_path, agent_id=child.agent.agent_id)
-        tool = child.agent.tool_registry.get_tool("clock")
-        await tool.run(context, {"period_m": 60})
+        clock = child.agent.tool_registry.runtime_environment.clock_manager
+        clock.set_period(60)
         with pytest.raises(RuntimeError, match="capacity reached"):
             await spawn(root, "blocked")
         assert child.accepts_input
-        await tool.run(context, {"period_m": None})
+        clock.set_period(None)
         await spawn(root, "replacement")
         assert child.agent.is_shutdown
     finally:

@@ -7,7 +7,7 @@ from starlette.testclient import TestClient
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
 from pycodex.events import AssistantDeltaEvent
-from pycodex.tools import ClockTool
+from pycodex.tools import BaseTool, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
     ThreadedWorkspaceInteractiveSession, WorkspaceInteractiveSession,
@@ -72,9 +72,30 @@ async def test_capacity_removes_agent_view_and_closes_subscriptions(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_tree_tracks_descendants_and_assistant_text_without_interactive_access(tmp_path, monkeypatch):
+async def test_agent_tree_tracks_descendants_and_assistant_text_without_interactive_access(tmp_path):
     clients = []
     tools = {}
+
+    class BarrierTool(BaseTool):
+        name = "barrier_fixture"
+        description = "Wait for the fixture to release this Agent."
+        input_schema = {"type": "object", "properties": {}}
+        supports_parallel = False
+
+        async def run(self, context, args):
+            release = asyncio.Event()
+            tools[context.agent_id] = release
+            await release.wait()
+            return "released"
+
+    def tools_factory(manager, environment, toolset):
+        registry = get_tools(
+            manager, environment,
+            [name for name in toolset if name != BarrierTool.name],
+        )
+        if BarrierTool.name in toolset:
+            registry.register(BarrierTool())
+        return registry
 
     class TreeModel(ScriptedModelClient):
         def __init__(self):
@@ -91,18 +112,14 @@ async def test_agent_tree_tracks_descendants_and_assistant_text_without_interact
                 raise ValueError("fixture failure")
             if count == 1:
                 text = [] if self.index == 4 else [AssistantMessage("Preparing " + str(self.index))]
-                return ModelResponse(text + [ToolCall("clock", "clock", {"period_m": None})])
+                return ModelResponse(text + [ToolCall("barrier", BarrierTool.name, {})])
             await self.finish.wait()
             return ModelResponse([AssistantMessage("Result " + str(self.index))])
 
-    async def held_clock(self, context, args):
-        release = asyncio.Event()
-        tools[context.agent_id] = release
-        await release.wait()
-        return {"enabled": False, "period_m": None}
-
-    monkeypatch.setattr(ClockTool, "run", held_clock)
-    manager = AgentsManager(TreeModel(), context(tmp_path), toolset=("clock",))
+    manager = AgentsManager(
+        TreeModel(), context(tmp_path), toolset=(BarrierTool.name,),
+        tools_factory=tools_factory,
+    )
     root = manager.create_root_runtime()
     session = await WorkspaceInteractiveSession(root).start()
     runtimes = [root]

@@ -1413,7 +1413,7 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failed", [False, True])
 async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
-    from pycodex.tools import ClockManager, ClockTool
+    from pycodex.tools import ClockManager
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1429,7 +1429,6 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
     clock = ClockManager()
     clock.set_period(1)
     tools = ToolRegistry()
-    tools.register(ClockTool(clock))
     tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
     initial_history = (UserMessage("old prompt"),)
     agent = make_agent(

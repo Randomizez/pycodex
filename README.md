@@ -238,6 +238,11 @@ recently used idle leaf with no pending or background work, or reports a capacit
 error. Closed children are removed from the Agent tree and Workspace views;
 their task names can be reused. The Manager retains closing child references
 until their cleanup finishes, even after they leave the live tree.
+The `clock` namespace provides two direct tools: `set_period(period_m)` schedules
+periodic wake-ups after replies (`null` disables it), and `sleep(duration_ms)`
+waits within the active turn until its deadline, new input or a stop request.
+Neither tool is available inside `exec`. The former `clock` tool is now
+`clock.set_period`; custom imports use `SetPeriodTool` instead of `ClockTool`.
 Recorded sessions retain the clock period in a small environment snapshot beside
 the rollout. Resuming starts a fresh countdown and restores `idle: sleeping`
 in attached frontends; child Agents remain in memory.
@@ -248,6 +253,8 @@ owns their callbacks, restart, background state and cleanup. Tools provide their
 model-callable behavior. Pass `tools_factory(manager, environment, toolset)` to
 `AgentsManager` to construct custom tools for both root and child Agents; see the
 [resource contract](docs/RUNTIME.md#tools).
+The ineffective built-in `request_user_input` tool is removed. Custom tools can
+still use the Runtime's question/permission services and frontend answer transport.
 Model clients expose explicit recording metadata; Agent supplies each request's
 session identity through `Prompt`, including compaction and resumed sessions.
 Tool summaries and conversation-history projections are pure helpers shared by

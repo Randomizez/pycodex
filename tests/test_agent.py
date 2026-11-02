@@ -24,8 +24,6 @@ from pycodex.events import AssistantDeltaEvent, StreamErrorEvent, TokenCountEven
 from pycodex.protocol import ContextMessage
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import (
-    ClockManager,
-    ClockTool,
     ExecCommandTool,
     UnifiedExecManager,
     WaitAgentTool,
@@ -835,119 +833,6 @@ def test_runtime_connects_exec_completion_hook_from_tool_registry(tool_name) -> 
     assert manager._notify_hook is None
     runtime = make_runtime(agent)
     assert manager._notify_hook == runtime.maybe_invoke
-
-
-@pytest.mark.asyncio
-async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "None":
-    monkeypatch.setattr(
-        "pycodex.tools.clock_manager._current_time",
-        lambda: "2026-08-07T12:34:56+08:00",
-    )
-    manager = ClockManager(seconds_per_minute=0.01)
-    tools = ToolRegistry()
-    tools.register(ClockTool(manager))
-    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
-    model = ScriptedModelClient(
-        [
-            ModelResponse(
-                items=[
-                    ToolCall(
-                        call_id="clock_set",
-                        name="clock",
-                        arguments={"period_m": 1},
-                    )
-                ]
-            ),
-            ModelResponse(items=[AssistantMessage(text="clock armed")]),
-            ModelResponse(items=[AssistantMessage(text="first tick handled")]),
-            ModelResponse(
-                items=[
-                    ToolCall(
-                        call_id="clock_cancel",
-                        name="clock",
-                        arguments={"period_m": None},
-                    )
-                ]
-            ),
-            ModelResponse(items=[AssistantMessage(text="clock stopped")]),
-        ]
-    )
-    agent = make_agent(model, tools, ContextConfig())
-    runtime = make_runtime(agent)
-
-    result = await agent.run_turn(["start periodic work"])
-
-    assert result.output_text == "clock armed"
-
-    async def wait_for_second_tick() -> "None":
-        while model.call_count < 5 or agent.is_running:
-            await asyncio.sleep(0.001)
-
-    await asyncio.wait_for(wait_for_second_tick(), timeout=1.0)
-    clock_ticks = [
-        item
-        for item in agent.history
-        if isinstance(item, UserMessage) and item.text.startswith("<clock_tick>\n")
-    ]
-    assert [item.text for item in clock_ticks] == [
-        (
-            "<clock_tick>\n"
-            '{"period_m":1.0,"current_time":"2026-08-07T12:34:56+08:00"}\n'
-            "</clock_tick>"
-        ),
-        (
-            "<clock_tick>\n"
-            '{"period_m":1.0,"current_time":"2026-08-07T12:34:56+08:00"}\n'
-            "</clock_tick>"
-        ),
-    ]
-    assert manager.snapshot() == {"enabled": False, "period_m": None}
-    assert manager._timer_task is None
-    await runtime.close()
-
-
-@pytest.mark.asyncio
-async def test_runtime_shutdown_cancels_clock_and_discards_queued_tools() -> "None":
-    manager = ClockManager()
-    manager.set_period(1)
-    tools = ToolRegistry()
-    clock = ClockTool(manager)
-    clock.exec_only = False
-    tools.register(clock)
-    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
-    model = ScriptedModelClient(
-        [
-            ModelResponse(items=[AssistantMessage(text="done")]),
-            ModelResponse(items=[ToolCall("clock", "clock", {"period_m": 1})]),
-            ModelResponse(items=[AssistantMessage(text="done")]),
-        ]
-    )
-    agent = make_agent(model, tools, ContextConfig())
-    events = []
-    runtime = make_runtime(agent)
-    runtime.event_handler = events.append
-    await runtime.start()
-    try:
-        result = await runtime.submit_user_turn("hello")
-        assert result.output_text == "done"
-        assert manager._timer_task is not None
-        pending_timer = manager._timer_task
-        completed_event = next(
-            event for event in events if event.kind == "turn_completed"
-        )
-        assert completed_event.background_work_count == 1
-
-        _submission_id, pending_turn = runtime.enqueue("set clock again")
-        await runtime.close()
-        with pytest.raises(SubmissionInterrupted):
-            await pending_turn
-        await asyncio.gather(pending_timer, return_exceptions=True)
-
-        assert manager.snapshot() == {"enabled": True, "period_m": 1.0}
-        assert manager._timer_task is None
-        assert model.call_count == 1
-    finally:
-        await runtime.close()
 
 
 @pytest.mark.asyncio

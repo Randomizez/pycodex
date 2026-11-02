@@ -34,8 +34,7 @@
 - 工具继承 `BaseTool` 并注册实例；schema 由真实建模层序列化。
   除明确扩展 `clock` 外，逐一对齐上游工具契约。
   不恢复 collaboration mode 切换；保留模型目录提供的 Default 指令文本。
-  `request_user_input` 固定返回 Default mode
-  下不可用，通用 Runtime 问答/权限服务仍保留。
+  不注册模型侧 `request_user_input` 工具；通用 Runtime 问答/权限服务仍保留。
 
 ## 开发与验证
 

@@ -16,7 +16,6 @@ from pycodex.tools.runtime_services import (
 from pycodex.tools import (
     ApplyPatchTool,
     ClockManager,
-    ClockTool,
     CodeModeManager,
     ExecCommandTool,
     ExecTool,
@@ -24,7 +23,6 @@ from pycodex.tools import (
     ListDirTool,
     ReadFileTool,
     RequestPermissionsTool,
-    RequestUserInputTool,
     ShellCommandTool,
     ShellTool,
     ToolContext,
@@ -422,47 +420,6 @@ async def test_exec_command_notifies_hook_when_background_session_exits(
     assert notifications[0]["type"] == "exec_command_completed"
     assert notifications[0]["session_id"] == 1000
     assert notifications[0]["exit_code"] == 0
-
-
-@pytest.mark.asyncio
-async def test_clock_tool_sets_cancels_and_validates_period() -> "None":
-    manager = ClockManager()
-    registry = ToolRegistry()
-    registry.register(ClockTool(manager))
-    context = ToolContext(turn_id="turn_clock", history=(), cwd=Path.cwd())
-
-    enabled = await registry.execute(
-        ToolCall(
-            call_id="clock_set",
-            name="clock",
-            arguments={"period_m": 2},
-        ),
-        context,
-    )
-    assert enabled.output == {"enabled": True, "period_m": 2.0}
-    assert enabled.is_error is False
-
-    invalid = await registry.execute(
-        ToolCall(
-            call_id="clock_invalid",
-            name="clock",
-            arguments={"period_m": 0},
-        ),
-        context,
-    )
-    assert invalid.is_error is True
-    assert "positive finite number or null" in str(invalid.output)
-
-    disabled = await registry.execute(
-        ToolCall(
-            call_id="clock_cancel",
-            name="clock",
-            arguments={"period_m": None},
-        ),
-        context,
-    )
-    assert disabled.output == {"enabled": False, "period_m": None}
-    assert disabled.is_error is False
 
 
 @pytest.mark.asyncio
@@ -886,58 +843,6 @@ async def test_update_plan_tool_returns_confirmation_and_stores_plan(
             {"step": "Inspect repo", "status": "completed"},
             {"step": "Implement tools", "status": "in_progress"},
         ],
-    }
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("has_handler", [False, True])
-async def test_request_user_input_tool_is_unavailable(has_handler) -> "None":
-    registry = ToolRegistry()
-    requested = []
-
-    async def handler(payload):
-        requested.append(payload)
-        return {"answers": {}}
-
-    if has_handler:
-        registry.runtime_environment.request_user_input_manager.set_handler(handler)
-    registry.register(RequestUserInputTool())
-
-    result = await registry.execute(
-        ToolCall(
-            call_id="call_request_user_input",
-            name="request_user_input",
-            arguments={
-                "questions": [
-                    {
-                        "id": "choice",
-                        "header": "Select",
-                        "question": "Pick one",
-                        "options": [
-                            {
-                                "label": "Use tool A (Recommended)",
-                                "description": "Fast path",
-                            },
-                            {
-                                "label": "Use tool B",
-                                "description": "Slow path",
-                            },
-                        ],
-                    }
-                ]
-            },
-        ),
-        ToolContext(turn_id="turn_request_user_input", history=(), cwd=Path.cwd()),
-    )
-
-    assert result.is_error is False
-    assert result.success is None
-    assert requested == []
-    assert result.output == "request_user_input is unavailable in Default mode"
-    assert result.serialize() == {
-        "type": "function_call_output",
-        "call_id": "call_request_user_input",
-        "output": "request_user_input is unavailable in Default mode",
     }
 
 
@@ -1400,7 +1305,6 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     clock_manager = ClockManager()
     exec_manager = UnifiedExecManager()
     registry = ToolRegistry()
-    registry.register(ClockTool(clock_manager))
     registry.register(ExecCommandTool(exec_manager))
     registry.runtime_environment.register_resource("clock", clock_manager, observer=clock_manager.handle_agent_event)
     registry.runtime_environment.register_resource("exec_command", exec_manager)

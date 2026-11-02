@@ -10,7 +10,7 @@ from ..protocol import qualified_tool_name
 from .apply_patch_tool import ApplyPatchTool
 from .base_tool import BaseTool, Registry, ToolContext, ToolRegistry
 from .clock_manager import ClockManager
-from .clock_tool import ClockTool
+from .clock_tool import SetPeriodTool, SleepTool
 from .code_mode_manager import CodeModeManager
 from .exec_command_tool import ExecCommandTool
 from .exec_tool import ExecTool
@@ -22,7 +22,6 @@ from .list_agents_tool import ListAgentsTool
 from .list_dir_tool import ListDirTool
 from .read_file_tool import ReadFileTool
 from .request_permissions_tool import RequestPermissionsTool
-from .request_user_input_tool import RequestUserInputTool
 from .runtime_services import (
     AgentRuntimeEnvironment,
     create_agent_runtime_environment,
@@ -60,7 +59,6 @@ def get_tools(
         GetGoalTool(runtime_environment.goal_manager),
         UpdateGoalTool(runtime_environment.goal_manager),
     )
-    request_user_input_tool = RequestUserInputTool()
     agent_tools = (
         SpawnAgentTool(agents_manager),
         SendMessageTool(agents_manager),
@@ -72,15 +70,16 @@ def get_tools(
     apply_patch_tool = ApplyPatchTool()
     exec_command_tool = ExecCommandTool(unified_exec_manager)
     write_stdin_tool = WriteStdinTool(unified_exec_manager)
-    clock_tool = ClockTool(clock_manager)
+    set_period_tool = SetPeriodTool(clock_manager)
+    sleep_tool = SleepTool(agents_manager)
     view_image_tool = ViewImageTool()
     tools = (
         exec_tool,
         wait_tool,
         exec_command_tool,
         write_stdin_tool,
-        clock_tool,
-        request_user_input_tool,
+        set_period_tool,
+        sleep_tool,
         apply_patch_tool,
         view_image_tool,
     ) + goal_tools + agent_tools
@@ -110,9 +109,9 @@ def get_tools(
             )
         elif tool is exec_command_tool:
             runtime_environment.register_resource(tool.name, unified_exec_manager)
-        elif tool is clock_tool:
+        elif tool is set_period_tool:
             runtime_environment.register_resource(
-                tool.name, clock_manager, observer=clock_manager.handle_agent_event,
+                "clock", clock_manager, observer=clock_manager.handle_agent_event,
             )
     return registry
 
@@ -121,7 +120,6 @@ __all__ = [
     "ApplyPatchTool",
     "BaseTool",
     "ClockManager",
-    "ClockTool",
     "CodeModeManager",
     "CreateGoalTool",
     "ExecTool",
@@ -136,10 +134,11 @@ __all__ = [
     "ReadFileTool",
     "Registry",
     "RequestPermissionsTool",
-    "RequestUserInputTool",
     "SendMessageTool",
+    "SetPeriodTool",
     "ShellCommandTool",
     "ShellTool",
+    "SleepTool",
     "SpawnAgentTool",
     "ToolContext",
     "ToolRegistry",
