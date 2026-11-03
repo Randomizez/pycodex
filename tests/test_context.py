@@ -72,6 +72,8 @@ def test_context_manager_resolves_gpt56_model_metadata() -> "None":
         ("gpt-6-astra:caishi-azure", "gpt-6-astra"),
         ("custom/gpt-6-astra:azure", "gpt-6-astra"),
         ("step-3.5-flash-2603:local", "step-3.5-flash-2603"),
+        ("gemini-4-argon-preview", "gemini-4-argon"),
+        ("custom/gemini-4-argon-preview", "gemini-4-argon"),
         ("invalid.namespace/gpt-5.4", None),
         ("provider/nested/gpt-5.4", None),
         ("/gpt-5.4", None),

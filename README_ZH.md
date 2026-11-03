@@ -55,6 +55,7 @@ export OPENAI_API_KEY="your-api-key"
 
 详见[配置文档](docs/CONTEXT.md#配置读取与-profile)和
 [Gemini 配置示例](docs/responses_server/README.md#gemini-api)。
+Gemini 4 Argon 内置基于 Antigravity 适配的提示词。
 
 ## 使用 CLI
 

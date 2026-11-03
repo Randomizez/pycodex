@@ -26,6 +26,9 @@
   本地 `step-3.5-flash`、`step-3.5-flash-2603`、`step-3.7-flash`、
   `step-5-preview` 均通过该表接入；新增模型也应沿用这个入口。
   Step 的调用指引使用当前工具接口和声明名称，不引用未注册的并行工具。
+  `gemini-4-argon` 使用基于 Antigravity CLI 1.4.12 模板的本地适配，
+  沿用同样的 `model_messages.instructions_template` 和 personality 变量。
+  原名带后缀或单层 provider namespace 时也按现有前缀规则匹配。
 - `AgentsManager` 构造根和子 Runtime，Agent 仍由 Runtime 单向控制；
   低层 `Agent` 构造必须显式传入 `session_id`。不恢复 collaboration mode
   切换、turn cancellation 或固定 iteration cap。
@@ -39,6 +42,12 @@
 steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 session
 仅第一条请求携带。历史对比及其测试隔离边界见
 [Steer semantics](ALIGNMENT.md#steer-semantics)。
+
+Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.12-4768735748292608/linux-x64/cli_linux_x64.tar.gz)
+中的身份、并行工具调用、行为与沟通模板，并适配为 pycodex 身份、现有工具接口和文件链接格式。
+不引入 Antigravity 专用 UI、KI 目录或未验证的模型条件分支；这是本地适配，
+不表示与官方最终请求的完整 system prompt 相同。未匹配到模型条目时仍使用
+`default_base_instructions.md`；显式 prompt 配置继续优先。
 
 ## 配置读取与 profile
 

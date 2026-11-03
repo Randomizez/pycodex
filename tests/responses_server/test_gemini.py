@@ -8,7 +8,7 @@ from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
-from pycodex.model import ResponsesModelClient
+from pycodex.model import ResponsesModelClient, ResponsesProviderConfig
 from pycodex.context import ContextConfig, ContextManager
 from pycodex.protocol import ToolResult, UserMessage
 from pycodex.utils.session_persist import SessionRolloutRecorder, load_resumed_session_path
@@ -87,6 +87,38 @@ def _tool(name="run", kind="function"):
         "type": "object", "properties": {"value": {"type": "integer"}},
         "required": ["value"], "additionalProperties": False,
     }}
+
+
+@pytest.mark.parametrize("instructions", [None, "Explicit system rules"])
+def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instructions):
+    model = "gemini-4-argon-preview"
+    context = ContextManager(ContextConfig(
+        model=model, personality="pragmatic", cwd=tmp_path,
+        base_instructions=instructions,
+        include_skills_instructions=False, include_permissions_instructions=False,
+    ))
+    history = [UserMessage("Hello")]
+    prompt = context.build_prompt(history, [], True)
+    client = ResponsesModelClient(ResponsesProviderConfig(
+        model=model, provider_name="gemini", base_url="https://example.invalid/v1beta",
+        api_key_env=None, responses_lite_override=False,
+    ))
+    request = client._build_payload(prompt)
+    with _bridge([[_response([{"text": "Hello"}])]]) as (bridge, captures):
+        _check_lifecycle(_post(bridge, request))
+    system_text = "\n".join(part["text"] for part in captures[0]["body"]["systemInstruction"]["parts"])
+    if instructions is None:
+        assert system_text.startswith("You are Codex, a coding agent based on Gemini 4 Argon.")
+        assert "You are a deeply pragmatic, effective software engineer." in system_text
+        assert "Do NOT batch operations if they depend on the output" in system_text
+        assert "{{" not in system_text
+        assert "task_boundary" not in system_text
+        assert "notify_user" not in system_text
+    else:
+        assert system_text == instructions
+    assert request["model"] == model
+    assert captures[0]["path"] == "/v1beta/models/" + model + ":streamGenerateContent"
+    assert history == [UserMessage("Hello")]
 
 
 @pytest.mark.parametrize("checkpoint", [False, True])

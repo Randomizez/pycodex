@@ -57,6 +57,7 @@ and `pycodex doctor` to check configuration and connectivity.
 
 See [configuration](docs/CONTEXT.md#配置读取与-profile) and the
 [Gemini setup example](docs/responses_server/README.md#gemini-api).
+Gemini 4 Argon includes a prompt adapted from Antigravity.
 
 ## Use the CLI
 
