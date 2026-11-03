@@ -2,6 +2,7 @@
 
 import json
 import typing
+from copy import deepcopy
 
 from .tools import WebSearchTool
 from .tools.custom_adapter import CustomToolAdapterError
@@ -142,6 +143,7 @@ def _responses_input_to_chat_messages(
             "content" not in pending_assistant
             and "reasoning" not in pending_assistant
             and "tool_calls" not in pending_assistant
+            and "provider_data" not in pending_assistant
         ):
             pending_assistant = None
             return
@@ -217,6 +219,10 @@ def _responses_input_to_chat_messages(
         if item_type == "reasoning":
             if pending_assistant is None:
                 pending_assistant = {"role": "assistant"}
+            if "provider_data" in raw_item:
+                pending_assistant.setdefault("provider_data", []).extend(
+                    deepcopy(raw_item["provider_data"])
+                )
             reasoning_text = coalesce_reasoning_text(raw_item)
             if reasoning_text:
                 pending_assistant["reasoning"] = (

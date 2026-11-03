@@ -98,7 +98,6 @@ class ResponsesProviderConfig:
     provider_name: "str"
     base_url: "str"
     api_key_env: "typing.Union[str, None]"
-    use_chat_completion: "bool" = False
     wire_api: "str" = "responses"
     query_params: "typing.Dict[str, str]" = field(default_factory=dict)
     reasoning_effort: "typing.Union[str, None]" = None
@@ -113,8 +112,11 @@ class ResponsesProviderConfig:
     fallback_models: "typing.Tuple[str, ...]" = ()
     fallback_cooldown_seconds: "int" = 900
     stream_first_data_timeout_ms: "typing.Union[int, None]" = None
+    compat_api: "str" = "none"
 
     def __post_init__(self):
+        if self.compat_api not in ("none", "chat_completions", "messages", "gemini"):
+            raise ValueError("compat_api must be none, chat_completions, messages or gemini")
         cooldown = self.fallback_cooldown_seconds
         if isinstance(cooldown, bool) or not isinstance(cooldown, int) or cooldown < 0:
             raise ValueError("fallback_cooldown_seconds must be a non-negative integer")
@@ -164,11 +166,9 @@ class ResponsesProviderConfig:
         beta_features: "typing.List[str]" = []
         if isinstance(features, dict) and features.get("guardian_approval") is True:
             beta_features.append("guardian_approval")
-        use_chat_completion = _optional_bool(selected.get("use_chat_completion"))
-        if use_chat_completion is None:
-            use_chat_completion = _optional_bool(provider.get("use_chat_completion"))
-        if use_chat_completion is None:
-            use_chat_completion = False
+        for key in ("use_chat_completion", "use_messages", "use_gemini"):
+            if key in selected or key in provider:
+                raise ValueError(f"{key} has been removed; use compat_api instead")
         fallback_models = provider.get("fallback_models", [])
         if not isinstance(fallback_models, list) or any(
             not isinstance(model, str) or not model or any(c.isspace() for c in model)
@@ -180,7 +180,7 @@ class ResponsesProviderConfig:
             provider_name=provider_name,
             base_url=provider["base_url"],
             api_key_env=api_key_env,
-            use_chat_completion=use_chat_completion,
+            compat_api=selected.get("compat_api", provider.get("compat_api", "none")),
             wire_api=wire_api,
             query_params=query_params,
             reasoning_effort=selected.get("model_reasoning_effort"),
@@ -278,21 +278,6 @@ class ResponsesProviderConfig:
             if isinstance(tier, dict) and tier.get("id") == service_tier:
                 return service_tier
         return None
-
-
-def _optional_bool(
-    value: "typing.Union[bool, str, int, None]",
-) -> "typing.Union[bool, None]":
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    raise ValueError(f"invalid boolean config value: {value!r}")
 
 
 def _metadata_supports_reasoning(

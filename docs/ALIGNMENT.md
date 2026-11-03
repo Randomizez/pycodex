@@ -17,7 +17,7 @@ of OpenAI's model catalog. The related declaration and behavior differences are
 intentional local choices.
 
 `responses_server` adapts vLLM `/v1/chat/completions` to a local `/v1/responses`
-endpoint. OpenAI models are evaluated through native Responses; OpenAI/models_proxy
+endpoint. OpenAI models are evaluated through native Responses; their
 Chat restrictions are outside this alignment target. Chat/messages adapters
 convert plaintext Agent messages to user text and reject `encrypted_content`
 with HTTP 501. This plaintext-only boundary is accepted; encrypted-input support

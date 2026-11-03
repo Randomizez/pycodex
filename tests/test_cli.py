@@ -80,7 +80,6 @@ def test_cli_arguments_and_input_selection(monkeypatch):
             "--profile",
             "demo",
             "--json",
-            "--use-messages",
             "--timeout-seconds",
             "17",
             "hello",
@@ -91,12 +90,10 @@ def test_cli_arguments_and_input_selection(monkeypatch):
         args.config,
         args.profile,
         args.json,
-        args.use_messages,
         args.timeout_seconds,
     ) == (
         "custom.toml",
         "demo",
-        True,
         True,
         17,
     )
@@ -114,7 +111,14 @@ def test_cli_arguments_and_input_selection(monkeypatch):
         build_parser().parse_args(["--put"])
 
 
-@pytest.mark.parametrize("mode", ["chat", "messages", "vllm", "managed"])
+@pytest.mark.parametrize("flag", ["--use-chat-completion", "--use-messages", "--use-gemini"])
+def test_cli_compat_selection_uses_configuration(flag):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args([flag, "hello"])
+    assert build_parser().parse_args(["--vllm-endpoint", "http://localhost:8000"]).vllm_endpoint == "http://localhost:8000"
+
+
+@pytest.mark.parametrize("mode", ["none", "chat_completions", "messages", "gemini", "vllm", "managed"])
 def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     launches = []
     probes = []
@@ -135,18 +139,27 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
         "pycodex.bootstrap.ResponsesModelClient.list_models_sync", list_models
     )
     options = {}
-    if mode == "chat":
-        with config_path.open("a", encoding="utf-8") as handle:
-            handle.write("use_chat_completion = true\n")
-    elif mode == "messages":
-        options["use_messages"] = True
+    profile = None
+    if mode in ("none", "chat_completions", "messages", "gemini"):
+        (config_path.parent / "selected.config.toml").write_text(
+            'model = "selected-model"\ncompat_api = "{}"\n'.format(mode),
+            encoding="utf-8",
+        )
+        args = build_parser().parse_args(["--profile", "selected", "hello"])
+        profile = args.profile
     elif mode == "vllm":
         options["vllm_endpoint"] = "http://127.0.0.1:18000"
     else:
         options["managed_responses_base_url"] = server.base_url
-    config = CodexConfig.from_env(config_path)
+    config = CodexConfig.from_env(config_path, profile)
     bootstrap = build_model(config.provider, timeout_seconds=17, **options)
     client = bootstrap.client
+    if mode == "none":
+        assert not launches and not probes
+        assert bootstrap.owned_server is None
+        assert client.endpoint == config.provider.base_url
+        assert client._config.api_key_env == config.provider.api_key_env
+        return
     assert client._config.base_url == server.base_url
     assert client.endpoint == server.base_url
     assert client._config.responses_lite_override is False
@@ -159,11 +172,28 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     elif mode == "managed":
         assert not launches
     else:
-        assert launches[0][1]["outcomming_api"] == (
-            "messages" if mode == "messages" else "chat_completions"
-        )
+        assert launches[0][1]["outcomming_api"] == mode
+        assert client.model == "selected-model"
+        from dataclasses import replace
+        direct = build_model(replace(config.provider, compat_api="none"))
+        assert direct.owned_server is None
+        assert direct.client.endpoint == config.provider.base_url
+
+
+@pytest.mark.parametrize("compat_api,options", [
+    ("messages", {"vllm_endpoint": "http://localhost:8000/v1"}),
+    ("gemini", {"vllm_endpoint": "http://localhost:8000/v1"}),
+    ("chat_completions", {"managed_responses_base_url": "http://localhost:8000/v1"}),
+    ("messages", {"managed_responses_base_url": "http://localhost:8000/v1"}),
+    ("gemini", {"managed_responses_base_url": "http://localhost:8000/v1"}),
+    ("none", {"managed_responses_base_url": "http://localhost:8000/v1", "vllm_endpoint": "http://localhost:8001/v1"}),
+])
+def test_bootstrap_rejects_conflicting_backends(config_path, compat_api, options):
+    from dataclasses import replace
+
+    config = CodexConfig.from_env(config_path)
     with pytest.raises(ValueError, match="cannot be combined"):
-        build_model(config.provider, use_chat_completion=True, use_messages=True)
+        build_model(replace(config.provider, compat_api=compat_api), **options)
 
 
 @pytest.mark.asyncio

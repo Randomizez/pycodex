@@ -6,10 +6,14 @@ import ssl
 import time
 import typing
 import urllib.error
+import urllib.parse
 import urllib.request
 from contextlib import contextmanager
 
 from .config import CompatServerConfig
+from .gemini_api import GeminiAPIAdapterError, build_gemini_request
+from .gemini_api import continuation_chunk as gemini_continuation_chunk
+from .gemini_api import iter_chat_chunks as iter_chat_chunks_from_gemini
 from .messages_api import MessagesAPIAdapterError, build_messages_request
 from .messages_api import iter_chat_chunks as iter_chat_chunks_from_messages
 from .messages_api import saw_message_stop as messages_saw_message_stop
@@ -30,6 +34,8 @@ class OutcommingTransport:
         self.config = config
 
     def list_models(self) -> "typing.Dict[str, object]":
+        if self.config.normalized_outcomming_api() == "gemini":
+            return self._list_gemini_models()
         request = urllib.request.Request(
             self.config.outcomming_models_url(),
             headers=self._build_headers(accept="application/json"),
@@ -37,10 +43,30 @@ class OutcommingTransport:
         )
         return self._request_json(request)
 
+    def _list_gemini_models(self):
+        url = self.config.outcomming_models_url()
+        models = []
+        while True:
+            request = urllib.request.Request(
+                url, headers=self._build_headers(accept="application/json"), method="GET",
+            )
+            payload = self._request_json(request)
+            for model in payload.get("models", []):
+                name = model["name"]
+                if not name.startswith("models/"):
+                    raise OutcommingChatError("invalid Gemini model resource name")
+                models.append({"id": name[len("models/"):], "object": "model"})
+            page_token = payload.get("nextPageToken")
+            if not page_token:
+                return {"object": "list", "data": models}
+            url = self.config.outcomming_models_url() + "?" + urllib.parse.urlencode({"pageToken": page_token})
+
     def open_stream(self, outcomming_request: "typing.Dict[str, object]"):
         outcomming_api = self.config.normalized_outcomming_api()
         if outcomming_api == "messages":
             return self._open_outcomming_messages_stream(outcomming_request)
+        if outcomming_api == "gemini":
+            return self._open_outcomming_gemini_stream(outcomming_request)
         if outcomming_api != "chat_completions":
             raise OutcommingChatError(
                 f"unsupported outcomming API: {self.config.outcomming_api!r}"
@@ -140,9 +166,22 @@ class OutcommingTransport:
             method="POST",
         )
         with self._request_diagnostics(request) as progress:
-            yield from self._read_outcomming_messages_stream(request, progress)
+            yield from self._read_outcomming_native_stream(request, progress, "messages")
 
-    def _read_outcomming_messages_stream(self, request, progress):
+    def _open_outcomming_gemini_stream(self, outcomming_request):
+        try:
+            payload = build_gemini_request(outcomming_request)
+            url = self.config.outcomming_gemini_url(outcomming_request["model"])
+        except ValueError as exc:
+            raise OutcommingChatError(str(exc)) from exc
+        request = urllib.request.Request(
+            url, data=json.dumps(payload).encode("utf-8"),
+            headers=self._build_headers(accept="text/event-stream"), method="POST",
+        )
+        with self._request_diagnostics(request) as progress:
+            yield from self._read_outcomming_native_stream(request, progress, "gemini")
+
+    def _read_outcomming_native_stream(self, request, progress, api):
         try:
             with urllib.request.urlopen(
                 request,
@@ -158,19 +197,22 @@ class OutcommingTransport:
                         if not data:
                             continue
                         payload = json.loads(data)
-                        if not isinstance(payload, dict):
-                            continue
                         self._received_chunk(progress)
-                        for chunk in iter_chat_chunks_from_messages(
-                            event_name,
-                            payload,
-                            stream_state,
-                        ):
-                            yield chunk
-                    if not messages_saw_message_stop(stream_state):
+                        if api == "gemini":
+                            yield from iter_chat_chunks_from_gemini(payload, stream_state)
+                        elif isinstance(payload, dict):
+                            yield from iter_chat_chunks_from_messages(event_name, payload, stream_state)
+                    finished = (
+                        stream_state.get("finished") if api == "gemini"
+                        else messages_saw_message_stop(stream_state)
+                    )
+                    if not finished:
+                        terminal = "finishReason" if api == "gemini" else "message_stop"
                         raise OutcommingChatError(
-                            "outcomming messages stream ended before `message_stop`"
+                            f"outcomming {api} stream ended before `{terminal}`"
                         )
+                    if api == "gemini":
+                        yield gemini_continuation_chunk(stream_state)
                 except (
                     ConnectionError,
                     EOFError,
@@ -178,9 +220,10 @@ class OutcommingTransport:
                     http.client.HTTPException,
                     json.JSONDecodeError,
                     MessagesAPIAdapterError,
+                    GeminiAPIAdapterError,
                 ) as exc:
                     raise OutcommingChatError(
-                        "outcomming messages stream failed while reading response body: "
+                        f"outcomming {api} stream failed while reading response body: "
                         f"{exc}"
                     ) from exc
         except urllib.error.HTTPError as exc:
@@ -189,20 +232,20 @@ class OutcommingTransport:
             progress["phase"] = "reading_error_body"
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
-                f"outcomming messages request failed with status {exc.code}: {body[:500]}"
+                f"outcomming {api} request failed with status {exc.code}: {body[:500]}"
             ) from exc
         except TimeoutError as exc:
             raise OutcommingChatError(
-                "outcomming messages request timed out after "
+                f"outcomming {api} request timed out after "
                 f"{self.config.timeout_seconds:g}s"
             ) from exc
         except urllib.error.URLError as exc:
             raise OutcommingChatError(
-                f"outcomming messages request failed: {exc.reason}"
+                f"outcomming {api} request failed: {exc.reason}"
             ) from exc
         except (OSError, EOFError, http.client.HTTPException) as exc:
             raise OutcommingChatError(
-                "outcomming messages request failed while opening response: "
+                f"outcomming {api} request failed while opening response: "
                 f"{type(exc).__name__}: {exc}"
             ) from exc
 
@@ -304,7 +347,10 @@ class OutcommingTransport:
         }
         api_key = self.config.outcomming_api_key()
         if api_key is not None:
-            headers["Authorization"] = f"Bearer {api_key}"
+            if self.config.normalized_outcomming_api() == "gemini":
+                headers["x-goog-api-key"] = api_key
+            else:
+                headers["Authorization"] = f"Bearer {api_key}"
         return headers
 
     def _iter_sse_events(self, response):

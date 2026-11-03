@@ -1882,8 +1882,10 @@ The client reads provider configuration from the selected Codex config file
 and sends `stream = true`.
 `stream_max_retries` defaults to 5; tests that need an immediate fatal stream
 error must explicitly set it to 0 (see [test guidance](../tests/TESTS.md#provider-配置)).
-Provider `use_chat_completion = true` persistently enables the local compat
-transport; an explicit CLI `--use-chat-completion` still overrides that setting.
+Profile/provider `compat_api` selects `none` (native Responses, the default),
+`chat_completions`, `messages` or `gemini`; a top-level profile value wins.
+CLI and workspace use this same setting. The only transport CLI option is
+`--vllm-endpoint`, which discovers the model and uses Chat Completions.
 
 Do not add a model-level `model_max_output_tokens` config or
 `max_output_tokens` request field for upstream parity: upstream does not send

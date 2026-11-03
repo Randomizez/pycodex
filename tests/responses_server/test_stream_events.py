@@ -74,7 +74,9 @@ def _check_lifecycle(events, allow_abandoned=False):
             assert event["output_index"] == indexes[active]
             assert item["status"] == "completed"
             assert item["type"] == added[active]["type"]
-            if item["type"] in ("message", "reasoning"):
+            if item["type"] == "reasoning" and not item.get("content"):
+                assert not deltas[active]
+            elif item["type"] in ("message", "reasoning"):
                 assert item["content"][0]["text"] == "".join(deltas[active])
             elif item["type"] in ("function_call", "custom_tool_call"):
                 field = "arguments" if item["type"] == "function_call" else "input"

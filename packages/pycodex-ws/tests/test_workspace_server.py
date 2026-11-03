@@ -1100,6 +1100,42 @@ def test_workspace_registry_crud_and_duplicate_state_path(tmp_path):
     assert definitions[0].workspace_id == workspace["id"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compat_api", ["chat_completions", "messages", "gemini"])
+async def test_workspace_selects_compat_transport_per_profile(tmp_path, monkeypatch, compat_api):
+    from types import SimpleNamespace
+
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "base"\nmodel_provider = "proxy"\n'
+        '[model_providers.proxy]\nbase_url = "https://example.invalid/v1"\n'
+        '[profiles.selected]\nmodel = "selected-model"\n'
+        'compat_api = "{}"\n'.format(compat_api), encoding="utf-8",
+    )
+    launches = []
+
+    def launch(*args, **kwargs):
+        launches.append(kwargs["outcomming_api"])
+        return SimpleNamespace(base_url="http://127.0.0.1:18083/v1", stop=lambda: None)
+
+    monkeypatch.setattr("pycodex.bootstrap.launch_chat_completion_compat_server", launch)
+    args = build_parser().parse_args(["--config", str(config), "--toolset"])
+    for flag in ("--use-chat-completion", "--use-messages", "--use-gemini"):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args([flag])
+    assert build_parser().parse_args(["--vllm-endpoint", "http://localhost:8000"]).vllm_endpoint == "http://localhost:8000"
+    entry = _build_workspace_entry(WorkspaceDefinition("test", None, tmp_path, False), args)
+    try:
+        await entry.manager.start()
+        assert launches == []
+        await entry.manager.create_session(profile="selected")
+        assert launches == [compat_api]
+        await entry.manager.create_session()
+        assert launches == [compat_api]
+    finally:
+        await entry.manager.close()
+
+
 @pytest.mark.parametrize("toolset", [["exec_command", "apply_patch"], []])
 @pytest.mark.parametrize("state_path", [None, "workspaces.alpha"])
 def test_boardless_workspace_preserves_context_and_tools(

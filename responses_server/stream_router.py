@@ -61,7 +61,11 @@ class StreamRouter:
             current_usage: "typing.Dict[str, object]" = {}
             reasoning_start = len(reasoning_parts)
             text_start = len(text_parts)
+            continuation_item = None
             for chunk in current_stream:
+                if "reasoning_item" in chunk:
+                    continuation_item = chunk["reasoning_item"]
+                    continue
                 for event_name, payload in self._consume_chat_chunk(
                     chunk,
                     reasoning_parts,
@@ -86,6 +90,8 @@ class StreamRouter:
             )
             if mock_search_calls and not ordinary_tool_calls:
                 yield from output_stream.finish_text()
+                if continuation_item is not None:
+                    yield from output_stream.complete_tool(continuation_item)
                 for item in build_output_items(mock_search_calls):
                     yield from output_stream.complete_tool(item)
                 try:
@@ -94,6 +100,8 @@ class StreamRouter:
                         current_request,
                         mock_search_calls,
                         reasoning_text="".join(reasoning_parts),
+                        provider_data=(continuation_item.get("provider_data")
+                                       if continuation_item is not None else None),
                     )
                 except ValueError as exc:
                     raise OutcommingChatError(str(exc)) from exc
@@ -132,6 +140,8 @@ class StreamRouter:
                 tool_names.custom_tool_names,
             )
             yield from output_stream.finish_text()
+            if continuation_item is not None:
+                yield from output_stream.complete_tool(continuation_item)
             for item in tool_items:
                 yield from output_stream.complete_tool(tool_names.restore_output_item(item))
             for item in build_output_items(mock_search_calls):

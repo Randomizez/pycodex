@@ -130,18 +130,6 @@ def build_parser() -> "argparse.ArgumentParser":
         default=None,
         help="Optional base URL for a chat-completions-backed vLLM server.",
     )
-    parser.add_argument(
-        "--use-chat-completion",
-        default=False,
-        action="store_true",
-        help="Start a local responses compat server for this session.",
-    )
-    parser.add_argument(
-        "--use-messages",
-        default=False,
-        action="store_true",
-        help="Route through a downstream /v1/messages backend.",
-    )
     return parser
 
 
@@ -369,8 +357,6 @@ def _build_workspace_entry(
             config.provider,
             timeout_seconds=args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
-            use_chat_completion=args.use_chat_completion or None,
-            use_messages=args.use_messages,
         )
         if bootstrap.owned_server is not None:
             atexit.register(bootstrap.owned_server.stop)

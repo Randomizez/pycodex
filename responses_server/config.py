@@ -32,6 +32,11 @@ class CompatServerConfig:
         base = self.outcomming_base_url.rstrip("/")
         return f"{base}/messages"
 
+    def outcomming_gemini_url(self, model: "str") -> "str":
+        base = self.outcomming_base_url.rstrip("/")
+        model_path = urllib.parse.quote(model, safe="")
+        return f"{base}/models/{model_path}:streamGenerateContent?alt=sse"
+
     def outcomming_models_url(self) -> "str":
         base = self.outcomming_base_url.rstrip("/")
         return f"{base}/models"
@@ -53,7 +58,7 @@ class CompatServerConfig:
             raise ValueError(f"invalid outcomming base url: {outcomming_base_url}")
         normalized_path = parsed.path.rstrip("/")
         if normalized_path in {"", "/"}:
-            parsed = parsed._replace(path="/v1")
+            parsed = parsed._replace(path="/v1beta" if outcomming_api == "gemini" else "/v1")
             outcomming_base_url = urllib.parse.urlunparse(parsed)
         else:
             outcomming_base_url = urllib.parse.urlunparse(

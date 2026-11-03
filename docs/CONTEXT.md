@@ -70,6 +70,16 @@ steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 ses
 `model_providers` 选择，因此 profile 可以修改现有 provider 的部分字段，
 也可以定义新的 provider。profile 名仅允许 ASCII 字母、数字、`_`、`-`。
 
+本地转发统一由 `compat_api` 配置，取值为 `none`（默认，原生 Responses）、
+`chat_completions`、`messages`、`gemini`。可以写在 profile 顶层或所选
+provider 表中，顶层优先；显式 `none` 可关闭 provider 默认转发。
+CLI 和 Workspace 为每个会话按 profile 自动选择，`build_model(config.provider)`
+也使用同一字段，不再接受单独的后端开关。旧 `use_chat_completion`、
+`use_messages`、`use_gemini` 配置会报迁移错误，不静默回退。
+命令行只保留 `--vllm-endpoint`，自动发现模型并使用 Chat Completions；
+不能与 `compat_api = "messages"/"gemini"` 同时使用。显式托管 Responses
+地址不能与 compat 配置或 vLLM 地址组合。
+
 选择顺序为显式 `--profile name`、基础配置顶层的 `profile = "name"`、
 基础配置本身。两种格式共用递归合并语义；旧内嵌表可继续使用，无需迁移。
 profile 覆盖层不能再通过 `profile` 选择其他 profile。

@@ -63,18 +63,6 @@ def build_parser():
         help="Start a local responses compat server for a chat-completions-backed vLLM endpoint.",
     )
     parser.add_argument(
-        "--use-chat-completion",
-        default=False,
-        action="store_true",
-        help="Start a local responses compat server for this session.",
-    )
-    parser.add_argument(
-        "--use-messages",
-        default=False,
-        action="store_true",
-        help="Route the local responses compat server to a downstream /v1/messages backend.",
-    )
-    parser.add_argument(
         "--system-prompt",
         default=None,
         help="Optional base instructions override passed to the model.",
@@ -150,8 +138,6 @@ async def run_cli(args):
             config.provider,
             timeout_seconds=args.timeout_seconds,
             vllm_endpoint=args.vllm_endpoint,
-            use_chat_completion=args.use_chat_completion or None,
-            use_messages=args.use_messages,
         )
         if bootstrap.owned_server is not None:
             atexit.register(bootstrap.owned_server.stop)

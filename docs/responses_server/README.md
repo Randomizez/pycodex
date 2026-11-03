@@ -4,7 +4,8 @@
 
 它和现有 `pycodex/` runtime 保持隔离，目标是为 vLLM 的
 `/v1/chat/completions` 提供面向 Codex 的本地 `/v1/responses` 适配。
-OpenAI 模型直接通过原生 Responses 运行和验证；OpenAI/models_proxy 的
+也通过边界适配接入 Claude Messages 和 Gemini API。
+OpenAI 模型直接通过原生 Responses 运行和验证；OpenAI 的
 Chat 接口限制不属于本服务的适配目标，vLLM 参数映射按其后端契约维护。
 
 请求中的 `model` 必须透传到下游；不能读取 `/models` 的第一个 ID
@@ -48,6 +49,7 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - incomming `GET /v1/models`
 - outcomming `POST /v1/chat/completions`
 - outcomming `POST /v1/messages`（通过边界适配复用同一套 canonical chat request / stream routing）
+- outcomming `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`
 - 流式 assistant 文本
 - chat-completions `reasoning` / `reasoning_content` -> Responses reasoning 增量和最终 `reasoning` item 适配
 - vLLM 历史 `reasoning` item -> assistant message `reasoning` 字段回放
@@ -62,6 +64,77 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - function / custom tool follow-up history 重建
 - 原生 `agent_message` 明文输入转换成 user 消息，保留发送者与接收者标签
 - 结构化 `input_image` content items：user message 里的图片直接转成 chat `image_url` part；tool output 里的图片会在该 `tool` message 之后补一条只带图片的 `user` message（chat backend 普遍会丢弃 `tool` role 里的图片）；`/v1/messages` 侧再转成 Anthropic `image` block
+
+## 统一配置入口
+
+CLI、Workspace 与 `build_model(provider_config)` 统一读取 profile/provider
+中的 `compat_api`，profile 顶层优先：`none`（默认，原生 Responses）、
+`chat_completions`（如 Step）、`messages`（Claude）、`gemini`。
+profile 显式 `none` 可覆盖 provider 的转发设置。旧 `use_*` 布尔配置和
+CLI 开关已移除，旧配置会明确提示迁移。
+
+命令行只保留 `--vllm-endpoint` 的模型发现与 Chat Completions 快捷入口，
+它不能与 `compat_api = "messages"/"gemini"` 同时使用。
+直接提供 `managed_responses_base_url` 时不能再配置 compat 或 vLLM。
+独立服务仍通过 `CompatServerConfig(outcomming_api=...)` 指定下游原生 API。
+
+## Gemini API
+
+在 profile 顶层设置 `compat_api = "gemini"`。
+例如基础配置旁的 `gemini.config.toml`：
+
+```toml
+model = "gemini-3.1-pro-preview"
+model_provider = "gemini"
+compat_api = "gemini"
+
+[model_providers.gemini]
+base_url = "https://generativelanguage.googleapis.com/v1beta"
+env_key = "GEMINI_API_KEY"
+```
+
+运行 `pycodex --profile gemini`，或在 Web 中选择该 profile，自动启用转发。
+同样支持内嵌 `[profiles.gemini]`。独立服务可创建
+`CompatServerConfig(outcomming_api="gemini", ...)`。
+`base_url` 是 Gemini API 根地址（包含版本路径），请求直接追加
+`/models/{model}:streamGenerateContent?alt=sse`；自定义部署的路径前缀原样保留。
+仅提供 origin 时，Gemini 默认补 `/v1beta`。认证使用 `x-goog-api-key`。
+模型目录请求同一根地址下的 `/models`，逐页将 Gemini 的 `models[].name`
+转换为 Responses 模型列表；生成请求仍使用调用方指定的 model。
+不自动探测或回退到其他 API。
+
+system/developer 指令转换成 `systemInstruction`，工具 schema 使用
+`parametersJsonSchema`，namespace/custom 和 tool_choice 复用现有映射。
+user/tool output 图片使用 `inlineData`；base64 data URL 拆成 MIME 与数据。
+HTTP 图片 URL 需先由调用方读取并转成 data URL，适配器明确拒绝直接传入 URL。
+并行工具结果合在一个 user content 中，
+tool output 图片保持为后续独立的 user content，不混进 functionResponse 所在块。
+`thought` 文本流映射成 reasoning；
+默认请求 `includeThoughts`，`none/minimal` effort 映射为 `minimal`，
+`low/medium/high` 原样，`xhigh/max` 映射为 `high`。支持多工具返回；
+Gemini 原生 API 没有与 `parallel_tool_calls=false` 对应的开关，执行并发仍由
+本地工具调度决定。custom grammar 通过描述和 input wrapper 传递，不是原生约束采样。
+
+Gemini 原生输出 parts（包括空文本上的 `thoughtSignature`）在成功读完流后，
+统一放入一个 reasoning item 的 `provider_data`。复用 core 已有的 reasoning
+item 原样保存契约，不扩展 AssistantMessage、ToolCall 或历史解析器。该状态
+随 rollout、恢复、fork 和保留原条目的 compact checkpoint 保存；adapter
+在下一轮还原 model parts，并过滤已从历史删除的工具调用。状态解释完全留在
+responses_server，不把签名混入工具参数或伪装成加密内容。
+无签名的旧工具历史不能补造签名，原生 API 可能拒绝。
+
+用量中输出 token 包含 `candidatesTokenCount + thoughtsTokenCount`，缓存和
+思考用量分别写入 cached_tokens/reasoning_tokens。只更新真实出现的 token 字段，
+不从其他元数据推算 token 数。原生错误、安全拦截、MAX_TOKENS 等非 STOP
+终止和缺少 finishReason 的断流返回 `response.failed`，不伪造 completed。
+当前仅支持文本/思考/函数输出；原生图片生成等其他 output parts 明确报错。
+`web_search` 仍使用已有的空结果 mock。
+
+离线回归：
+
+```bash
+env -u VIRTUAL_ENV uv run --dev pytest tests/responses_server/test_gemini.py tests/test_cli.py
+```
 
 ## 当前明确不支持
 

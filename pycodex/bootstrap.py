@@ -90,20 +90,18 @@ def build_model(
     timeout_seconds: "float" = 120.0,
     managed_responses_base_url: "typing.Union[str, None]" = None,
     vllm_endpoint: "typing.Union[str, None]" = None,
-    use_chat_completion: "typing.Union[bool, None]" = None,
-    use_messages: "bool" = False,
 ) -> "ModelBootstrapResult":
-    if use_chat_completion is None:
-        use_chat_completion = bool(provider_config.use_chat_completion)
-    if use_chat_completion and use_messages:
-        raise ValueError("--use-chat-completion and --use-messages cannot be combined")
-    if vllm_endpoint and use_messages:
-        raise ValueError("--vllm-endpoint and --use-messages cannot be combined")
+    compat_api = provider_config.compat_api
+    if vllm_endpoint is not None and compat_api not in ("none", "chat_completions"):
+        raise ValueError("--vllm-endpoint cannot be combined with compat_api=" + compat_api)
+    if managed_responses_base_url is not None and (
+        vllm_endpoint is not None or compat_api != "none"
+    ):
+        raise ValueError("a managed Responses endpoint cannot be combined with compat_api or --vllm-endpoint")
     uses_local_responses_compat = (
         managed_responses_base_url is not None
         or vllm_endpoint is not None
-        or bool(use_chat_completion)
-        or use_messages
+        or compat_api != "none"
     )
     if vllm_endpoint is not None:
         provider_config = replace(
@@ -122,7 +120,7 @@ def build_model(
             LOCAL_RESPONSES_SERVER_API_KEY_ENV,
         )
         os.environ.setdefault(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
-    elif vllm_endpoint or use_chat_completion or use_messages:
+    elif vllm_endpoint is not None or compat_api != "none":
         if vllm_endpoint:
             managed_server = launch_chat_completion_compat_server(
                 vllm_endpoint,
@@ -133,7 +131,7 @@ def build_model(
                 provider_config.base_url,
                 provider_config.api_key_env,
                 model_provider=provider_config.provider_name,
-                outcomming_api=("messages" if use_messages else "chat_completions"),
+                outcomming_api=compat_api,
             )
         url, key_env = (
             managed_server.base_url,

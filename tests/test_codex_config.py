@@ -76,6 +76,49 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
 
 
 @pytest.mark.parametrize("embedded", [False, True])
+@pytest.mark.parametrize("provider_setting,profile_setting,expected", [
+    ("", 'compat_api = "gemini"\n', "gemini"),
+    ('compat_api = "gemini"\n', 'compat_api = "none"\n', "none"),
+    ('compat_api = "messages"\n', "", "messages"),
+    ('compat_api = "chat_completions"\n', 'compat_api = "messages"\n', "messages"),
+    ("", "", "none"),
+])
+def test_profile_selects_compat_transport(
+    tmp_path, embedded, provider_setting, profile_setting, expected,
+):
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "base"\nmodel_provider = "proxy"\n'
+        '[model_providers.proxy]\nbase_url = "https://example.invalid/v1"\n'
+        + provider_setting, encoding="utf-8",
+    )
+    _write_profile(config, "selected",
+        'model = "selected-model"\n' + profile_setting, embedded,
+    )
+    provider = ResponsesProviderConfig.from_codex_config(config, "selected")
+    assert provider.model == "selected-model"
+    assert provider.compat_api == expected
+
+
+@pytest.mark.parametrize("value", [True, False, None, "", "chat", "Responses", [], {}])
+def test_invalid_compat_api_is_rejected(value):
+    with pytest.raises(ValueError, match="compat_api"):
+        ResponsesProviderConfig.from_mapping({"model": "test", "compat_api": value})
+
+
+@pytest.mark.parametrize("key", ["use_chat_completion", "use_messages", "use_gemini"])
+@pytest.mark.parametrize("in_provider", [False, True])
+def test_removed_compat_settings_require_explicit_migration(key, in_provider):
+    selected = {"model": "test", "model_provider": "proxy", "model_providers": {
+        "proxy": {"base_url": "https://example.invalid/v1"},
+    }}
+    target = selected["model_providers"]["proxy"] if in_provider else selected
+    target[key] = True
+    with pytest.raises(ValueError, match="use compat_api instead"):
+        ResponsesProviderConfig.from_mapping(selected)
+
+
+@pytest.mark.parametrize("embedded", [False, True])
 def test_profile_replaces_values_with_different_types(tmp_path, embedded):
     config = tmp_path / "config.toml"
     config.write_text(

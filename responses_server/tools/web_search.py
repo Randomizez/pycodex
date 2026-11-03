@@ -131,6 +131,7 @@ def build_followup_request(
     outcomming_request: "typing.Dict[str, object]",
     mock_search_calls: "typing.List[typing.Dict[str, object]]",
     reasoning_text: "typing.Union[str, None]" = None,
+    provider_data=None,
 ) -> "typing.Dict[str, object]":
     followup_request = deepcopy(outcomming_request)
     messages = followup_request.get("messages") or []
@@ -159,6 +160,8 @@ def build_followup_request(
         }
         if reasoning_text:
             assistant_message["reasoning"] = reasoning_text
+        if provider_data:
+            assistant_message["provider_data"] = deepcopy(provider_data)
         messages.append(assistant_message)
 
     for tool_call in mock_search_calls:
