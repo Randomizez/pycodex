@@ -93,6 +93,7 @@ class UserMessage:
     id: "typing.Union[str, None]" = None
     # Local history metadata; serialize() is the model-facing representation.
     name: "str" = "user"
+    visible: "bool" = True
 
     def serialize(self) -> "JSONDict":
         payload = {
@@ -114,6 +115,7 @@ class AgentMessage:
     content_items: "typing.Tuple[JSONDict, ...]"
     id: "typing.Union[str, None]" = None
     internal_chat_message_metadata_passthrough: "typing.Union[JSONDict, None]" = None
+    visible: "bool" = False
 
     @property
     def text(self) -> "str":
@@ -164,6 +166,7 @@ class AssistantMessage:
     id: "typing.Union[str, None]" = None
     phase: "typing.Union[str, None]" = None
     content_items: "typing.Union[typing.Tuple[JSONDict, ...], None]" = None
+    visible: "bool" = True
 
     @classmethod
     def from_response_item(cls, payload: "JSONDict") -> "AssistantMessage":

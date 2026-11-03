@@ -1685,6 +1685,13 @@ responses and rollout records use `serialize_history_item` to include it; `UserM
 deliberately excludes it from model requests. Rollout replay and retained
 compaction-checkpoint messages restore the name. Display projections remain
 text-only, and `sender` continues to identify the input transport.
+User/assistant messages default to `visible=True`, agent messages to `False`.
+This local field survives recording and checkpoints but is omitted from model
+serialization. Runtime history and rollout display share `iter_display_turns`:
+hidden inputs do not produce prompts; final phases close replies, and hidden
+mail does not split commentary from its final answer. Existing unphased replies
+are retained at input boundaries; without recorded phases, exact execution
+grouping cannot be reconstructed. Live frontend event handling is unchanged.
 Construction and first-write requirements are in
 [Recording lifecycle](#recording-lifecycle); they also apply to child context
 inheritance and resume.

@@ -116,6 +116,8 @@ slash-prefixed text literally, including known commands such as ` /model`.
 These rules also apply to the browser workspace and Feishu.
 Sessions are saved under `CODEX_HOME/sessions`. Set
 `model_auto_compact_token_limit` in the configuration to compact automatically.
+Internal agent messages remain in model history and the raw transcript but are
+hidden from restored chat by default.
 
 Ctrl+D or Ctrl+C stops the session and its child agents: pending turns are
 discarded, and active turns stop after issued model/tool operations finish.

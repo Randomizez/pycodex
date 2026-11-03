@@ -23,7 +23,10 @@ from ..protocol import (
 )
 from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
-from .history import conversation_history_to_turns, serialize_history_item
+from .history import (
+    conversation_history_to_turns, iter_display_turns,
+    restore_visibility, serialize_history_item,
+)
 from .get_env import get_package_version
 
 SESSION_INDEX_FILENAME = "session_index.jsonl"
@@ -159,6 +162,7 @@ class SessionRolloutRecorder:
                     "type": "user_message",
                     "message": item.text,
                     "name": item.name,
+                    "visible": item.visible,
                     "images": [],
                     "local_images": [],
                     "text_elements": [],
@@ -321,9 +325,7 @@ def load_resumed_session_path(
 
         if item_type == "event_msg" and isinstance(payload, dict):
             if payload.get("type") == "user_message":
-                history.append(UserMessage(
-                    text=str(payload.get("message", "")), name=payload.get("name", "user")
-                ))
+                history.append(_user_message_from_event(payload))
                 saw_input = True
             continue
 
@@ -399,28 +401,36 @@ def load_display_history(
     limit: "int" = 80,
 ) -> "typing.Tuple[typing.Union[typing.Tuple[str, str], None], ...]":
     """Read visible turns across checkpoints; None marks a compaction."""
+    return tuple(deque(iter_display_turns(_iter_display_items(rollout_path)), maxlen=limit))
+
+
+def _user_message_from_event(payload):
+    return restore_visibility(UserMessage(
+        text=str(payload.get("message", "")), name=payload.get("name", "user"),
+    ), payload)
+
+
+def _iter_display_items(rollout_path):
     path = Path(rollout_path).expanduser().resolve()
-    turns = deque(maxlen=limit)
     for entry in _iter_rollout_entries(path):
         item_type = entry.get("type")
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             continue
         if item_type == "compacted":
-            turns.append(None)
+            yield None
         elif item_type == "event_msg" and payload.get("type") == "user_message":
-            turns.append((str(payload.get("message", "")), ""))
-        elif item_type == "response_item" and payload.get("type") == "agent_message":
-            turns.append((AgentMessage.from_response_item(payload).text, ""))
+            yield _user_message_from_event(payload)
         elif (
             item_type == "response_item"
-            and payload.get("type") == "message"
-            and payload.get("role") == "assistant"
+            and (
+                payload.get("type") == "agent_message"
+                or (payload.get("type") == "message" and payload.get("role") == "assistant")
+            )
         ):
-            if not turns or turns[-1] is None:
-                turns.append(("", ""))
-            turns[-1] = (turns[-1][0], _extract_response_message_text(payload))
-    return tuple(turns)
+            items = []
+            _append_deserialized_response_item(items, payload, {}, False)
+            yield from items
 
 
 def _drop_unmatched_tool_calls(
@@ -625,19 +635,23 @@ def _append_deserialized_response_item(
 ) -> "None":
     response_item_type = str(payload.get("type", "")).strip()
     if response_item_type == "agent_message":
-        history.append(AgentMessage.from_response_item(payload))
+        history.append(restore_visibility(
+            AgentMessage.from_response_item(payload), payload,
+        ))
         return
     if response_item_type == "message":
         role = str(payload.get("role", "")).strip()
         if role == "assistant":
-            history.append(AssistantMessage.from_response_item(payload))
+            history.append(restore_visibility(
+                AssistantMessage.from_response_item(payload), payload,
+            ))
             return
         if include_user_messages and role == "user":
             history.append(
-                UserMessage(
+                restore_visibility(UserMessage(
                     text=_extract_response_message_text(payload), id=payload.get("id"),
                     name=payload.get("name", "user"),
-                )
+                ), payload)
             )
         return
 
