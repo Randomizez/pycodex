@@ -371,11 +371,15 @@ def _websocket_backend_hint_response() -> JSONResponse:
 
 
 def _sessions_response(manager: "WorkspaceSessionManager") -> JSONResponse:
+    try:
+        manager.refresh_profiles()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     return JSONResponse({
         "sessions": manager.list_sessions(),
         "profiles": list(manager.profile_factories),
         "default_profile": manager.default_profile,
-    })
+    }, headers={"Cache-Control": "no-store"})
 
 
 def _read_session_response(
@@ -409,9 +413,10 @@ async def _new_session_response(
         raise HTTPException(status_code=422, detail="title and prompt must be strings")
     if profile is not None and not isinstance(profile, str):
         raise HTTPException(status_code=422, detail="profile must be a string or null")
-    if profile is not None and profile not in manager.profile_factories:
-        raise HTTPException(status_code=400, detail="unknown Codex profile: " + profile)
-    session_id = await manager.create_session(title=title, profile=profile)
+    try:
+        session_id = await manager.create_session(title=title, profile=profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     result = (
         await manager.get(session_id).submit(prompt, sender="web", name=name)
         if prompt else {"ok": True}

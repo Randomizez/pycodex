@@ -99,7 +99,8 @@ profile 覆盖层不能再通过 `profile` 选择其他 profile。
 名称无效或 TOML 无效时直接报错，不回退到基础模型。
 
 读取结果的 `profile` 字段记录实际选择，基础配置为 `None`。
-Workspace 在启动时解析默认选择并保存每个会话的实际名称；恢复显式保存的
+Workspace 每次获取 profile 列表或创建会话时重新读取配置，并保存每个会话的实际名称；
+新增、修改或删除 profile 无需重启，已有会话保留原配置。恢复显式保存的
 基础配置时传 `use_default_profile=False`，避免配置默认值变化导致换模型。
 CLI、doctor、provider/context 的普通读取默认启用顶层 selector。
 

@@ -61,12 +61,17 @@ class WorkspaceSessionManager:
         views=None,
         profile_factories: "typing.Optional[typing.Dict[str, SessionFactory]]" = None,
         default_profile: "typing.Optional[str]" = None,
+        profile_loader=None,
     ) -> None:
+        if profile_loader is not None and (
+            profile_factories is not None or default_profile is not None
+        ):
+            raise ValueError("profile_loader cannot be combined with static profiles")
         self._session_factory = session_factory
+        self._profile_loader = profile_loader
         self.profile_factories = dict(profile_factories or {})
         self.default_profile = default_profile
-        if default_profile is not None and default_profile not in self.profile_factories:
-            raise ValueError("unknown Codex profile: {0}".format(default_profile))
+        self.refresh_profiles()
         self._sessions: "typing.Dict[str, object]" = {}
         self._session_order: "typing.List[str]" = []
         self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
@@ -81,6 +86,15 @@ class WorkspaceSessionManager:
             workspace_file_path(state_path, ".pycodex-views.json")
         )
 
+    def refresh_profiles(self) -> None:
+        factories, default = self.profile_factories, self.default_profile
+        if self._profile_loader is not None:
+            factories, default = self._profile_loader()
+        if default is not None and default not in factories:
+            raise ValueError("unknown Codex profile: {0}".format(default))
+        self.profile_factories = dict(factories)
+        self.default_profile = default
+
     def _get_lock(self):
         if self._lock is None:
             self._lock = asyncio.Lock()
@@ -93,6 +107,7 @@ class WorkspaceSessionManager:
         self._persist_callback = callback
 
     async def start(self) -> None:
+        self.refresh_profiles()
         state_tabs = self._state_store.load_tabs()
         if not state_tabs:
             await self.create_session()
@@ -133,6 +148,7 @@ class WorkspaceSessionManager:
         rollout_path: str = "",
         profile: "typing.Optional[str]" = None,
     ) -> str:
+        self.refresh_profiles()
         session_id = await self._create_session(
             title, rollout_path,
             profile=self.default_profile if profile is None else profile,

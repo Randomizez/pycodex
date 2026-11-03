@@ -346,9 +346,6 @@ def _build_workspace_entry(
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
 ) -> "WorkspaceEntry":
-    selected = read_codex_config(args.config, args.profile)
-    profiles = list_codex_profiles(args.config)
-
     def build_session(profile) -> "WorkspaceInteractiveSession":
         config = CodexConfig.from_env(
             args.config, profile, use_default_profile=False,
@@ -384,17 +381,21 @@ def _build_workspace_entry(
             partial(build_session, profile), asyncio.get_running_loop()
         )
 
+    def load_profiles():
+        selected = read_codex_config(args.config, args.profile)
+        factories = {
+            name: partial(session_factory, name)
+            for name in list_codex_profiles(args.config)
+        }
+        return factories, selected["profile"]
+
     return WorkspaceEntry(
         definition=definition,
         manager=WorkspaceSessionManager(
             partial(session_factory, None),
             definition.state_path,
             persist_callback=persist_callback,
-            profile_factories={
-                name: partial(session_factory, name)
-                for name in profiles
-            },
-            default_profile=selected["profile"],
+            profile_loader=load_profiles,
         ),
     )
 

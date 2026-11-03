@@ -44,6 +44,10 @@ running sessions and unread replies. `/cd <directory>` changes the current
 session's working directory while idle; `/model`, `/resume`, `/compact` and
 other core session commands are also available.
 
+Use **New session** for the default profile, or its **+** button to choose one.
+Profiles reload when you open the chooser or create a session, so config changes
+apply to new sessions without restarting the server. Existing sessions keep their configuration.
+
 Consecutive model reconnection diagnostics share one collapsed `Model retries`
 row per sequence. The summary shows the number of recorded retries, the latest
 attempt and its HTTP status when available. Expand it to read the original errors

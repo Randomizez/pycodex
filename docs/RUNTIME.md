@@ -731,15 +731,16 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 ## Workspace session API
 
 `GET api/sessions` returns the session list (including each tab's `profile`),
-the available profile names in `profiles`, and `default_profile`. The CLI
-loads the sorted profile catalog from valid adjacent `*.config.toml` files and
-embedded `[profiles.NAME]` tables when building each workspace. Duplicate names
-across the two formats are errors. Provider and context settings share the
+the available profile names in `profiles`, and `default_profile`, with
+`Cache-Control: no-store`. Each catalog request and new-session creation reloads
+valid adjacent `*.config.toml` files and embedded `[profiles.NAME]` tables.
+Adding, editing or deleting profiles does not require a server restart. Duplicate
+names across the two formats are errors. Provider and context settings share the
 [profile loader](CONTEXT.md#配置读取与-profile).
 `POST api/sessions` creates a session with optional string fields `title` and
 `prompt`, plus an optional `profile` name. Title and prompt default to an empty
 string; requests with no body still create an empty session. An omitted or null
-profile uses the launch `--profile`, then the top-level config `profile`, then
+profile uses the launch `--profile`, then the current top-level config `profile`, then
 the base config. Unknown
 names fail before creating a session. The selected profile is passed to both
 model and Agent construction on the session's worker thread. CLI overrides
@@ -749,8 +750,12 @@ fields are general frontend inputs: the API does not select prompts, infer
 reply languages or interpret feature-specific flags.
 
 `WorkspaceSessionManager` accepts a base zero-argument session factory plus an
-optional `profile_factories` mapping of names to zero-argument factories and a
-`default_profile`. Each factory constructs a fresh session. The browser's
+optional static `profile_factories` mapping and `default_profile`, or a
+`profile_loader` callback returning the current `(factories, default_profile)`.
+The CLI supplies this loader; it refreshes before restoration, catalog responses
+and session creation. Existing sessions retain their model and instructions.
+An unknown or removed name is rejected before a session is registered.
+Each factory constructs a fresh session. The browser's
 **New session** button directly creates a default session. Its right-hand
 **+** button (`Custom profile`) opens the profile chooser; when no named profiles
 exist, it shows a message without creating a session. Frontend customization

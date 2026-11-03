@@ -20,6 +20,101 @@ from test_workspace_server import make_session, wait_snapshot
 
 
 @pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize("profile_format", ["file", "embedded"])
+def test_profiles_refresh_after_add_edit_and_delete(tmp_path, multi, profile_format):
+    config = tmp_path / "config.toml"
+    base = 'model = "base-model"\n'
+    config.write_text(base, encoding="utf-8")
+    profile_path = tmp_path / "opus.config.toml"
+
+    def write_profile(model):
+        content = 'model = "{}"\n'.format(model)
+        if profile_format == "file":
+            profile_path.write_text(content, encoding="utf-8")
+        else:
+            config.write_text(base + "[profiles.opus]\n" + content, encoding="utf-8")
+
+    definition = WorkspaceDefinition("test", tmp_path / "state", tmp_path, False)
+    entry = app_module._build_workspace_entry(
+        definition, build_parser().parse_args(["--config", str(config), "--toolset"]),
+    )
+    app = (
+        create_multi_workspace_app(WorkspaceRegistry([entry])) if multi
+        else create_app(entry.manager, definition.state_path)
+    )
+    prefix = "/w/test" if multi else ""
+    with TestClient(app) as browser:
+        assert browser.get(prefix + "/api/sessions").json()["profiles"] == []
+        write_profile("added-v1")
+        catalog = browser.get(prefix + "/api/sessions")
+        assert catalog.json()["profiles"] == ["opus"]
+        assert catalog.headers["cache-control"] == "no-store"
+        first = browser.post(prefix + "/api/sessions", json={"profile": "opus"})
+        assert first.status_code == 200
+        assert first.json()["snapshot"]["model"] == "added-v1:default"
+        first_id = first.json()["session_id"]
+        write_profile("added-v2")
+        second = browser.post(prefix + "/api/sessions", json={"profile": "opus"})
+        assert second.status_code == 200
+        assert second.json()["snapshot"]["model"] == "added-v2:default"
+        if profile_format == "file":
+            profile_path.unlink()
+        else:
+            config.write_text(base, encoding="utf-8")
+        # A name shown in the chooser can disappear before submission.
+        rejected = browser.post(prefix + "/api/sessions", json={"profile": "opus"})
+        assert rejected.status_code == 400
+        catalog = browser.get(prefix + "/api/sessions").json()
+        assert catalog["profiles"] == []
+        assert len(catalog["sessions"]) == 3
+        previous = browser.get(prefix + "/api/session", params={"session_id": first_id})
+        assert previous.json()["snapshot"]["model"] == "added-v1:default"
+
+        # A catalog refresh must surface duplicate names and recover after correction.
+        profile_path.write_text('model = "file-model"\n', encoding="utf-8")
+        config.write_text(base + '[profiles.opus]\nmodel = "embedded-model"\n', encoding="utf-8")
+        assert browser.get(prefix + "/api/sessions").status_code == 400
+        assert browser.post(prefix + "/api/sessions", json={"profile": "opus"}).status_code == 400
+        assert len(entry.manager.list_sessions()) == 3
+        profile_path.unlink()
+        assert browser.get(prefix + "/api/sessions").json()["profiles"] == ["opus"]
+
+
+@pytest.mark.parametrize("launch_profile", [None, "fast"])
+def test_new_sessions_reload_config_default_but_keep_launch_override(tmp_path, launch_profile):
+    config = tmp_path / "config.toml"
+    base = (
+        'model = "base-model"\n'
+        '[profiles.fast]\nmodel = "fast-model"\n'
+        '[profiles.review]\nmodel = "review-model"\n'
+    )
+    config.write_text(
+        'profile = "fast"\nmodel = "base-model"\n[profiles.fast]\nmodel = "fast-model"\n',
+        encoding="utf-8",
+    )
+    args = ["--config", str(config), "--toolset"]
+    if launch_profile is not None:
+        args.extend(["--profile", launch_profile])
+    entry = app_module._build_workspace_entry(
+        WorkspaceDefinition("test", None, tmp_path, False), build_parser().parse_args(args),
+    )
+    with TestClient(create_app(entry.manager, None)) as browser:
+        original = browser.get("/api/sessions").json()["sessions"][0]["id"]
+        # POST must discover the new default and name without a catalog GET.
+        config.write_text('profile = "review"\n' + base, encoding="utf-8")
+        expected = launch_profile or "review"
+        created = browser.post("/api/sessions").json()
+        assert created["snapshot"]["model"] == expected + "-model:default"
+        assert created["sessions"][-1]["profile"] == expected
+        assert browser.get("/api/sessions").json()["default_profile"] == expected
+        config.write_text(base, encoding="utf-8")
+        created = browser.post("/api/sessions", json={"profile": None}).json()
+        assert created["sessions"][-1]["profile"] == launch_profile
+        assert created["snapshot"]["model"] == ("fast-model:default" if launch_profile else "base-model:default")
+        assert browser.get("/api/session", params={"session_id": original}).json()["snapshot"]["model"] == "fast-model:default"
+
+
+@pytest.mark.parametrize("multi", [False, True])
 @pytest.mark.parametrize("profile_format,config_default,launch_profile", [
     ("file", None, None),
     ("file", None, "fast"),

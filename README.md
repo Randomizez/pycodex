@@ -54,6 +54,7 @@ For another provider, configure its `base_url` and `env_key`. Select the API wit
 Use `--profile NAME` to select `NAME.config.toml` beside the base config or an
 embedded `[profiles.NAME]` table. Use `--config PATH` for a different config file,
 and `pycodex doctor` to check configuration and connectivity.
+The browser workspace picks up profile changes for new sessions without a restart.
 
 See [configuration](docs/CONTEXT.md#配置读取与-profile) and the
 [Gemini setup example](docs/responses_server/README.md#gemini-api).

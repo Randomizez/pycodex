@@ -40,14 +40,17 @@ Agent execution permissions, and does not replace Router authentication.
 `GET api/sessions` returns `{sessions, profiles, default_profile}`. `profiles`
 contains only names from the server's Codex config; no provider configuration
 or credentials are returned. The catalog combines adjacent `*.config.toml` files
-and embedded `[profiles.NAME]` tables and rejects duplicate names. It is loaded
-when the workspace is built. `default_profile` is the launch `--profile`, then
-the top-level config `profile`, or `null` for the base configuration.
+and embedded `[profiles.NAME]` tables and rejects duplicate names. It is reloaded
+on every catalog request and session creation; additions, edits and removals
+take effect without restarting the server. Responses use `Cache-Control: no-store`.
+`default_profile` is the launch `--profile`, then the current top-level config
+`profile`, or `null` for the base configuration. Invalid catalog configuration
+or duplicate names return HTTP 400 rather than a stale catalog.
 Each session list entry includes its effective `profile` name or `null`.
 
 `POST api/sessions` accepts `{title?, prompt?, profile?, name?}`. Title and prompt are
 strings and default to empty. Profile is a string name; omission or `null` uses
-the server default. An unknown name returns HTTP 400; an invalid field type
+the current server default. An unknown or removed name returns HTTP 400; an invalid field type
 returns HTTP 422. An empty body still creates a default session.
 The selected profile configures both the model and Agent instructions; CLI
 overrides still apply. A nonempty prompt is submitted through Runtime.
