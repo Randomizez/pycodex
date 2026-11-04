@@ -31,6 +31,10 @@ reasoning 分片持续到达且相邻间隔没有超过读空闲阈值，正文�
 最终 `response.output_item.done` 中的 reasoning 写入历史，增量不会显示为
 assistant 正文。
 
+工具参数分片、usage、原生 ping 和 SSE 心跳也会通过 SSE 注释向客户端报告连接活动，
+避免适配层暂存工具参数时触发客户端读空闲超时。只有下游实际收到数据才转发保活，
+没有数据的连接仍会超时；参数校验完成前不会发布工具调用。
+
 Responses 请求里的 `reasoning.effort` 会转换为下游 chat 请求的
 `chat_template_kwargs.reasoning_effort`。这与 vLLM Responses renderer 的
 prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `max`）。
@@ -289,6 +293,10 @@ custom/freeform 工具继续使用原有适配流程，assistant 正文也继续
 `outcomming_request`，只有在真正发请求和读 SSE 时，才在边界把它翻译成
 messages request / event。这样 tool hydration、mock `web_search`
 follow-up、provider payload post-process 仍然复用同一套主逻辑。
+
+Messages 的 `stop_reason=refusal` 返回终止错误
+`response.failed(type=invalid_prompt)`，保留上游提供的拒绝原因。
+即使上游没有返回正文，也不会被当成空的成功回复，客户端不会自动重试拒绝请求。
 
 当前 messages 边界还会补一个兼容性细节：下游如果像 vLLM `0.19.0` 一样要求
 `max_tokens`，则优先透传上游请求里的 `max_output_tokens` / `max_tokens`；

@@ -5,7 +5,9 @@ DEFAULT_MESSAGES_MAX_TOKENS = 32000
 
 
 class MessagesAPIAdapterError(ValueError):
-    pass
+    def __init__(self, message, error_type=None):
+        super().__init__(message)
+        self.error_type = error_type
 
 
 def build_messages_request(
@@ -160,6 +162,12 @@ def iter_chat_chunks(
         delta = payload.get("delta") or {}
         if not isinstance(delta, dict):
             return chunks
+        if delta.get("stop_reason") == "refusal":
+            message = "messages generation refused (stop_reason=refusal)"
+            details = delta.get("stop_details")
+            if isinstance(details, dict) and details.get("explanation"):
+                message += ": " + str(details["explanation"])
+            raise MessagesAPIAdapterError(message, error_type="invalid_prompt")
         finish_reason = _translate_stop_reason(delta.get("stop_reason"))
         if finish_reason and not bool(state.get("finish_emitted")):
             state["finish_reason"] = finish_reason

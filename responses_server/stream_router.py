@@ -66,6 +66,7 @@ class StreamRouter:
                 if "reasoning_item" in chunk:
                     continuation_item = chunk["reasoning_item"]
                     continue
+                emitted_text = False
                 for event_name, payload in self._consume_chat_chunk(
                     chunk,
                     reasoning_parts,
@@ -74,11 +75,15 @@ class StreamRouter:
                     current_usage,
                     finish_reasons,
                 ):
+                    emitted_text = True
                     item_type = (
                         "reasoning" if event_name == "response.reasoning_text.delta"
                         else "message"
                     )
                     yield from output_stream.text_delta(item_type, payload["delta"])
+                if not emitted_text:
+                    # Preserve downstream activity while tool arguments are buffered.
+                    yield None, {}
             if current_usage:
                 latest_usage = json.loads(json.dumps(current_usage))
 

@@ -1914,6 +1914,11 @@ targets are cooling, the next completion clears the deadlines and tries again.
 Explicit model selection clears cooldowns; new clients have independent state.
 Terminal request, context-length and incomplete errors do not cause failover.
 
+Messages compat reports an upstream refusal as terminal `invalid_prompt`, including
+the supplied explanation. Compat forwards downstream non-text activity as SSE
+comments so buffered tool arguments do not cause a false client idle timeout;
+silent connections still time out. See [Responses Server](responses_server/README.md).
+
 Responses HTTP 408/429 and server errors use the provider retry budget.
 Rate-limit messages containing `try again in` or `retry after` supply the retry
 delay. CLI and workspace retry notices include the underlying error details;

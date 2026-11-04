@@ -45,7 +45,11 @@ def _stream(transport, tools=None):
     request = build_outcomming_request({
         "model": "test", "input": [], "tools": tools or [],
     }, names)
-    return StreamRouter(transport).route_stream(StoredResponse("resp_test", None, "test", 0), request, names)
+    return (
+        event for event in StreamRouter(transport).route_stream(
+            StoredResponse("resp_test", None, "test", 0), request, names,
+        ) if event[0] is not None
+    )
 
 
 def _check_lifecycle(events, allow_abandoned=False):

@@ -33,8 +33,10 @@ async def _http_exception_response(request: "Request", exc: "HTTPException"):
 
 
 def _format_sse_event(
-    event_name: "str", payload: "typing.Dict[str, object]"
+    event_name: "typing.Union[str, None]", payload: "typing.Dict[str, object]"
 ) -> "bytes":
+    if event_name is None:
+        return b": keep-alive\n\n"
     data = json.dumps(payload, ensure_ascii=False)
     return f"event: {event_name}\ndata: {data}\n\n".encode("utf-8")
 

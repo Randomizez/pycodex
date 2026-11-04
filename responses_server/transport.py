@@ -100,6 +100,7 @@ class OutcommingTransport:
                     saw_done = False
                     for _event_name, data in self._iter_sse_events(response):
                         if not data:
+                            yield {}
                             continue
                         if data == "[DONE]":
                             saw_done = True
@@ -195,13 +196,17 @@ class OutcommingTransport:
                     stream_state: "typing.Dict[str, object]" = {}
                     for event_name, data in self._iter_sse_events(response):
                         if not data:
+                            yield {}
                             continue
                         payload = json.loads(data)
                         self._received_chunk(progress)
                         if api == "gemini":
-                            yield from iter_chat_chunks_from_gemini(payload, stream_state)
+                            chunks = list(iter_chat_chunks_from_gemini(payload, stream_state))
                         elif isinstance(payload, dict):
-                            yield from iter_chat_chunks_from_messages(event_name, payload, stream_state)
+                            chunks = iter_chat_chunks_from_messages(event_name, payload, stream_state)
+                        else:
+                            chunks = []
+                        yield from chunks or [{}]
                     finished = (
                         stream_state.get("finished") if api == "gemini"
                         else messages_saw_message_stop(stream_state)
@@ -213,13 +218,17 @@ class OutcommingTransport:
                         )
                     if api == "gemini":
                         yield gemini_continuation_chunk(stream_state)
+                except MessagesAPIAdapterError as exc:
+                    raise OutcommingChatError(
+                        "outcomming messages stream failed while reading response body: "
+                        + str(exc), error_type=exc.error_type,
+                    ) from exc
                 except (
                     ConnectionError,
                     EOFError,
                     OSError,
                     http.client.HTTPException,
                     json.JSONDecodeError,
-                    MessagesAPIAdapterError,
                     GeminiAPIAdapterError,
                 ) as exc:
                     raise OutcommingChatError(
@@ -367,6 +376,7 @@ class OutcommingTransport:
                 continue
 
             if line.startswith(":"):
+                yield None, ""
                 continue
             if line.startswith("event:"):
                 event_name = line.split(":", 1)[1].lstrip()
