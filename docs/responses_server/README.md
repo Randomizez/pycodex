@@ -120,8 +120,16 @@ tool output 图片保持为后续独立的 user content，不混进 functionResp
 Gemini 原生 API 没有与 `parallel_tool_calls=false` 对应的开关，执行并发仍由
 本地工具调度决定。custom grammar 通过描述和 input wrapper 传递，不是原生约束采样。
 
+有工具的请求默认开启 `toolConfig.functionCallingConfig.streamFunctionCallArguments`。
+适配器按 `partialArgs.jsonPath` 合并字符串分片和标量，识别 `{}` / `[]`
+容器标记，支持嵌套对象、数组及空容器；
+`willContinue` 省略时按 false 处理，空 `functionCall` 可结束当前调用。
+每个收到的参数分片沿用 SSE 注释保活，完整调用及参数结束后才发布工具；
+未完成调用、未结束的字符串或非法路径会明确报错。仍支持一次性返回完整 `args`。
+
 Gemini 原生输出 parts（包括空文本上的 `thoughtSignature`）在成功读完流后，
-统一放入一个 reasoning item 的 `provider_data`。复用 core 已有的 reasoning
+统一放入一个 reasoning item 的 `provider_data`；流式调用合并为完整的
+`functionCall.args`，保留调用签名，下一轮不回放参数分片。复用 core 已有的 reasoning
 item 原样保存契约，不扩展 AssistantMessage、ToolCall 或历史解析器。该状态
 随 rollout、恢复、fork 和保留原条目的 compact checkpoint 保存；adapter
 在下一轮还原 model parts，并过滤已从历史删除的工具调用。状态解释完全留在

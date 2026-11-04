@@ -89,6 +89,26 @@ def _tool(name="run", kind="function"):
     }}
 
 
+def _streamed_parts(part):
+    call = part["functionCall"]
+    first = deepcopy(part)
+    first["functionCall"] = {key: value for key, value in call.items() if key != "args"}
+    first["functionCall"]["willContinue"] = True
+    yield first
+    for key, value in call["args"].items():
+        if isinstance(value, str):
+            for text in (value[:2], value[2:]):
+                yield {"functionCall": {"partialArgs": [{
+                    "jsonPath": "$." + key, "stringValue": text, "willContinue": True,
+                }], "willContinue": True}}
+            field, value = "stringValue", ""
+        else:
+            field = "numberValue"
+        yield {"functionCall": {"partialArgs": [{"jsonPath": "$." + key, field: value}],
+                                "willContinue": True}}
+    yield {"functionCall": {}}
+
+
 @pytest.mark.parametrize("instructions", [None, "Explicit system rules"])
 def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instructions):
     model = "gemini-4-argon-preview"
@@ -122,7 +142,8 @@ def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instruct
 
 
 @pytest.mark.parametrize("checkpoint", [False, True])
-def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, checkpoint):
+@pytest.mark.parametrize("streamed", [False, True])
+def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, checkpoint, streamed):
     parts = [
         {"text": "Need both tools.", "thought": True, "thoughtSignature": "reasoning-signature"},
         {"text": "Running tools."},
@@ -137,8 +158,11 @@ def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, che
             {"type": "namespace", "name": "functions", "tools": [_tool("apply_patch", "custom")]},
         ], "tool_choice": "required", "parallel_tool_calls": True,
     }
+    wire_parts = []
+    for part in parts:
+        wire_parts.extend(_streamed_parts(part) if streamed and "functionCall" in part else [part])
     streams = [
-        [_response([part], finish=None) for part in parts] + [_response([])],
+        [_response([part], finish=None) for part in wire_parts] + [_response([])],
         [_response([{"text": "Done."}]), _response([{"text": "", "thoughtSignature": "answer-signature"}])],
         [_response([{"text": "Still done."}])],
     ]
@@ -250,10 +274,111 @@ def test_request_instructions_images_tool_results_schema_and_choice(choice, mode
     declaration = payload["tools"][0]["functionDeclarations"][0]
     assert declaration["parametersJsonSchema"] == _tool()["parameters"]
     assert declaration["description"].startswith("Workspace tools")
-    expected = {"mode": mode}
+    expected = {"mode": mode, "streamFunctionCallArguments": True}
     if names:
         expected["allowedFunctionNames"] = names
     assert payload["toolConfig"]["functionCallingConfig"] == expected
+
+
+@pytest.mark.parametrize("explicit_end", [False, True])
+def test_streamed_arguments_preserve_nested_values_and_escaped_paths(explicit_end):
+    partials = [
+        {"jsonPath": "$.items[]"},
+        {"jsonPath": "$.items[0]{}"},
+        {"jsonPath": "$.items[0].text", "stringValue": '中"\\\n', "willContinue": True},
+        {"jsonPath": "$.items[0].text", "stringValue": "文"},
+        {"jsonPath": "$.items[1]", "numberValue": 2.5},
+        {"jsonPath": "$.enabled", "boolValue": False},
+        {"jsonPath": "$.nothing", "nullValue": None if explicit_end else "NULL_VALUE"},
+        {"jsonPath": "$.zero", "numberValue": 0},
+        {"jsonPath": "$.empty", "stringValue": ""},
+        {"jsonPath": "$.empty_list[]"},
+        {"jsonPath": "$.empty_object{}"},
+        {"jsonPath": '$["a.b"][0]', "stringValue": "quoted"},
+        {"jsonPath": "$['single\\'quote']", "stringValue": "single"},
+        {"jsonPath": '$["double\\\"quote"]', "stringValue": "double"},
+    ]
+    first = {"functionCall": {"name": "store", "id": "call", "willContinue": True,
+                             "partialArgs": [partials.pop(0)]},
+             "thoughtSignature": "signed"}
+    end = {"willContinue": False} if explicit_end else {}
+    stream = [_response([first], finish=None)]
+    stream.extend(_response([{"functionCall": {
+        "partialArgs": [partial], "willContinue": True,
+    }}], finish=None) for partial in partials)
+    stream.append(_response([{"functionCall": end, "thoughtSignature": "tail"}]))
+    with _bridge([stream, [_response([{"text": "saved"}])]]) as (client, captures):
+        request = {"model": "gemini-test", "input": [], "tools": [_tool("store")]}
+        items = _check_lifecycle(_post(client, request))
+        arguments = json.loads(items[-1]["arguments"])
+        assert arguments == {
+            "items": [{"text": '中"\\\n文'}, 2.5], "enabled": False,
+            "nothing": None, "zero": 0, "empty": "", "a.b": ["quoted"],
+            "empty_list": [], "empty_object": {},
+            "single'quote": "single", 'double"quote': "double",
+        }
+        request["input"] = items + [{"type": "function_call_output", "call_id": "call", "output": "ok"}]
+        _check_lifecycle(_post(client, request))
+    assert captures[1]["body"]["contents"][0]["parts"] == [
+        {"functionCall": {"name": "store", "id": "call", "args": arguments},
+         "thoughtSignature": "signed"},
+        {"text": "", "thoughtSignature": "tail"},
+    ]
+
+
+def test_zero_argument_call_preserves_its_signed_native_part():
+    part = {"functionCall": {"name": "ping", "id": "one"}, "thoughtSignature": "signed"}
+    with _bridge([[_response([part])]]) as (client, captures):
+        items = _check_lifecycle(_post(client, {
+            "model": "gemini-test", "input": [],
+            "tools": [{"type": "function", "name": "ping", "parameters": {"type": "object"}}],
+        }))
+    assert items[-1]["arguments"] == "{}"
+    assert items[0]["provider_data"][0]["part"] == part
+
+
+@pytest.mark.parametrize("parts,error", [
+    ([{"functionCall": {}}], "invalid Gemini function call"),
+    ([{"functionCall": {"name": "run", "willContinue": True}}], "incomplete function call"),
+    ([
+        {"functionCall": {"name": "run", "willContinue": True}},
+        {"functionCall": {"partialArgs": [
+            {"jsonPath": "$.value", "stringValue": "unfinished", "willContinue": True},
+        ]}},
+    ], "incomplete arguments"),
+    ([
+        {"functionCall": {"name": "run", "willContinue": True}},
+        {"functionCall": {"name": "other", "args": {}}},
+    ], "conflicting Gemini function call fragment"),
+])
+def test_invalid_streamed_call_never_publishes_a_tool(parts, error):
+    with _bridge([[_response(parts)]]) as (client, captures):
+        events = _post(client, {"model": "gemini-test", "input": [], "tools": [_tool()]})
+    assert events[-1]["type"] == "response.failed"
+    assert error in events[-1]["response"]["error"]["message"]
+    assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
+
+
+@pytest.mark.parametrize("partial", [
+    {"jsonPath": "$..secret", "stringValue": "hidden"},
+    {"jsonPath": "$.items[*]", "stringValue": "hidden"},
+    {"jsonPath": "$.items[1000000]", "stringValue": "hidden"},
+    {"jsonPath": "$.value", "stringValue": "hidden", "numberValue": 2},
+    {"jsonPath": "$.value", "boolValue": "false"},
+    {"jsonPath": "$.value", "numberValue": True},
+    {"jsonPath": "$.value", "nullValue": 99},
+    {"jsonPath": "$.items[]", "stringValue": "hidden"},
+])
+def test_invalid_partial_argument_fails_explicitly(partial):
+    stream = [
+        _response([{"functionCall": {"name": "run", "willContinue": True}}], finish=None),
+        _response([{"functionCall": {"partialArgs": [partial]}}]),
+    ]
+    with _bridge([stream]) as (client, captures):
+        events = _post(client, {"model": "gemini-test", "input": [], "tools": [_tool()]})
+    assert events[-1]["type"] == "response.failed"
+    assert "hidden" not in events[-1]["response"]["error"]["message"]
+    assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
 
 
 @pytest.mark.parametrize("chunks,error", [
@@ -327,13 +452,17 @@ def test_gemini_endpoint_uses_configured_api_root(base, expected):
     )
 
 
-def test_continuation_state_does_not_replay_pruned_tool_calls():
+@pytest.mark.parametrize("streamed", [False, True])
+def test_continuation_state_does_not_replay_pruned_tool_calls(streamed):
     parts = [
         {"functionCall": {"id": "keep", "name": "run", "args": {"value": 1}}, "thoughtSignature": "keep-signature"},
         {"functionCall": {"id": "prune", "name": "run", "args": {"value": 2}}},
         {"text": "", "thoughtSignature": "pruned-tail"},
     ]
-    with _bridge([[_response(parts)]]) as (client, captures):
+    wire_parts = []
+    for part in parts:
+        wire_parts.extend(_streamed_parts(part) if streamed and "functionCall" in part else [part])
+    with _bridge([[_response(wire_parts)]]) as (client, captures):
         items = _check_lifecycle(_post(client, {"model": "argon", "input": [], "tools": [_tool()]}))
     restored = [ResponsesModelClient._parse_output_item(item).serialize() for item in items]
     retained = [item for item in restored if item.get("call_id") != "prune"]

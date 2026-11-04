@@ -61,6 +61,7 @@ The browser workspace picks up profile changes for new sessions without a restar
 See [configuration](docs/CONTEXT.md#配置读取与-profile) and the
 [Gemini setup example](docs/responses_server/README.md#gemini-api).
 Gemini 4 Argon includes a prompt adapted from Antigravity.
+Gemini tool arguments stream as they are generated; tools run after the complete call is received.
 
 ## Use the CLI
 

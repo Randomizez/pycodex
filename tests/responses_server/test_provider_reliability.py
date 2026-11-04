@@ -22,6 +22,7 @@ from tests.responses_server.fake_chat_completions_server import (
 @pytest.mark.parametrize("api, traffic", [
     ("messages", "tool_arguments"),
     ("messages", "ping"),
+    ("gemini", "tool_arguments"),
     ("gemini", "comments"),
     ("gemini", "metadata"),
     ("gemini", "silent"),
@@ -34,6 +35,23 @@ async def test_downstream_activity_preserves_client_idle_timeout(api, traffic):
 
         async def events():
             if traffic == "tool_arguments":
+                if api == "gemini":
+                    calls = [{"name": "echo", "id": "call_one", "willContinue": True}]
+                    calls.extend({"partialArgs": [{
+                        "jsonPath": "$.text", "stringValue": "x", "willContinue": True,
+                    }], "willContinue": True} for _ in range(15))
+                    calls.extend([
+                        {"partialArgs": [{"jsonPath": "$.text", "stringValue": ""}],
+                         "willContinue": True},
+                        {},
+                    ])
+                    for call in calls:
+                        yield "data: " + json.dumps({"candidates": [{
+                            "content": {"parts": [{"functionCall": call}]},
+                        }]}) + "\n\n"
+                        await asyncio.sleep(0.1)
+                    yield 'data: {"candidates":[{"finishReason":"STOP"}]}\n\n'
+                    return
                 for entry in build_messages_tool_use_events(
                     "call_one", "echo", ['{"text":"'] + ["x"] * 15 + ['"}'],
                 ):
@@ -83,9 +101,9 @@ async def test_downstream_activity_preserves_client_idle_timeout(api, traffic):
             else:
                 response = await client.complete(prompt, observed.append)
                 if traffic == "tool_arguments":
-                    assert len(response.items) == 1
-                    assert isinstance(response.items[0], ToolCall)
-                    assert response.items[0].arguments == {"text": "x" * 15}
+                    calls = [item for item in response.items if isinstance(item, ToolCall)]
+                    assert len(calls) == 1
+                    assert calls[0].arguments == {"text": "x" * 15}
                 else:
                     assert [item.text for item in response.items
                             if isinstance(item, AssistantMessage)] == ["done"]

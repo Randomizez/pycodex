@@ -1,6 +1,7 @@
 """Gemini generateContent request and streaming response adapter."""
 
 import json
+import re
 import uuid
 from copy import deepcopy
 
@@ -99,6 +100,7 @@ def build_gemini_request(request):
             config = {"mode": {"auto": "AUTO", "required": "ANY", "none": "NONE"}[choice]}
         else:
             raise GeminiAPIAdapterError("unsupported Gemini tool_choice")
+        config["streamFunctionCallArguments"] = True
         payload["toolConfig"] = {"functionCallingConfig": config}
     return payload
 
@@ -147,24 +149,13 @@ def iter_chat_chunks(payload, state):
         if finish and finish != "STOP":
             raise GeminiAPIAdapterError("Gemini generation ended with {}".format(finish))
         for part in candidate.get("content", {}).get("parts", []):
-            entry = {"provider": "gemini", "part": deepcopy(part)}
-            state.setdefault("provider_data", []).append(entry)
             if "functionCall" in part:
-                call = part["functionCall"]
-                if not call.get("name") or not isinstance(call.get("args", {}), dict):
-                    raise GeminiAPIAdapterError("invalid Gemini function call")
-                tool_index = state.get("tool_index", -1) + 1
-                state["tool_index"] = tool_index
-                call_id = call.get("id") or "call_" + uuid.uuid4().hex
-                entry["call_id"] = call_id
-                state["last_call_id"] = call_id
-                yield _delta({"tool_calls": [{
-                    "index": tool_index, "id": call_id, "type": "function",
-                    "function": {"name": call["name"], "arguments": json.dumps(
-                        call.get("args", {}), ensure_ascii=False, separators=(",", ":"),
-                    )},
-                }]})
+                chunk = _consume_function_call(part, state)
+                if chunk is not None:
+                    yield chunk
             elif "text" in part or "thoughtSignature" in part:
+                entry = {"provider": "gemini", "part": deepcopy(part)}
+                state.setdefault("provider_data", []).append(entry)
                 text = part.get("text", "")
                 if not text and state.get("last_call_id"):
                     entry["call_id"] = state["last_call_id"]
@@ -177,6 +168,8 @@ def iter_chat_chunks(payload, state):
                     ", ".join(sorted(part)),
                 ))
         if finish:
+            if "function_call" in state:
+                raise GeminiAPIAdapterError("Gemini stream ended with an incomplete function call")
             state["finished"] = True
             yield {"choices": [{"index": 0, "delta": {}, "finish_reason": (
                 "tool_calls" if "tool_index" in state else "stop"
@@ -201,6 +194,131 @@ def iter_chat_chunks(payload, state):
         translated["prompt_tokens_details"] = {"cached_tokens": usage["cachedContentTokenCount"]}
     if translated:
         yield {"choices": [], "usage": translated}
+
+
+def _consume_function_call(part, state):
+    call = part["functionCall"]
+    active = state.get("function_call")
+    if active is None:
+        if not isinstance(call.get("name"), str) or not call["name"] or not isinstance(call.get("args", {}), dict):
+            raise GeminiAPIAdapterError("invalid Gemini function call")
+        native = {key: deepcopy(value) for key, value in call.items()
+                  if key not in {"partialArgs", "willContinue"}}
+        entry = {"provider": "gemini", "part": dict(deepcopy(part), functionCall=native),
+                 "call_id": call.get("id") or "call_" + uuid.uuid4().hex}
+        state.setdefault("provider_data", []).append(entry)
+        state["tool_index"] = state.get("tool_index", -1) + 1
+        active = {"entry": entry, "pending": {}}
+        state["function_call"] = active
+        state["last_call_id"] = entry["call_id"]
+    else:
+        native = active["entry"]["part"]["functionCall"]
+        if ("name" in call and call["name"] != native["name"]
+                or "id" in call and call["id"] != native.get("id")
+                or "args" in call):
+            raise GeminiAPIAdapterError("conflicting Gemini function call fragment")
+        if "thoughtSignature" in part:
+            state["provider_data"].append({
+                "provider": "gemini", "call_id": active["entry"]["call_id"],
+                "part": {"text": "", "thoughtSignature": part["thoughtSignature"]},
+            })
+    for partial in call.get("partialArgs", []):
+        _consume_partial_argument(partial, native.setdefault("args", {}), active["pending"])
+    if call.get("willContinue", False):
+        return None
+    if active["pending"]:
+        raise GeminiAPIAdapterError("Gemini function call ended with incomplete arguments")
+    del state["function_call"]
+    return _delta({"tool_calls": [{
+        "index": state["tool_index"], "id": active["entry"]["call_id"], "type": "function",
+        "function": {"name": native["name"], "arguments": json.dumps(
+            native.get("args", {}), ensure_ascii=False, separators=(",", ":"),
+        )},
+    }]})
+
+
+def _consume_partial_argument(partial, arguments, pending):
+    raw_path = partial.get("jsonPath")
+    container = raw_path[-2:] if isinstance(raw_path, str) else None
+    is_container = container in ("{}", "[]")
+    path = _argument_path(raw_path[:-2] if is_container else raw_path)
+    fields = [key for key in ("stringValue", "numberValue", "boolValue", "nullValue")
+              if key in partial]
+    if len(fields) != (0 if is_container else 1):
+        raise GeminiAPIAdapterError("Gemini partial argument must contain one value")
+    field = fields[0] if fields else None
+    value = partial[field] if field is not None else ([] if container == "[]" else {})
+    if field == "stringValue":
+        if not isinstance(value, str):
+            raise GeminiAPIAdapterError("invalid Gemini string argument")
+        chunks = pending.setdefault(path, [])
+        chunks.append(value)
+        if partial.get("willContinue", False):
+            return
+        value = "".join(pending.pop(path))
+    else:
+        if path in pending or partial.get("willContinue", False):
+            raise GeminiAPIAdapterError("invalid Gemini scalar argument continuation")
+        if field == "numberValue" and (isinstance(value, bool) or not isinstance(value, (int, float))):
+            raise GeminiAPIAdapterError("invalid Gemini number argument")
+        if field == "boolValue" and not isinstance(value, bool):
+            raise GeminiAPIAdapterError("invalid Gemini boolean argument")
+        if field == "nullValue":
+            if isinstance(value, bool) or value not in (None, "NULL_VALUE", 0):
+                raise GeminiAPIAdapterError("invalid Gemini null argument")
+            value = None
+    node = arguments
+    for index, key in enumerate(path):
+        last = index == len(path) - 1
+        child = value if last else ([] if isinstance(path[index + 1], int) else {})
+        if isinstance(node, dict) and isinstance(key, str):
+            if key not in node:
+                node[key] = child
+            elif last:
+                raise GeminiAPIAdapterError("duplicate Gemini argument path")
+        elif isinstance(node, list) and isinstance(key, int) and key <= len(node):
+            if key == len(node):
+                node.append(child)
+            elif last:
+                raise GeminiAPIAdapterError("duplicate Gemini argument path")
+        else:
+            raise GeminiAPIAdapterError("invalid Gemini argument path structure")
+        node = node[key]
+
+
+def _argument_path(path):
+    # Function arguments use concrete member/index paths, never JSONPath queries.
+    pattern = r'''\.([^\W\d]\w*)|\[(0|[1-9][0-9]*|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')\]'''
+    if not isinstance(path, str) or not path.startswith("$"):
+        raise GeminiAPIAdapterError("invalid Gemini argument path")
+    keys = []
+    offset = 1
+    while offset < len(path):
+        match = re.match(pattern, path[offset:])
+        if match is None:
+            raise GeminiAPIAdapterError("invalid Gemini argument path")
+        member, bracket = match.groups()
+        if member is not None:
+            key = member
+        elif bracket[0] in ("'", '"'):
+            if bracket[0] == "'":
+                bracket = '"' + re.sub(
+                    r'''\\(.)|"''',
+                    lambda item: "'" if item.group(1) == "'" else
+                    '\\"' if item.group(0) == '"' else item.group(0),
+                    bracket[1:-1],
+                ) + '"'
+            try:
+                key = json.loads(bracket)
+            except ValueError as exc:
+                raise GeminiAPIAdapterError("invalid Gemini argument path") from exc
+        else:
+            key = int(bracket)
+        keys.append(key)
+        offset += match.end()
+    if not keys or not isinstance(keys[0], str):
+        raise GeminiAPIAdapterError("Gemini function arguments must be objects")
+    return tuple(keys)
 
 
 def _delta(delta):
