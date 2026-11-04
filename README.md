@@ -51,6 +51,8 @@ For another provider, configure its `base_url` and `env_key`. Select the API wit
 | `"messages"` | Claude Messages |
 | `"gemini"` | Gemini API |
 
+Legacy `use_chat_completion = true/false` remains supported as `chat_completions/none`.
+
 Use `--profile NAME` to select `NAME.config.toml` beside the base config or an
 embedded `[profiles.NAME]` table. Use `--config PATH` for a different config file,
 and `pycodex doctor` to check configuration and connectivity.

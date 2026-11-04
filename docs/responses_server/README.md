@@ -74,8 +74,9 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 CLI、Workspace 与 `build_model(provider_config)` 统一读取 profile/provider
 中的 `compat_api`，profile 顶层优先：`none`（默认，原生 Responses）、
 `chat_completions`（如 Step）、`messages`（Claude）、`gemini`。
-profile 显式 `none` 可覆盖 provider 的转发设置。旧 `use_*` 布尔配置和
-CLI 开关已移除，旧配置会明确提示迁移。
+profile 显式 `none` 可覆盖 provider 的转发设置。旧 `use_chat_completion`
+仍兼容，`true/false` 分别对应 `chat_completions/none`，顶层优先于 provider，
+同一层以 `compat_api` 为准。`use_messages`、`use_gemini` 配置和旧 CLI 开关已移除。
 
 命令行只保留 `--vllm-endpoint` 的模型发现与 Chat Completions 快捷入口，
 它不能与 `compat_api = "messages"/"gemini"` 同时使用。

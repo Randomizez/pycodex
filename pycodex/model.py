@@ -166,9 +166,18 @@ class ResponsesProviderConfig:
         beta_features: "typing.List[str]" = []
         if isinstance(features, dict) and features.get("guardian_approval") is True:
             beta_features.append("guardian_approval")
-        for key in ("use_chat_completion", "use_messages", "use_gemini"):
+        for key in ("use_messages", "use_gemini"):
             if key in selected or key in provider:
                 raise ValueError(f"{key} has been removed; use compat_api instead")
+        compat_api = "none"
+        for source in (selected, provider):
+            if "compat_api" in source:
+                compat_api = source["compat_api"]
+                break
+            use_chat_completion = _optional_bool(source.get("use_chat_completion"))
+            if use_chat_completion is not None:
+                compat_api = "chat_completions" if use_chat_completion else "none"
+                break
         fallback_models = provider.get("fallback_models", [])
         if not isinstance(fallback_models, list) or any(
             not isinstance(model, str) or not model or any(c.isspace() for c in model)
@@ -180,7 +189,7 @@ class ResponsesProviderConfig:
             provider_name=provider_name,
             base_url=provider["base_url"],
             api_key_env=api_key_env,
-            compat_api=selected.get("compat_api", provider.get("compat_api", "none")),
+            compat_api=compat_api,
             wire_api=wire_api,
             query_params=query_params,
             reasoning_effort=selected.get("model_reasoning_effort"),
@@ -278,6 +287,21 @@ class ResponsesProviderConfig:
             if isinstance(tier, dict) and tier.get("id") == service_tier:
                 return service_tier
         return None
+
+
+def _optional_bool(
+    value: "typing.Union[bool, str, int, None]",
+) -> "typing.Union[bool, None]":
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"invalid boolean config value: {value!r}")
 
 
 def _metadata_supports_reasoning(

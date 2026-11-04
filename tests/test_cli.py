@@ -118,7 +118,7 @@ def test_cli_compat_selection_uses_configuration(flag):
     assert build_parser().parse_args(["--vllm-endpoint", "http://localhost:8000"]).vllm_endpoint == "http://localhost:8000"
 
 
-@pytest.mark.parametrize("mode", ["none", "chat_completions", "messages", "gemini", "vllm", "managed"])
+@pytest.mark.parametrize("mode", ["none", "chat_completions", "messages", "gemini", "legacy_chat", "vllm", "managed"])
 def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     launches = []
     probes = []
@@ -140,9 +140,13 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     )
     options = {}
     profile = None
-    if mode in ("none", "chat_completions", "messages", "gemini"):
+    if mode in ("none", "chat_completions", "messages", "gemini", "legacy_chat"):
+        setting = (
+            'use_chat_completion = true\n' if mode == "legacy_chat"
+            else 'compat_api = "{}"\n'.format(mode)
+        )
         (config_path.parent / "selected.config.toml").write_text(
-            'model = "selected-model"\ncompat_api = "{}"\n'.format(mode),
+            'model = "selected-model"\n' + setting,
             encoding="utf-8",
         )
         args = build_parser().parse_args(["--profile", "selected", "hello"])
@@ -172,7 +176,9 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     elif mode == "managed":
         assert not launches
     else:
-        assert launches[0][1]["outcomming_api"] == mode
+        assert launches[0][1]["outcomming_api"] == (
+            "chat_completions" if mode == "legacy_chat" else mode
+        )
         assert client.model == "selected-model"
         from dataclasses import replace
         direct = build_model(replace(config.provider, compat_api="none"))

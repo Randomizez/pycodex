@@ -83,8 +83,10 @@ Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](ht
 `chat_completions`、`messages`、`gemini`。可以写在 profile 顶层或所选
 provider 表中，顶层优先；显式 `none` 可关闭 provider 默认转发。
 CLI 和 Workspace 为每个会话按 profile 自动选择，`build_model(config.provider)`
-也使用同一字段，不再接受单独的后端开关。旧 `use_chat_completion`、
-`use_messages`、`use_gemini` 配置会报迁移错误，不静默回退。
+也使用同一字段，不再接受单独的后端开关。旧 `use_chat_completion` 仍兼容，
+`true/false` 分别映射为 `chat_completions/none`；顶层仍优先于 provider，
+同一层同时存在新旧字段时以 `compat_api` 为准。
+`use_messages`、`use_gemini` 配置仍报迁移错误。
 命令行只保留 `--vllm-endpoint`，自动发现模型并使用 Chat Completions；
 不能与 `compat_api = "messages"/"gemini"` 同时使用。显式托管 Responses
 地址不能与 compat 配置或 vLLM 地址组合。

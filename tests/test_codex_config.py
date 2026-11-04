@@ -81,6 +81,18 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
     ('compat_api = "gemini"\n', 'compat_api = "none"\n', "none"),
     ('compat_api = "messages"\n', "", "messages"),
     ('compat_api = "chat_completions"\n', 'compat_api = "messages"\n', "messages"),
+    ('use_chat_completion = true\n', "", "chat_completions"),
+    ('use_chat_completion = false\n', "", "none"),
+    ("", 'use_chat_completion = true\n', "chat_completions"),
+    ("", 'use_chat_completion = false\n', "none"),
+    ('use_chat_completion = true\n', 'use_chat_completion = false\n', "none"),
+    ('use_chat_completion = false\n', 'use_chat_completion = true\n', "chat_completions"),
+    ('use_chat_completion = true\n', 'compat_api = "none"\n', "none"),
+    ('compat_api = "gemini"\n', 'use_chat_completion = false\n', "none"),
+    ('compat_api = "none"\n', 'use_chat_completion = true\n', "chat_completions"),
+    ('compat_api = "messages"\nuse_chat_completion = true\n', "", "messages"),
+    ("", 'compat_api = "none"\nuse_chat_completion = true\n', "none"),
+    ("", 'compat_api = "gemini"\nuse_chat_completion = false\n', "gemini"),
     ("", "", "none"),
 ])
 def test_profile_selects_compat_transport(
@@ -103,10 +115,35 @@ def test_profile_selects_compat_transport(
 @pytest.mark.parametrize("value", [True, False, None, "", "chat", "Responses", [], {}])
 def test_invalid_compat_api_is_rejected(value):
     with pytest.raises(ValueError, match="compat_api"):
-        ResponsesProviderConfig.from_mapping({"model": "test", "compat_api": value})
+        ResponsesProviderConfig.from_mapping({
+            "model": "test", "compat_api": value, "use_chat_completion": True,
+        })
 
 
-@pytest.mark.parametrize("key", ["use_chat_completion", "use_messages", "use_gemini"])
+@pytest.mark.parametrize("value,expected", [
+    (True, "chat_completions"), (False, "none"), (None, "none"),
+    (1, "chat_completions"), (0, "none"),
+    ("true", "chat_completions"), ("false", "none"),
+    ("1", "chat_completions"), ("0", "none"),
+    ("yes", "chat_completions"), ("no", "none"),
+    (" ON ", "chat_completions"), (" OFF ", "none"),
+])
+def test_legacy_chat_completion_values(value, expected):
+    provider = ResponsesProviderConfig.from_mapping({
+        "model": "test", "use_chat_completion": value,
+    })
+    assert provider.compat_api == expected
+
+
+@pytest.mark.parametrize("value", ["", "chat", 2, [], {}])
+def test_invalid_legacy_chat_completion_is_rejected(value):
+    with pytest.raises(ValueError, match="invalid boolean config value"):
+        ResponsesProviderConfig.from_mapping({
+            "model": "test", "use_chat_completion": value,
+        })
+
+
+@pytest.mark.parametrize("key", ["use_messages", "use_gemini"])
 @pytest.mark.parametrize("in_provider", [False, True])
 def test_removed_compat_settings_require_explicit_migration(key, in_provider):
     selected = {"model": "test", "model_provider": "proxy", "model_providers": {
