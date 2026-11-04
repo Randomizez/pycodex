@@ -106,6 +106,7 @@ async function newTabsAndRestore() {
   await flush();
   assert.equal(restored.tabs.activeId, "a");
   assert.equal(restored.tabs.snapshot.id, "a");
+  assert.deepEqual(restored.selections, []);
   await restored.tabs.open("b", "/docs/a.md", "session-a");
   await restored.tabs.open("b", "/docs/a.md", "session-b");
   assert.deepEqual(restored.bodies, [
@@ -124,6 +125,9 @@ async function disabledCanvasKeepsFileViewsAndAnEmptyState() {
     const expected = selected === "b" ? "b" : "a";
     assert.equal(state.tabs.activeId, expected);
     assert.equal(state.tabs.snapshot.id, expected);
+    assert.deepEqual(state.selections, []);
+    await state.tabs.select(expected);
+    assert.deepEqual(state.selections, [expected]);
     await state.tabs.select("board");
     assert.equal(state.tabs.activeId, expected);
     await assert.rejects(state.tabs.open("workspace://canvas"), /Canvas is disabled/);

@@ -80,7 +80,7 @@ export class ContentTabs {
       if ((next === "board" && !this.enableBoard) ||
           (next !== null && next !== "board" && !remaining.has(next))) next = this.defaultId();
       if (next !== this.activeId || (next !== null && next !== "board" && !this.snapshot && !this.loading)) {
-        this.select(next);
+        this.select(next, null, null, false);
       } else {
         if (next !== null && next !== "board" && !this.cache.has(next) && !this.contentRequest) this.load(next);
         this.onChange(this);
@@ -168,7 +168,7 @@ export class ContentTabs {
     }
   }
 
-  async select(id, selection = null, displayMode = null) {
+  async select(id, selection = null, displayMode = null, reveal = true) {
     if (id === "board" && !this.enableBoard) return;
     if (id !== null && id !== "board" && !this.views.some(view => view.id === id)) return;
     this.cancelOpen();
@@ -182,8 +182,8 @@ export class ContentTabs {
     this.snapshot = this.cache.get(id) || current;
     this.loading = id !== null && id !== "board" && !this.snapshot;
     this.error = "";
-    this.onSelect(id);
     this.onChange(this);
+    if (reveal) this.onSelect(id);
     if (id === null || id === "board" || this.cache.has(id)) return;
     await this.load(id);
   }
@@ -743,7 +743,6 @@ export function mountContentViews({
       display.clear(state.loading ? "Loading view…" :
         state.activeId ? "View unavailable." : "Open a file link to view it here.");
     }
-    if (switched) focusTab(state.activeId);
   }
 
   controller = new ContentTabs({
