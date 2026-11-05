@@ -9,11 +9,37 @@ from pycodex import (
     ContextManager,
     ContextMessage,
     ModelResponse,
+    ToolCall,
     ToolRegistry,
+    ToolResult,
     UserMessage,
 )
 from pycodex.utils.model_metadata import model_metadata
 from tests.fakes import ScriptedModelClient, make_agent
+
+
+@pytest.mark.parametrize("tool_type", ["function", "custom"])
+def test_prompt_filters_orphan_outputs_without_changing_history(tool_type):
+    other_type = "custom" if tool_type == "function" else "function"
+    call = ToolCall("matched", "fixture", "input", tool_type=tool_type)
+    result = ToolResult("matched", "fixture", "kept", tool_type=tool_type)
+    pending = ToolCall("pending", "fixture", "input", tool_type=tool_type)
+    history = [
+        UserMessage("hello"), call, result,
+        ToolResult("missing", "fixture", "orphan", tool_type=tool_type),
+        ToolResult("matched", "fixture", "wrong type", tool_type=other_type),
+        pending,
+    ]
+    original = tuple(history)
+    manager = ContextManager(ContextConfig())
+
+    prompt = manager.build_prompt(history, [], False)
+
+    assert [item for item in prompt.input if isinstance(item, (ToolCall, ToolResult))] == [
+        call, result, pending,
+    ]
+    assert tuple(history) == original
+    assert manager.build_prompt(history, [], False).input == prompt.input
 
 
 def test_context_manager_resolves_base_instructions_precedence(tmp_path) -> "None":

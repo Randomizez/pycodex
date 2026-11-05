@@ -281,8 +281,7 @@ class ContextManager:
             input_items.extend(block)
             position = offset
         input_items.extend(history[position:])
-        if self._fork_context is not None:
-            input_items = _normalize_fork_calls(input_items)
+        input_items = _normalize_tool_calls(input_items, self._fork_context is not None)
         base_instructions = self.resolve_base_instructions()
         if capture_context:
             self._last_context = ForkContext(
@@ -799,7 +798,7 @@ class ContextManager:
         return "\n".join(lines)
 
 
-def _normalize_fork_calls(items):
+def _normalize_tool_calls(items, complete_calls):
     call_ids = {
         (item.tool_type, item.call_id)
         for item in items if isinstance(item, ToolCall)
@@ -817,7 +816,7 @@ def _normalize_fork_calls(items):
             continue
         normalized.append(item)
         if (
-            isinstance(item, ToolCall)
+            complete_calls and isinstance(item, ToolCall)
             and (item.tool_type, item.call_id) not in result_ids
         ):
             prefix = "ctco" if item.tool_type == "custom" else "fco"

@@ -30,7 +30,8 @@ from pycodex.tools import (
 )
 from pycodex.tools.base_tool import StructuredToolOutput
 from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT, SUMMARY_PREFIX, compact
-from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+from pycodex.utils.session_persist import load_resumed_session_path
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, wait_for_runtime_idle
 
 
 class EchoTool(BaseTool):
@@ -470,6 +471,69 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
         "auto_compact_completed",
     ]
     assert auto_events[0].phase == "mid_turn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("compaction", ["manual", "auto", "overflow"])
+@pytest.mark.parametrize("arrival", ["during", "after"])
+async def test_runtime_filters_notify_after_compaction(tmp_path, compaction, arrival):
+    call = ToolCall("background-exec", "exec", "watch()", tool_type="custom")
+    before = ToolResult(call.call_id, "exec", "before", tool_type="custom")
+    later = ToolResult(call.call_id, "exec", "later", tool_type="custom")
+    compacted = []
+    delivered_later = []
+
+    def response_factory(prompt, call_count):
+        if prompt.input[-1] == UserMessage(DEFAULT_COMPACT_PROMPT):
+            if arrival == "during":
+                runtime.receive_tool_output(later)
+                delivered_later.append(True)
+            compacted.append(True)
+            return ModelResponse([AssistantMessage("watcher summary")])
+        if compaction == "overflow" and call_count == 1:
+            raise ContextLengthExceeded(_context_length_error_message())
+        if compacted:
+            if arrival == "after" and not delivered_later:
+                runtime.receive_tool_output(later)
+                delivered_later.append(True)
+            assert not any(isinstance(item, (ToolCall, ToolResult)) for item in prompt.input)
+        else:
+            assert call in prompt.input
+            assert before in prompt.input
+        return ModelResponse([AssistantMessage("done")])
+
+    model = ScriptedModelClient(response_factory=response_factory)
+    agent = make_agent(
+        model, ToolRegistry(), replace(_auto_compact_context(10), cwd=tmp_path),
+        initial_history=(UserMessage("watch progress"), call,
+                         replace(before, output="Script running with cell ID cell-1")),
+        session_file_path=tmp_path / "notify.jsonl",
+    )
+    runtime = make_runtime(agent)
+    try:
+        runtime.receive_tool_output(before)
+        if compaction == "manual":
+            await agent.compact()
+        elif compaction == "auto":
+            agent._last_total_usage_tokens = 10
+        await runtime.start()
+        await wait_for_runtime_idle(runtime)
+
+        assert compacted == delivered_later == [True]
+        assert isinstance(agent.history[0], ContextMessage)
+        assert agent.history[-1] == AssistantMessage("done")
+        assert not any(isinstance(item, ToolCall) for item in agent.history)
+        outputs = [item for item in agent.history if isinstance(item, ToolResult)]
+        assert outputs == ([later] if compaction == "overflow" else [before, later])
+        restored = load_resumed_session_path(agent.recorded_session_file_path)["history"]
+        assert [
+            (item.call_id, item.output, item.tool_type)
+            for item in restored if isinstance(item, ToolResult)
+        ] == [(item.call_id, item.output, item.tool_type) for item in outputs]
+        restored_prompt = agent.context_manager.build_prompt(restored, [], False)
+        assert not any(isinstance(item, ToolResult) for item in restored_prompt.input)
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
