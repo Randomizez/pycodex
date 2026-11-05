@@ -1,10 +1,18 @@
+import json
+import os
 import threading
+from pathlib import Path
 
 import pytest
+from starlette.applications import Starlette
+from starlette.responses import StreamingResponse
+from starlette.routing import Route
 from starlette.testclient import TestClient
 
 from pycodex import AssistantMessage, ModelResponse
+from pycodex.bootstrap import LOCAL_RESPONSES_SERVER_API_KEY_ENV
 from pycodex.multi_agents import AgentsManager
+from tests.responses_server.fake_chat_completions_server import RunningASGITestServer
 from workspace_server import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -112,6 +120,94 @@ def test_new_sessions_reload_config_default_but_keep_launch_override(tmp_path, l
         assert created["sessions"][-1]["profile"] == launch_profile
         assert created["snapshot"]["model"] == ("fast-model:default" if launch_profile else "base-model:default")
         assert browser.get("/api/session", params={"session_id": original}).json()["snapshot"]["model"] == "fast-model:default"
+
+
+@pytest.mark.parametrize("profile", [None, "fast"])
+def test_new_sessions_reload_dotenv_for_gemini(tmp_path, monkeypatch, profile):
+    key = "PYCODEX_TEST_WORKSPACE_RELOAD_KEY"
+    monkeypatch.setenv(key, "inherited")
+    monkeypatch.setenv(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
+    sent_keys = []
+
+    async def generate(request):
+        sent_keys.append(request.headers["x-goog-api-key"])
+        payload = {"candidates": [{
+            "content": {"role": "model", "parts": [{"text": "done-" + str(len(sent_keys))}]},
+            "finishReason": "STOP",
+        }]}
+
+        async def events():
+            yield "data: " + json.dumps(payload) + "\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    downstream = RunningASGITestServer(Starlette(routes=[
+        Route("/v1beta/models/{model_path}", generate, methods=["POST"]),
+    ]))
+    config = tmp_path / "config.toml"
+    config.write_text(
+        'model = "gemini-test"\nmodel_provider = "test"\ncompat_api = "gemini"\n'
+        '[model_providers.test]\nbase_url = "{}/v1beta"\nstream_max_retries = 0\n'
+        'env_key = "{}"\n[profiles.fast]\nmodel = "gemini-fast"\n'.format(downstream.base_url, key),
+        encoding="utf-8",
+    )
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(key + "=first\n", encoding="utf-8")
+    reads = []
+    read_text = Path.read_text
+
+    def track_read(path, *args, **kwargs):
+        if path == dotenv:
+            reads.append(path)
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", track_read)
+    bootstraps = []
+    build_model = app_module.build_model
+
+    def capture_bootstrap(provider, **kwargs):
+        bootstrap = build_model(provider, **kwargs)
+        bootstraps.append(bootstrap)
+        return bootstrap
+
+    monkeypatch.setattr(app_module, "build_model", capture_bootstrap)
+    downstream.start()
+    try:
+        entry = app_module._build_workspace_entry(
+            WorkspaceDefinition("test", None, tmp_path, False),
+            build_parser().parse_args(["--config", str(config), "--toolset"]),
+        )
+        with TestClient(create_app(entry.manager, None)) as browser:
+            def send(session_id, expected_keys, expected_reads):
+                response = browser.post("/api/session/message", json={
+                    "session_id": session_id, "prompt": "Reply done.",
+                })
+                assert response.status_code == 200
+                wait_snapshot(
+                    browser,
+                    lambda item: item["turns"] and item["turns"][-1]["response"] == "done-" + str(len(expected_keys)),
+                    "/api/session?session_id=" + session_id,
+                )
+                assert sent_keys == expected_keys
+                assert len(reads) == expected_reads
+
+            original = browser.get("/api/sessions").json()["sessions"][0]["id"]
+            send(original, ["first"], 1)
+            dotenv.write_text(key + "=updated\n", encoding="utf-8")
+            assert browser.get("/api/sessions").status_code == 200
+            assert os.environ[key] == "first"
+            send(original, ["first", "first"], 1)
+            response = browser.post("/api/sessions", json={"profile": profile})
+            assert response.status_code == 200
+            assert len(reads) == 2
+            created = response.json()["session_id"]
+            send(created, ["first", "first", "updated"], 2)
+            send(created, ["first", "first", "updated", "updated"], 2)
+            send(original, ["first", "first", "updated", "updated", "updated"], 2)
+    finally:
+        for bootstrap in bootstraps:
+            bootstrap.close()
+        downstream.stop()
 
 
 @pytest.mark.parametrize("multi", [False, True])

@@ -1,8 +1,37 @@
+import os
+
 import pytest
 
+from pycodex.config import CodexConfig
 from pycodex.context import ContextConfig, ContextManager
 from pycodex.model import ResponsesProviderConfig
 from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
+
+
+@pytest.mark.parametrize("existing_dotenv", [False, True])
+def test_config_reloads_adjacent_dotenv(tmp_path, monkeypatch, existing_dotenv):
+    key = "PYCODEX_TEST_RELOAD_KEY"
+    monkeypatch.setenv(key, "inherited")
+    monkeypatch.setenv("CODEX_TEST_RELOAD", "protected")
+    config = tmp_path / "custom.toml"
+    config.write_text(
+        'model = "test"\nmodel_provider = "test"\n'
+        '[model_providers.test]\nbase_url = "https://example.invalid/v1"\n'
+        'env_key = "{}"\n'.format(key), encoding="utf-8",
+    )
+    dotenv = tmp_path / ".env"
+    if existing_dotenv:
+        dotenv.write_text(key + "=first\n", encoding="utf-8")
+    initial = CodexConfig.from_env(config)
+    assert initial.provider.api_key() == ("first" if existing_dotenv else "inherited")
+
+    dotenv.write_text(key + "=updated\nCODEX_TEST_RELOAD=blocked\n", encoding="utf-8")
+    assert initial.provider.api_key() == ("first" if existing_dotenv else "inherited")
+    reloaded = CodexConfig.from_env(config)
+
+    assert reloaded.provider.api_key() == "updated"
+    assert initial.provider.api_key() == "updated"
+    assert os.environ["CODEX_TEST_RELOAD"] == "protected"
 
 
 def _write_profile(config, name, settings, embedded):
