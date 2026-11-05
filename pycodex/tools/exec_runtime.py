@@ -1,6 +1,5 @@
 """In-process Python cells with expression display and asyncio task ownership."""
 
-import ast
 import asyncio
 import base64
 import builtins
@@ -8,13 +7,25 @@ from copy import deepcopy
 import inspect
 import io
 import json
-import math
-import tokenize
 import traceback
 from types import SimpleNamespace
 import wave
 
+from ..utils.compat import compile_async_cell
 from .python_tool_schema import python_tool_signature
+
+_BLOCKED_MODULES = frozenset(("ctypes", "_ctypes", "cffi"))
+
+
+def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level == 0 and isinstance(name, str):
+        root = name.split(".", 1)[0]
+        if root in _BLOCKED_MODULES:
+            raise ImportError(
+                f"'{root}' is disabled in in-process exec cells; "
+                "use `await tools.exec_command(...)` to run native code in a subprocess."
+            )
+    return builtins.__import__(name, globals, locals, fromlist, level)
 
 
 class CellTaskFactory:
@@ -99,11 +110,8 @@ class ExecRuntime:
         self._next_request_id = 0
         self._tasks = set()
         self._tool_tasks = []
-        self._timers = set()
         self._factory = None
         self._main_task = None
-        self._background_error = None
-        self._exited = False
         self._stop_requested = False
         self._closing = False
 
@@ -204,47 +212,6 @@ class ExecRuntime:
         self.send({"type": "yield"})
         await asyncio.sleep(0)
 
-    def set_timeout(self, callback, delay_ms=0):
-        if self._stop_requested or self._closing:
-            raise RuntimeError("exec cell is stopping")
-        if not callable(callback):
-            raise TypeError("set_timeout expects a callable")
-        if (
-            isinstance(delay_ms, bool) or not isinstance(delay_ms, (int, float))
-            or not math.isfinite(delay_ms) or delay_ms < 0
-        ):
-            raise ValueError("delay_ms must be a finite non-negative number")
-
-        async def invoke():
-            try:
-                result = callback()
-                if inspect.isawaitable(result):
-                    await result
-            except asyncio.CancelledError:
-                raise
-            except BaseException as error:
-                # Catch control-flow exceptions before they reach asyncio.Task.
-                if isinstance(error, ExecExit):
-                    self._exited = True
-                else:
-                    self._background_error = "".join(traceback.format_exception(
-                        type(error), error, error.__traceback__,
-                    ))
-                self._main_task.cancel()
-
-        def fire():
-            self._timers.discard(handle)
-            self._factory.create_task(invoke(), self)
-
-        handle = self._loop.call_later(delay_ms / 1000.0, fire)
-        self._timers.add(handle)
-        return handle
-
-    def clear_timeout(self, handle=None):
-        if handle is not None:
-            handle.cancel()
-            self._timers.discard(handle)
-
     def _tool_caller(self, spec):
         signature = python_tool_signature(spec)
 
@@ -271,27 +238,6 @@ class ExecRuntime:
         # Once issued, host tool calls finish even if the cell is cancelled.
         return deepcopy(await asyncio.shield(task))
 
-    def _compile_source(self):
-        source = self._source.replace("\r\n", "\n").replace("\r", "\n")
-        string_lines = set()
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
-            if tokenize.tok_name[token.type] in ("STRING", "FSTRING_MIDDLE", "TSTRING_MIDDLE"):
-                string_lines.update(range(token.start[0], token.end[0]))
-        # Indent code into an async body without changing multiline string contents.
-        source = "async def __exec_cell__():\n" + "\n".join(
-            line if index in string_lines else "    " + line
-            for index, line in enumerate(source.split("\n"))
-        ) + "\n    pass\n"
-        tree = ast.parse(source, filename="<exec>")
-        body = tree.body[0].body
-        # The trailing pass keeps comment-only cells valid.
-        if len(body) > 1 and isinstance(body[-2], ast.Expr):
-            expression = body[-2]
-            body[-2] = ast.copy_location(ast.Return(value=expression.value), expression)
-        for statement in body:
-            ast.increment_lineno(statement, -1)
-        return compile(tree, "<exec>", "exec")
-
     async def run(self):
         if self._stop_requested:
             return None
@@ -304,13 +250,14 @@ class ExecRuntime:
             )
         namespace = {
             "__name__": "__codex_exec__",
-            "__builtins__": dict(vars(builtins), print=self.print),
+            "__builtins__": dict(
+                vars(builtins), print=self.print, __import__=_guarded_import,
+            ),
             "cwd": self._cwd,
             "asyncio": asyncio,
             "text": self.text, "image": self.image, "audio": self.audio,
             "generated_image": self.generated_image,
             "store": self.store, "load": self.load, "notify": self.notify,
-            "set_timeout": self.set_timeout, "clear_timeout": self.clear_timeout,
             "exit": self.exit, "yield_control": self.yield_control,
             "ALL_TOOLS": tuple(
                 {
@@ -330,14 +277,11 @@ class ExecRuntime:
             try:
                 error_text = await self._main_task
             except asyncio.CancelledError:
-                if not self._stop_requested and not self._exited:
-                    error_text = self._background_error or "exec cell was cancelled"
+                if not self._stop_requested:
+                    error_text = "exec cell was cancelled"
         finally:
             self._closing = True
             try:
-                for handle in self._timers:
-                    handle.cancel()
-                self._timers.clear()
                 # A cancelled task's finally block can create another task.
                 while True:
                     pending = [task for task in self._tasks if not task.done()]
@@ -361,12 +305,19 @@ class ExecRuntime:
                 self._tasks.clear()
                 self._tool_tasks.clear()
                 self._factory.release()
-        return error_text or self._background_error
+        return error_text
 
     async def _execute(self, namespace):
         try:
-            exec(self._compile_source(), namespace)
-            result = await namespace.pop("__exec_cell__")()
+            coro = eval(compile_async_cell(self._source), namespace)
+            if "__exec_cell__" in namespace:
+                coro = namespace.pop("__exec_cell__")()
+            if inspect.iscoroutine(coro):
+                result = await coro
+            else:
+                result = None
+            if result is None:
+                result = namespace.pop("__exec_result__", None)
             if result is not None:
                 output = repr(result)
                 self._writer.flush()

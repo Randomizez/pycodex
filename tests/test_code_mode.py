@@ -303,6 +303,8 @@ text("continued")
     ("raise ValueError('bad cell')", "ValueError: bad cell"),
     ("if", "SyntaxError"),
     ("import sys\nsys.exit(2)", "SystemExit: 2"),
+    ("import ctypes", "ImportError: 'ctypes' is disabled in in-process exec cells"),
+    ("from _ctypes import sizeof", "ImportError: '_ctypes' is disabled in in-process exec cells"),
 ])
 async def test_errors_remain_cell_results_and_restore_task_factory(tmp_path, source, expected):
     manager, registry, context = make_manager(tmp_path)
@@ -331,47 +333,18 @@ async def test_errors_remain_cell_results_and_restore_task_factory(tmp_path, sou
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("callback_prefix", ["def", "async def"])
-@pytest.mark.parametrize("error,expected", [
-    ("ValueError('timer failure')", "ValueError: timer failure"),
-    ("SystemExit(2)", "SystemExit: 2"),
-    ("KeyboardInterrupt()", "KeyboardInterrupt"),
-])
-async def test_timer_failures_remain_cell_errors(tmp_path, callback_prefix, error, expected):
-    manager, registry, context = make_manager(tmp_path)
-    source = "\n".join([
-        callback_prefix + " fail():",
-        "    raise " + error,
-        "set_timeout(fail)",
-        "await asyncio.sleep(60)",
-    ])
-    try:
-        result = await registry.execute(
-            ToolCall("failed-timer", "exec", source, tool_type="custom"), context,
-        )
-        assert result.is_error
-        assert expected in result.output
-        assert output_items(await manager.exec('text("next cell")', context)) == ["next cell"]
-    finally:
-        await manager.close()
-
-
-@pytest.mark.asyncio
-async def test_timers_exit_and_notify(tmp_path):
+async def test_exit_and_notify(tmp_path):
     manager, _, context = make_manager(tmp_path)
     notifications = []
     manager.bind(None, notifications.append, None)
     try:
         result = await manager.exec("""
-def stop():
-    text("timer fired")
-    exit()
-set_timeout(stop)
-await asyncio.sleep(60)
+text("before exit")
+exit()
 text("unreachable")
 """, context)
         assert "Script completed" in result.output
-        assert output_items(result) == ["timer fired"]
+        assert output_items(result) == ["before exit"]
         result = await manager.exec("""
 notify("progress")
 await asyncio.sleep(0.01)
@@ -383,9 +356,6 @@ text("finished")
         cell = next(iter(manager._cells.values()))
         await cell.task
         assert output_items(await manager.wait(cell.cell_id, 100, None, False)) == ["finished"]
-        await manager.exec('set_timeout(lambda: store("late", True), 10)', context)
-        await asyncio.sleep(0.02)
-        assert "late" not in manager._stored_values
     finally:
         await manager.close()
 
@@ -424,8 +394,9 @@ second
 text(value)
 image("data:image/png;base64,YWJj", detail="original")
 audio("data:audio/mpeg;base64,YWJj")
+{"done": True}
 """, context)
-        assert output_items(result) == ["first\nsecond\n"]
+        assert output_items(result) == ["first\nsecond\n", "{'done': True}"]
         assert result.content_items[2] == {
             "type": "input_image", "image_url": "data:image/png;base64,YWJj",
             "detail": "original",

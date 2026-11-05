@@ -1,8 +1,11 @@
 """Compatibility helpers for supported Python versions."""
 
+import ast
 import asyncio
 import functools
+import io
 import shlex
+import tokenize
 
 try:
     from http.server import ThreadingHTTPServer
@@ -117,3 +120,41 @@ def is_ascii(text):
     except UnicodeEncodeError:
         return False
     return True
+
+
+def compile_async_cell(source, filename="<exec>"):
+    if hasattr(ast, "PyCF_ALLOW_TOP_LEVEL_AWAIT"):
+        tree = ast.parse(source, filename=filename)
+        if tree.body and isinstance(tree.body[-1], ast.Expr):
+            expr = tree.body[-1]
+            target = ast.Name(id="__exec_result__", ctx=ast.Store())
+            tree.body[-1] = ast.copy_location(
+                ast.Assign(targets=[target], value=expr.value), expr,
+            )
+            ast.fix_missing_locations(tree.body[-1])
+        return compile(tree, filename, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+    return compile_async_cell_compat(source, filename)
+
+
+def compile_async_cell_compat(source, filename="<exec>"):  # pragma: no cover - Python 3.6/3.7 path
+    source = source.replace("\r\n", "\n").replace("\r", "\n")
+    string_lines = set()
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tokenize.tok_name[token.type] in ("STRING", "FSTRING_MIDDLE", "TSTRING_MIDDLE"):
+            string_lines.update(range(token.start[0], token.end[0]))
+    source = (
+        "async def __exec_cell__():\n"
+        + "\n".join(
+            line if index in string_lines else "    " + line
+            for index, line in enumerate(source.split("\n"))
+        )
+        + "\n    pass\n"
+    )
+    tree = ast.parse(source, filename=filename)
+    body = tree.body[0].body
+    if len(body) > 1 and isinstance(body[-2], ast.Expr):
+        expression = body[-2]
+        body[-2] = ast.copy_location(ast.Return(value=expression.value), expression)
+    for statement in body:
+        ast.increment_lineno(statement, -1)
+    return compile(tree, filename, "exec")
