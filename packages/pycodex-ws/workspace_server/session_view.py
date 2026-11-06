@@ -250,6 +250,9 @@ class WebSessionView:
                 "model": self._model,
                 "cwd": self._cwd,
                 "running": bool(self._spinner_status),
+                "working": bool(self._spinner_status)
+                and self._spinner_status != IDLE_SLEEPING_STATUS,
+                "clock": self._enabled_clock(),
                 "last_final_id": self._last_final_id,
                 "spinner": self._spinner_status,
                 "title": self._title,
@@ -409,6 +412,12 @@ class WebSessionView:
             turn["_thinking_active"] = False
             turn["status"] = "interrupted"
             self._stream_buffer = ""
+
+    def _enabled_clock(self) -> "typing.Union[typing.Dict[str, object], None]":
+        clock = (self._runtime_state or {}).get("clock")
+        if not isinstance(clock, dict) or not clock.get("enabled"):
+            return None
+        return {"period_m": clock.get("period_m")}
 
     def _context_usage(self) -> "typing.Dict[str, object]":
         limit = self._auto_compact_token_limit

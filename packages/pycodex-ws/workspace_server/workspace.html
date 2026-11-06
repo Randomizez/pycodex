@@ -24,6 +24,9 @@
       --info: #2868b2;
       --success-soft: #edf9f2;
       --danger: #b33d50;
+      --unread: #1677ff;
+      --clock: #d48806;
+      --clock-icon: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='6.5' fill='none' stroke='black' stroke-width='1.8'/><path d='M8 4.5V8l2.5 1.6' fill='none' stroke='black' stroke-width='1.8' stroke-linecap='round'/></svg>");
       --danger-soft: #fff0f2;
       --code: #f1f5f7;
       --space-1: 2px;
@@ -457,8 +460,52 @@
       opacity: 1;
       transform: none;
     }
-    .session-sidebar .tab.completed:not(.running) .tab-status::before,
-    .mobile-session-dot.completed:not(.running) .tab-status::before { background: #568a73; }
+    .session-sidebar .tab:not(.running) .tab-status::before,
+    .mobile-session-dot.unread:not(.running) .tab-status::before { visibility: hidden; }
+    .session-sidebar .tab.running .tab-status::before,
+    .mobile-session-dot.running .tab-status::before,
+    #activeSessionStatus::before {
+      width: 10px;
+      height: 10px;
+      box-sizing: border-box;
+      border: 2px solid rgba(8, 127, 154, 0.22);
+      border-top-color: var(--accent);
+      background: transparent;
+      box-shadow: none;
+      opacity: 1;
+      transform: none;
+      animation: session-spin 0.8s linear infinite;
+    }
+    .mobile-session-dot.running .tab-status::before { width: 8px; height: 8px; border-width: 1.5px; }
+    .session-sidebar .unread-dot,
+    .mobile-session-dot .unread-dot {
+      background: var(--unread);
+      box-shadow: 0 0 0 2px rgba(22, 119, 255, 0.18);
+    }
+    .session-sidebar .tab:not(.running) .unread-dot {
+      width: 8px;
+      height: 8px;
+      right: 17px;
+      top: calc(50% - 4px);
+    }
+    .mobile-session-dot:not(.running) .unread-dot {
+      top: calc(50% - 3px);
+      right: calc(50% - 3px);
+      width: 6px;
+      height: 6px;
+    }
+    .has-clock .tab-status::after {
+      content: "";
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      background: var(--clock);
+      -webkit-mask: var(--clock-icon) center / contain no-repeat;
+      mask: var(--clock-icon) center / contain no-repeat;
+      pointer-events: none;
+    }
+    .session-sidebar .tab.has-clock .tab-status::after { left: 1px; top: calc(50% - 5.5px); }
+    .mobile-session-dot.has-clock .tab-status::after { width: 7px; height: 7px; right: -3px; bottom: 0; }
     .sessions-backdrop {
       position: fixed;
       inset: 0;
@@ -1235,6 +1282,7 @@
       margin-bottom: var(--space-3);
     }
     .toast.visible { opacity: 1; transform: translateY(0); }
+    @keyframes session-spin { to { transform: rotate(360deg); } }
     @keyframes spinner-pulse {
       0%, 100% {
         opacity: 0.45;
@@ -1378,6 +1426,9 @@
       .spinner:not(:empty)::before { animation: none; }
       .tab-status::before,
       .spinner:not(:empty)::before { opacity: 0.8; transform: none; }
+      .session-sidebar .tab.running .tab-status::before,
+      .mobile-session-dot.running .tab-status::before,
+      #activeSessionStatus::before { opacity: 1; border-color: var(--accent); }
       .workspace { --sidebar-duration: 0ms; }
       .workspace.sessions-ready,
       .sessions-ready .session-sidebar,
@@ -2108,6 +2159,23 @@
       return parseFloat(getComputedStyle(workspace).getPropertyValue("--session-rail-width"));
     }
 
+    const sessionsPinnedKey = "pycodex.workspace.sessionsPinned";
+
+    function rememberSessionsPinned() {
+      if (mobileSessionsMedia.matches) return;
+      try {
+        window.localStorage.setItem(sessionsPinnedKey, sessionsPinned ? "1" : "0");
+      } catch (error) {}
+    }
+
+    function storedSessionsPinned() {
+      try {
+        return window.localStorage.getItem(sessionsPinnedKey) === "1";
+      } catch (error) {
+        return false;
+      }
+    }
+
     function clearSessionsHover() {
       clearTimeout(sessionsHoverTimer);
       sessionsHoverTimer = null;
@@ -2449,7 +2517,7 @@
       const activeIndex = sessions.findIndex(session => session.id === activeSessionId);
       activeSessionTitle.textContent = active ? active.title || `Session ${activeIndex + 1}` : "";
       activeSessionTitle.title = activeSessionTitle.textContent;
-      activeSessionStatus.hidden = !active?.running;
+      activeSessionStatus.hidden = !sessionWorking(active);
       updateSessionControls();
       renderSessionList(tabsEl, false);
       renderSessionList(mobileSessionDots, true);
@@ -2457,6 +2525,11 @@
         mobileSessionDots.querySelector(".active")?.scrollIntoView({block: "nearest", inline: "nearest"});
       }
       mobileSessionDots.dataset.activeSessionId = activeSessionId;
+    }
+
+    function sessionWorking(session) {
+      if (!session) return false;
+      return Boolean(session.working ?? session.running);
     }
 
     function renderSessionList(container, mobile) {
@@ -2471,18 +2544,25 @@
         tab.dataset.sessionId = sessionId;
         const active = sessionId === activeSessionId;
         tab.classList.toggle("active", active);
-        tab.classList.toggle("running", Boolean(session.running));
+        const working = sessionWorking(session);
+        tab.classList.toggle("running", working);
         tab.classList.toggle("completed", Boolean(session.last_final_id));
+        tab.classList.toggle("unread", Boolean(session.unread));
+        tab.classList.toggle("has-clock", Boolean(session.clock));
         const title = session.title || `Session ${index + 1}`;
-        const status = session.running ? "Running" : session.last_final_id ? "Finished" : "Idle";
-        const description = `${title} · ${status}${session.unread ? " · Unread reply" : ""}`;
+        const status = working ? "Running"
+          : session.running ? "Waiting for background work"
+          : session.last_final_id ? "Finished" : "Idle";
+        const clock = session.clock
+          ? ` · Clock${session.clock.period_m ? ` every ${session.clock.period_m} min` : ""}` : "";
+        const description = `${title} · ${status}${session.unread ? " · Unread reply" : ""}${clock}`;
         tab.title = mobile ? description : title;
         tab.setAttribute(mobile ? "aria-pressed" : "aria-selected", String(active));
         tab.querySelector(".unread-dot").hidden = !session.unread;
         if (mobile) {
           tab.setAttribute("aria-label", description);
         } else {
-          tab.setAttribute("aria-busy", String(Boolean(session.running)));
+          tab.setAttribute("aria-busy", String(working));
           const statusButton = tab.querySelector(".tab-status");
           statusButton.title = description;
           statusButton.setAttribute("aria-label", description);
@@ -3623,7 +3703,10 @@
       });
     }
     mobileSessionsToggle.addEventListener("click", () => setSessionsOpen(!sessionsOpen));
-    sessionsClose.addEventListener("click", () => setSessionsOpen(!sessionsPinned, true));
+    sessionsClose.addEventListener("click", () => {
+      setSessionsOpen(!sessionsPinned, true);
+      rememberSessionsPinned();
+    });
     sessionSidebar.addEventListener("pointerenter", event => {
       if (event.pointerType !== "mouse" || mobileSessionsMedia.matches) return;
       clearSessionsHover();
@@ -3648,7 +3731,8 @@
         setSessionsOpen(true);
       } else if (!event.target.closest("button, input, .tab")) {
         setSessionsOpen(false, true);
-      }
+      } else return;
+      rememberSessionsPinned();
     }, true);
     sessionsBackdrop.addEventListener("click", () => setSessionsOpen(false, true));
     mobileSessionsMedia.addEventListener("change", () => {
@@ -3673,6 +3757,7 @@
           !event.target.closest("dialog")) {
         event.preventDefault();
         setSessionsOpen(false, true);
+        rememberSessionsPinned();
       }
     });
     document.querySelectorAll(".fullscreen-toggle").forEach(button => {
@@ -3733,7 +3818,7 @@
     const recoveryNotice = document.getElementById("frontendRecovery");
     recoveryNotice.hidden = !builtinFrontend;
     recoveryNotice.querySelector("a").href = frontendUrl(false);
-    setSessionsOpen(sessionsOpen);
+    setSessionsOpen(!mobileSessionsMedia.matches && storedSessionsPinned());
     requestAnimationFrame(() => requestAnimationFrame(() => workspace.classList.add("sessions-ready")));
     loadChatWidth();
     setupContextDetails();

@@ -39,8 +39,10 @@ open, and click the toggle or empty space again to close it. Expansion narrows
 the conversation while keeping the board fixed. On phones, use the header
 buttons to switch between chat and board.
 
-Use the expanded sidebar to create, rename or close sessions. Status dots show
-running sessions and unread replies. `/cd <directory>` changes the current
+Use the expanded sidebar to create, rename or close sessions. A spinning ring
+marks a session that is working, a blue dot an unread reply and a small clock an
+enabled `clock` timer; idle sessions show no indicator. The pinned/collapsed
+sidebar choice is remembered per browser. `/cd <directory>` changes the current
 session's working directory while idle; `/model`, `/resume`, `/compact` and
 other core session commands are also available.
 

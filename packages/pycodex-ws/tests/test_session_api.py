@@ -6,7 +6,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolRegistry, UserMessage
-from pycodex.events import AssistantDeltaEvent
+from pycodex.events import AssistantDeltaEvent, TurnCompletedEvent, TurnStartedEvent
 from pycodex.tools import ClockManager
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
@@ -339,6 +339,30 @@ async def test_clock_inventory_exposes_deadline_without_changing_tool_output(tmp
     finally:
         await session.close()
 
+
+def test_session_list_reports_enabled_clock_and_idle_wait(tmp_path):
+    tools = ToolRegistry()
+    clock = tools.runtime_environment.clock_manager
+    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
+    session = make_session(tools=tools, cwd=tmp_path)
+    manager = WorkspaceSessionManager(lambda: session)
+    view = session.view
+    with TestClient(create_app(manager, None)):
+        summary = manager.list_sessions()[0]
+        assert summary["clock"] is None
+        assert not summary["working"]
+        clock.set_period(5)
+        view.synchronize_state(session.runtime.state_snapshot())
+        view.handle_event(TurnStartedEvent("turn", ("question",)))
+        assert manager.list_sessions()[0]["working"]
+        view.handle_event(TurnCompletedEvent("turn", 1, "final", 1))
+        summary = manager.list_sessions()[0]
+        assert summary["clock"] == {"period_m": 5.0}
+        assert summary["running"]
+        assert not summary["working"]
+        clock.set_period(None)
+        view.synchronize_state(session.runtime.state_snapshot())
+        assert manager.list_sessions()[0]["clock"] is None
 
 def test_resource_api_uses_existing_authentication(api_setup):
     app, prefix = api_setup(password="test-password")

@@ -309,7 +309,10 @@ same top-right position in their respective headers; the board switch follows
 the fullscreen button in the board toolbar. Floating session controls stay below
 the headers and contain only the session-list button and status dots.
 
-In the two-pane layout, the session sidebar starts collapsed on every page load.
+In the two-pane layout, the session sidebar starts collapsed until the user pins
+it; the pinned or collapsed choice is kept in `localStorage`
+(`pycodex.workspace.sessionsPinned`) and restored on the next load. Phone
+layouts always start collapsed and do not change the stored choice.
 Hovering for 100 ms previews it; leaving schedules dismissal after 150 ms,
 and returning cancels dismissal. Clicking pins it open; another click on the
 toggle or empty sidebar space, or Escape, closes it. The chat and sidebar share
@@ -942,8 +945,12 @@ revocation watcher. Disconnects cancel the watcher, while revocation finishes
 the handler's cleanup before closing the socket.
 Router login and forwarding are unchanged.
 
-A separate red dot marks an unread final reply or failed turn, including results
-produced while background work remains active. A focused, visible page marks the
+Session tabs distinguish three states. A spinning ring marks a session whose
+Agent is actively working (`working` in the session list); waiting only for
+background work such as an armed clock or a running `exec` session is not shown
+as working. A blue dot marks an unread final reply or failed turn, including
+results produced while background work remains active. A small clock marks an
+enabled `clock` timer. Idle, read sessions without a clock show no indicator. A focused, visible page marks the
 selected session's latest reply or error as read only when that content enters
 the chat viewport. Partial text above an error cannot mark the error as read.
 Hidden pages, the mobile Canvas pane and scrolling above the result keep it unread.
