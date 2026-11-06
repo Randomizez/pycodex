@@ -223,6 +223,7 @@ class AgentRuntime:
             "auto_compact_token_limit": agent.context_manager.resolve_auto_compact_token_limit(),
             "usage_tokens": execution.usage_tokens,
             "background_work_count": agent.tool_registry.runtime_environment.background_work_count(False),
+            "clock": agent.tool_registry.runtime_environment.clock_manager.snapshot(),
             "input_request": self._input_request_event(),
             "plan": agent.tool_registry.runtime_environment.plan_store.snapshot(),
         }

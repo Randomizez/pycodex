@@ -47,6 +47,9 @@ take effect without restarting the server. Responses use `Cache-Control: no-stor
 `profile`, or `null` for the base configuration. Invalid catalog configuration
 or duplicate names return HTTP 400 rather than a stale catalog.
 Each session list entry includes its effective `profile` name or `null`.
+`running` is true while a turn executes or background work keeps the session
+waiting; `working` is true only while the Agent is actively executing. `clock`
+is `{period_m}` while the session's clock is enabled, otherwise `null`.
 
 `POST api/sessions` accepts `{title?, prompt?, profile?, name?}`. Title and prompt are
 strings and default to empty. Profile is a string name; omission or `null` uses

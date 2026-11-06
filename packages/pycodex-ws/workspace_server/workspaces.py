@@ -279,6 +279,8 @@ class WorkspaceSessionManager:
                     "cwd": summary["cwd"],
                     "profile": self._tab_states[session_id]["profile"],
                     "running": bool(summary.get("running")),
+                    "working": bool(summary.get("working", summary.get("running"))),
+                    "clock": summary.get("clock"),
                     "last_final_id": final_id,
                     "unread": bool(
                         final_id and final_id != self._read_final_ids.get(session_id)
