@@ -1,4 +1,4 @@
-from datetime import datetime
+import re
 
 import pytest
 
@@ -101,5 +101,5 @@ def test_display_history_can_include_record_times(tmp_path):
     assert prompt == "question"
     assert no_prompt_at is None
     for value in (prompt_at, response_at, continued_at):
-        assert datetime.fromisoformat(value).tzinfo is not None
+        assert re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}[+-]\d\d:\d\d$", value)
     assert prompt_at <= response_at <= continued_at
