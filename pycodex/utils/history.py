@@ -26,31 +26,45 @@ def restore_visibility(item, payload):
 
 def iter_display_turns(history):
     """Project message visibility and grouping; None marks a compaction."""
+    for entry in iter_timed_display_turns((item, None) for item in history):
+        yield None if entry is None else entry[:2]
+
+
+def iter_timed_display_turns(history):
+    """Like iter_display_turns for (item, timestamp) pairs.
+
+    Yields (prompt, response, prompt_at, response_at); the times come from the
+    items that supplied the visible prompt and response.
+    """
     prompt = None
     response = ""
     phase = None
-    for item in history:
+    prompt_at = response_at = None
+    for item, timestamp in history:
         if item is None:
             if prompt is not None or response:
-                yield (prompt or "", response)
+                yield (prompt or "", response, prompt_at, response_at)
             yield None
             prompt, response, phase = None, "", None
+            prompt_at = response_at = None
         elif isinstance(item, (UserMessage, AgentMessage)):
             # Hidden mail must not split commentary from its final answer.
             # Keep an existing unphased reply when the next input arrives.
             if item.visible or (response and phase != "commentary"):
                 if prompt is not None or response:
-                    yield (prompt or "", response)
+                    yield (prompt or "", response, prompt_at, response_at)
                 prompt, response, phase = None, "", None
+                prompt_at = response_at = None
             if item.visible:
-                prompt = item.text
+                prompt, prompt_at = item.text, timestamp
         elif isinstance(item, AssistantMessage) and item.visible:
-            response, phase = item.text, item.phase
+            response, phase, response_at = item.text, item.phase, timestamp
             if phase == "final":
-                yield (prompt or "", response)
+                yield (prompt or "", response, prompt_at, response_at)
                 prompt, response, phase = None, "", None
+                prompt_at = response_at = None
     if prompt is not None or response:
-        yield (prompt or "", response)
+        yield (prompt or "", response, prompt_at, response_at)
 
 
 def conversation_history_to_turns(

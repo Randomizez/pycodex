@@ -5,6 +5,7 @@ import json
 import threading
 import typing
 from dataclasses import asdict, fields, is_dataclass
+from datetime import datetime
 
 from pycodex.events import (
     IDLE_SLEEPING_STATUS,
@@ -168,12 +169,14 @@ class WebSessionView:
                 if entry is None:
                     self._add_compaction_marker()
                     continue
-                prompt, response = entry
+                prompt, response = entry[:2]
                 submission_id = uuid7_string()
                 turn = self._ensure_turn(
                     submission_id, submission_id, str(prompt or "")
                 )
                 turn["response"] = str(response or "")
+                if len(entry) > 2:
+                    turn["prompt_at"], turn["response_at"] = entry[2:4]
                 turn["status"] = "completed"
                 turn["queue"] = "history"
                 turn["sender"] = "resume"
@@ -274,7 +277,9 @@ class WebSessionView:
                 active = state["active_turn"]
                 history = completed_history(state)
                 if active is None and state["recorded_rollout_path"] is not None:
-                    history = load_display_history(state["recorded_rollout_path"])
+                    history = load_display_history(
+                        state["recorded_rollout_path"], with_times=True,
+                    )
                 self.load_session_history(state["title"], history)
                 if active is not None:
                     self._apply_runtime_event(
@@ -342,6 +347,7 @@ class WebSessionView:
         if isinstance(event, TurnStartedEvent):
             self._set_spinner_status("understood")
             turn = self._ensure_turn(submission_id, turn_id, event.visualize())
+            turn["prompt_at"] = turn.get("prompt_at") or _now()
             turn["status"] = "running"
             turn["thinking"] = ""
             turn["_thinking_active"] = False
@@ -389,12 +395,14 @@ class WebSessionView:
             turn["thinking"] = ""
             turn["_thinking_active"] = False
             turn["status"] = "completed"
+            turn["response_at"] = _now()
             self._stream_buffer = ""
             return
 
         if isinstance(event, TurnFailedEvent):
             turn["status"] = "error"
             turn["error"] = event.visualize()
+            turn["response_at"] = _now()
             turn["final_id"] = event.turn_id
             self._last_final_id = event.turn_id
             self._stream_buffer = ""
@@ -408,6 +416,7 @@ class WebSessionView:
             turn["thinking"] = ""
             turn["_thinking_active"] = False
             turn["status"] = "interrupted"
+            turn["response_at"] = _now()
             self._stream_buffer = ""
 
     def _context_usage(self) -> "typing.Dict[str, object]":
@@ -577,6 +586,10 @@ def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> 
     return ""
 
 
+def _now() -> str:
+    return datetime.now().astimezone().isoformat(timespec="milliseconds")
+
+
 def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]":
     return typing.cast(
         "typing.Dict[str, object]",
@@ -594,6 +607,8 @@ def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]"
                 "sender": turn.get("sender", ""),
                 "kind": turn.get("kind", "assistant"),
                 "model_errors": turn.get("model_errors", []),
+                "prompt_at": turn.get("prompt_at"),
+                "response_at": turn.get("response_at"),
             }
         ),
     )

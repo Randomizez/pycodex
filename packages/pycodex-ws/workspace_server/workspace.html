@@ -787,6 +787,16 @@
       border-radius: 10px 10px 3px 10px;
       background: var(--success-soft);
     }
+    .message-time {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+      font-variant-numeric: tabular-nums;
+      user-select: none;
+    }
+    .entry.user > .message-time { text-align: right; }
     .entry.thinking,
     .entry.control,
     .entry.setup {
@@ -2809,6 +2819,8 @@
           item.status || "",
           item.error || "",
           item.kind || "",
+          item.prompt_at || "",
+          item.response_at || "",
           item.model_errors || [],
         ]),
         snapshot.input_request || null,
@@ -3028,6 +3040,45 @@
       }
     }
 
+    const messageTimeFormat = new Intl.DateTimeFormat(undefined, {hour: "2-digit", minute: "2-digit"});
+    const messageDateFormat = new Intl.DateTimeFormat(undefined, {
+      month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+    });
+
+    function formatMessageTime(value) {
+      const date = value ? new Date(value) : null;
+      if (!date || Number.isNaN(date.getTime())) return "";
+      const sameDay = date.toDateString() === new Date().toDateString();
+      return (sameDay ? messageTimeFormat : messageDateFormat).format(date);
+    }
+
+    function formatDuration(start, end) {
+      const seconds = Math.round((new Date(end) - new Date(start)) / 1000);
+      if (!Number.isFinite(seconds) || seconds < 0) return "";
+      if (seconds < 60) return `${seconds}s`;
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ${seconds % 60}s`;
+      return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+    }
+
+    function setMessageTime(body, value, detail = "") {
+      const entry = body.parentElement;
+      const label = formatMessageTime(value);
+      let time = entry.querySelector(":scope > .message-time");
+      if (!label) {
+        time?.remove();
+        return;
+      }
+      if (!time) {
+        time = element("time", "message-time");
+        entry.appendChild(time);
+      }
+      const text = detail ? `${label} · ${detail}` : label;
+      if (time.textContent !== text) time.textContent = text;
+      time.dateTime = value;
+      time.title = new Date(value).toLocaleString();
+    }
+
     function renderTurn(turn, renderEntry) {
       const key = `turn:${turn.submission_id || turn.turn_id}`;
       if (turn.kind === "compaction") {
@@ -3041,6 +3092,7 @@
         const setup = turn.prompt.startsWith("<frontend_customization>\n") &&
           turn.prompt.endsWith("\n</frontend_customization>");
         const body = renderEntry(`${key}:prompt`, turn.prompt, setup ? "setup" : isControl ? "control" : "user");
+        if (!setup && !isControl) setMessageTime(body, turn.prompt_at);
         if (setup && !body.firstElementChild) {
           const notice = element("p", "frontend-notice",
             "Changes affect all workspaces for this server user. Refresh to apply. ");
@@ -3064,6 +3116,11 @@
         );
         response.dataset.finalId = isControl || turn.error ? "" : (turn.final_id || "");
         response.dataset.sessionId = activeSessionId;
+        if (!isControl) {
+          const elapsed = turn.prompt_at && turn.response_at
+            ? formatDuration(turn.prompt_at, turn.response_at) : "";
+          setMessageTime(response, turn.response_at, elapsed);
+        }
       }
       if (turn.thinking) renderEntry(`${key}:thinking`, turn.thinking, "thinking");
       if (Array.isArray(turn.model_errors)) {

@@ -2246,3 +2246,25 @@ async def test_threaded_close_stops_active_turn_when_caller_is_cancelled():
         if closing is not None:
             await asyncio.gather(closing, return_exceptions=True)
         await session.close()
+
+
+def test_web_view_records_message_times():
+    view = WebSessionView()
+    view.load_session_history("old", (
+        ("restored", "reply", "2026-01-02T03:04:05.000+08:00", "2026-01-02T03:05:00.000+08:00"),
+        ("legacy", "reply"),
+    ))
+    restored, legacy = view.snapshot()["turns"]
+    assert restored["prompt_at"] == "2026-01-02T03:04:05.000+08:00"
+    assert restored["response_at"] == "2026-01-02T03:05:00.000+08:00"
+    assert legacy["prompt_at"] is None and legacy["response_at"] is None
+    view.handle_event(TurnStartedEvent("live", ("question",)))
+    started = view.snapshot()["turns"][-1]
+    assert started["prompt_at"] and started["response_at"] is None
+    view.handle_event(TurnCompletedEvent("live", 1, "answer", 0))
+    finished = view.snapshot()["turns"][-1]
+    assert finished["prompt_at"] == started["prompt_at"]
+    assert finished["prompt_at"] <= finished["response_at"]
+    view.handle_event(TurnStartedEvent("broken", ("again",)))
+    view.handle_event(TurnFailedEvent("broken", 1, "failed", "RuntimeError", 0))
+    assert view.snapshot()["turns"][-1]["response_at"]

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 import pytest
 
 from pycodex import ContextConfig, ToolRegistry
@@ -79,3 +81,25 @@ def test_hidden_mail_does_not_consume_display_window_or_hide_compaction(tmp_path
     assert conversation_history_to_turns((
         AgentMessage.from_response_item(mail().serialize()), AssistantMessage("reply"),
     )) == (("", "reply"),)
+
+
+def test_display_history_can_include_record_times(tmp_path):
+    recorder = SessionRolloutRecorder.create(
+        tmp_path, "session", tmp_path, "test", None, "", tmp_path / "rollout.jsonl",
+    )
+    recorder.append_history_items((
+        UserMessage("question"), AssistantMessage("working", phase="commentary"),
+        mail(), AssistantMessage("answer", phase="final"),
+    ))
+    recorder.append_compacted_history((ContextMessage("summary"),))
+    recorder.append_history_items((AssistantMessage("continued", phase="final"),))
+    plain = load_display_history(recorder.rollout_path)
+    timed = load_display_history(recorder.rollout_path, with_times=True)
+    assert plain == (("question", "answer"), None, ("", "continued"))
+    assert [None if turn is None else turn[:2] for turn in timed] == list(plain)
+    (prompt, _, prompt_at, response_at), _, (_, _, no_prompt_at, continued_at) = timed
+    assert prompt == "question"
+    assert no_prompt_at is None
+    for value in (prompt_at, response_at, continued_at):
+        assert datetime.fromisoformat(value).tzinfo is not None
+    assert prompt_at <= response_at <= continued_at

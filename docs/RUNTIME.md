@@ -300,6 +300,12 @@ numbering and line breaks.
 
 Web and VS Code restore the latest 80 display entries from the saved rollout,
 including compact dividers and earlier questions/replies within that window.
+Workspace turns carry `prompt_at` and `response_at` ISO timestamps. Live turns
+stamp them when the turn starts and when it completes, fails or is interrupted;
+restored turns use the rollout record times of the visible prompt and reply
+(`load_display_history(..., with_times=True)`), and older entries without a
+time leave them `null`. The chat shows the time under each user message and
+reply, with the date when it is not today and the reply's elapsed time.
 Compaction adds a divider to the existing conversation list. Display restoration
 reuses the rollout parser; model context still resumes from the latest checkpoint.
 
