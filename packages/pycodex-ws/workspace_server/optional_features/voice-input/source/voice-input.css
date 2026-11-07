@@ -1,0 +1,46 @@
+.voice-controls { display: flex; align-items: center; flex: 0 0 auto; }
+.voice-controls button {
+  position: relative;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; padding: 4px; border: 0; border-radius: 7px;
+  background: transparent; color: var(--muted); cursor: pointer;
+  touch-action: manipulation;
+}
+.voice-controls button::before { content: ""; position: absolute; inset: -6px; }
+.voice-controls svg { width: 20px; height: 20px; }
+.voice-controls button:hover { color: var(--accent); background: var(--accent-soft); }
+.voice-controls button:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+.voice-controls .voice-mic[aria-pressed="true"] { color: var(--danger, #b42318); background: #b4231810; }
+.voice-stop-icon, .voice-busy-icon,
+.voice-mic[aria-pressed="true"] .voice-mic-icon,
+.voice-mic[aria-busy="true"] .voice-mic-icon { display: none; }
+.voice-mic[aria-pressed="true"] .voice-stop-icon { display: block; }
+.voice-mic[aria-busy="true"] .voice-busy-icon { display: block; animation: voice-spin 1s linear infinite; }
+.voice-mic[aria-busy="true"] { color: var(--accent); }
+@keyframes voice-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .voice-mic[aria-busy="true"] .voice-busy-icon { animation: none; } }
+.voice-notice { overflow-wrap: anywhere; }
+.voice-settings [hidden] { display: none; }
+.voice-settings {
+  box-sizing: border-box; width: min(390px, calc(100vw - 32px)); padding: 22px;
+  border: 1px solid var(--line-strong); border-radius: 12px;
+  color: var(--ink); background: var(--panel-raised); box-shadow: 0 16px 60px #0003;
+}
+.voice-settings::backdrop { background: #14242f55; }
+.voice-settings h2 { margin: 0 0 20px; font-size: 18px; }
+.voice-settings label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 600; }
+.voice-settings input {
+  box-sizing: border-box; width: 100%; padding: 10px 11px; border: 1px solid var(--line-strong);
+  border-radius: 6px; font: inherit; font-size: 16px; color: var(--ink); background: var(--panel-raised);
+}
+.voice-settings input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.voice-settings p { font-size: 12px; line-height: 1.65; color: var(--muted); }
+.voice-settings .voice-settings-error { color: var(--danger, #b42318); }
+.voice-settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.voice-settings-actions button { padding: 8px 16px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--ink); cursor: pointer; }
+.voice-settings-actions .voice-settings-save { border-color: var(--accent); background: var(--accent); color: white; }
+@media (max-width: 760px) {
+  .voice-settings { padding: 20px; }
+}
