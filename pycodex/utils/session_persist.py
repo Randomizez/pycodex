@@ -24,7 +24,7 @@ from ..protocol import (
 from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
 from .history import (
-    conversation_history_to_turns, iter_display_turns,
+    conversation_history_to_turns, iter_display_turns, iter_timed_display_turns,
     restore_visibility, serialize_history_item,
 )
 from .get_env import get_package_version
@@ -399,9 +399,19 @@ def read_rollout_history_page(rollout_path, before=None, limit=100):
 def load_display_history(
     rollout_path: "typing.Union[str, Path]",
     limit: "int" = 80,
-) -> "typing.Tuple[typing.Union[typing.Tuple[str, str], None], ...]":
-    """Read visible turns across checkpoints; None marks a compaction."""
-    return tuple(deque(iter_display_turns(_iter_display_items(rollout_path)), maxlen=limit))
+    with_times: "bool" = False,
+) -> "typing.Tuple[typing.Union[typing.Tuple[str, ...], None], ...]":
+    """Read visible turns across checkpoints; None marks a compaction.
+
+    With ``with_times`` each turn also carries the rollout timestamps of its
+    prompt and response: (prompt, response, prompt_at, response_at).
+    """
+    items = _iter_display_items(rollout_path)
+    if with_times:
+        turns = iter_timed_display_turns(items)
+    else:
+        turns = iter_display_turns(item for item, _timestamp in items)
+    return tuple(deque(turns, maxlen=limit))
 
 
 def _user_message_from_event(payload):
@@ -417,10 +427,13 @@ def _iter_display_items(rollout_path):
         payload = entry.get("payload")
         if not isinstance(payload, dict):
             continue
+        timestamp = entry.get("timestamp")
+        if not isinstance(timestamp, str):
+            timestamp = None
         if item_type == "compacted":
-            yield None
+            yield None, timestamp
         elif item_type == "event_msg" and payload.get("type") == "user_message":
-            yield _user_message_from_event(payload)
+            yield _user_message_from_event(payload), timestamp
         elif (
             item_type == "response_item"
             and (
@@ -430,7 +443,8 @@ def _iter_display_items(rollout_path):
         ):
             items = []
             _append_deserialized_response_item(items, payload, {}, False)
-            yield from items
+            for item in items:
+                yield item, timestamp
 
 
 def _drop_unmatched_tool_calls(
