@@ -20,6 +20,7 @@ space. Request failures remain visible; reasoning records need readable text.
 | reasoning-display | [Recorded reasoning](reasoning-display/README.md) | Readable recorded reasoning summaries and text. | Chromium fixtures, opaque filtering, desktop/mobile; live model not tested |
 | session-tips | [Session tips](session-tips/README.md) | Browser-local per-conversation notes in a compact corner card. | Chromium fixtures, session/rollout isolation, refresh, storage failures and desktop/mobile; synthetic sessions |
 | tool-calls | [Tool calls](tool-calls/README.md) | Recent function/custom calls with paired inputs and results. | Chromium fixtures, lifecycle, desktop/mobile; live tools not tested |
+| voice-input | [Step Plan voice input](voice-input/README.md) | Record speech in-browser, tidy it with Step Plan, and insert it into the current draft. | Chromium simulated microphone, mocked ASR/cleanup, key flow, undo/context, cancellation, mobile focus/layout and cleanup |
 
 Each published row links its feature name to `<feature-id>/README.md`.
 Only list features whose source and documentation are present in this library;
