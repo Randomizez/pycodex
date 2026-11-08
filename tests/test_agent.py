@@ -209,9 +209,9 @@ def test_agent_ask_uses_run_turn_and_propagates_its_result(
     received_inputs = []
     run_turn = agent.run_turn
 
-    async def record_turn(texts, turn_id=None):
-        received_inputs.append(texts)
-        return await run_turn(texts, turn_id)
+    async def record_turn(messages, turn_id=None):
+        received_inputs.append(messages)
+        return await run_turn(messages, turn_id)
 
     monkeypatch.setattr(agent, "run_turn", record_turn)
     if fail_model:
@@ -220,7 +220,7 @@ def test_agent_ask_uses_run_turn_and_propagates_its_result(
     else:
         result = agent.ask("sync prompt")
         assert result.output_text == "sync answer"
-    assert received_inputs == [["sync prompt"]]
+    assert received_inputs == [[UserMessage("sync prompt")]]
     assert not agent.is_running
     assert client.call_count == 1
 
@@ -228,7 +228,7 @@ def test_agent_ask_uses_run_turn_and_propagates_its_result(
 def test_agent_run_turn_is_a_regular_coroutine() -> "None":
     client = ScriptedModelClient([ModelResponse([AssistantMessage("done")])])
     agent = make_agent(client, ToolRegistry(), ContextConfig())
-    coroutine = agent.run_turn(["prompt"])
+    coroutine = agent.run_turn([UserMessage("prompt")])
     assert inspect.iscoroutinefunction(agent.run_turn)
     assert inspect.iscoroutine(coroutine)
     assert not agent.is_running
@@ -239,6 +239,17 @@ def test_agent_run_turn_is_a_regular_coroutine() -> "None":
     assert not hasattr(agent, "task")
     assert not hasattr(agent, "cancel")
     assert not hasattr(agent, "add_task_listener")
+
+
+@pytest.mark.asyncio
+async def test_agent_run_turn_rejects_text_without_committing_invalid_history():
+    client = ScriptedModelClient([ModelResponse([AssistantMessage("unused")])])
+    agent = make_agent(client, ToolRegistry(), ContextConfig())
+    with pytest.raises(TypeError):
+        await agent.run_turn(["old string call"])
+    assert agent.history == ()
+    assert client.call_count == 0
+    assert not agent.is_running
 
 
 @pytest.mark.asyncio
@@ -277,7 +288,7 @@ async def test_agent_runs_tool_then_returns_final_message() -> "None":
     tools.register(EchoTool())
 
     agent = make_agent(model, tools, ContextConfig())
-    result = await agent.run_turn(["请回声 hello"])
+    result = await agent.run_turn([UserMessage("请回声 hello")])
 
     assert result.output_text == "工具返回了 hello"
     assert result.iterations == 2
@@ -313,7 +324,7 @@ async def test_parallel_tools_share_one_model_round() -> "None":
     tools.register(CoordinatedParallelTool("slow_b", entered, both_started))
 
     agent = make_agent(model, tools, ContextConfig())
-    result = await agent.run_turn(["并行跑两个工具"])
+    result = await agent.run_turn([UserMessage("并行跑两个工具")])
 
     assert result.output_text == "两个工具都执行完了"
     assert entered == ["slow_a", "slow_b"] or entered == ["slow_b", "slow_a"]
@@ -343,7 +354,7 @@ async def test_agent_default_has_no_fixed_iteration_cap() -> "None":
     tools.register(EchoTool())
 
     agent = make_agent(model, tools, ContextConfig())
-    result = await agent.run_turn(["连续调用工具直到结束"])
+    result = await agent.run_turn([UserMessage("连续调用工具直到结束")])
 
     assert result.output_text == "超过 12 轮后也收敛了"
     assert result.iterations == 13
@@ -372,12 +383,12 @@ async def test_agent_auto_compacts_before_next_turn_when_usage_reaches_limit(
         event_handler=events.append,
     )
 
-    first = await agent.run_turn(["first prompt"])
+    first = await agent.run_turn([UserMessage("first prompt")])
     if directory is not None:
         (tmp_path / "child").mkdir()
         agent.set_cwd(directory)
         assert agent._last_total_usage_tokens == 12
-    second = await agent.run_turn(["second prompt"])
+    second = await agent.run_turn([UserMessage("second prompt")])
 
     assert first.output_text == "first answer"
     assert second.output_text == "second answer"
@@ -443,7 +454,7 @@ async def test_agent_auto_compacts_before_tool_follow_up_when_usage_reaches_limi
         event_handler=events.append,
     )
 
-    result = await agent.run_turn(["use the tool"])
+    result = await agent.run_turn([UserMessage("use the tool")])
 
     assert result.output_text == "final answer"
     assert model.call_count == 3
@@ -584,7 +595,7 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
         event_handler=events.append,
     )
 
-    result = await agent.run_turn(["use the tool"])
+    result = await agent.run_turn([UserMessage("use the tool")])
 
     assert result.output_text == "final answer"
     assert model.call_count == 3
@@ -647,7 +658,7 @@ async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary()
     )
 
     with pytest.raises(ResponsesIncompleteError):
-        await agent.run_turn(["new prompt"])
+        await agent.run_turn([UserMessage("new prompt")])
 
     auto_events = [event for event in events if event.kind.startswith("auto_compact_")]
     assert [event.kind for event in auto_events] == [
@@ -674,8 +685,8 @@ async def test_agent_does_not_auto_compact_without_token_limit() -> "None":
         event_handler=events.append,
     )
 
-    await agent.run_turn(["first prompt"])
-    await agent.run_turn(["second prompt"])
+    await agent.run_turn([UserMessage("first prompt")])
+    await agent.run_turn([UserMessage("second prompt")])
 
     assert model.call_count == 2
     assert not [event for event in events if event.kind.startswith("auto_compact_")]
@@ -702,7 +713,7 @@ async def test_wait_agent_does_not_create_notifications_from_its_result() -> "No
     tools.register(WaitAgentTool(ReadyMailbox()))
 
     agent = make_agent(model, tools, ContextConfig())
-    result = await agent.run_turn(["check subagent"])
+    result = await agent.run_turn([UserMessage("check subagent")])
 
     assert result.output_text == "done"
     assert not any(
@@ -734,7 +745,7 @@ async def test_agent_truncates_tool_output_before_history_follow_up() -> "None":
 
     agent = make_agent(model, tools, _model_context("gpt-5.5"))
 
-    result = await agent.run_turn(["run long tool"])
+    result = await agent.run_turn([UserMessage("run long tool")])
 
     assert result.output_text == "done"
     tool_result = next(item for item in result.history if isinstance(item, ToolResult))
@@ -779,7 +790,7 @@ async def test_agent_truncates_tool_content_items_for_history() -> "None":
 
     agent = make_agent(model, tools, _model_context("gpt-5.5"))
 
-    await agent.run_turn(["run content tool"])
+    await agent.run_turn([UserMessage("run content tool")])
 
     tool_result = next(item for item in agent.history if isinstance(item, ToolResult))
     assert tool_result.content_items is not None
@@ -816,7 +827,7 @@ async def test_agent_keeps_small_structured_tool_output_for_follow_up() -> "None
 
     agent = make_agent(model, tools, _model_context("gpt-5.5"))
 
-    await agent.run_turn(["check subagent"])
+    await agent.run_turn([UserMessage("check subagent")])
 
     tool_result = next(item for item in agent.history if isinstance(item, ToolResult))
     assert isinstance(tool_result.output, dict)
@@ -914,7 +925,7 @@ async def test_agent_turn_completed_counts_background_exec_work() -> "None":
     events = []
     agent.event_handler = events.append
 
-    await agent.run_turn(["hello"])
+    await agent.run_turn([UserMessage("hello")])
 
     completed_events = [event for event in events if event.kind == "turn_completed"]
     assert completed_events
@@ -935,7 +946,7 @@ async def test_runtime_maybe_invoke_noops_while_active() -> "None":
     model = ScriptedModelClient(response_factory=response_factory)
     agent = make_agent(model, ToolRegistry(), ContextConfig())
     runtime = make_runtime(agent)
-    first_turn = asyncio.create_task(agent.run_turn(["hello"]))
+    first_turn = asyncio.create_task(agent.run_turn([UserMessage("hello")]))
     try:
         await request_started.wait()
         started = await runtime.maybe_invoke(
@@ -1002,7 +1013,7 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
     agent = make_agent(model, tools, ContextConfig())
     runtime = make_runtime(agent)
 
-    background_turn = asyncio.create_task(agent.run_turn(["background"]))
+    background_turn = asyncio.create_task(agent.run_turn([UserMessage("background")]))
     await tool_started.wait()
     await runtime.start()
     try:
@@ -1129,10 +1140,11 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> "None":
     )
 
     with pytest.raises(RuntimeError, match="synthetic client error"):
-        await agent.run_turn(["hello"])
+        await agent.run_turn([UserMessage("hello")])
 
     assert [event.kind for event in events] == [
         "turn_started",
+        "messages_added",
         "turn_input_ready",
         "model_called",
         "turn_failed",
@@ -1216,9 +1228,9 @@ async def test_agent_recovers_after_event_handler_failure(failed_event) -> "None
     try:
         if failed_event == "turn_failed":
             with pytest.raises(ValueError, match="synthetic model failure"):
-                await agent.run_turn(["first prompt"])
+                await agent.run_turn([UserMessage("first prompt")])
         else:
-            assert (await agent.run_turn(["first prompt"])).output_text == "done"
+            assert (await agent.run_turn([UserMessage("first prompt")])).output_text == "done"
     finally:
         loop.set_exception_handler(previous_handler)
     assert len(observer_errors) == 1
@@ -1227,7 +1239,7 @@ async def test_agent_recovers_after_event_handler_failure(failed_event) -> "None
     assert not agent.is_running
     await asyncio.wait_for(agent.wait_until_idle(), timeout=1.0)
     agent.event_handler = lambda _event: None
-    result = await agent.run_turn(["retry prompt"])
+    result = await agent.run_turn([UserMessage("retry prompt")])
     assert result.output_text == "done"
 
 
@@ -1252,7 +1264,7 @@ async def test_agent_failed_turn_releases_idle_waiters(compact_limit) -> "None":
         initial_history=(UserMessage(text="older prompt"),),
     )
     agent._last_total_usage_tokens = 1
-    turn = asyncio.create_task(agent.run_turn(["prompt"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("prompt")]))
     waiters = []
     try:
         await asyncio.wait_for(request_started.wait(), timeout=1.0)
@@ -1291,7 +1303,7 @@ async def test_agent_idle_waiters_are_independent_of_turn_result(fail_model) -> 
         ToolRegistry(),
         ContextConfig(),
     )
-    turn = asyncio.create_task(agent.run_turn(["prompt"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("prompt")]))
     waiters = []
     try:
         await asyncio.wait_for(request_started.wait(), timeout=1.0)
@@ -1330,12 +1342,12 @@ async def test_agent_run_turn_rejects_overlapping_execution() -> "None":
 
     model = ScriptedModelClient(response_factory=respond)
     agent = make_agent(model, ToolRegistry(), ContextConfig())
-    turn = asyncio.create_task(agent.run_turn(["first prompt"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("first prompt")]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         assert agent.is_running
         with pytest.raises(RuntimeError, match="agent already has an active turn"):
-            await agent.run_turn(["overlapping prompt"])
+            await agent.run_turn([UserMessage("overlapping prompt")])
         assert not await make_runtime(agent).maybe_invoke({"type": "exec_command_completed"})
         release.set()
         assert (await turn).output_text == "done"
@@ -1359,7 +1371,7 @@ async def test_agent_shutdown_does_not_cancel_current_turn() -> "None":
 
     model = ScriptedModelClient(response_factory=respond)
     agent = make_agent(model, ToolRegistry(), ContextConfig())
-    turn = asyncio.create_task(agent.run_turn(["finish this prompt"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("finish this prompt")]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         agent.shutdown()
@@ -1367,7 +1379,7 @@ async def test_agent_shutdown_does_not_cancel_current_turn() -> "None":
         assert agent.is_shutdown
         assert not await make_runtime(agent).maybe_invoke({"type": "clock_tick"})
         with pytest.raises(RuntimeError, match="shutdown"):
-            await agent.run_turn(["new prompt"])
+            await agent.run_turn([UserMessage("new prompt")])
         release.set()
         assert (await turn).output_text == "done"
         assert not agent.is_running
@@ -1387,8 +1399,8 @@ async def test_agent_does_not_consume_enqueued_turns_without_a_worker() -> "None
     )
     agent = make_agent(model, ToolRegistry(), ContextConfig())
     queue = make_runtime(agent)
-    turn = asyncio.create_task(agent.run_turn(["first prompt"]))
-    _submission_id, queued = queue.enqueue("next prompt")
+    turn = asyncio.create_task(agent.run_turn([UserMessage("first prompt")]))
+    _submission_id, queued = queue.enqueue(UserMessage("next prompt"))
     result = await turn
 
     assert not agent.is_running
@@ -1449,7 +1461,7 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
     agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(ResponsesIncompleteError):
-        await agent.run_turn(["write a long answer"])
+        await agent.run_turn([UserMessage("write a long answer")])
 
     assert [type(item).__name__ for item in agent.history] == [
         "UserMessage",
@@ -1458,7 +1470,7 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
     assert agent.history[0].text == "write a long answer"
     assert "turn_failed" in [event.kind for event in events]
 
-    result = await agent.run_turn(["continue"])
+    result = await agent.run_turn([UserMessage("continue")])
 
     assert result.output_text == "continued answer"
     follow_up_items = _conversation_items(model.prompts[1])
@@ -1508,14 +1520,14 @@ async def test_agent_keeps_reasoning_done_item_from_incomplete_response() -> "No
     agent = make_agent(model, ToolRegistry(), ContextConfig())
 
     with pytest.raises(ResponsesIncompleteError):
-        await agent.run_turn(["think for a while"])
+        await agent.run_turn([UserMessage("think for a while")])
 
     assert [type(item).__name__ for item in agent.history] == [
         "UserMessage",
         "ReasoningItem",
     ]
 
-    await agent.run_turn(["continue"])
+    await agent.run_turn([UserMessage("continue")])
 
     follow_up_items = _conversation_items(model.prompts[1])
     assert [type(item).__name__ for item in follow_up_items] == [
@@ -1546,10 +1558,11 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
     )
 
     with pytest.raises(RuntimeError, match="context_length_exceeded"):
-        await agent.run_turn(["hello"])
+        await agent.run_turn([UserMessage("hello")])
 
     assert [event.kind for event in events] == [
         "turn_started",
+        "messages_added",
         "turn_input_ready",
         "model_called",
         "token_count",
@@ -1558,14 +1571,14 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
         "token_count",
         "turn_failed",
     ]
-    assert events[3].usage == {
+    assert events[4].usage == {
         "total_tokens": 264568,
         "input_tokens": 264568,
         "output_tokens": 0,
     }
-    assert events[4].phase == "context_length_exceeded"
-    assert events[4].total_tokens == 264568
-    assert events[4].token_limit == 262144
+    assert events[5].phase == "context_length_exceeded"
+    assert events[5].total_tokens == 264568
+    assert events[5].token_limit == 262144
 
 
 @pytest.mark.asyncio
@@ -1584,7 +1597,7 @@ async def test_agent_auto_compacts_and_retries_on_context_length_error() -> "Non
     model = ScriptedModelClient(response_factory=response_factory)
     agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
-    result = await agent.run_turn(["hello"])
+    result = await agent.run_turn([UserMessage("hello")])
 
     assert result.output_text == "final answer"
     assert model.call_count == 3
@@ -1636,7 +1649,7 @@ async def test_agent_auto_compacts_on_context_window_error_without_token_counts(
     model = ScriptedModelClient(response_factory=response_factory)
     agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
-    result = await agent.run_turn(["hello"])
+    result = await agent.run_turn([UserMessage("hello")])
 
     assert result.output_text == "final answer"
     assert [event.kind for event in events if event.kind == "token_count"] == []
@@ -1690,7 +1703,7 @@ async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() 
         initial_history=initial_history,
     )
 
-    result = await agent.run_turn(["new prompt"])
+    result = await agent.run_turn([UserMessage("new prompt")])
 
     assert result.output_text == "final after prune"
     assert model.call_count == 4
@@ -1727,15 +1740,17 @@ async def test_agent_relays_stream_error_events() -> "None":
         event_handler=events.append,
     )
 
-    result = await agent.run_turn(["hello"])
+    result = await agent.run_turn([UserMessage("hello")])
 
     assert result.output_text == "done"
     assert [event.kind for event in events] == [
         "turn_started",
+        "messages_added",
         "turn_input_ready",
         "model_called",
         "stream_error",
         "model_completed",
+        "messages_added",
         "turn_completed",
     ]
-    assert events[3].message == "Reconnecting... 1/5"
+    assert events[4].message == "Reconnecting... 1/5"

@@ -796,8 +796,20 @@
       font-variant-numeric: tabular-nums;
       user-select: none;
     }
-    .entry.user > .message-time { text-align: right; }
+    .message-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.4;
+    }
+    .message-author { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+    .message-header > .message-time { flex-shrink: 0; margin-top: 0; }
     .entry.thinking,
+    .entry.response[data-temporary="true"],
     .entry.control,
     .entry.setup {
       border-left: 2px solid var(--line);
@@ -811,7 +823,8 @@
     .entry.setup .setup-source { margin-top: 8px; white-space: pre-wrap; }
     .frontend-notice { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .frontend-notice a { color: var(--accent); }
-    .entry.thinking {
+    .entry.thinking,
+    .entry.response[data-temporary="true"] {
       border-left-color: var(--accent);
       animation: activity-breathe var(--breathing-duration) var(--breathing-ease) infinite;
     }
@@ -2825,13 +2838,13 @@
           item.submission_id || "",
           item.turn_id || "",
           item.final_id || "",
-          item.prompt || "",
+          item.messages,
           item.response || "",
+          item.response_phase || "",
           item.thinking || "",
           item.status || "",
           item.error || "",
           item.kind || "",
-          item.prompt_at || "",
           item.response_at || "",
           item.model_errors || [],
         ]),
@@ -2992,13 +3005,13 @@
           entry = addEntry(cls, text, markdown, false).parentElement;
           entry.dataset.entryKey = key;
         } else if (entry.renderedSource !== text) {
-          const body = entry.firstElementChild;
+          const body = entry.querySelector(":scope > .text");
           if (markdown) renderMarkdownInto(body, text);
           else body.textContent = text;
         }
         entry.renderedSource = text;
         entries.push(entry);
-        return entry.firstElementChild;
+        return entry.querySelector(":scope > .text");
       }
       turns.forEach(turn => renderTurn(turn, renderEntry));
       if (!turns.length && !inputRequest) {
@@ -3076,7 +3089,7 @@
     function setMessageTime(body, value, detail = "") {
       const entry = body.parentElement;
       const label = formatMessageTime(value);
-      let time = entry.querySelector(":scope > .message-time");
+      let time = entry.querySelector(".message-time");
       if (!label) {
         time?.remove();
         return;
@@ -3092,7 +3105,7 @@
     }
 
     function renderTurn(turn, renderEntry) {
-      const key = `turn:${turn.submission_id || turn.turn_id}`;
+      const key = `turn:${turn.turn_id}`;
       if (turn.kind === "compaction") {
         const marker = renderEntry(`${key}:compact`, "Context compacted", "compaction");
         marker.parentElement.setAttribute("role", "separator");
@@ -3100,11 +3113,22 @@
         return;
       }
       const isControl = turn.kind === "control";
-      if (turn.prompt) {
-        const setup = turn.prompt.startsWith("<frontend_customization>\n") &&
-          turn.prompt.endsWith("\n</frontend_customization>");
-        const body = renderEntry(`${key}:prompt`, turn.prompt, setup ? "setup" : isControl ? "control" : "user");
-        if (!setup && !isControl) setMessageTime(body, turn.prompt_at);
+      for (const message of turn.messages) {
+        const setup = message.text.startsWith("<frontend_customization>\n") &&
+          message.text.endsWith("\n</frontend_customization>");
+        const body = renderEntry(`message:${message.message_id}`, message.text, setup ? "setup" : isControl ? "control" : "user");
+        if (!setup && !isControl) {
+          let header = body.parentElement.querySelector(":scope > .message-header");
+          if (!header) {
+            header = element("div", "message-header");
+            header.append(element("span", "message-author"));
+            body.before(header);
+          }
+          header.firstElementChild.textContent = message.name;
+          setMessageTime(body, message.created_at);
+          const time = body.parentElement.querySelector(".message-time");
+          if (time) header.append(time);
+        }
         if (setup && !body.firstElementChild) {
           const notice = element("p", "frontend-notice",
             "Changes affect all workspaces for this server user. Refresh to apply. ");
@@ -3115,7 +3139,7 @@
           const details = element("details");
           details.append(
             element("summary", "", "Interface customization context"),
-            element("div", "setup-source", turn.prompt.slice(
+            element("div", "setup-source", message.text.slice(
               "<frontend_customization>\n".length, -"\n</frontend_customization>".length
             ))
           );
@@ -3128,10 +3152,13 @@
         );
         response.dataset.finalId = isControl || turn.error ? "" : (turn.final_id || "");
         response.dataset.sessionId = activeSessionId;
+        const temporary = !isControl && turn.response_phase !== "final" &&
+          ["running", "responding", "tool"].includes(turn.status);
+        response.parentElement.dataset.temporary = String(temporary);
         if (!isControl) {
           const elapsed = turn.prompt_at && turn.response_at
             ? formatDuration(turn.prompt_at, turn.response_at) : "";
-          setMessageTime(response, turn.response_at, elapsed);
+          setMessageTime(response, temporary ? null : turn.response_at, elapsed);
         }
       }
       if (turn.thinking) renderEntry(`${key}:thinking`, turn.thinking, "thinking");

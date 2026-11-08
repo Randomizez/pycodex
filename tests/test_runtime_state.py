@@ -6,7 +6,7 @@ from pycodex import (
     AssistantMessage, BaseTool, ContextConfig, ContextLengthExceeded,
     ModelResponse, ToolCall, ToolRegistry, ToolResult, UserMessage,
 )
-from pycodex.events import TokenCountEvent
+from pycodex.events import MessagesAddedEvent, TokenCountEvent
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import ClockManager, ExecCommandTool, UnifiedExecManager
 from pycodex.tools.runtime_services import AgentRuntimeEnvironment
@@ -72,7 +72,7 @@ async def test_lightweight_state_excludes_history_and_preserves_queue_identity()
         assert "completed_history" not in state["active_turn"]
         assert state["queued_inputs"] == [{
             "submission_id": second.submission_id, "turn_id": second.submission_id,
-            "queue": "enqueue", "prompts": ["second"],
+            "queue": "enqueue", "messages": (UserMessage("second"),),
         }]
         assert state["active_turn"]["submission_id"] == first.submission_id
     finally:
@@ -122,8 +122,8 @@ async def test_close_interrupts_pending_inputs_and_finishes_issued_tools(stop_du
     tools.register(WorkTool())
     runtime = make_runtime(make_agent(model, tools, ContextConfig()))
     await runtime.start()
-    first_id, first = runtime.enqueue("first")
-    second_id, second = runtime.enqueue("second")
+    first_id, first = runtime.enqueue(UserMessage("first"))
+    second_id, second = runtime.enqueue(UserMessage("second"))
     await asyncio.wait_for(started.wait(), 1)
     pending = [second]
     if with_steer:
@@ -149,7 +149,7 @@ async def test_close_interrupts_pending_inputs_and_finishes_issued_tools(stop_du
                 await future
         assert not await runtime.maybe_invoke({"type": "clock_tick"})
         with pytest.raises(RuntimeError, match="shutting down"):
-            runtime.enqueue("too late")
+            runtime.enqueue(UserMessage("too late"))
         with pytest.raises(RuntimeError, match="shutting down"):
             runtime.trigger()
         with pytest.raises(RuntimeError, match="shutting down"):
@@ -180,7 +180,7 @@ async def test_close_interrupts_pending_inputs_and_finishes_issued_tools(stop_du
 async def test_close_before_start_discards_work_and_resume_accepts_new_work():
     model = ScriptedModelClient([ModelResponse([AssistantMessage("resumed")])])
     runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
-    _submission_id, queued = runtime.enqueue("discard")
+    _submission_id, queued = runtime.enqueue(UserMessage("discard"))
     steer = await runtime.submit_input("discard too")
     await runtime.close()
     for future in (queued, steer.future):
@@ -209,7 +209,7 @@ async def test_queue_busy_includes_direct_agent_work_until_it_finishes():
     runtime = make_runtime(make_agent(
         ScriptedModelClient(response_factory=respond), ToolRegistry(), ContextConfig(),
     ))
-    turn = asyncio.create_task(runtime.agent.run_turn(["direct turn"]))
+    turn = asyncio.create_task(runtime.agent.run_turn([UserMessage("direct turn")]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         assert runtime.is_busy
@@ -230,7 +230,7 @@ async def test_queue_busy_includes_pending_submissions_before_worker_starts():
         ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
         ToolRegistry(), ContextConfig(),
     ))
-    _submission_id, future = runtime.enqueue("pending")
+    _submission_id, future = runtime.enqueue(UserMessage("pending"))
     assert runtime.is_busy
     await runtime.close()
     with pytest.raises(SubmissionInterrupted):
@@ -248,7 +248,7 @@ async def test_idle_messages_wait_for_execution_and_pending_triggers_merge():
     runtime.message("first message")
     assert not runtime.is_busy
     assert model.call_count == 0
-    queued_id, queued = runtime.enqueue("queued prompt")
+    queued_id, queued = runtime.enqueue(UserMessage("queued prompt"))
     first_id, first = runtime.trigger()
     runtime.message("second message")
     second_id, second = runtime.trigger()
@@ -286,7 +286,7 @@ async def test_active_message_reuses_turn_and_trigger_does_not_queue_an_extra_tu
     events = []
     runtime.event_handler = events.append
     await runtime.start()
-    _submission_id, result = runtime.enqueue("start")
+    _submission_id, result = runtime.enqueue(UserMessage("start"))
     try:
         await started.wait()
         runtime.message("agent update")
@@ -304,6 +304,68 @@ async def test_active_message_reuses_turn_and_trigger_does_not_queue_an_extra_tu
     finally:
         release.set()
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_message_observer_can_deliver_more_mail_without_losing_identity():
+    model = ScriptedModelClient([
+        ModelResponse([AssistantMessage("first")]),
+        ModelResponse([AssistantMessage("last")]),
+    ])
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    messages = [UserMessage("same", name=name) for name in ("Alice", "Bob", "Carol")]
+    committed = []
+
+    def observe(event):
+        if not isinstance(event, MessagesAddedEvent):
+            return
+        for message in event.messages:
+            if isinstance(message, UserMessage):
+                committed.append(message)
+                if len(committed) < len(messages):
+                    runtime.message(messages[len(committed)])
+
+    runtime.event_handler = observe
+    await runtime.start()
+    try:
+        _submission_id, future = runtime.enqueue(messages[0])
+        result = await asyncio.wait_for(future, 1)
+        assert result.output_text == "last"
+        assert model.call_count == 2
+        assert [message.name for message in committed] == ["Alice", "Bob", "Carol"]
+        assert [message.message_id for message in committed] == [message.message_id for message in messages]
+        assert [message.created_at for message in committed] == [message.created_at for message in messages]
+        assert all(message.turn_id == result.turn_id for message in committed)
+        assert [item.name for item in model.prompts[0].input if isinstance(item, UserMessage)] == ["Alice", "Bob"]
+        assert [item.name for item in model.prompts[1].input if isinstance(item, UserMessage)] == ["Alice", "Bob", "Carol"]
+        assert runtime.snapshot()["history"][0]["messages"] == tuple(committed)
+        assert not runtime._steer_queue
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_mail_commit_restores_pending_messages_in_order(monkeypatch):
+    runtime = make_runtime(make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig()))
+    first = UserMessage("same", name="Alice")
+    second = UserMessage("same", name="Bob")
+    receive = runtime.agent.receive_messages
+
+    def fail(messages):
+        runtime.message(second)
+        raise OSError("history write failed")
+
+    runtime.message(first)
+    monkeypatch.setattr(runtime.agent, "receive_messages", fail)
+    with pytest.raises(OSError, match="history write failed"):
+        runtime._deliver_messages()
+    assert list(runtime._steer_queue) == [first, second]
+    assert runtime.agent.history == ()
+    monkeypatch.setattr(runtime.agent, "receive_messages", receive)
+    runtime._deliver_messages()
+    assert [message.message_id for message in runtime.agent.history] == [first.message_id, second.message_id]
+    assert not runtime._steer_queue
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -342,7 +404,7 @@ async def test_stop_releases_waiting_tool_without_a_timeout():
     model = ScriptedModelClient([ModelResponse([ToolCall("wait", "wait_for_mail", {})])])
     runtime = make_runtime(make_agent(model, tools, ContextConfig()))
     await runtime.start()
-    _submission_id, result = runtime.enqueue("wait")
+    _submission_id, result = runtime.enqueue(UserMessage("wait"))
     try:
         await entered.wait()
         runtime.stop_asap()
@@ -502,7 +564,7 @@ async def test_steer_during_compaction_restarts_execution_with_shared_turn_id(ov
     events = []
     runtime.event_handler = events.append
     await runtime.start()
-    _submission_id, original = runtime.enqueue("original")
+    _submission_id, original = runtime.enqueue(UserMessage("original"))
     futures = [original]
     try:
         await request_started.wait()
@@ -585,7 +647,7 @@ async def test_steer_during_tool_follow_up_compact_preserves_completed_tools(ove
     events = []
     runtime.event_handler = events.append
     await runtime.start()
-    _submission_id, original = runtime.enqueue("original")
+    _submission_id, original = runtime.enqueue(UserMessage("original"))
     futures = [original]
     try:
         await asyncio.wait_for(compact_started.wait(), 1)

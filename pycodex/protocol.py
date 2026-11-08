@@ -17,12 +17,18 @@ import json
 import typing
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from .utils.compat import Literal, TypeAlias
+from .utils.random_ids import uuid7_string
 
 JSONValue: "TypeAlias" = Any
 JSONDict: "TypeAlias" = typing.Dict[str, Any]
+
+
+def message_timestamp():
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def qualified_tool_name(name, namespace):
@@ -94,6 +100,9 @@ class UserMessage:
     # Local history metadata; serialize() is the model-facing representation.
     name: "str" = "user"
     visible: "bool" = True
+    message_id: "str" = field(default_factory=uuid7_string, compare=False)
+    created_at: "typing.Union[str, None]" = field(default_factory=message_timestamp, compare=False)
+    turn_id: "typing.Union[str, None]" = field(default=None, compare=False)
 
     def serialize(self) -> "JSONDict":
         payload = {
@@ -116,6 +125,9 @@ class AgentMessage:
     id: "typing.Union[str, None]" = None
     internal_chat_message_metadata_passthrough: "typing.Union[JSONDict, None]" = None
     visible: "bool" = False
+    message_id: "str" = field(default_factory=uuid7_string, compare=False)
+    created_at: "typing.Union[str, None]" = field(default_factory=message_timestamp, compare=False)
+    turn_id: "typing.Union[str, None]" = field(default=None, compare=False)
 
     @property
     def text(self) -> "str":
@@ -167,6 +179,9 @@ class AssistantMessage:
     phase: "typing.Union[str, None]" = None
     content_items: "typing.Union[typing.Tuple[JSONDict, ...], None]" = None
     visible: "bool" = True
+    message_id: "str" = field(default_factory=uuid7_string, compare=False)
+    created_at: "typing.Union[str, None]" = field(default_factory=message_timestamp, compare=False)
+    turn_id: "typing.Union[str, None]" = field(default=None, compare=False)
 
     @classmethod
     def from_response_item(cls, payload: "JSONDict") -> "AssistantMessage":

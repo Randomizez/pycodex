@@ -1,73 +1,92 @@
-"""Pure conversation-history projections, independent of rollout storage."""
+"""Message storage metadata and pure display conversion."""
 
-import typing
+import json
 from dataclasses import replace
+from hashlib import sha256
 
-from ..protocol import AgentMessage, AssistantMessage, ConversationItem, UserMessage
+from ..protocol import AgentMessage, AssistantMessage, UserMessage
 
 
-def serialize_history_item(item: "ConversationItem") -> "typing.Dict[str, object]":
-    """Include local message metadata without changing model serialization."""
+def serialize_history_item(item):
     payload = item.serialize()
     if isinstance(item, UserMessage):
         payload["name"] = item.name
     if isinstance(item, (UserMessage, AgentMessage, AssistantMessage)):
-        payload["visible"] = item.visible
+        payload.update(message_id=item.message_id, created_at=item.created_at,
+                       turn_id=item.turn_id, visible=item.visible)
     return payload
 
 
-def restore_visibility(item, payload):
-    """Older rollouts use the message type's visibility default."""
+def restore_message_metadata(item, payload, record_id, timestamp=None):
     visible = payload.get("visible", item.visible)
     if not isinstance(visible, bool):
         raise ValueError("history item visible must be a boolean")
-    return replace(item, visible=visible)
+    legacy_id = sha256(json.dumps(
+        [record_id, timestamp, payload], ensure_ascii=False, sort_keys=True,
+    ).encode("utf-8")).hexdigest()[:32]
+    return replace(
+        item, visible=visible, message_id=payload.get("message_id", "legacy-" + legacy_id),
+        created_at=payload.get("created_at", timestamp), turn_id=payload.get("turn_id"),
+    )
 
 
-def iter_display_turns(history):
-    """Project message visibility and grouping; None marks a compaction."""
-    for entry in iter_timed_display_turns((item, None) for item in history):
-        yield None if entry is None else entry[:2]
+def conversation_history_to_turns(history, previous=()):
+    """Convert a transcript or append committed items to existing display values.
 
-
-def iter_timed_display_turns(history):
-    """Like iter_display_turns for (item, timestamp) pairs.
-
-    Yields (prompt, response, prompt_at, response_at); the times come from the
-    items that supplied the visible prompt and response.
+    The caller owns the result; neither the previous values nor messages change.
+    Explicit turn IDs group new messages. Old records retain phase boundaries.
     """
-    prompt = None
-    response = ""
-    phase = None
-    prompt_at = response_at = None
-    for item, timestamp in history:
-        if item is None:
-            if prompt is not None or response:
-                yield (prompt or "", response, prompt_at, response_at)
-            yield None
-            prompt, response, phase = None, "", None
-            prompt_at = response_at = None
-        elif isinstance(item, (UserMessage, AgentMessage)):
-            # Hidden mail must not split commentary from its final answer.
-            # Keep an existing unphased reply when the next input arrives.
-            if item.visible or (response and phase != "commentary"):
-                if prompt is not None or response:
-                    yield (prompt or "", response, prompt_at, response_at)
-                prompt, response, phase = None, "", None
-                prompt_at = response_at = None
-            if item.visible:
-                prompt, prompt_at = item.text, timestamp
-        elif isinstance(item, AssistantMessage) and item.visible:
-            response, phase, response_at = item.text, item.phase, timestamp
-            if phase == "final":
-                yield (prompt or "", response, prompt_at, response_at)
-                prompt, response, phase = None, "", None
-                prompt_at = response_at = None
-    if prompt is not None or response:
-        yield (prompt or "", response, prompt_at, response_at)
-
-
-def conversation_history_to_turns(
-    history: "typing.Iterable[ConversationItem]",
-) -> "typing.Tuple[typing.Tuple[str, str], ...]":
-    return tuple(entry for entry in iter_display_turns(history) if entry is not None)
+    turns = [
+        {key: turn[key] for key in (
+            "turn_id", "messages", "response", "response_id", "response_at",
+            "response_phase", "kind",
+        )}
+        for turn in previous
+    ]
+    by_id = {turn["turn_id"]: turn for turn in turns}
+    current = turns[-1] if turns else None
+    if current is not None and (
+        current["kind"] == "compaction" or current["response_phase"] == "final"
+    ):
+        current = None
+    for item in history:
+        is_compaction = item is None or (
+            isinstance(item, dict) and item.get("type") == "compacted"
+        )
+        if is_compaction:
+            turn_id = item["id"] if item is not None else "compaction-{0}".format(len(turns))
+            current = None
+        elif isinstance(item, (UserMessage, AgentMessage, AssistantMessage)):
+            is_input = isinstance(item, (UserMessage, AgentMessage))
+            if item.turn_id is None and is_input and (
+                item.visible or (current is not None and current["response"]
+                                 and current["response_phase"] != "commentary")
+            ):
+                current = None
+            if not item.visible:
+                continue
+            turn_id = item.turn_id or (current["turn_id"] if current is not None else item.message_id)
+        else:
+            continue
+        turn = by_id.get(turn_id)
+        if turn is None:
+            turn = {
+                "turn_id": turn_id, "messages": (), "response": "",
+                "response_id": None, "response_at": None, "response_phase": None,
+                "kind": "compaction" if is_compaction else "assistant",
+            }
+            turns.append(turn)
+            by_id[turn_id] = turn
+        if is_compaction:
+            continue
+        if is_input:
+            messages = list(turn["messages"])
+            position = next((index for index, message in enumerate(messages)
+                             if message.message_id == item.message_id), len(messages))
+            messages[position:position + 1] = [item]
+            turn["messages"] = tuple(messages)
+        else:
+            turn.update(response=item.text, response_id=item.message_id,
+                        response_at=item.created_at, response_phase=item.phase)
+        current = None if turn["response_phase"] == "final" else turn
+    return tuple(turns)

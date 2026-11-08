@@ -126,7 +126,9 @@ def _render_output_content(output: str, output_mode: str) -> str:
 
 
 def _history_panel(history, index, expanded, output_mode, interactive):
-    prompt, response = history[index]
+    turn = history[index]
+    prompt = "\n".join(message.text for message in turn["messages"])
+    response = turn["response"]
     content = _truncate(
         "user> {0}\n\nassistant> {1}".format(prompt, response), CARD_OUTPUT_LIMIT
     )

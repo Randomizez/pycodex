@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
-from pycodex.protocol import AgentMessage, ToolResult
+from pycodex.protocol import AgentMessage, ToolResult, UserMessage
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import BaseTool, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
@@ -47,7 +47,7 @@ async def test_child_drains_pending_work_after_failure_or_interruption(tmp_path,
     child = await spawn(root)
     try:
         await entered.wait()
-        _submission_id, pending = child.enqueue("next")
+        _submission_id, pending = child.enqueue(UserMessage("next"))
         if interrupted:
             assert await root.agents_manager.interrupt_agent(
                 root.agent.agent_id, "worker",
@@ -283,7 +283,7 @@ async def test_parent_close_interrupts_active_and_queued_child_work(tmp_path, st
     try:
         if start_sampling:
             await entered.wait()
-        _submission_id, pending = child.enqueue("discard")
+        _submission_id, pending = child.enqueue(UserMessage("discard"))
         if start_sampling:
             closing = asyncio.create_task(root.close())
             await asyncio.sleep(0)
@@ -376,7 +376,7 @@ async def test_close_signals_whole_tree_before_waiting_and_keeps_child_errors(tm
     grandchild = await spawn(children[0], "nested")
     root.agent.model_client = ScriptedModelClient(response_factory=respond_root)
     await root.start()
-    _submission_id, active = root.enqueue("root work")
+    _submission_id, active = root.enqueue(UserMessage("root work"))
     for _ in range(4):
         await asyncio.wait_for(entered.get(), 1)
 
@@ -385,7 +385,7 @@ async def test_close_signals_whole_tree_before_waiting_and_keeps_child_errors(tm
         raise ValueError("child cleanup failed")
 
     children[0].add_close_handler(fail_cleanup)
-    pending = [runtime.enqueue("discard")[1] for runtime in [root] + children + [grandchild]]
+    pending = [runtime.enqueue(UserMessage("discard"))[1] for runtime in [root] + children + [grandchild]]
     closing = asyncio.create_task(root.close())
     try:
         await asyncio.sleep(0)

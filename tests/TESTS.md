@@ -125,7 +125,8 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 
 覆盖首次直接加载、已删除的保存会话、服务错误、切换即时复用节点、
 内容更新、展开状态、草稿、手机滚动、新建/关闭会话及切走后的 Mermaid
-异步完成。所有请求使用离线 fixture，不访问真实会话或 CDN。
+异步完成，以及逐条消息的稳定 DOM 身份、作者/时间更新、未知时间和手机布局。
+所有请求使用离线 fixture，不访问真实会话或 CDN。
 
 Markdown 文件链接的浏览器回归使用与页面相同版本的渲染和清洗库，手动运行：
 
@@ -337,6 +338,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   执行前端实际切换/渲染代码，验证关闭 tab 后恢复已访问 tab 的内容、草稿和
   滚动位置，以及旧轮询迟到或报错时不能覆盖当前 tab；
   不再把 CSS 颜色、函数名等实现细节当成独立回归。
+- `test_history_display.py` 验证展示 limit 限制实际读取范围、steer 分组与压缩标记
+  在窗口变化后保持完整，以及旧多行日志、UTF-8 字节位置和未完成尾记录的恢复。
 - `test_workspace_views.py` 覆盖模型只输出链接时不打开标签、点击不增加模型请求/会话消息、
   空工具集仍可打开文件、普通路径与 Git 风格 URI、百分号编码及非法目标拒绝、
   本地 diff 两侧的绝对/相对路径组合、父目录与编码分隔符、

@@ -5,7 +5,7 @@ import typing
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .protocol import JSONDict, ToolCall, ToolResult
+from .protocol import AgentMessage, ConversationItem, JSONDict, ToolCall, ToolResult, UserMessage
 from .utils.event_helpers import (
     colorize_cli_message,
     colorize_tool_message,
@@ -147,12 +147,15 @@ class TerminalEvent(TurnEvent):
 @dataclass(frozen=True)
 class TurnStartedEvent(TurnEvent):
     turn_id: "str"
-    user_texts: "typing.Tuple[str, ...]"
+    messages: "typing.Tuple[ConversationItem, ...]"
     submission_id: "typing.Union[str, None]" = None
     kind: ClassVar[str] = "turn_started"
 
     def visualize(self) -> "str":
-        return "\n".join(self.user_texts)
+        return "\n".join(
+            message.text for message in self.messages
+            if isinstance(message, (UserMessage, AgentMessage)) and message.visible
+        )
 
     def render(self, display: "EventDisplay") -> "None":
         display.begin_turn(self)
@@ -165,6 +168,16 @@ class TurnInputReadyEvent(TurnEvent):
     turn_id: "str"
     submission_id: "typing.Union[str, None]" = None
     kind: ClassVar[str] = "turn_input_ready"
+
+
+@dataclass(frozen=True)
+class MessagesAddedEvent(TurnEvent):
+    """Conversation items committed to history, in their original order."""
+
+    turn_id: "str"
+    messages: "typing.Tuple[ConversationItem, ...]"
+    submission_id: "typing.Union[str, None]" = None
+    kind: ClassVar[str] = "messages_added"
 
 
 @dataclass(frozen=True)
@@ -564,11 +577,7 @@ class SessionStateEvent(Event):
             display.inserted_steer_prompts.clear()
             active = state["active_turn"]
             if active is not None:
-                TurnStartedEvent(
-                    active["turn_id"],
-                    tuple(active["user_texts"]),
-                    active["submission_id"],
-                ).render(display)
+                display.set_status("working")
                 display.stream_buffer = active["assistant_text"]
             elif not state["busy"]:
                 display.set_idle_status(state["background_work_count"])
@@ -636,7 +645,7 @@ class CommandFailedEvent(Event):
 @dataclass(frozen=True)
 class InputQueuedEvent(Event):
     submission_id: "str"
-    prompt: "str"
+    message: "UserMessage"
     queue: "str"
     sender: "str"
     explicit_queue: "bool"
@@ -644,7 +653,7 @@ class InputQueuedEvent(Event):
     kind: ClassVar[str] = "input_queued"
 
     def render(self, display: "EventDisplay") -> "None":
-        preview = shorten_title(self.prompt, 72)
+        preview = shorten_title(self.message.text, 72)
         if self.explicit_queue:
             display.queued_steer_prompts.setdefault(self.submission_id, []).append(
                 preview

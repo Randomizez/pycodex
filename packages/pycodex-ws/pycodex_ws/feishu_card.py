@@ -13,13 +13,15 @@ from pycodex.events import (
     EventDisplay,
     InputQueuedEvent,
     InputRequestedEvent,
+    MessagesAddedEvent,
     SessionStateEvent,
     StreamErrorEvent,
     TurnCompletedEvent,
     TurnFailedEvent,
     TurnStartedEvent,
 )
-from pycodex.utils.event_helpers import completed_history
+from pycodex.protocol import AssistantMessage
+from pycodex.utils.history import conversation_history_to_turns
 
 from .feishu_auth import (
     FEISHU_API_BASE,
@@ -182,42 +184,48 @@ class PycodexCard:
             if event.reason in {"attach", "history"}:
                 self.output_text = ""
                 self.activity_text = ""
-                self.turn_history = list(completed_history(state))
+                self.turn_history = [
+                    turn for turn in state["history"] if turn["kind"] == "assistant"
+                ]
                 self.history_index = None
                 active = state["active_turn"]
                 self.working_output = active["assistant_text"] if active is not None else ""
                 self._active_turn_id = active["turn_id"] if active is not None else None
-                self.user_prompt = (
-                    "\n".join(active["user_texts"])
-                    if active is not None
-                    else self.turn_history[-1][0] if self.turn_history else ""
-                )
+                if active is not None:
+                    current = self._append_messages(active["messages"], active["turn_id"])
+                    if not self.working_output and current is not None:
+                        self.working_output = current["response"]
+                else:
+                    current = self.turn_history[-1] if self.turn_history else None
+                self.user_prompt = "\n".join(message.text for message in current["messages"]) if current else ""
                 self.display.stream_buffer = ""
                 self.prompt_text = DEFAULT_MAIN_PROMPT
                 if state["busy"]:
                     self._set_status("working")
                 else:
                     self.display.set_idle_status(state["background_work_count"])
-                for _prompt, response in self.turn_history[-1:]:
-                    self.output_text = response
+                for turn in (self.earlier_turns() if active is not None else self.turn_history)[-1:]:
+                    self.output_text = turn["response"]
                 if state["busy"]:
                     self._mark_last_turn_output()
-        elif isinstance(event, (InputQueuedEvent, TurnStartedEvent)):
+        elif isinstance(event, InputQueuedEvent):
             self._mark_last_turn_output()
+        elif isinstance(event, (TurnStartedEvent, MessagesAddedEvent)):
+            turn = self._append_messages(event.messages, event.turn_id)
+            self.user_prompt = "\n".join(message.text for message in turn["messages"]) if turn else ""
             if isinstance(event, TurnStartedEvent):
-                prompt = event.visualize()
-                if event.turn_id == self._active_turn_id and self.user_prompt:
-                    self.user_prompt += "\n" + prompt
-                else:
-                    self.user_prompt = prompt
+                self._mark_last_turn_output()
                 self._active_turn_id = event.turn_id
+            elif any(isinstance(message, AssistantMessage) for message in event.messages):
+                self.display.stream_buffer = ""
+                self.working_output = turn["response"] if turn else ""
         event.render(self.display)
         if self.display.stream_buffer:
             self.working_output = self.display.stream_buffer
         if isinstance(event, TurnCompletedEvent):
-            if event.output_text:
-                self.output_text = event.output_text
-                self.turn_history.append((self.user_prompt, event.output_text))
+            for turn in self.turn_history:
+                if turn["turn_id"] == event.turn_id and turn["response"]:
+                    self.output_text = turn["response"]
             self.activity_text = ""
             self.working_output = ""
             self._active_turn_id = None
@@ -231,6 +239,13 @@ class PycodexCard:
         elif isinstance(event, SessionStateEvent) and event.reason in {"attach", "history"}:
             request = event.state["input_request"]
             self.activity_text = request.visualize() if request is not None else ""
+
+    def _append_messages(self, messages, turn_id):
+        self.turn_history = [
+            turn for turn in conversation_history_to_turns(messages, self.turn_history)
+            if turn["kind"] == "assistant"
+        ]
+        return next((turn for turn in self.turn_history if turn["turn_id"] == turn_id), None)
 
     def _mark_last_turn_output(self) -> None:
         prefix = "(*last turn)\n"
@@ -252,7 +267,7 @@ class PycodexCard:
 
     def earlier_turns(self):
         if self._active_turn_id is not None:
-            return self.turn_history
+            return [turn for turn in self.turn_history if turn["turn_id"] != self._active_turn_id]
         return self.turn_history[:-1]
 
     def show_history(self, index):

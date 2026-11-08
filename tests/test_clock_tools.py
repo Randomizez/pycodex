@@ -87,7 +87,7 @@ async def test_sleep_wakes_and_records_result_before_processing_input(tmp_path, 
 
     runtime.attach(observe, interactive=False)
     await runtime.start()
-    _submission_id, future = runtime.enqueue("wait")
+    _submission_id, future = runtime.enqueue(UserMessage("wait"))
     try:
         await asyncio.wait_for(entered.wait(), 1)
         if wake != "pending":
@@ -213,7 +213,7 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
     agent = make_agent(model, tools, ContextConfig())
     runtime = make_runtime(agent)
 
-    result = await agent.run_turn(["start periodic work"])
+    result = await agent.run_turn([UserMessage("start periodic work")])
 
     assert result.output_text == "clock armed"
 
@@ -275,7 +275,7 @@ async def test_runtime_shutdown_cancels_clock_and_discards_queued_tools() -> "No
         )
         assert completed_event.background_work_count == 1
 
-        _submission_id, pending_turn = runtime.enqueue("set clock again")
+        _submission_id, pending_turn = runtime.enqueue(UserMessage("set clock again"))
         await runtime.close()
         with pytest.raises(SubmissionInterrupted):
             await pending_turn

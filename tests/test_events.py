@@ -33,7 +33,8 @@ from pycodex.events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
-from pycodex.protocol import ToolCall, ToolResult, TurnResult
+from pycodex.protocol import AssistantMessage, ToolCall, ToolResult, TurnResult, UserMessage
+from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.event_helpers import (
     colorize_cli_message,
     colorize_tool_message,
@@ -55,19 +56,19 @@ def make_display(color=False):
 
 
 def test_event_fields_are_explicit_and_frozen():
-    event = TurnStartedEvent("turn", ("first", "second"))
+    event = TurnStartedEvent("turn", (UserMessage("first", turn_id="turn"), UserMessage("second", turn_id="turn")))
     assert isinstance(event, Event)
     assert event.kind == "turn_started"
-    assert event.user_texts == ("first", "second")
+    assert event.messages == (UserMessage("first"), UserMessage("second"))
     assert not hasattr(event, "payload")
     assert not hasattr(event, "user_text")
     assert event.visualize() == "first\nsecond"
     with pytest.raises(TypeError):
         TurnStartedEvent("turn")
     with pytest.raises(TypeError):
-        TurnStartedEvent("turn", ("first",), extra="unknown")
+        TurnStartedEvent("turn", (UserMessage("first", turn_id="turn"),), extra="unknown")
     with pytest.raises(FrozenInstanceError):
-        event.user_texts = ("changed",)
+        event.messages = (UserMessage("changed"),)
 
 
 @pytest.mark.parametrize(
@@ -444,11 +445,10 @@ def test_compact_progress_and_failures():
                 "kind": "history",
                 "state": {
                     "title": "demo",
-                    "history": [
-                        ("", "continued"),
-                        ("问", "答\nnext"),
-                        ("pending", None),
-                    ],
+                    "history": conversation_history_to_turns((
+                        AssistantMessage("continued"), None,
+                        UserMessage("问"), AssistantMessage("答\nnext"), UserMessage("pending"),
+                    )),
                 },
             },
             "Session: demo\n[1]A> continued\n[2]U> 问\n[2]A> 答\nnext\n[3]U> pending",
@@ -533,7 +533,7 @@ def test_cli_colors():
 @pytest.mark.parametrize("outcome", ["success", "retry", "failure"])
 def test_stream_rendering_uses_completed_attempt_only(outcome):
     display, operations = make_display()
-    TurnStartedEvent("turn", ("hello",)).render(display)
+    TurnStartedEvent("turn", (UserMessage("hello", turn_id="turn"),)).render(display)
     AssistantDeltaEvent("partial", "turn").render(display)
     assert ("log", "assistant> partial") not in operations
     if outcome == "retry":
@@ -580,7 +580,7 @@ def test_render_keeps_subscriber_state_and_coloring_out_of_events():
     AssistantDeltaEvent("partial").render(colored)
     AssistantDeltaEvent("partial").render(plain)
     StreamErrorEvent("Retrying", 1, 2, 0, "lost").render(colored)
-    InputQueuedEvent("queued", "next", "enqueue", "cli", True, True).render(colored)
+    InputQueuedEvent("queued", UserMessage("next"), "enqueue", "cli", True, True).render(colored)
     assert colored.stream_buffer == ""
     assert plain.stream_buffer == "partial"
     assert colored.queued_steer_prompts == {"queued": ["next"]}
@@ -618,11 +618,11 @@ def test_tool_render_orders_stream_flush_status_and_log_with_task_paths():
 @pytest.mark.parametrize("explicit", [False, True])
 def test_queue_render_consumes_feedback_only_when_input_starts(explicit):
     display, operations = make_display()
-    InputQueuedEvent("submission", "next", "enqueue", "cli", explicit, True).render(
+    InputQueuedEvent("submission", UserMessage("next"), "enqueue", "cli", explicit, True).render(
         display
     )
     assert operations == ([("log", "[steer] queued: next")] if explicit else [])
-    TurnStartedEvent("turn", ("next",), "submission").render(display)
+    TurnStartedEvent("turn", (UserMessage("next", turn_id="turn"),), "submission").render(display)
     assert operations[-3:] == [
         ("status", "understood"),
         ("log", "[steer] inserted: next"),
@@ -713,7 +713,7 @@ def test_render_flush_boundaries_and_auto_compact_status():
 
 def test_snapshot_render_restores_active_output_and_clears_old_queue_feedback():
     display, operations = make_display()
-    InputQueuedEvent("old", "old input", "enqueue", "cli", True, True).render(display)
+    InputQueuedEvent("old", UserMessage("old input"), "enqueue", "cli", True, True).render(display)
     event = SessionStateEvent(
         "attach",
         {
@@ -724,7 +724,7 @@ def test_snapshot_render_restores_active_output_and_clears_old_queue_feedback():
             "active_turn": {
                 "turn_id": "turn",
                 "submission_id": "current",
-                "user_texts": ["live"],
+                "messages": (UserMessage("live", turn_id="turn"),),
                 "assistant_text": "part",
             },
         },

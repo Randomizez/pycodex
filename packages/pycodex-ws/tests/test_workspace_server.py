@@ -27,6 +27,7 @@ from pycodex.events import (
     CommandCompletedEvent,
     CompactCompletedEvent,
     InputRequestedEvent,
+    MessagesAddedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     TokenCountEvent,
@@ -41,6 +42,7 @@ from pycodex.protocol import ToolResult
 from pycodex.model import ResponsesIncompleteError
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
+from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime
 from workspace_server import (
@@ -500,12 +502,13 @@ const fetch = async (path, options = {}) => {
 def test_typed_event_wire_preserves_existing_fields():
     call = ToolCall("call", "echo", {"text": "hello"})
     result = ToolResult("call", "echo", "hello")
-    assert _event_data(TurnStartedEvent("turn", ("first", "second"), "submission")) == {
+    messages = (UserMessage("first", turn_id="turn"), UserMessage("second", turn_id="turn"))
+    assert _event_data(TurnStartedEvent("turn", messages, "submission")) == {
         "kind": "turn_started",
         "turn_id": "turn",
         "payload": {
             "user_text": "first\nsecond",
-            "user_texts": ["first", "second"],
+            "messages": [asdict(message) for message in messages],
             "submission_id": "submission",
             "turn_id": "turn",
         },
@@ -584,8 +587,12 @@ def test_typed_event_wire_preserves_existing_fields():
 @pytest.mark.asyncio
 async def test_history_command_publishes_one_control_turn():
     view = WebSessionView()
-    history = tuple(
+    pairs = tuple(
         ("question {}".format(index), "answer {}".format(index)) for index in range(40)
+    )
+    history = conversation_history_to_turns(
+        item for prompt, response in pairs
+        for item in (UserMessage(prompt), AssistantMessage(response))
     )
     view.load_session_history("history", history)
     subscriber = view.subscribe()
@@ -602,7 +609,7 @@ async def test_history_command_publishes_one_control_turn():
         turns = view.snapshot()["turns"]
         assert len(turns) == 41
         assert [(turn["prompt"], turn["response"]) for turn in turns[:-1]] == list(
-            history
+            pairs
         )
         assert len(turns[-1]["response"].splitlines()) == 81
         assert turns[-1]["response"].endswith("[40]A> answer 39")
@@ -1885,7 +1892,7 @@ def test_final_or_failure_creates_unread_independently_of_running(failure):
     manager = WorkspaceSessionManager(lambda: session)
     view = session.view
     with TestClient(create_app(manager, None)) as browser:
-        view.handle_event(TurnStartedEvent("first", ("question",)))
+        view.handle_event(TurnStartedEvent("first", (UserMessage("question", turn_id="first"),)))
         view.handle_event(AssistantDeltaEvent("commentary", "first"))
         assert not manager.list_sessions()[0]["unread"]
         view.handle_event(TurnCompletedEvent("first", 1, "final", 1))
@@ -1895,7 +1902,7 @@ def test_final_or_failure_creates_unread_independently_of_running(failure):
         browser.post("/api/sessions/" + session_id + "/read", json={"final_id": "first"})
         assert manager.list_sessions()[0]["running"]
         for event in (
-            TurnStartedEvent("next", ("next question",)),
+            TurnStartedEvent("next", (UserMessage("next question", turn_id="next"),)),
             AssistantDeltaEvent("thinking", "next"),
             ToolStartedEvent("next", ToolCall("call", "echo", {})),
             ToolCompletedEvent(
@@ -1908,7 +1915,7 @@ def test_final_or_failure_creates_unread_independently_of_running(failure):
             view.handle_event(event)
             assert not manager.list_sessions()[0]["unread"]
             assert manager.list_sessions()[0]["last_final_id"] == "first"
-        view.handle_event(TurnStartedEvent("last", ("last question",)))
+        view.handle_event(TurnStartedEvent("last", (UserMessage("last question", turn_id="last"),)))
         view.handle_event(
             TurnFailedEvent("last", 1, "failed", "RuntimeError", 0)
             if failure
@@ -1933,16 +1940,23 @@ async def test_web_view_projects_context_tool_and_stream_events():
     )
     view.handle_event(SessionStateEvent("attach", runtime.snapshot()))
     view.handle_event(TokenCountEvent({"total_tokens": 56000}, "turn"))
-    view.handle_event(TurnStartedEvent("turn", ("hello",)))
+    view.handle_event(TurnStartedEvent("turn", (UserMessage("hello", turn_id="turn"),)))
     view.handle_event(AssistantDeltaEvent("part", "turn"))
     assert view.snapshot()["context_remaining_percent"] == 30
     assert view.snapshot()["turns"][-1]["thinking"] == "part"
+    view.handle_event(MessagesAddedEvent("turn", (
+        AssistantMessage("partial", turn_id="turn", phase="commentary"),
+    )))
+    assert view.snapshot()["turns"][-1]["response_phase"] == "commentary"
+    assert view.snapshot()["turns"][-1]["thinking"] == ""
     view.handle_event(TurnInterruptedEvent("turn", 1, "partial", 0))
     assert view.snapshot()["turns"][-1]["response"] == "partial"
     assert not view.snapshot()["turns"][-1]["error"]
     view.handle_event(TurnCompletedEvent("turn", 1, None, 1))
     assert view.snapshot()["spinner"] == "idle: sleeping"
-    view.load_session_history("restored", (("old", "answer"),))
+    view.load_session_history("restored", conversation_history_to_turns((
+        UserMessage("old"), AssistantMessage("answer"),
+    )))
     assert len(view.snapshot()["turns"]) == 1
     subscriber = view.subscribe()
     hello = await subscriber.get()
@@ -2007,7 +2021,9 @@ def test_web_context_usage_clears_after_compaction(completed):
     )
     view = WebSessionView()
     view.handle_event(SessionStateEvent("attach", runtime.snapshot()))
-    view.load_session_history("old", (("question", "answer"),))
+    view.load_session_history("old", conversation_history_to_turns((
+        UserMessage("question"), AssistantMessage("answer"),
+    )))
     view.handle_event(TokenCountEvent({"total_tokens": 80000}, "turn"))
     view.handle_event(completed)
     assert view.snapshot()["turns"][0]["response"] == "answer"
@@ -2044,8 +2060,8 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
         assert [turn["prompt"] for turn in session.snapshot()["turns"]] == ["first"]
         assert session.summary()["turn_count"] == 1
         assert session.snapshot()["queued_inputs"] == [
-            {"queue": "enqueue", "prompt": "last"},
             {"queue": "steer", "prompt": "steer one\nsteer two"},
+            {"queue": "enqueue", "prompt": "last"},
         ]
 
         release[0].set()
@@ -2053,8 +2069,8 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
         with pytest.raises(SubmissionInterrupted):
             await first.future
         turns = session.snapshot()["turns"]
-        assert [turn["prompt"] for turn in turns] == ["first", "steer one\nsteer two"]
-        assert turns[-1]["turn_id"] == turns[0]["turn_id"]
+        assert [turn["prompt"] for turn in turns] == ["first\nsteer one\nsteer two"]
+        assert [message["name"] for message in turns[0]["messages"]] == ["owner", "reviewer", "observer"]
         assert turns[-1]["submission_id"] == steered.submission_id
         assert session.snapshot()["queued_inputs"] == [
             {"queue": "enqueue", "prompt": "last"}
@@ -2064,8 +2080,7 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
         await asyncio.wait_for(started[2].wait(), 1)
         turns = session.snapshot()["turns"]
         assert [turn["prompt"] for turn in turns] == [
-            "first",
-            "steer one\nsteer two",
+            "first\nsteer one\nsteer two",
             "last",
         ]
         assert turns[-1]["queue"] == "enqueue"
@@ -2081,6 +2096,112 @@ async def test_workspace_displays_steer_and_enqueue_in_execution_order():
     finally:
         for event in release:
             event.set()
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_same_text_preserves_each_author_and_message_across_queue_and_restore():
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 1:
+            entered.set()
+            await release.wait()
+        return ModelResponse([AssistantMessage("answer " + str(count))])
+
+    session = await make_session(ScriptedModelClient(response_factory=respond)).start()
+    runtime = session.runtime
+    events = []
+    runtime.event_handler = events.append
+    late = WebSessionView()
+    subscription = None
+    try:
+        first = await runtime.submit_input("same", name="Alice")
+        await entered.wait()
+        queued = await runtime.submit_input("/queue same", name="Bob")
+        steered = await runtime.submit_input("same", name="Carol")
+        admitted = [event.message for event in events if event.kind == "input_queued"]
+        assert len({message.message_id for message in admitted}) == 3
+        subscription = runtime.attach(late.handle_event)
+        assert late.snapshot()["turns"][0]["messages"] == session.snapshot()["turns"][0]["messages"]
+        assert late.snapshot()["queued_inputs"] == session.snapshot()["queued_inputs"]
+        release.set()
+        with pytest.raises(SubmissionInterrupted):
+            await first.future
+        await asyncio.gather(queued.future, steered.future)
+        messages = [message for turn in session.snapshot()["turns"] for message in turn["messages"]]
+        assert [message["name"] for message in messages] == ["Alice", "Carol", "Bob"]
+        assert [message["text"] for message in messages] == ["same"] * 3
+        originals = {message.name: message for message in admitted}
+        for message in messages:
+            original = originals[message["name"]]
+            assert message["message_id"] == original.message_id
+            assert message["created_at"] == original.created_at
+        for key in ("turn_id", "messages", "response", "response_at", "status"):
+            assert [turn[key] for turn in late.snapshot()["turns"]] == [
+                turn[key] for turn in session.snapshot()["turns"]
+            ]
+        restored = WebSessionView()
+        restored.handle_event(SessionStateEvent("attach", runtime.snapshot()))
+        assert [turn["messages"] for turn in restored.snapshot()["turns"]] == [
+            turn["messages"] for turn in session.snapshot()["turns"]
+        ]
+        assert [turn["response_at"] for turn in restored.snapshot()["turns"]] == [
+            turn["response_at"] for turn in session.snapshot()["turns"]
+        ]
+    finally:
+        release.set()
+        if subscription is not None:
+            runtime.detach(subscription)
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("steered", [False, True])
+async def test_pre_turn_compaction_keeps_live_and_restored_message_order(tmp_path, steered):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if steered and count == 1:
+            entered.set()
+            await release.wait()
+            runtime.agent._last_total_usage_tokens = 100
+            return ModelResponse([AssistantMessage("interrupted answer")])
+        if count == (2 if steered else 1):
+            return ModelResponse([AssistantMessage("summary")])
+        return ModelResponse([AssistantMessage("final answer")])
+
+    agent = make_agent(
+        ScriptedModelClient(response_factory=respond), ToolRegistry(),
+        ContextConfig(model_auto_compact_token_limit=50),
+        initial_history=(UserMessage("old", turn_id="old"), AssistantMessage("old answer", turn_id="old")),
+        session_file_path=tmp_path / "compaction.jsonl",
+    )
+    runtime = make_runtime(agent)
+    session = await WorkspaceInteractiveSession(runtime).start()
+    if not steered:
+        agent._last_total_usage_tokens = 100
+    try:
+        first = await runtime.submit_input("start", name="Alice")
+        if steered:
+            await entered.wait()
+            next_input = await runtime.submit_input("steer", name="Bob")
+            release.set()
+            with pytest.raises(SubmissionInterrupted):
+                await first.future
+            await next_input.future
+        else:
+            await first.future
+        restored = WebSessionView()
+        restored.handle_event(SessionStateEvent("attach", runtime.snapshot()))
+        for key in ("kind", "messages", "response", "prompt_at", "response_at"):
+            assert [turn[key] for turn in session.snapshot()["turns"]] == [
+                turn[key] for turn in restored.snapshot()["turns"]
+            ]
+    finally:
+        release.set()
         await session.close()
 
 
@@ -2250,21 +2371,25 @@ async def test_threaded_close_stops_active_turn_when_caller_is_cancelled():
 
 def test_web_view_records_message_times():
     view = WebSessionView()
-    view.load_session_history("old", (
-        ("restored", "reply", "2026-01-02T03:04:05.000+08:00", "2026-01-02T03:05:00.000+08:00"),
-        ("legacy", "reply"),
-    ))
+    view.load_session_history("old", conversation_history_to_turns((
+        UserMessage("restored", created_at="2026-01-02T03:04:05.000+08:00"),
+        AssistantMessage("reply", created_at="2026-01-02T03:05:00.000+08:00"),
+        UserMessage("legacy", created_at=None), AssistantMessage("reply", created_at=None),
+    )))
     restored, legacy = view.snapshot()["turns"]
     assert restored["prompt_at"] == "2026-01-02T03:04:05.000+08:00"
     assert restored["response_at"] == "2026-01-02T03:05:00.000+08:00"
     assert legacy["prompt_at"] is None and legacy["response_at"] is None
-    view.handle_event(TurnStartedEvent("live", ("question",)))
+    view.handle_event(TurnStartedEvent("live", (UserMessage("question", turn_id="live"),)))
     started = view.snapshot()["turns"][-1]
     assert started["prompt_at"] and started["response_at"] is None
+    reply = AssistantMessage("answer", turn_id="live")
+    view.handle_event(MessagesAddedEvent("live", (reply,)))
     view.handle_event(TurnCompletedEvent("live", 1, "answer", 0))
     finished = view.snapshot()["turns"][-1]
     assert finished["prompt_at"] == started["prompt_at"]
     assert finished["prompt_at"] <= finished["response_at"]
-    view.handle_event(TurnStartedEvent("broken", ("again",)))
+    assert finished["response_at"] == reply.created_at
+    view.handle_event(TurnStartedEvent("broken", (UserMessage("again", turn_id="broken"),)))
     view.handle_event(TurnFailedEvent("broken", 1, "failed", "RuntimeError", 0))
-    assert view.snapshot()["turns"][-1]["response_at"]
+    assert view.snapshot()["turns"][-1]["response_at"] is None

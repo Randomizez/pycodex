@@ -222,7 +222,7 @@ def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypa
         assert reloaded.json()["snapshot"]["turns"][-1]["response"] == "answer-1"
 
 
-def test_reload_ignores_idle_sleeping_and_backfills_legacy_turn_fields(
+def test_reload_ignores_idle_sleeping_and_rebuilds_messages_by_identity(
     tmp_path, monkeypatch
 ):
     monkeypatch.setattr(
@@ -236,14 +236,15 @@ def test_reload_ignores_idle_sleeping_and_backfills_legacy_turn_fields(
         session_id = browser.get("/api/session").json()["session_id"]
         assert browser.post(
             "/api/session/message",
-            json={"session_id": session_id, "prompt": "legacy turn"},
+            json={"session_id": session_id, "prompt": "saved turn"},
         ).status_code == 200
         wait_snapshot(browser, lambda snap: len(snap["turns"]) == 1)
         session = manager.get(session_id)
         with session.view._lock:
             session.view._spinner_status = IDLE_SLEEPING_STATUS
-            del session.view._turns[0]["response"]
-            del session.view._turns[0]["kind"]
+            message = session.view._turns[0]["messages"][0]
+            session.view._turns[0]["response"] = "stale cached response"
+            session.view._turns[0]["messages"] = ()
         assert session.summary()["running"] is True
         assert session.summary()["spinner"] == IDLE_SLEEPING_STATUS
         check = browser.post("/api/reload", json={"session_id": session_id, "check_only": True})
@@ -253,6 +254,8 @@ def test_reload_ignores_idle_sleeping_and_backfills_legacy_turn_fields(
         restored_turn = reloaded.json()["snapshot"]["turns"][0]
         assert restored_turn["response"] == "done"
         assert restored_turn["kind"] == "assistant"
+        assert restored_turn["messages"][0]["message_id"] == message.message_id
+        assert restored_turn["messages"][0]["created_at"] == message.created_at
 
 
 def test_reload_rolls_back_when_post_reload_session_sync_fails(

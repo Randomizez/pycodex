@@ -97,10 +97,12 @@ State includes:
 
 - `model: {name, reasoning_effort}`, `title`, and `cwd`;
 - `busy`, `running`, `closed`, and `accepts_input`;
-- `active_turn`: IDs, user texts, accumulated assistant text and model errors,
+- `active_turn`: IDs, complete `messages` passed to the current execution,
+  accumulated assistant text and model errors,
   or `null`; completed history is excluded;
 - `queued_inputs`: `submission_id`, `turn_id`, `queue` (`steer` or `enqueue`)
-  and `prompts`, in execution order; merged steer inputs share one ID;
+  and visible input `messages`, in execution order; merged steer inputs share one
+  submission ID while each message retains its own ID, author and creation time;
 - `commands`: currently queued/running commands with their submission IDs;
 - `input_request`, `plan`, and `background_work_count`;
 - `context_window`, `max_context_window`, `auto_compact_token_limit`,
@@ -208,8 +210,30 @@ It is returned as `payload.name` on user messages in the history API; old record
 without the field use `"user"`. Recording-enabled sessions persist it in the
 rollout and restore it on resume, including retained messages in compaction
 checkpoints. Unrecorded sessions keep it in memory. Model request serialization omits `name`, including
-after resume and during compaction. The built-in frontend does not display it;
-its aggregated conversation snapshots remain unchanged.
+after resume and during compaction.
+
+The display snapshot at `GET api/session` exposes `turns[].messages` as an ordered
+array of `{message_id, text, name, created_at}`. Each input appears separately
+with its author and time, including inputs with identical text. `prompt` is
+derived by joining those texts, and `prompt_at` is the first input's creation
+time. `response_at` is the committed assistant message's creation time. These
+timestamps survive queueing, steer and resume; unknown legacy times stay `null`.
+`response_phase` carries the latest committed assistant message's phase. While
+the turn is running, non-final replies retain the temporary-reply animation,
+including after commentary is committed and tools are executing.
+Temporary replies omit the displayed timestamp and duration; their stored
+creation time remains available in the snapshot and rollout.
+Local message IDs are distinct from provider response-item `id` values and are
+not sent to the model. Legacy display messages receive stable IDs on read.
+Restoration reads backwards from the rollout tail for the latest 80 complete
+display rows, including compaction markers. This display limit does not truncate
+the active model context restored by resume.
+
+Wire events carry complete message data in `input_queued.payload.message`,
+`turn_started.payload.messages` and `messages_added.payload.messages`.
+`messages_added` means history was committed, including retained partial replies;
+terminal events update execution status. Attach/history snapshots restore the
+view directly without replaying turn or stream events.
 
 Regular workspace message receipts are also queryable. Their successful result
 contains `turn_id`, `output_text`, and `iterations`. Command events observed

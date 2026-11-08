@@ -60,9 +60,11 @@ def test_prune_oldest_tool_response_keeps_other_pairs_intact():
 def test_compact_summary_is_context_but_identical_user_input_is_visible():
     summary = compact([AssistantMessage("summary")])
     assert conversation_history_to_turns(summary) == ()
-    assert conversation_history_to_turns(
+    turns = conversation_history_to_turns(
         summary + (AssistantMessage("continued answer"), UserMessage(summary[0].text))
-    ) == (("", "continued answer"), (summary[0].text, ""))
+    )
+    assert [turn["messages"] for turn in turns] == [(), (UserMessage(summary[0].text),)]
+    assert [turn["response"] for turn in turns] == ["continued answer", ""]
 
 
 @pytest.mark.parametrize("has_summary_metadata", [False, True])
@@ -108,4 +110,5 @@ def test_resume_summary_checkpoint_keeps_follow_up_items(
         + (UserMessage(text), AssistantMessage("next answer"))
     )
     assert resumed["history"][0].serialize() == summary
-    assert resumed["turns"] == (("", "continued answer"), (text, "next answer"))
+    assert [turn["messages"] for turn in resumed["turns"]] == [(), (UserMessage(text),)]
+    assert [turn["response"] for turn in resumed["turns"]] == ["continued answer", "next answer"]

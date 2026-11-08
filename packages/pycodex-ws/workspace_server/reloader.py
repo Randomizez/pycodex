@@ -1,7 +1,6 @@
 """In-place backend code reload with preflight import verification."""
 
 import asyncio
-import copy
 import importlib
 import importlib.util
 import os
@@ -352,94 +351,48 @@ def reload_modules_in_place() -> "typing.Tuple[int, typing.Callable[[], None]]":
     return len(modules), rollback
 
 
-def _merge_reprojected_turn(
-    old_turn: "typing.Dict[str, object]",
-    staged_turn: "typing.Optional[typing.Dict[str, object]]",
-    template: "typing.Dict[str, object]",
-) -> "typing.Dict[str, object]":
-    merged = copy.deepcopy(template)
-    if staged_turn is not None:
-        merged.update(copy.deepcopy(staged_turn))
-    for key, val in old_turn.items():
-        if val is None or (val in ("", [], {}) and merged.get(key)):
-            continue
-        merged[key] = copy.deepcopy(val)
-    return merged
-
-
 def _reproject_view(runtime: object, view: object) -> "typing.Callable[[], None]":
-    from pycodex.events import SessionStateEvent
-    from .session_view import WebSessionView, _json_safe
+    from pycodex.utils.session_persist import load_display_history
+    from .session_view import _json_safe
 
-    fresh_view = WebSessionView()
-    added_attrs = []
-    for attr, val in vars(fresh_view).items():
-        if attr not in vars(view):
-            setattr(view, attr, copy.deepcopy(val))
-            added_attrs.append(attr)
-
+    state = runtime.snapshot()
+    history = (
+        load_display_history(state["recorded_rollout_path"])
+        if state["recorded_rollout_path"] is not None else state["history"]
+    )
     with view._lock:
         saved_state = (
-            copy.deepcopy(view._turns),
-            dict(view._turns_by_submission_id),
-            dict(view._turns_by_turn_id),
-            view._last_final_id,
-            copy.deepcopy(view._runtime_state),
+            view._turns, view._turns_by_submission_id, view._turns_by_turn_id,
+            view._runtime_state,
         )
 
     def restore_view() -> None:
         with view._lock:
             (
-                view._turns,
-                view._turns_by_submission_id,
-                view._turns_by_turn_id,
-                view._last_final_id,
+                view._turns, view._turns_by_submission_id, view._turns_by_turn_id,
                 view._runtime_state,
             ) = saved_state
-            for attr in added_attrs:
-                vars(view).pop(attr, None)
 
-    staged = WebSessionView()
-    staged._apply_runtime_event(SessionStateEvent("attach", runtime.snapshot()))
-    template = staged._ensure_turn("", "", "")
-    runtime_state = runtime.state_snapshot()
-
-    with view._lock:
-        old_turns = list(view._turns)
-        old_non_control = [
-            t for t in old_turns if t.get("kind", "assistant") != "control"
-        ]
-        staged_turns = list(staged._turns)
-        paired_staged: "typing.Dict[int, typing.Dict[str, object]]" = {}
-        if old_non_control and staged_turns:
-            count = min(len(old_non_control), len(staged_turns))
-            for old_t, staged_t in zip(
-                old_non_control[-count:], staged_turns[-count:]
-            ):
-                paired_staged[id(old_t)] = staged_t
-
-        new_turns = []
-        by_submission = {}
-        by_turn = {}
-        for old_t in old_turns:
-            merged = _merge_reprojected_turn(
-                old_t, paired_staged.get(id(old_t)), template
-            )
-            new_turns.append(merged)
-            sub_id = str(merged.get("submission_id") or "").strip()
-            t_id = str(merged.get("turn_id") or "").strip()
-            if sub_id:
-                by_submission[sub_id] = merged
-            if t_id:
-                by_turn[t_id] = merged
-
-        view._turns = new_turns
-        view._turns_by_submission_id = by_submission
-        view._turns_by_turn_id = by_turn
-        view._runtime_state = _json_safe(runtime_state)
-        view.snapshot()
-        view.summary()
-
+    try:
+        with view._lock:
+            view._turns = [dict(turn) for turn in view._turns]
+            view._turns_by_turn_id = {turn["turn_id"]: turn for turn in view._turns}
+            view._turns_by_submission_id = {
+                key: view._turns_by_turn_id[turn["turn_id"]] if turn["turn_id"] else dict(turn)
+                for key, turn in view._turns_by_submission_id.items()
+            }
+            for values in history:
+                turn = view._turns_by_turn_id.get(values["turn_id"])
+                if turn is None:
+                    turn = view._ensure_turn(values["turn_id"], values["turn_id"])
+                    turn.update(status="completed", queue="history", sender="resume")
+                turn.update(values)
+            view._runtime_state = _json_safe(runtime.state_snapshot())
+            view.snapshot()
+            view.summary()
+    except BaseException:
+        restore_view()
+        raise
     return restore_view
 
 

@@ -448,7 +448,7 @@ async def test_agent_injects_context_without_polluting_history(
     )
 
     agent = make_agent(model, ToolRegistry(), config)
-    result = await agent.run_turn(["hello"])
+    result = await agent.run_turn([UserMessage("hello")])
 
     prompt = model.prompts[0]
     assert prompt.base_instructions == "base rules"

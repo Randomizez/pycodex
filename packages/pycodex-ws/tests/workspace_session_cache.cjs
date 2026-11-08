@@ -14,14 +14,17 @@ const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
 </script></body>`).replace("    startContentViews();", `
     window.fixture = {
       switchSession, createSession, closeSession, pollSession, restoreSessionScroll,
-      renderSnapshot, updateSessions, sessionState, composer, renderMermaidInto,
+      renderSnapshot, updateSessions, sessionState, composer, renderMermaidInto, setSessionsOpen,
       active: () => activeSessionId,
       stop: () => {clearInterval(pollTimer); clearInterval(boardPollTimer); stopContentViews();},
     };
     startContentViews();`);
 
 function turn(id, text) {
-  return {turn_id: id, prompt: "Question " + id, response: text, model_errors: []};
+  const prompt = "Question " + id;
+  return {turn_id: id, prompt, response: text, model_errors: [], messages: [
+    {message_id: "input-" + id, name: "user", text: prompt, created_at: null},
+  ]};
 }
 
 (async () => {
@@ -190,8 +193,70 @@ function turn(id, text) {
     await page.evaluate("fixture.closeSession('a')");
     assert.equal(await page.evaluate("fixture.active()"), "c");
     assert.equal(await page.evaluate("fixture.sessionState.has('a')"), false);
+
+    await page.evaluate(() => {
+      window.messageSnapshot = {model: "test", queued_inputs: [], spinner: "", turns: [{
+        turn_id: "message-turn", submission_id: "first", prompt: "same\nsame",
+        messages: [
+          {message_id: "alice", name: "Alice", text: "same", created_at: "2026-01-01T09:00:00Z"},
+          {message_id: "bob", name: "Bob", text: "same", created_at: "2026-01-01T09:01:00Z"},
+        ], response: "Both inputs retained.", model_errors: [],
+      }]};
+      fixture.renderSnapshot(messageSnapshot);
+      window.firstInput = document.querySelector(".entry.user");
+    });
+    assert.deepEqual(await page.locator(".message-author").allTextContents(), ["Alice", "Bob"]);
+    assert.deepEqual(await page.locator(".entry.user > .text").allTextContents(), ["same", "same"]);
+    assert.deepEqual(await page.locator(".message-header time").evaluateAll(nodes =>
+      nodes.map(node => node.dateTime)), ["2026-01-01T09:00:00Z", "2026-01-01T09:01:00Z"]);
+    await page.evaluate(() => {
+      const turn = messageSnapshot.turns[0];
+      turn.submission_id = "steer";
+      turn.messages[0].name = "Alice updated";
+      turn.messages[0].created_at = "2026-01-01T10:00:00Z";
+      turn.messages.push({message_id: "legacy", text: "Unknown time stays empty.",
+        name: "<img src=x onerror=alert(1)>", created_at: null});
+      fixture.renderSnapshot(messageSnapshot);
+    });
+    assert.equal(await page.evaluate(() => firstInput === document.querySelector(".entry.user")), true);
+    assert.equal(await page.locator(".message-author").first().textContent(), "Alice updated");
+    assert.equal(await page.locator(".message-header time").first().getAttribute("datetime"), "2026-01-01T10:00:00Z");
+    assert.equal(await page.locator(".entry.user").last().locator("time, img").count(), 0);
+    await page.setViewportSize({width: 390, height: 844});
+    await page.evaluate(() => {
+      document.querySelector('[data-pane="chat"]').click();
+      fixture.setSessionsOpen(false);
+    });
+    await page.locator("#sessionSidebar").waitFor({state: "hidden"});
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(await page.locator(".entry.user").evaluateAll(entries => entries.some(entry =>
+      entry.scrollWidth > entry.clientWidth)), false);
+    await page.evaluate(() => {
+      window.temporaryReply = document.querySelector(".entry.response");
+      Object.assign(messageSnapshot.turns[0], {
+        prompt_at: "2026-01-01T09:00:00Z", response_at: "2026-01-01T09:02:00Z",
+      });
+    });
+    for (const [phase, status, animation] of [
+      ["commentary", "tool", "activity-breathe"],
+      ["final", "tool", "none"],
+      ["commentary", "completed", "none"],
+      [null, "running", "activity-breathe"],
+      [null, "completed", "none"],
+    ]) {
+      await page.evaluate(([phase, status]) => {
+        Object.assign(messageSnapshot.turns[0], {response_phase: phase, status});
+        fixture.renderSnapshot(messageSnapshot);
+      }, [phase, status]);
+      assert.equal(await page.locator(".entry.response").evaluate(entry =>
+        getComputedStyle(entry).animationName), animation);
+      assert.equal(await page.locator(".entry.response .message-time").count(),
+        animation === "activity-breathe" ? 0 : 1);
+      assert.equal(await page.evaluate(() =>
+        document.querySelector(".entry.response") === temporaryReply), true);
+    }
     assert.deepEqual(errors, []);
-    console.log("Session cache: startup, errors, immediate reuse, updates, scroll, drafts, creation, close and detached Mermaid passed.");
+    console.log("Session cache, message metadata, temporary reply animation and mobile layout passed.");
   } finally {
     await browser.close();
   }

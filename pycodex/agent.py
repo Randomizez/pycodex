@@ -13,6 +13,7 @@ from .events import (
     CompactFailedEvent,
     CompactStartedEvent,
     Event,
+    MessagesAddedEvent,
     ModelCalledEvent,
     ModelCompletedEvent,
     ModelEvent,
@@ -118,6 +119,7 @@ class Agent:
         self._configure_recording(session_id, session_file_path)
         self._last_total_usage_tokens: "typing.Union[int, None]" = None
         self._idle: "typing.Union[asyncio.Event, None]" = None
+        self._active_turn_id: "typing.Union[str, None]" = None
         self.is_shutdown = False
         self.accepts_input = True
         self._stop_requested = False
@@ -209,7 +211,7 @@ class Agent:
     def ask(self, text: "str") -> "TurnResult":
         from .utils.async_bridge import run_async
 
-        return run_async(self.run_turn([text]))
+        return run_async(self.run_turn([UserMessage(text)]))
 
     def _configure_recording(
         self,
@@ -260,8 +262,8 @@ class Agent:
             self._idle = None
 
     async def run_turn(
-        self, texts: "typing.List[str]", turn_id: "typing.Union[str, None]" = None,
-        name: "str" = "user",
+        self, messages: "typing.Iterable[typing.Union[UserMessage, AgentMessage, ToolResult]]",
+        turn_id: "typing.Union[str, None]" = None,
     ) -> "TurnResult":
         if self.is_shutdown:
             raise RuntimeError("agent is shutdown")
@@ -271,18 +273,18 @@ class Agent:
         self._follow_up_requested = False
         self._idle = asyncio.Event()
         turn = _TurnState(turn_id or uuid7_string())
+        self._active_turn_id = turn.turn_id
         try:
-            self._emit(TurnStartedEvent(turn.turn_id, tuple(texts)))
+            messages = self._bind_turn(messages)
+            self._emit(TurnStartedEvent(turn.turn_id, messages))
             while True:
                 phase = "pre_turn" if turn.iteration == 0 else "mid_turn"
                 await self._maybe_auto_compact(turn.turn_id, phase)
+                if turn.iteration == 0:
+                    self._append_history(messages)
                 self._follow_up_requested = False
                 # Input delivery commits history; its failures must fail the turn.
                 self.event_handler(TurnInputReadyEvent(turn.turn_id))
-                if turn.iteration == 0:
-                    self.receive_messages(
-                        tuple(UserMessage(text=text, name=name) for text in texts)
-                    )
                 response = await self._sample(turn)
                 self._emit(
                     ModelCompletedEvent(
@@ -347,6 +349,7 @@ class Agent:
         finally:
             self._stop_requested = False
             self._follow_up_requested = False
+            self._active_turn_id = None
             self._idle.set()
             self._idle = None
 
@@ -479,14 +482,30 @@ class Agent:
             )
             return None
 
+    def _bind_turn(
+        self, items: "typing.Iterable[ConversationItem]"
+    ) -> "typing.Tuple[ConversationItem, ...]":
+        turn_id = self._active_turn_id
+        return tuple(
+            item if isinstance(item, (ToolCall, ToolResult, ReasoningItem))
+            else replace(item, turn_id=turn_id) if turn_id is not None
+            else item
+            for item in items
+        )
+
     def _append_history(
         self,
         items: "typing.Iterable[ConversationItem]",
     ) -> "None":
-        items = tuple(items)
+        items = self._bind_turn(items)
         if self._rollout_recorder is not None:
             self._rollout_recorder.append_history_items(items, self._history)
         self._history.extend(items)
+        messages = tuple(
+            item for item in items if isinstance(item, (UserMessage, AgentMessage, AssistantMessage))
+        )
+        if messages:
+            self._emit(MessagesAddedEvent(messages[0].turn_id or "", messages))
 
     def _handle_model_stream_event(self, turn_id: "str", event: "ModelEvent") -> "None":
         if isinstance(event, TokenCountEvent):

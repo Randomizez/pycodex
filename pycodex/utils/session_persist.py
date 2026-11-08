@@ -24,8 +24,7 @@ from ..protocol import (
 from .compactor import SUMMARY_PREFIX
 from .event_helpers import shorten_title
 from .history import (
-    conversation_history_to_turns, iter_display_turns, iter_timed_display_turns,
-    restore_visibility, serialize_history_item,
+    conversation_history_to_turns, restore_message_metadata, serialize_history_item,
 )
 from .get_env import get_package_version
 
@@ -163,6 +162,9 @@ class SessionRolloutRecorder:
                     "message": item.text,
                     "name": item.name,
                     "visible": item.visible,
+                    "message_id": item.message_id,
+                    "created_at": item.created_at,
+                    "turn_id": item.turn_id,
                     "images": [],
                     "local_images": [],
                     "text_elements": [],
@@ -310,7 +312,7 @@ def load_resumed_session_path(
             replacement_history = payload.get("replacement_history")
             if isinstance(replacement_history, list):
                 history = _deserialize_compacted_history(
-                    replacement_history, payload.get("message")
+                    replacement_history, payload.get("message"), entry["_record_offset"],
                 )
                 saw_input = any(
                     isinstance(item, (UserMessage, AgentMessage, ContextMessage))
@@ -325,7 +327,7 @@ def load_resumed_session_path(
 
         if item_type == "event_msg" and isinstance(payload, dict):
             if payload.get("type") == "user_message":
-                history.append(_user_message_from_event(payload))
+                history.append(_user_message_from_event(payload, entry))
                 saw_input = True
             continue
 
@@ -341,6 +343,7 @@ def load_resumed_session_path(
             payload,
             tool_names_by_call_id,
             include_user_messages=False,
+            record_id=entry["_record_offset"], timestamp=entry.get("timestamp"),
         )
 
     if not history:
@@ -351,7 +354,8 @@ def load_resumed_session_path(
         raise ValueError(f"No resumable history found in {rollout_path}")
 
     turns = conversation_history_to_turns(history)
-    first_prompt = next((prompt for prompt, _ in turns if prompt), "")
+    first_prompt = next(("\n".join(message.text for message in turn["messages"])
+                         for turn in turns if turn["messages"]), "")
     title = thread_name or shorten_title(first_prompt) or thread_id
     return {
         "session_id": session_id,
@@ -398,53 +402,75 @@ def read_rollout_history_page(rollout_path, before=None, limit=100):
 
 def load_display_history(
     rollout_path: "typing.Union[str, Path]",
-    limit: "int" = 80,
-    with_times: "bool" = False,
-) -> "typing.Tuple[typing.Union[typing.Tuple[str, ...], None], ...]":
-    """Read visible turns across checkpoints; None marks a compaction.
+    limit: "typing.Union[int, None]" = 80,
+) -> "tuple":
+    """Read recent complete display rows from the end of the rollout."""
+    if limit is None:
+        return conversation_history_to_turns(_iter_display_items(rollout_path))
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError("limit must be a non-negative integer or None")
+    if limit == 0:
+        return ()
 
-    With ``with_times`` each turn also carries the rollout timestamps of its
-    prompt and response: (prompt, response, prompt_at, response_at).
-    """
-    items = _iter_display_items(rollout_path)
-    if with_times:
-        turns = iter_timed_display_turns(items)
-    else:
-        turns = iter_display_turns(item for item, _timestamp in items)
-    return tuple(deque(turns, maxlen=limit))
+    items = []
+    oldest_turn_id = None
+    remaining = limit + 1
+    with closing(_iter_display_items(rollout_path, reverse=True)) as history:
+        for item in history:
+            items.append(item)
+            if isinstance(item, dict):
+                remaining -= 1
+                if oldest_turn_id is not None:
+                    continue
+            elif not item.visible:
+                continue
+            else:
+                if item.turn_id != oldest_turn_id or item.turn_id is None:
+                    remaining -= 1
+                oldest_turn_id = item.turn_id
+            if remaining <= 0:
+                turns = conversation_history_to_turns(reversed(items))
+                if len(turns) > limit:
+                    return turns[-limit:]
+                remaining = limit - len(turns) + 1
+    return conversation_history_to_turns(reversed(items))[-limit:]
 
 
-def _user_message_from_event(payload):
-    return restore_visibility(UserMessage(
+def _user_message_from_event(payload, entry):
+    return restore_message_metadata(UserMessage(
         text=str(payload.get("message", "")), name=payload.get("name", "user"),
-    ), payload)
+    ), payload, entry["_record_offset"], entry.get("timestamp"))
 
 
-def _iter_display_items(rollout_path):
+def _iter_display_items(rollout_path, reverse=False):
     path = Path(rollout_path).expanduser().resolve()
-    for entry in _iter_rollout_entries(path):
-        item_type = entry.get("type")
-        payload = entry.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        timestamp = entry.get("timestamp")
-        if not isinstance(timestamp, str):
-            timestamp = None
-        if item_type == "compacted":
-            yield None, timestamp
-        elif item_type == "event_msg" and payload.get("type") == "user_message":
-            yield _user_message_from_event(payload), timestamp
-        elif (
-            item_type == "response_item"
-            and (
-                payload.get("type") == "agent_message"
-                or (payload.get("type") == "message" and payload.get("role") == "assistant")
-            )
-        ):
-            items = []
-            _append_deserialized_response_item(items, payload, {}, False)
-            for item in items:
-                yield item, timestamp
+    reader = _iter_rollout_entries_reverse if reverse else _iter_rollout_entries
+    with closing(reader(path)) as entries:
+        for entry in entries:
+            item_type = entry.get("type")
+            payload = entry.get("payload")
+            if not isinstance(payload, dict):
+                continue
+            timestamp = entry.get("timestamp")
+            if not isinstance(timestamp, str):
+                timestamp = None
+            if item_type == "compacted":
+                yield {"type": "compacted", "id": "compaction-{0}".format(entry["_record_offset"])}
+            elif item_type == "event_msg" and payload.get("type") == "user_message":
+                yield _user_message_from_event(payload, entry)
+            elif (
+                item_type == "response_item"
+                and (
+                    payload.get("type") == "agent_message"
+                    or (payload.get("type") == "message" and payload.get("role") == "assistant")
+                )
+            ):
+                items = []
+                _append_deserialized_response_item(
+                    items, payload, {}, False, entry["_record_offset"], timestamp,
+                )
+                for item in items:
+                    yield item
 
 
 def _drop_unmatched_tool_calls(
@@ -548,6 +574,7 @@ def _iter_rollout_entries(
 ) -> "typing.Iterable[typing.Dict[str, object]]":
     decoder = json.JSONDecoder()
     buffer = ""
+    byte_offset = start_offset
     start = 0
     parsed_entries = 0
 
@@ -561,14 +588,16 @@ def _iter_rollout_entries(
                 buffer += chunk
 
             while True:
+                whitespace_start = start
                 while start < len(buffer) and buffer[start].isspace():
                     start += 1
+                byte_offset += len(buffer[whitespace_start:start].encode("utf-8"))
                 if start >= len(buffer):
                     buffer = ""
                     start = 0
                     break
                 try:
-                    entry, start = decoder.raw_decode(buffer, start)
+                    entry, end = decoder.raw_decode(buffer, start)
                 except json.JSONDecodeError as exc:
                     if eof:
                         if parsed_entries > 0:
@@ -580,8 +609,12 @@ def _iter_rollout_entries(
                         buffer = buffer[start:]
                         start = 0
                     break
+                record_offset = byte_offset
+                byte_offset += len(buffer[start:end].encode("utf-8"))
+                start = end
                 if isinstance(entry, dict):
                     parsed_entries += 1
+                    entry["_record_offset"] = record_offset
                     yield entry
                 if start > ROLLOUT_READ_CHUNK_SIZE:
                     buffer = buffer[start:]
@@ -592,6 +625,38 @@ def _iter_rollout_entries(
 
     if parsed_entries == 0:
         raise ValueError(f"no rollout entries found in {rollout_path}")
+
+
+def _iter_rollout_entries_reverse(rollout_path):
+    """Walk JSONL records backwards, including pretty-printed legacy records."""
+    parsed_entries = 0
+    with rollout_path.open("rb") as handle:
+        if not rollout_path.stat().st_size:
+            raise ValueError("no rollout entries found in {0}".format(rollout_path))
+        with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            end = len(mapped)
+            at_tail = True
+            while end:
+                start = mapped.rfind(b"\n{", 0, end)
+                start = start + 1 if start >= 0 else 0
+                text = mapped[start:end].decode("utf-8", errors="replace")
+                try:
+                    entry = json.loads(text)
+                except json.JSONDecodeError as exc:
+                    if not at_tail:
+                        raise ValueError(
+                            "failed to parse rollout file {0}: {1}".format(rollout_path, exc)
+                        ) from exc
+                else:
+                    if isinstance(entry, dict):
+                        leading = text[:len(text) - len(text.lstrip())]
+                        entry["_record_offset"] = start + len(leading.encode("utf-8"))
+                        parsed_entries += 1
+                        yield entry
+                end = start
+                at_tail = False
+    if not parsed_entries:
+        raise ValueError("no rollout entries found in {0}".format(rollout_path))
 
 
 def _extract_response_message_text(payload: "typing.Dict[str, object]") -> "str":
@@ -618,10 +683,11 @@ def _compacted_payload(
 def _deserialize_compacted_history(
     replacement_history: "typing.Iterable[object]",
     summary_message: "typing.Union[str, None]" = None,
+    record_id: "object" = "checkpoint",
 ) -> "typing.List[ConversationItem]":
     history: "typing.List[ConversationItem]" = []
     tool_names_by_call_id: "typing.Dict[str, str]" = {}
-    for payload in replacement_history:
+    for index, payload in enumerate(replacement_history):
         if not isinstance(payload, dict):
             continue
         _append_deserialized_response_item(
@@ -629,6 +695,7 @@ def _deserialize_compacted_history(
             payload,
             tool_names_by_call_id,
             include_user_messages=True,
+            record_id="{0}:{1}".format(record_id, index),
         )
     for index in range(len(history) - 1, -1, -1):
         item = history[index]
@@ -646,26 +713,28 @@ def _append_deserialized_response_item(
     payload: "typing.Dict[str, object]",
     tool_names_by_call_id: "typing.Dict[str, str]",
     include_user_messages: "bool",
+    record_id: "object" = "",
+    timestamp: "typing.Union[str, None]" = None,
 ) -> "None":
     response_item_type = str(payload.get("type", "")).strip()
     if response_item_type == "agent_message":
-        history.append(restore_visibility(
-            AgentMessage.from_response_item(payload), payload,
+        history.append(restore_message_metadata(
+            AgentMessage.from_response_item(payload), payload, record_id, timestamp,
         ))
         return
     if response_item_type == "message":
         role = str(payload.get("role", "")).strip()
         if role == "assistant":
-            history.append(restore_visibility(
-                AssistantMessage.from_response_item(payload), payload,
+            history.append(restore_message_metadata(
+                AssistantMessage.from_response_item(payload), payload, record_id, timestamp,
             ))
             return
         if include_user_messages and role == "user":
             history.append(
-                restore_visibility(UserMessage(
+                restore_message_metadata(UserMessage(
                     text=_extract_response_message_text(payload), id=payload.get("id"),
                     name=payload.get("name", "user"),
-                ), payload)
+                ), payload, record_id, timestamp)
             )
         return
 

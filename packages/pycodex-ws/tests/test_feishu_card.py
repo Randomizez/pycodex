@@ -11,6 +11,7 @@ from pycodex.events import (
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
+    MessagesAddedEvent,
     ModelCalledEvent,
     SessionClosedEvent,
     SessionStateEvent,
@@ -23,7 +24,8 @@ from pycodex.events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
-from pycodex.protocol import ToolCall, ToolResult
+from pycodex.protocol import AssistantMessage, ToolCall, ToolResult, UserMessage
+from pycodex.utils.history import conversation_history_to_turns
 from pycodex_ws.feishu_card import CARD_OUTPUT_LIMIT, PycodexCard
 
 
@@ -116,7 +118,7 @@ def test_feishu_card_uses_session_title_and_preserves_input_status() -> None:
 
     card.display.title = "Project notes"
     card.model_name = "gpt-6"
-    card.apply_event(TurnStartedEvent("turn", ("hello",)))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("hello", turn_id="turn"),)))
     rendered = card.render()
 
     assert rendered["header"]["title"]["content"] == "Project notes"
@@ -213,20 +215,29 @@ def test_feishu_card_update_falls_back_to_escaped_code_mode() -> None:
 
 def test_feishu_card_preserves_last_reply_until_next_turn_completes() -> None:
     card = PycodexCard()
+    card.apply_event(MessagesAddedEvent("previous", (
+        AssistantMessage("previous answer", turn_id="previous"),
+    )))
     card.apply_event(TurnCompletedEvent("previous", 1, "previous answer", 0))
 
     card.apply_event(
-        InputQueuedEvent("next", "next prompt", "steer", "cli", False, False)
+        InputQueuedEvent("next", UserMessage("next prompt"), "steer", "cli", False, False)
     )
     assert card.output_text == "(*last turn)\nprevious answer"
-    card.apply_event(TurnStartedEvent("turn", ("next prompt",), "next"))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("next prompt", turn_id="turn"),), "next"))
     assert card.output_text == "(*last turn)\nprevious answer"
 
+    card.apply_event(MessagesAddedEvent("turn", (
+        AssistantMessage("new answer", turn_id="turn"),
+    )))
     card.apply_event(TurnCompletedEvent("turn", 1, "new answer", 0))
     assert card.output_text == "new answer"
     assert card.status is None
     assert not _has_element(card.render(), "activity_md")
 
+    card.apply_event(MessagesAddedEvent("long", (
+        AssistantMessage("x" * CARD_OUTPUT_LIMIT + "latest", turn_id="long"),
+    )))
     card.apply_event(
         TurnCompletedEvent("long", 1, "x" * CARD_OUTPUT_LIMIT + "latest", 0)
     )
@@ -240,7 +251,7 @@ def test_feishu_card_preserves_last_reply_until_next_turn_completes() -> None:
 def test_feishu_card_shows_current_delta_segment_above_input() -> None:
     card = PycodexCard()
     card.output_text = "previous answer"
-    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("next prompt", turn_id="turn"),)))
 
     card.apply_event(AssistantDeltaEvent("first ", "turn"))
     card.apply_event(AssistantDeltaEvent("segment", "turn"))
@@ -268,6 +279,9 @@ def test_feishu_card_shows_current_delta_segment_above_input() -> None:
     card.apply_event(AssistantDeltaEvent("answer", "turn"))
     assert _working_markdown_content(card.render()) == "final answer"
 
+    card.apply_event(MessagesAddedEvent("turn", (
+        AssistantMessage("final answer", turn_id="turn"),
+    )))
     card.apply_event(TurnCompletedEvent("turn", 1, "final answer", 0))
     rendered = card.render()
     assert _answer_markdown_content(rendered) == "final answer"
@@ -277,8 +291,11 @@ def test_feishu_card_shows_current_delta_segment_above_input() -> None:
 
 def test_feishu_card_discards_retries_and_keeps_fatal_output_separate() -> None:
     card = PycodexCard()
+    card.apply_event(MessagesAddedEvent("previous", (
+        AssistantMessage("previous answer", turn_id="previous"),
+    )))
     card.apply_event(TurnCompletedEvent("previous", 1, "previous answer", 0))
-    card.apply_event(TurnStartedEvent("turn", ("next prompt",)))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("next prompt", turn_id="turn"),)))
     card.apply_event(AssistantDeltaEvent("discarded"))
     assert _working_markdown_content(card.render()) == "discarded"
 
@@ -329,6 +346,7 @@ def test_feishu_card_uses_shared_input_prompts(request_kind, other, prompt) -> N
 def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> None:
     card = PycodexCard()
     request = InputRequestedEvent("request", "questions", True)
+    message = UserMessage("live", turn_id="turn")
     state = {
         "model": "restored-model:high",
         "title": "Restored",
@@ -339,17 +357,19 @@ def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> 
         "context_window": None,
         "usage_tokens": None,
         "input_request": request,
-        "history": (("previous", "answer"), ("live", "partial")),
+        "history": conversation_history_to_turns((
+            UserMessage("previous"), AssistantMessage("answer"), message,
+        )),
         "active_turn": {
             "turn_id": "turn",
             "submission_id": "submission",
-            "user_texts": ["live"],
+            "messages": (message,),
             "assistant_text": "partial",
-            "completed_history": (("previous", "answer"),),
         },
     }
     card.apply_event(SessionStateEvent("attach", state))
-    assert card.turn_history == [("previous", "answer")]
+    assert card.turn_history == list(state["history"])
+    assert card.earlier_turns() == list(state["history"][:1])
     assert card.user_prompt == "live"
     card.show_history(0)
     assert card.output_text == "(*last turn)\nanswer"
@@ -358,6 +378,14 @@ def test_feishu_card_restores_snapshot_without_replaying_active_turn_twice() -> 
     assert card.prompt_text == "other> "
     assert card.display.stream_buffer == ""
     assert card.render()["header"]["title"]["content"] == "Restored"
+
+    committed = dict(state, input_request=None, active_turn=dict(state["active_turn"], assistant_text=""))
+    committed["history"] = conversation_history_to_turns((
+        AssistantMessage("saved commentary", turn_id="turn", phase="commentary"),
+    ), state["history"])
+    card.apply_event(SessionStateEvent("attach", committed))
+    assert _working_markdown_content(card.render()) == "saved commentary"
+    assert card.user_prompt == "live"
 
     card.apply_event(AssistantDeltaEvent("stale"))
     card.apply_event(
@@ -403,7 +431,10 @@ def test_feishu_card_disables_closed_input_and_removes_detached_input() -> None:
 def test_feishu_card_history_keeps_prompts_and_current_turn_independent():
     card = PycodexCard()
     for index in range(3):
-        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnStartedEvent(str(index), (UserMessage("prompt " + str(index), turn_id=str(index)),)))
+        card.apply_event(MessagesAddedEvent(str(index), (
+            AssistantMessage("answer " + str(index), turn_id=str(index)),
+        )))
         card.apply_event(TurnCompletedEvent(str(index), 1, "answer " + str(index), 0))
     panel = _element(card.render(), "history_panel")
     assert panel["tag"] == "collapsible_panel"
@@ -414,7 +445,7 @@ def test_feishu_card_history_keeps_prompts_and_current_turn_independent():
     assert _answer_markdown_content(card.render()) == "answer 2"
 
     card.show_history(0)
-    card.apply_event(TurnStartedEvent("active", ("current prompt",)))
+    card.apply_event(TurnStartedEvent("active", (UserMessage("current prompt", turn_id="active"),)))
     card.apply_event(AssistantDeltaEvent("live reply", "active"))
     panel = _element(card.render(), "history_panel")
     assert panel["expanded"]
@@ -432,25 +463,39 @@ def test_feishu_card_history_keeps_prompts_and_current_turn_independent():
         "action": "history",
         "history_index": 1,
     }
+    card.apply_event(MessagesAddedEvent("active", (
+        AssistantMessage("completed reply", turn_id="active"),
+    )))
     card.apply_event(TurnCompletedEvent("active", 1, "completed reply", 0))
     assert card.history_index == 0
-    assert card.turn_history[-1] == ("current prompt", "completed reply")
+    assert card.turn_history[-1]["messages"] == (UserMessage("current prompt"),)
+    assert card.turn_history[-1]["response"] == "completed reply"
     assert _answer_markdown_content(card.render()) == "completed reply"
 
 
 def test_feishu_card_history_retains_steer_prompt_batch():
     card = PycodexCard()
-    card.apply_event(TurnStartedEvent("turn", ("original",)))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("original", turn_id="turn"),)))
     card.apply_event(TurnInterruptedEvent("turn", 1, "partial", 0))
-    card.apply_event(TurnStartedEvent("turn", ("steer one", "steer two")))
+    card.apply_event(TurnStartedEvent("turn", (UserMessage("steer one", turn_id="turn"), UserMessage("steer two", turn_id="turn"))))
+    card.apply_event(MessagesAddedEvent("turn", (
+        AssistantMessage("answer", turn_id="turn"),
+    )))
     card.apply_event(TurnCompletedEvent("turn", 1, "answer", 0))
-    assert card.turn_history == [("original\nsteer one\nsteer two", "answer")]
+    assert len(card.turn_history) == 1
+    assert card.turn_history[0]["messages"] == (
+        UserMessage("original"), UserMessage("steer one"), UserMessage("steer two"),
+    )
+    assert card.turn_history[0]["response"] == "answer"
 
 
 def test_feishu_card_history_payload_is_bounded_without_discarding_turns():
     card = PycodexCard()
     for index in range(20):
-        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnStartedEvent(str(index), (UserMessage("prompt " + str(index), turn_id=str(index)),)))
+        card.apply_event(MessagesAddedEvent(str(index), (
+            AssistantMessage("x" * 20000, turn_id=str(index)),
+        )))
         card.apply_event(TurnCompletedEvent(str(index), 1, "x" * 20000, 0))
     assert len(card.turn_history) == 20
     card.show_history(0)
@@ -471,9 +516,12 @@ def test_feishu_card_history_payload_is_bounded_without_discarding_turns():
 @pytest.mark.parametrize("index", [-1, 1, "0", True, None])
 def test_feishu_card_rejects_invalid_history_selection(index):
     card = PycodexCard()
-    card.apply_event(TurnStartedEvent("first", ("prompt",)))
+    card.apply_event(TurnStartedEvent("first", (UserMessage("prompt", turn_id="first"),)))
+    card.apply_event(MessagesAddedEvent("first", (
+        AssistantMessage("answer", turn_id="first"),
+    )))
     card.apply_event(TurnCompletedEvent("first", 1, "answer", 0))
-    card.apply_event(TurnStartedEvent("next", ("next prompt",)))
+    card.apply_event(TurnStartedEvent("next", (UserMessage("next prompt", turn_id="next"),)))
     with pytest.raises(ValueError, match="no longer available"):
         card.show_history(index)
 

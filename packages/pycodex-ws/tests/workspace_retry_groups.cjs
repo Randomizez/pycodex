@@ -34,7 +34,9 @@ const style = source.match(/<style>([\s\S]*?)<\/style>/)[1];
       const retry = (n, limit = "∞") => "Reconnecting... " + n + "/" + limit +
         "\\nresponses request failed with status 502: <html>" +
         "<img src=x onerror='window.retryXss=true'></html>";
-      const turn = {turn_id:"turn-a", prompt:"hello", model_errors:[]};
+      const turn = {turn_id:"turn-a", prompt:"hello", model_errors:[], messages:[
+        {message_id:"input-a", name:"user", text:"hello", created_at:null},
+      ]};
       window.retryFixture = {
         render(count, limit = "∞") {
           turn.model_errors = Array.from({length:count}, (_, i) => retry(i + 1, limit));

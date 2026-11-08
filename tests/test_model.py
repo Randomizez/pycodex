@@ -1888,12 +1888,12 @@ async def test_responses_model_client_retries_compat_function_argument_errors(
         compat_server.start()
         try:
             if recover:
-                result = await agent.run_turn(["continue"])
+                result = await agent.run_turn([UserMessage("continue")])
                 assert result.output_text == "done"
                 assert result.iterations == 3
             else:
                 with pytest.raises(expected_error) as exc_info:
-                    await agent.run_turn(["continue"])
+                    await agent.run_turn([UserMessage("continue")])
                 if expected_error is ResponsesRetryableError:
                     assert "response.failed" in str(exc_info.value)
                     assert "server_error" in str(exc_info.value)

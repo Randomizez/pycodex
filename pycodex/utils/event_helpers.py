@@ -56,10 +56,13 @@ def format_command_result(result: "typing.Dict[str, object]") -> "str":
     if kind in {"history", "resumed"}:
         state = result["state"]
         lines = ["Resumed session: " + state["title"]] if kind == "resumed" else []
-        if not state["history"]:
+        turns = [turn for turn in state["history"] if turn["kind"] == "assistant"]
+        if not turns:
             return "\n".join(lines + ["No history yet."])
         lines.append("Session: " + (state["title"] or "untitled"))
-        for index, (prompt, response) in enumerate(state["history"], 1):
+        for index, turn in enumerate(turns, 1):
+            prompt = "\n".join(message.text for message in turn["messages"])
+            response = turn["response"]
             if prompt:
                 lines.append("[{0}]U> {1}".format(index, prompt))
             if response:
@@ -96,13 +99,6 @@ def percent_of_context_window_remaining(total_tokens, context_window_tokens):
     used = max(total_tokens - PROMPT_CONTEXT_BASELINE_TOKENS, 0)
     remaining = max(effective_window - used, 0)
     return int(round(max(0.0, min(100.0, (remaining / effective_window) * 100.0))))
-
-
-def completed_history(state):
-    active = state["active_turn"]
-    if active is not None:
-        return active["completed_history"]
-    return state["history"]
 
 
 def colorize_cli_message(text: "str", kind: "str", enabled: "bool") -> "str":

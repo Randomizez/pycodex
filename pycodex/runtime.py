@@ -8,7 +8,6 @@ from time import monotonic
 from .agent import BASE_EVENT_HANDLER, Agent, TurnInterrupted
 from .events import (
     AssistantDeltaEvent,
-    AutoCompactCompletedEvent,
     CommandCompletedEvent,
     CommandFailedEvent,
     CommandStartedEvent,
@@ -17,6 +16,7 @@ from .events import (
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
+    MessagesAddedEvent,
     RuntimeUpdatedEvent,
     SessionClosedEvent,
     SessionStateEvent,
@@ -30,7 +30,7 @@ from .events import (
     TurnStartedEvent,
 )
 from .model import ModelControl
-from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
+from .protocol import AgentMessage, AssistantMessage, ToolResult, TurnResult, UserMessage
 from .tools.runtime_services import close_resources
 from .utils import uuid7_string
 from .utils.event_helpers import shorten_title
@@ -52,11 +52,10 @@ class SubmissionInterrupted(RuntimeError):
 
 
 class _QueuedSubmission:
-    def __init__(self, texts: "typing.List[str]", name: "str" = "user") -> "None":
+    def __init__(self, messages) -> "None":
         self.submission_id = uuid7_string()
         self.turn_id = self.submission_id
-        self.texts = texts
-        self.name = name
+        self.messages = list(messages)
         self.futures: "typing.List[asyncio.Future[TurnResult]]" = []
 
 
@@ -228,12 +227,11 @@ class AgentRuntime:
         }
 
     def snapshot(self):
-        execution = self.agent.execution_snapshot()
         rollout_path = self.agent.session_file_path
         recorded_path = self.agent.recorded_session_file_path
         return {
-            **self._snapshot_fields(execution),
-            "session_id": execution.session_id,
+            **self.state_snapshot(),
+            "session_id": self.agent.session_id,
             "rollout_path": str(rollout_path) if rollout_path is not None else None,
             "recorded_rollout_path": str(recorded_path) if recorded_path is not None else None,
             "model": "{0}:{1}".format(
@@ -241,9 +239,6 @@ class AgentRuntime:
                 self.agent.model_client.reasoning_effort or "default",
             ),
             "history": conversation_history_to_turns(self.agent.history),
-            "active_turn": (
-                dict(self._active_turn) if self._active_turn is not None else None
-            ),
         }
 
     def state_snapshot(self):
@@ -266,21 +261,14 @@ class AgentRuntime:
                 "reasoning_effort": client.reasoning_effort,
             },
             "running": execution.running,
-            "active_turn": (
-                {
-                    key: active[key]
-                    for key in (
-                        "turn_id", "submission_id", "user_texts", "assistant_text",
-                        "model_errors",
-                    )
-                } if active is not None else None
-            ),
+            "active_turn": dict(active) if active is not None else None,
             "queued_inputs": [
                 {
                     "submission_id": item.submission_id,
                     "turn_id": item.turn_id,
                     "queue": name,
-                    "prompts": list(item.texts),
+                    "messages": tuple(message for message in item.messages
+                                      if isinstance(message, (UserMessage, AgentMessage)) and message.visible),
                 }
                 for name, item in pending
             ],
@@ -515,18 +503,18 @@ class AgentRuntime:
 
     def _submit_turn(self, text, queue, sender, name):
         busy = self.is_busy
+        message = UserMessage(text, name=name)
         if queue == "enqueue":
-            submission_id, future = self.enqueue(text, name=name)
+            submission_id, future = self.enqueue(message)
         else:
             current = self._current_submission if self.agent.is_running else None
             self.stop_asap()
-            self.message(UserMessage(text, name=name))
+            self.message(message)
             submission_id, future = self.trigger()
-            self._triggered_submission.texts.append(text)
             if current is not None:
                 self._triggered_submission.turn_id = current.turn_id
         self._publish(
-            InputQueuedEvent(submission_id, text, queue, sender, queue == "enqueue", busy)
+            InputQueuedEvent(submission_id, message, queue, sender, queue == "enqueue", busy)
         )
         return SubmittedInput(submission_id, "turn", future)
 
@@ -643,7 +631,7 @@ class AgentRuntime:
 
     async def submit_user_turn(self, text: "str") -> "TurnResult":
         """Enqueue one independent turn and wait for its receipt."""
-        _submission_id, future = self.enqueue(text)
+        _submission_id, future = self.enqueue(UserMessage(text))
         return await future
 
     async def maybe_invoke(self, event: "typing.Dict[str, object]") -> "bool":
@@ -662,7 +650,6 @@ class AgentRuntime:
         await self.start()
         self.message(text)
         _submission_id, future = self.trigger()
-        self._triggered_submission.texts.append(text)
         await future
         return True
 
@@ -682,11 +669,11 @@ class AgentRuntime:
         self._last_agent_status = "interrupted"
         self.publish_update("interrupt")
 
-    def enqueue(self, text: "str", name: "str" = "user") -> "typing.Tuple[str, asyncio.Future[TurnResult]]":
+    def enqueue(self, message: "UserMessage") -> "typing.Tuple[str, asyncio.Future[TurnResult]]":
         """Schedule an independent user turn without affecting active execution."""
         if not self.accepts_input:
             raise RuntimeError("agent is shutting down")
-        queued = _QueuedSubmission([text], name=name)
+        queued = _QueuedSubmission([message])
         self._enqueue_queue.append(queued)
         return self._submission_receipt(queued)
 
@@ -697,7 +684,7 @@ class AgentRuntime:
         if self._active_turn is not None and not self.agent.execution_snapshot().stop_requested:
             return None
         if self._triggered_submission is None:
-            self._triggered_submission = _QueuedSubmission([])
+            self._triggered_submission = _QueuedSubmission(self._take_messages())
         return self._submission_receipt(self._triggered_submission)
 
     def _submission_receipt(self, queued):
@@ -705,7 +692,7 @@ class AgentRuntime:
         future = loop.create_future()
         future.add_done_callback(self._observe_completion)
         queued.futures.append(future)
-        # Publish after the input layer attaches display text and turn identity.
+        # Publish after the input layer attaches the execution identity.
         loop.call_soon(self._notify_queue_change)
         return queued.submission_id, future
 
@@ -716,22 +703,35 @@ class AgentRuntime:
         self.publish_update("queue")
         self._wake_worker()
 
-    def message(self, text: "typing.Union[str, AgentMessage, ToolResult]") -> "None":
+    def message(self, text: "typing.Union[str, UserMessage, AgentMessage, ToolResult]") -> "None":
         """Deliver input to an open runtime's mailbox."""
         if not self.accepts_input:
             raise RuntimeError("agent is shutting down")
-        self._steer_queue.append(UserMessage(text) if isinstance(text, str) else text)
+        item = UserMessage(text) if isinstance(text, str) else text
+        if self._triggered_submission is not None:
+            self._triggered_submission.messages.append(item)
+        else:
+            self._steer_queue.append(item)
         if self._active_turn is not None:
             self.agent.request_follow_up()
         if self._input_activity is not None:
             self._input_activity.set()
 
+    def _take_messages(self):
+        messages = tuple(self._steer_queue)
+        self._steer_queue.clear()
+        return messages
+
     def _deliver_messages(self):
         if not self._steer_queue or self.agent.execution_snapshot().stop_requested:
             return
-        self.agent.receive_messages(tuple(self._steer_queue))
-        self._steer_queue.clear()
-        if self._input_activity is not None and not self._wait_interrupted:
+        messages = self._take_messages()
+        try:
+            self.agent.receive_messages(messages)
+        except BaseException:
+            self._steer_queue.extendleft(reversed(messages))
+            raise
+        if self._input_activity is not None and not self._steer_queue and not self._wait_interrupted:
             self._input_activity.clear()
 
     async def wait_for_activity(self, timeout_ms):
@@ -760,10 +760,10 @@ class AgentRuntime:
             pending = await self._next_submission()
             if pending is None:
                 break
-            queued, texts = pending
+            queued = pending
             self._current_submission = queued
             try:
-                result = await self.agent.run_turn(texts, turn_id=queued.turn_id, name=queued.name)
+                result = await self.agent.run_turn(queued.messages, turn_id=queued.turn_id)
             except TurnInterrupted:
                 self._finish_submission_exception(queued, SubmissionInterrupted())
             except Exception as exc:
@@ -788,17 +788,18 @@ class AgentRuntime:
                 self._publish(SessionClosedEvent())
                 self.agents_manager.unregister_runtime(self.agent.agent_id)
 
-    async def _next_submission(self) -> "typing.Union[typing.Tuple[_QueuedSubmission, typing.List[str]], None]":
+    async def _next_submission(self) -> "typing.Union[_QueuedSubmission, None]":
         while True:
             await self.agent.wait_until_idle()
             if not self.accepts_input:
                 return None
             if self._triggered_submission is not None:
                 queued, self._triggered_submission = self._triggered_submission, None
-                return queued, []
+                return queued
             if self._enqueue_queue:
                 queued = self._enqueue_queue.popleft()
-                return queued, list(queued.texts)
+                queued.messages[:0] = self._take_messages()
+                return queued
             if not self._steer_queue:
                 continuation = self.agent.tool_registry.runtime_environment.take_continuation()
                 if continuation is not None:
@@ -809,8 +810,7 @@ class AgentRuntime:
                         or self._enqueue_queue or self._steer_queue
                     ):
                         continue
-                    self.message(continuation)
-                    return _QueuedSubmission([]), []
+                    return _QueuedSubmission([continuation])
             self._queue_event.clear()
             await self._queue_event.wait()
 
@@ -843,9 +843,6 @@ class AgentRuntime:
             event = replace(
                 event, submission_id=event.submission_id or queued.submission_id
             )
-            if isinstance(event, TurnStartedEvent):
-                # Triggered input is delivered through steer, not run_turn's texts.
-                event = replace(event, user_texts=tuple(queued.texts))
         if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
             self._wait_interrupted = False
             if self._input_activity is not None and not self._steer_queue:
@@ -865,30 +862,28 @@ class AgentRuntime:
             self._active_turn = {
                 "turn_id": event.turn_id,
                 "submission_id": event.submission_id or event.turn_id,
-                "user_text": "\n".join(event.user_texts),
-                "user_texts": list(event.user_texts),
+                "messages": event.messages,
                 "assistant_text": "",
-                "completed_history": conversation_history_to_turns(self.agent.history),
                 "model_errors": [],
             }
         elif self._active_turn is not None:
             if isinstance(event, AssistantDeltaEvent):
                 self._active_turn["assistant_text"] += event.delta
+            elif isinstance(event, MessagesAddedEvent) and any(
+                isinstance(message, AssistantMessage) for message in event.messages
+            ):
+                self._active_turn["assistant_text"] = ""
             elif isinstance(event, StreamErrorEvent):
                 self._active_turn["assistant_text"] = ""
                 self._active_turn["model_errors"].append(event.detail())
             elif isinstance(event, ToolCompletedEvent):
                 self._active_turn["assistant_text"] = ""
-            elif isinstance(event, AutoCompactCompletedEvent):
-                self._active_turn["completed_history"] = conversation_history_to_turns(
-                    self.agent.history
-                )
             elif isinstance(
                 event, (TurnCompletedEvent, TurnFailedEvent, TurnInterruptedEvent)
             ):
                 self._active_turn = None
         if isinstance(event, TurnStartedEvent) and not self.title:
-            prompt = "\n".join(event.user_texts)
+            prompt = event.visualize()
             if prompt:
                 self.title = shorten_title(prompt)
                 self.publish_state("auto_title")

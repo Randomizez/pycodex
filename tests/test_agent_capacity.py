@@ -3,7 +3,7 @@ import asyncio
 import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
-from pycodex.protocol import AgentMessage
+from pycodex.protocol import AgentMessage, UserMessage
 from pycodex.tools import BaseTool, ListAgentsTool, ToolContext, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 
@@ -132,7 +132,7 @@ async def test_capacity_preserves_accepted_work(tmp_path, pending):
     try:
         await wait_for_runtime_idle(child)
         if pending in ("running", "enqueue"):
-            child.enqueue("accepted")
+            child.enqueue(UserMessage("accepted"))
         elif pending in ("trigger", "mailbox"):
             child.message("accepted")
             if pending == "trigger":

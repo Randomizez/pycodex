@@ -1,3 +1,4 @@
+from pycodex.protocol import UserMessage
 from pycodex import ContextConfig, ToolRegistry
 from pycodex.events import StreamErrorEvent, TurnStartedEvent
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime
@@ -10,7 +11,7 @@ async def test_retry_details_survive_active_turn_reattachment():
     ))
     view = WebSessionView()
     frontend = runtime.attach(view.handle_event)
-    runtime._handle_agent_event(TurnStartedEvent("turn", ("hello",)))
+    runtime._handle_agent_event(TurnStartedEvent("turn", (UserMessage("hello", turn_id="turn"),)))
     runtime.agent._handle_model_stream_event("turn", StreamErrorEvent(
         "Reconnecting... 1/1", 1, 1, 0.0, "upstream connection timed out",
     ))

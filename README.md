@@ -119,6 +119,10 @@ Open `http://127.0.0.1:6007`. The workspace uses the same model configuration as
 the CLI and provides conversations, a live HTML Canvas, and file/diff viewers.
 Click file links to inspect code, then select text and use **Insert into chat**
 to include it in your next message.
+Each input displays its author and creation time, including separate messages
+in a steer batch. Recorded messages keep that metadata when the session resumes.
+Restoring a tab reads the rollout tail needed for its latest 80 display rows;
+Agent resume still restores the complete active context after the last checkpoint.
 
 The settings menu provides interface customization and password-protected
 workspace sharing. See the [workspace guide](packages/pycodex-ws/README.md) for

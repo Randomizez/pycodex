@@ -100,7 +100,7 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
         session_file_path=rollout_path_for_session(resolve_codex_home(), session_id),
         session_id=session_id,
     )
-    await source.run_turn(["old prompt"])
+    await source.run_turn([UserMessage("old prompt")])
     old_id = source.session_id
     source.shutdown()
     client = ControlClient([ModelResponse([AssistantMessage("checkpoint")])])
@@ -142,7 +142,10 @@ async def test_frontends_share_all_session_commands(frontend, resume_by_id):
     ]
     assert "exit" not in results[0]["commands"]
     assert "quit" not in results[0]["commands"]
-    assert results[7]["state"]["history"] == (("old prompt", "old answer"),)
+    history = results[7]["state"]["history"]
+    assert len(history) == 1
+    assert history[0]["messages"] == (UserMessage("old prompt"),)
+    assert history[0]["response"] == "old answer"
     assert queue.title == "Shared title"
     assert queue.agent.model_name == "changed"
     assert queue.agent.session_id == old_id
@@ -268,7 +271,7 @@ async def test_frontends_preserve_slash_paths_and_leading_space_escape(frontend)
     queue.event_handler = events.append
     await run_frontend(frontend, queue, inputs + ["/modle", "/tmp"])
     queued = [event for event in events if event.kind == "input_queued"]
-    assert [event.prompt for event in queued] == [text.strip() for text in inputs]
+    assert [event.message.text for event in queued] == [text.strip() for text in inputs]
     assert all(event.queue == "steer" for event in queued)
     assert queue.agent.model_name == "scripted"
     assert [event.command for event in events if event.kind == "command_failed"] == [
@@ -670,7 +673,7 @@ async def test_interactive_commands_reject_direct_background_work(monkeypatch):
     monkeypatch.setattr(session.view, "show_error", record_line)
     await session.start()
     await asyncio.sleep(0)
-    turn = asyncio.create_task(agent.run_turn(["background"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("background")]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         for command in ["/model changed", "/compact", "/resume 1"]:

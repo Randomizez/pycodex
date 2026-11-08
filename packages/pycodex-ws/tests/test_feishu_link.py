@@ -7,7 +7,8 @@ import types
 
 import pytest
 
-from pycodex.events import TurnCompletedEvent, TurnStartedEvent
+from pycodex.events import MessagesAddedEvent, TurnCompletedEvent, TurnStartedEvent
+from pycodex.protocol import AssistantMessage, UserMessage
 import pycodex_ws.feishu_connection as feishu_connection
 import pycodex_ws.feishu_link as feishu_link
 from pycodex_ws.feishu_card import PycodexCard
@@ -98,7 +99,10 @@ async def _forever():
 async def test_history_navigation_updates_card_without_submitting_model_input():
     card = PycodexCard()
     for index in range(3):
-        card.apply_event(TurnStartedEvent(str(index), ("prompt " + str(index),)))
+        card.apply_event(TurnStartedEvent(str(index), (UserMessage("prompt " + str(index), turn_id=str(index)),)))
+        card.apply_event(MessagesAddedEvent(str(index), (
+            AssistantMessage("answer " + str(index), turn_id=str(index)),
+        )))
         card.apply_event(TurnCompletedEvent(str(index), 1, "answer " + str(index), 0))
     link = feishu_link.PycodexRuntimeLink(object(), "unused", card=card)
     card.resolve_operator_name = lambda operator: "reader"

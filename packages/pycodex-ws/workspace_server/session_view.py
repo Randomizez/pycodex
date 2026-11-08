@@ -5,7 +5,6 @@ import json
 import threading
 import typing
 from dataclasses import asdict, fields, is_dataclass
-from datetime import datetime
 
 from pycodex.events import (
     IDLE_SLEEPING_STATUS,
@@ -23,6 +22,7 @@ from pycodex.events import (
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
+    MessagesAddedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     StreamErrorEvent,
@@ -37,8 +37,10 @@ from pycodex.events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
+from pycodex.protocol import UserMessage
 from pycodex.utils import uuid7_string
-from pycodex.utils.event_helpers import completed_history, shorten_title
+from pycodex.utils.event_helpers import shorten_title
+from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.session_persist import load_display_history
 
 
@@ -75,7 +77,6 @@ class WebSessionView:
         self._input_request = None
         self._accepts_input = True
         self._spinner_status = ""
-        self._stream_buffer = ""
         self._max_context_window: "typing.Union[int, None]" = None
         self._auto_compact_token_limit: "typing.Union[int, None]" = None
         self._usage_tokens: "typing.Union[int, None]" = None
@@ -111,32 +112,18 @@ class WebSessionView:
                 self._runtime_state = state
                 self.publish({"type": "state"})
 
-    def finish_stream(self) -> None:
-        with self._lock:
-            if not self._stream_buffer:
-                return
-            active_turn = self._last_active_turn()
-            if active_turn is not None and not active_turn.get("response"):
-                active_turn["response"] = self._stream_buffer
-                active_turn["thinking"] = ""
-                active_turn["_thinking_active"] = False
-            self._stream_buffer = ""
-            event = {"type": "snapshot", "snapshot": self.snapshot()}
-        self.publish(event)
-
     def write_line(self, text: str) -> None:
         with self._lock:
             text = str(text or "")
-            turn = self._new_control_turn(text)
+            turn = self._new_control_turn()
             turn["response"] = text
             turn["status"] = "completed"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self.publish(event)
 
     def show_error(self, text: str) -> None:
-        self.finish_stream()
         with self._lock:
-            turn = self._new_control_turn("")
+            turn = self._new_control_turn()
             turn["error"] = str(text or "")
             turn["status"] = "error"
             event = {"type": "snapshot", "snapshot": self.snapshot()}
@@ -155,9 +142,8 @@ class WebSessionView:
     def load_session_history(
         self,
         title: "typing.Union[str, None]",
-        history: "typing.Iterable[typing.Union[typing.Tuple[str, str], None]]",
+        history: "typing.Iterable[dict]",
     ) -> None:
-        self.finish_stream()
         with self._lock:
             self._set_title(title)
             self._turns = []
@@ -166,20 +152,8 @@ class WebSessionView:
             self._events = []
             self._last_final_id = ""
             for entry in history:
-                if entry is None:
-                    self._add_compaction_marker()
-                    continue
-                prompt, response = entry[:2]
-                submission_id = uuid7_string()
-                turn = self._ensure_turn(
-                    submission_id, submission_id, str(prompt or "")
-                )
-                turn["response"] = str(response or "")
-                if len(entry) > 2:
-                    turn["prompt_at"], turn["response_at"] = entry[2:4]
-                turn["status"] = "completed"
-                turn["queue"] = "history"
-                turn["sender"] = "resume"
+                turn = self._ensure_turn(entry["turn_id"], entry["turn_id"])
+                turn.update(entry, status="completed", queue="history", sender="resume")
             event = {"type": "snapshot", "snapshot": self.snapshot()}
         self.publish(event)
 
@@ -237,9 +211,10 @@ class WebSessionView:
                 "recorded_rollout_path": self._recorded_rollout_path,
                 "input_request": _json_safe(self._input_request),
                 "queued_inputs": [
-                    {"queue": turn["queue"], "prompt": turn["prompt"]}
+                    {"queue": turn["queue"], "prompt": "\n".join(message.text for message in turn["messages"])}
+                    for queue in ("steer", "enqueue")
                     for turn in self._turns_by_submission_id.values()
-                    if not turn["turn_id"]
+                    if not turn["turn_id"] and turn["queue"] == queue
                 ],
                 "accepts_input": self._accepts_input,
                 "title": self._title,
@@ -275,32 +250,25 @@ class WebSessionView:
             self._usage_tokens = state["usage_tokens"]
             if event.reason in {"attach", "history"}:
                 active = state["active_turn"]
-                history = completed_history(state)
-                if active is None and state["recorded_rollout_path"] is not None:
-                    history = load_display_history(
-                        state["recorded_rollout_path"], with_times=True,
-                    )
+                history = state["history"]
+                if state["recorded_rollout_path"] is not None:
+                    history = load_display_history(state["recorded_rollout_path"])
                 self.load_session_history(state["title"], history)
                 if active is not None:
-                    self._apply_runtime_event(
-                        TurnStartedEvent(
-                            active["turn_id"],
-                            tuple(active["user_texts"]),
-                            active["submission_id"],
-                        )
+                    turn = self._ensure_turn(active["submission_id"], active["turn_id"])
+                    self._append_messages(active["messages"], active["turn_id"], active["submission_id"])
+                    text = active["assistant_text"]
+                    turn.update(
+                        status="responding" if text else "running",
+                        thinking=text, _thinking_active=bool(text),
+                        model_errors=list(active["model_errors"]),
                     )
-                    self._apply_runtime_event(
-                        AssistantDeltaEvent(
-                            active["assistant_text"],
-                            active["turn_id"],
-                            active["submission_id"],
-                        )
-                    )
-                    self._turns_by_turn_id[active["turn_id"]]["model_errors"] = list(
-                        active.get("model_errors", [])
-                    )
+                    self._set_spinner_status("talking" if text else "working")
                 elif not state["busy"]:
                     self._set_idle_spinner_status(state["background_work_count"])
+                for pending in state["queued_inputs"]:
+                    turn = self._ensure_turn(pending["submission_id"], "")
+                    turn.update(messages=pending["messages"], queue=pending["queue"])
             elif event.reason == "title":
                 self.set_session_title(state["title"])
             else:
@@ -327,8 +295,8 @@ class WebSessionView:
             self._spinner_status = ""
             return
         if isinstance(event, InputQueuedEvent):
-            turn = self._ensure_turn(event.submission_id, "", "")
-            turn["prompt"] += ("\n" if turn["prompt"] else "") + event.prompt
+            turn = self._ensure_turn(event.submission_id, "")
+            turn["messages"] += (event.message,)
             turn["queue"] = event.queue
             turn["sender"] = event.sender
             return
@@ -337,17 +305,21 @@ class WebSessionView:
             return
         if isinstance(event, (AutoCompactCompletedEvent, CompactCompletedEvent)):
             self._usage_tokens = None
-            self._add_compaction_marker()
+            self._add_compaction_marker(event)
         if not isinstance(event, TurnEvent):
             return
         turn_id = event.turn_id
         submission_id = event.submission_id or turn_id
         turn = self._turns_by_submission_id.get(submission_id)
 
+        if isinstance(event, MessagesAddedEvent):
+            self._append_messages(event.messages, turn_id, submission_id)
+            return
+
         if isinstance(event, TurnStartedEvent):
             self._set_spinner_status("understood")
-            turn = self._ensure_turn(submission_id, turn_id, event.visualize())
-            turn["prompt_at"] = turn.get("prompt_at") or _now()
+            turn = self._ensure_turn(submission_id, turn_id)
+            self._append_messages(event.messages, turn_id, submission_id)
             turn["status"] = "running"
             turn["thinking"] = ""
             turn["_thinking_active"] = False
@@ -361,7 +333,6 @@ class WebSessionView:
         if isinstance(event, AssistantDeltaEvent):
             turn["status"] = "responding"
             delta = event.visualize()
-            self._stream_buffer += delta
             if turn.get("_thinking_active"):
                 turn["thinking"] = str(turn.get("thinking") or "") + delta
             else:
@@ -387,37 +358,24 @@ class WebSessionView:
         if isinstance(event, TurnCompletedEvent):
             response = event.visualize()
             if response:
-                turn["response"] = response
                 turn["final_id"] = event.turn_id
                 self._last_final_id = event.turn_id
-            elif turn.get("thinking"):
-                turn["response"] = str(turn.get("thinking") or "")
             turn["thinking"] = ""
             turn["_thinking_active"] = False
             turn["status"] = "completed"
-            turn["response_at"] = _now()
-            self._stream_buffer = ""
             return
 
         if isinstance(event, TurnFailedEvent):
             turn["status"] = "error"
             turn["error"] = event.visualize()
-            turn["response_at"] = _now()
             turn["final_id"] = event.turn_id
             self._last_final_id = event.turn_id
-            self._stream_buffer = ""
             return
 
         if isinstance(event, TurnInterruptedEvent):
-            if event.output_text:
-                turn["response"] = event.output_text
-            elif turn.get("thinking") and not turn.get("response"):
-                turn["response"] = str(turn.get("thinking") or "")
             turn["thinking"] = ""
             turn["_thinking_active"] = False
             turn["status"] = "interrupted"
-            turn["response_at"] = _now()
-            self._stream_buffer = ""
 
     def _context_usage(self) -> "typing.Dict[str, object]":
         limit = self._auto_compact_token_limit
@@ -483,19 +441,25 @@ class WebSessionView:
         self,
         submission_id: str,
         turn_id: str,
-        prompt: str,
     ) -> "typing.Dict[str, object]":
-        submission_id = str(submission_id or "").strip()
-        turn_id = str(turn_id or "").strip()
         turn = self._turns_by_submission_id.get(submission_id)
-        if turn is None and turn_id and not submission_id:
-            turn = self._turns_by_turn_id.get(turn_id)
+        live = self._turns_by_turn_id.get(turn_id)
+        if live is not None and turn is not live:
+            for key, value in list(self._turns_by_submission_id.items()):
+                if value is turn:
+                    self._turns_by_submission_id[key] = live
+            turn = live
         if turn is None:
             turn = {
                 "submission_id": submission_id,
                 "turn_id": "",
-                "prompt": prompt,
+                "final_id": "",
+                "model_errors": [],
+                "messages": (),
                 "response": "",
+                "response_id": None,
+                "response_at": None,
+                "response_phase": None,
                 "thinking": "",
                 "_thinking_active": False,
                 "status": "queued",
@@ -513,40 +477,35 @@ class WebSessionView:
                 self._turns.append(turn)
             turn["turn_id"] = turn_id
             self._turns_by_turn_id[turn_id] = turn
-        if prompt:
-            turn["prompt"] = prompt
         return turn
 
-    def _new_control_turn(self, text: str) -> "typing.Dict[str, object]":
+    def _append_messages(self, messages, turn_id, submission_id):
+        previous = self._turns_by_turn_id.get(turn_id)
+        for values in conversation_history_to_turns(messages, (previous,) if previous else ()):
+            turn = self._ensure_turn(submission_id or values["turn_id"], values["turn_id"])
+            if turn["response_id"] != values["response_id"]:
+                turn["thinking"] = ""
+                turn["_thinking_active"] = False
+            turn.update(values)
+
+    def _new_control_turn(self) -> "typing.Dict[str, object]":
         submission_id = uuid7_string()
-        turn = self._ensure_turn(submission_id, submission_id, "")
-        turn["kind"] = "control"
-        turn["queue"] = "control"
-        turn["sender"] = "web"
-        turn["status"] = "running"
-        turn["error"] = ""
-        turn["response"] = ""
-        turn["thinking"] = ""
-        turn["prompt"] = ""
+        turn = self._ensure_turn(submission_id, submission_id)
+        turn.update(kind="control", queue="control", status="running")
         return turn
 
-    def _add_compaction_marker(self) -> None:
-        turn = self._new_control_turn("")
+    def _add_compaction_marker(self, event) -> None:
+        turn = self._new_control_turn()
         turn["kind"] = "compaction"
         turn["status"] = "completed"
+        active = self._turns_by_turn_id.get(event.turn_id)
+        if active is not None and event.phase == "pre_turn" and not active["response"]:
+            # A new turn commits its inputs after pre-turn compaction.
+            self._turns.remove(turn)
+            self._turns.insert(self._turns.index(active), turn)
 
     def _set_title(self, title: "typing.Union[str, None]") -> None:
         self._title = str(title or "").strip()
-
-    def _last_active_turn(self) -> "typing.Union[typing.Dict[str, object], None]":
-        for turn in reversed(self._turns):
-            if turn.get("kind") != "control" and turn.get("status") not in {
-                "completed",
-                "error",
-                "interrupted",
-            }:
-                return turn
-        return None
 
     def publish(self, event: "typing.Dict[str, object]") -> None:
         with self._lock:
@@ -586,32 +545,22 @@ def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> 
     return ""
 
 
-def _now() -> str:
-    return datetime.now().astimezone().isoformat(timespec="milliseconds")
-
-
 def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]":
-    return typing.cast(
-        "typing.Dict[str, object]",
-        _json_safe(
-            {
-                "submission_id": turn.get("submission_id", ""),
-                "turn_id": turn.get("turn_id", ""),
-                "final_id": turn.get("final_id", ""),
-                "prompt": turn.get("prompt", ""),
-                "response": turn.get("response", ""),
-                "thinking": turn.get("thinking", ""),
-                "status": turn.get("status", ""),
-                "error": turn.get("error", ""),
-                "queue": turn.get("queue", ""),
-                "sender": turn.get("sender", ""),
-                "kind": turn.get("kind", "assistant"),
-                "model_errors": turn.get("model_errors", []),
-                "prompt_at": turn.get("prompt_at"),
-                "response_at": turn.get("response_at"),
-            }
-        ),
-    )
+    return {
+        **{key: turn[key] for key in (
+            "submission_id", "turn_id", "final_id", "response", "response_at", "response_phase",
+            "thinking", "status", "error", "queue", "sender", "kind",
+        )},
+        "model_errors": list(turn["model_errors"]),
+        "prompt": "\n".join(message.text for message in turn["messages"]),
+        "prompt_at": turn["messages"][0].created_at if turn["messages"] else None,
+        "messages": [
+            {"message_id": message.message_id, "text": message.text,
+             "name": message.name if isinstance(message, UserMessage) else message.author,
+             "created_at": message.created_at}
+            for message in turn["messages"]
+        ],
+    }
 
 
 def _event_data(event: "Event") -> "typing.Dict[str, object]":
@@ -632,7 +581,7 @@ def _event_data(event: "Event") -> "typing.Dict[str, object]":
         if isinstance(event, InputQueuedEvent):
             payload["submission_id"] = event.submission_id
     if isinstance(event, TurnStartedEvent):
-        payload["user_text"] = "\n".join(event.user_texts)
+        payload["user_text"] = event.visualize()
     if isinstance(event, (ToolStartedEvent, ToolCompletedEvent)):
         payload.update(tool_name=event.call.name, call_id=event.call.call_id)
         if isinstance(event, ToolCompletedEvent):

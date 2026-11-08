@@ -58,7 +58,7 @@ async def test_history_write_failure_is_visible_before_mutation(
 
     monkeypatch.setattr(recorder, "append_history_items", append_items)
     with pytest.raises(OSError, match="synthetic write failure"):
-        await agent.run_turn(["prompt"])
+        await agent.run_turn([UserMessage("prompt")])
 
     assert not agent.is_running
     assert events[-1].kind == "turn_failed"
@@ -140,7 +140,7 @@ async def test_manual_compact_resets_usage_before_next_turn():
 
     assert agent.history == result.history
     assert agent._last_total_usage_tokens is None
-    assert (await agent.run_turn(["continue"])).output_text == "next answer"
+    assert (await agent.run_turn([UserMessage("continue")])).output_text == "next answer"
     assert model.call_count == 2
 
 
@@ -202,7 +202,7 @@ async def test_agent_does_not_classify_arbitrary_exception_text():
     model = ScriptedModelClient(response_factory=response_factory)
     agent = make_agent(model, ToolRegistry(), ContextConfig())
     with pytest.raises(RuntimeError, match="custom code"):
-        await agent.run_turn(["prompt"])
+        await agent.run_turn([UserMessage("prompt")])
     assert model.call_count == 1
 
 
@@ -226,7 +226,7 @@ async def test_tool_follow_up_does_not_depend_on_tool_name():
             ModelResponse([AssistantMessage("done")]),
         ]
     )
-    result = await make_agent(model, tools, ContextConfig()).run_turn(["prompt"])
+    result = await make_agent(model, tools, ContextConfig()).run_turn([UserMessage("prompt")])
     assert isinstance(result.history[-3], ToolResult)
     assert result.history[-2] == UserMessage("follow up: tool output")
 
@@ -251,7 +251,7 @@ async def test_follow_up_failure_keeps_completed_tool_result():
         ContextConfig(),
     )
     with pytest.raises(ValueError, match="follow-up failure"):
-        await agent.run_turn(["prompt"])
+        await agent.run_turn([UserMessage("prompt")])
     assert agent.history[-1] == ToolResult("notice_call", "notice", "completed output")
 
 
@@ -308,7 +308,7 @@ async def test_failed_tool_commit_waits_for_remaining_batch(tmp_path, monkeypatc
         append(items, initial_history)
 
     monkeypatch.setattr(recorder, "append_history_items", append_items)
-    turn = asyncio.create_task(agent.run_turn(["prompt"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("prompt")]))
     try:
         await asyncio.wait_for(failed.wait(), 1)
         assert agent.is_running
@@ -373,7 +373,7 @@ async def test_shutdown_allows_tool_batch_to_complete_and_commit(tmp_path, paral
     agent = make_agent(
         client, tools, ContextConfig(), session_file_path=tmp_path / "rollout.jsonl"
     )
-    task = asyncio.create_task(agent.run_turn(["start"]))
+    task = asyncio.create_task(agent.run_turn([UserMessage("start")]))
     try:
         await asyncio.wait_for(blocked.wait(), 1)
         assert any(
@@ -512,7 +512,7 @@ async def test_bare_agent_stop_asap_finishes_issued_tools_and_allows_next_turn(
         parallel_tool_calls=parallel,
         event_handler=events.append,
     )
-    turn = asyncio.create_task(agent.run_turn(["work"]))
+    turn = asyncio.create_task(agent.run_turn([UserMessage("work")]))
     try:
         await asyncio.wait_for(started.wait(), 1)
         agent.stop_asap()
@@ -534,7 +534,7 @@ async def test_bare_agent_stop_asap_finishes_issued_tools_and_allows_next_turn(
         assert events[-1].kind == "turn_interrupted"
         assert not any(event.kind == "turn_failed" for event in events)
         agent.stop_asap()
-        result = await agent.run_turn(["continue"])
+        result = await agent.run_turn([UserMessage("continue")])
         assert result.output_text == "continued"
         assert client.call_count == 2
     finally:
@@ -589,7 +589,7 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
         agent._last_total_usage_tokens = 100
     try:
         with pytest.raises(TurnInterrupted):
-            await agent.run_turn(["new prompt"])
+            await agent.run_turn([UserMessage("new prompt")])
         assert not agent.is_running
         assert client.call_count == (1 if phase == "pre_turn" else 2)
         assert [
@@ -645,9 +645,9 @@ async def test_agent_lazily_creates_and_owns_new_rollout(tmp_path):
     agent._append_history(())
     assert not path.parent.exists()
 
-    await agent.run_turn(["first prompt"])
+    await agent.run_turn([UserMessage("first prompt")])
     first_bytes = path.read_bytes()
-    await agent.run_turn(["second prompt"])
+    await agent.run_turn([UserMessage("second prompt")])
 
     assert all(prompt.session_id == session_id for prompt in client.prompts)
     assert agent.session_id == session_id
@@ -712,7 +712,7 @@ async def test_new_session_creation_race_does_not_overwrite_file(tmp_path):
     path.write_text("created by another writer", encoding="utf-8")
 
     with pytest.raises(FileExistsError):
-        await agent.run_turn(["prompt"])
+        await agent.run_turn([UserMessage("prompt")])
 
     assert path.read_text(encoding="utf-8") == "created by another writer"
     assert agent.history == (UserMessage("seed"),)
@@ -767,14 +767,14 @@ async def test_first_write_failure_does_not_mark_rollout_initialized(
 
     monkeypatch.setattr(Path, "open", failing_open)
     with pytest.raises(OSError, match="synthetic first write failure"):
-        await agent.run_turn(["prompt"])
+        await agent.run_turn([UserMessage("prompt")])
 
     assert agent.history == (UserMessage("seed"),)
     assert agent._rollout_recorder._session_meta is not None
     assert agent.model_client.call_count == 0
     contents = agent.session_file_path.read_bytes()
     with pytest.raises(FileExistsError):
-        await agent.run_turn(["retry"])
+        await agent.run_turn([UserMessage("retry")])
     assert agent.session_file_path.read_bytes() == contents
     assert agent.history == (UserMessage("seed"),)
 
@@ -796,7 +796,9 @@ def test_resume_expands_home_and_reopens_closed_agent(tmp_path, monkeypatch):
     assert agent.session_file_path == tmp_path / "sessions" / "会话.jsonl"
     assert agent.session_id == source.session_id
     assert agent.history == source.history
-    assert resumed["turns"] == (("恢复 — ≤ 测试", "saved answer"),)
+    assert len(resumed["turns"]) == 1
+    assert resumed["turns"][0]["messages"] == (source.history[0],)
+    assert resumed["turns"][0]["response"] == "saved answer"
     assert agent.accepts_input
     assert not agent.is_shutdown
 
@@ -851,16 +853,14 @@ async def test_continuation_after_compact_keeps_summary_context_on_resume(tmp_pa
     )
     await source.compact()
     await source.run_turn([])
-    await source.run_turn(["new prompt"])
+    await source.run_turn([UserMessage("new prompt")])
     agent = make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig())
 
     resumed = agent.resume(source.session_file_path)
 
     assert agent.history == source.history
-    assert resumed["turns"] == (
-        ("", "continued answer"),
-        ("new prompt", "next answer"),
-    )
+    assert [turn["messages"] for turn in resumed["turns"]] == [(), (UserMessage("new prompt"),)]
+    assert [turn["response"] for turn in resumed["turns"]] == ["continued answer", "next answer"]
     assert source.history[0].serialize() in [
         item.serialize() for item in model.prompts[-1].input
     ]
@@ -936,7 +936,7 @@ async def test_resume_preserves_later_history_after_unfinished_tools(
         item.serialize() for item in expected
     ]
     assert source.session_file_path.read_bytes() == original_bytes
-    await agent.run_turn(["after restart"])
+    await agent.run_turn([UserMessage("after restart")])
     assert [
         item.serialize()
         for item in client.prompts[0].input
@@ -1003,7 +1003,7 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
         session_file_path=tmp_path / "restored.jsonl",
         session_id="restored-session",
     )
-    await source.run_turn(["restored"])
+    await source.run_turn([UserMessage("restored")])
     original_path = tmp_path / "original.jsonl"
     agent = make_agent(
         client,
@@ -1032,7 +1032,7 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
         assert client._session_id == "original-session"
     else:
         assert not hasattr(client, "_session_id")
-    result = await agent.run_turn(["continue"])
+    result = await agent.run_turn([UserMessage("continue")])
     assert client.prompts[-1].session_id == "restored-session"
     assert result.output_text == "continued"
     assert not original_path.exists()
@@ -1184,7 +1184,7 @@ async def test_resume_rejects_active_execution(operation):
         session_id="original-session",
     )
     coroutine = (
-        agent.compact() if operation == "compact" else agent.run_turn(["continue"])
+        agent.compact() if operation == "compact" else agent.run_turn([UserMessage("continue")])
     )
     task = asyncio.create_task(coroutine)
     try:
@@ -1371,7 +1371,7 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
     )
     root = manager.create_root_runtime()
     parent = root.agent
-    await parent.run_turn(["parent prompt"])
+    await parent.run_turn([UserMessage("parent prompt")])
     parent_bytes = parent.session_file_path.read_bytes()
     try:
         path = await manager.spawn_agent(
@@ -1508,7 +1508,7 @@ async def test_tool_observer_failure_does_not_abort_execution_or_commit():
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: observer_errors.append(context))
     try:
-        result = await agent.run_turn(["test"])
+        result = await agent.run_turn([UserMessage("test")])
     finally:
         loop.set_exception_handler(previous_handler)
     assert result.output_text == "answer"
@@ -1551,7 +1551,7 @@ async def test_follow_up_messages_do_not_split_tool_call_result_groups():
             ModelResponse([AssistantMessage("done")]),
         ]
     )
-    await make_agent(model, tools, ContextConfig()).run_turn(["start"])
+    await make_agent(model, tools, ContextConfig()).run_turn([UserMessage("start")])
     assert model.prompts[-1].input[-4:] == [
         ToolResult("first", "notice", "first"),
         ToolResult("second", "notice", "second"),
@@ -1582,7 +1582,7 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
             tools,
             ContextConfig(),
         )
-        assert (await agent.run_turn(["test"])).output_text == "done"
+        assert (await agent.run_turn([UserMessage("test")])).output_text == "done"
         assert len(failures) == 2
         assert all(
             item["message"].startswith("Agent event observer failed:")
@@ -1620,7 +1620,7 @@ async def test_background_count_failure_does_not_hide_terminal_event():
     previous_handler = loop.get_exception_handler()
     loop.set_exception_handler(lambda _loop, context: errors.append(context))
     try:
-        assert (await agent.run_turn(["start"])).output_text == "done"
+        assert (await agent.run_turn([UserMessage("start")])).output_text == "done"
     finally:
         loop.set_exception_handler(previous_handler)
     assert events[-1].kind == "turn_completed"
@@ -1659,7 +1659,7 @@ async def test_context_recovery_is_local_to_each_sample_without_replaying_tools(
     client = ScriptedModelClient(response_factory=respond)
     agent = make_agent(client, tools, ContextConfig(), event_handler=events.append)
 
-    result = await agent.run_turn(["start"], turn_id="one-turn")
+    result = await agent.run_turn([UserMessage("start")], turn_id="one-turn")
 
     assert result.output_text == "done"
     assert result.iterations == 2
@@ -1691,7 +1691,7 @@ async def test_context_recovery_retries_only_once_and_reports_latest_usage():
     agent = make_agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(ContextLengthExceeded, match="requested 300 tokens"):
-        await agent.run_turn(["start"])
+        await agent.run_turn([UserMessage("start")])
 
     assert client.call_count == 3
     assert not agent.is_running
@@ -1720,7 +1720,7 @@ async def test_context_recovery_does_not_retry_failed_compaction(failure):
     agent = make_agent(client, ToolRegistry(), ContextConfig(), event_handler=events.append)
 
     with pytest.raises(failure):
-        await agent.run_turn(["start"])
+        await agent.run_turn([UserMessage("start")])
 
     assert client.call_count == 2
     assert not agent.is_running

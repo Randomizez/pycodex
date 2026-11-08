@@ -208,12 +208,16 @@ limit, including archived sessions. Both use the same idle-only restore path.
 The list includes only recordings with a real user message, excluding
 metadata-only empty sessions. Ordinary recorded sessions use UUIDv7 identities
 and append to `CODEX_HOME/sessions/.../rollout-*.jsonl`.
-Each queued request is one private record of submission id, turn id, texts and
+Each queued request is one private record of submission id, turn id, messages and
 futures. The unused public `Submission` / `UserTurnOp` wrappers are removed;
-callers submit frontend text through `submit_input`, or independent turns through `enqueue`.
+callers submit frontend text through `submit_input`, or independent turns through
+`enqueue(UserMessage(...))`. `Agent.run_turn(messages, turn_id=None)` receives
+complete items. String entry points (`submit_input`, `message`, `ask`) create a
+UserMessage once; queueing and execution preserve its identity, author and time.
 The workspace keeps queued submissions out of its displayed conversation.
-`TurnStartedEvent` adds the actual user texts in execution order, including
-coalesced steer inputs; enqueue admission alone does not create a user block.
+`TurnStartedEvent` carries the actual messages in execution order, including
+coalesced steer inputs. Steer reuses the execution's display row; each input
+retains its own identity. Enqueue admission alone does not create a user block.
 The composer previews pending Steer and Queue text in small capsules beside
 the status pill. The preview comes from existing queued submission metadata.
 Commands return structured results and never become user messages. Unknown
@@ -300,12 +304,13 @@ numbering and line breaks.
 
 Web and VS Code restore the latest 80 display entries from the saved rollout,
 including compact dividers and earlier questions/replies within that window.
-Workspace turns carry `prompt_at` and `response_at` ISO timestamps. Live turns
-stamp them when the turn starts and when it completes, fails or is interrupted;
-restored turns use the rollout record times of the visible prompt and reply
-(`load_display_history(..., with_times=True)`), and older entries without a
-time leave them `null`. The chat shows the time under each user message and
-reply, with the date when it is not today and the reply's elapsed time.
+Workspace turns carry individual `messages` with `message_id`, `text`, `name`
+and `created_at`. Each input has an author/time header and a DOM key based on
+its message ID. The aggregate `prompt` and `prompt_at` are derived at the Web
+boundary. `response_at` comes from the committed assistant message; failures
+without a reply do not invent a response time. `load_display_history(path)`
+always returns the same metadata. Older records use their recorded timestamps,
+or `null` when unknown. Reply times include elapsed time from the first input.
 Compaction adds a divider to the existing conversation list. Display restoration
 reuses the rollout parser; model context still resumes from the latest checkpoint.
 
@@ -1349,9 +1354,9 @@ frame formatting belongs to `EventDisplay`. Shared text/color/summary formatting
 non-event errors and one-shot/JSON output helpers live in `utils/event_helpers.py`.
 Tool summaries use the pure `summarize_tool_result(call, result)` projection;
 structured exec metadata is displayed from the result object, without parsing
-legacy `Process running...` text. Conversation pairs are projected by
+legacy `Process running...` text. Conversation rows are projected by
 `utils.history.conversation_history_to_turns`, independently of rollout storage.
-That helper module depends only on the standard library, never events or
+That helper module depends on protocol items and the standard library, never events or
 frontends. The compactor's event type import is type-checking-only so loading
 the utils package cannot create an events/utils initialization cycle.
 
@@ -1378,8 +1383,10 @@ Stream, tool, retry, error and question presentation still uses the shared
 rendered activity, command result, error or question appears separately above
 the input and does not accumulate in the answer. Starting or completing a turn
 clears that activity, and resolving a question clears its prompt.
-Attach/resume restores the latest completed reply and any active stream or
-pending question.
+Attach/resume loads the snapshot directly, restoring the latest completed reply,
+active stream and pending question. Committed messages update card history through
+the same pure conversion used by Web and rollout loading; completion only updates
+presentation state.
 Completed prompt/reply pairs are available in a native Feishu JSON 2.0
 `collapsible_panel`, collapsed by default. Clicking its header expands or
 collapses it; Previous/Next buttons browse one earlier turn at a time. These callbacks
@@ -1413,8 +1420,11 @@ Compact summaries derive from item counts and pruned-tool counts instead
 of storing duplicate text; the Web adapter still supplies the same `summary`
 field on the wire.
 
-`TurnStartedEvent` carries only `user_texts`; its `visualize()` method joins the
-text. Local tool events carry the existing `ToolCall` and
+`TurnStartedEvent.messages` contains complete items; `visualize()` joins visible
+input text. `InputQueuedEvent.message` contains the admitted UserMessage.
+`MessagesAddedEvent` reports messages after `_append_history` commits them,
+including mailbox deliveries, tool follow-ups and retained partial replies.
+Local tool events carry the existing `ToolCall` and
 `ToolResult`, rather than duplicate tool names, ids and error flags.
 Provider tool reports use `ToolCalledEvent`, distinct from local execution
 starting with `ToolStartedEvent`.
@@ -1686,19 +1696,49 @@ Keep `UserMessage`, `AgentMessage`, `AssistantMessage`, `ToolCall` and `ToolResu
 conversation contracts when extending the richer item/event model. The
 test-only `ScriptedModelClient` belongs in `tests/fakes.py`, not the runtime
 package; the model boundary must remain replaceable and testable.
-`UserMessage.name` is local string metadata, defaulting to `"user"`. Runtime
-retains each message's name through steer delivery and queued turns. History API
-responses and rollout records use `serialize_history_item` to include it; `UserMessage.serialize()`
-deliberately excludes it from model requests. Rollout replay and retained
-compaction-checkpoint messages restore the name. Display projections remain
-text-only, and `sender` continues to identify the input transport.
+`UserMessage.name` is local string metadata, defaulting to `"user"`; `sender`
+continues to identify the input transport. User, agent and assistant messages
+also carry local `message_id`, `created_at` and `turn_id`. Message IDs and creation
+times are assigned on creation; binding a turn preserves them. Protocol `id`
+keeps its provider meaning. Tracking fields do not change content equality;
+compare `message_id` explicitly when testing identity.
+`serialize_history_item` persists local metadata in rollout and checkpoint
+messages. Model-facing `serialize()` omits it, including UserMessage names.
+Legacy display records derive stable IDs from record position and contents;
+their time comes from the record, or remains `None` when unknown. Loading never
+rewrites the original file or infers authors from message text.
 User/assistant messages default to `visible=True`, agent messages to `False`.
 This local field survives recording and checkpoints but is omitted from model
-serialization. Runtime history and rollout display share `iter_display_turns`:
-hidden inputs do not produce prompts; final phases close replies, and hidden
-mail does not split commentary from its final answer. Existing unphased replies
-are retained at input boundaries; without recorded phases, exact execution
-grouping cannot be reconstructed. Live frontend event handling is unchanged.
+serialization. The pure `conversation_history_to_turns(history, previous=())`
+is shared by runtime snapshots, live Web/Feishu views and rollout display.
+It returns a tuple of dictionaries with fixed keys: `turn_id`, `messages`,
+`response`, `response_id`, `response_at`, `response_phase`, and `kind`.
+Compaction rows use the same shape with `kind="compaction"` and empty content.
+The optional previous rows and all input messages remain unchanged. Inputs
+are deduplicated by message ID, and explicit turn IDs group execution records.
+For legacy records, visible inputs and final phases delimit rows; hidden mail
+does not split commentary from its final reply. Exact execution grouping cannot
+be recovered from old records without turn IDs and phases.
+
+`load_display_history(path, limit=80)` reads records backwards and stops after
+enough complete display rows are available. A row may contain several steer
+messages; hidden mail does not consume the limit. `limit=None` reads all rows,
+and zero reads none. Persisted compaction markers use record offsets as stable
+IDs, so changing the display window does not change their identity. The limit
+bounds the requested rows, not the bytes in an individual row or tool record.
+Model resume independently restores the full active history from the latest
+checkpoint. UTF-8 record offsets are counted incrementally during forward reads.
+
+Runtime derives display history from Agent history on demand; it does not keep
+a `completed_history` copy. WebSessionView retains its existing presentation
+cache and loads snapshots directly. Reload refreshes that cache by stable IDs,
+preserving control output and submission aliases. Changes to Message layouts
+require a full process restart; Reload does not migrate old Agent/Runtime objects.
+The Web snapshot exposes the committed reply's `response_phase`; the page uses
+it with execution status to keep non-final replies animated during execution.
+Committing commentary to history does not make it a final reply.
+Temporary replies hide their timestamp and elapsed-time label without discarding
+the message's recorded creation time.
 Construction and first-write requirements are in
 [Recording lifecycle](#recording-lifecycle); they also apply to child context
 inheritance and resume.
