@@ -207,7 +207,7 @@ def install_auth(
                 return await call_next(request)
             grant = None if target is None else sharing.grant(target[0], cookie)
             if grant is not None:
-                if target[1].rstrip("/") == "/api/share":
+                if target[1].rstrip("/") in {"/api/share", "/api/reload"}:
                     return JSONResponse({"error": "administrator access required"}, 403)
                 request.scope["pycodex.access_role"] = "visitor"
                 return await call_next(request)

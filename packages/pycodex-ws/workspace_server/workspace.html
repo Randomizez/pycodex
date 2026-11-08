@@ -1005,6 +1005,7 @@
       background: var(--panel-raised);
     }
     .composer-surface {
+      position: relative;
       min-width: 0;
       border: 1px solid var(--line-strong);
       border-radius: 10px;
@@ -1474,8 +1475,8 @@
           <a>Re-enable customizations</a>
         </p>
         <div class="composer-surface">
+          <div id="toast" class="toast" role="status" aria-live="polite"></div>
           <div class="spinner-wrap">
-            <div id="toast" class="toast" role="status" aria-live="polite"></div>
             <div id="queueHint" class="queue-hint" role="status" aria-live="polite" hidden>
               <span id="steerHint" class="queue-indicator" hidden>
                 <span class="queue-symbol" role="img" aria-label="Steer">↑</span>
@@ -1622,7 +1623,18 @@
         </span>
         <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
       </button>
+      <button id="reloadPycodex" type="button" class="settings-option" aria-labelledby="reloadPycodexLabel" aria-describedby="reloadPycodexHint">
+        <span class="settings-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6"/></svg>
+        </span>
+        <span class="settings-option-copy">
+          <span id="reloadPycodexLabel" class="settings-option-title">Reload PyCodex</span>
+          <span id="reloadPycodexHint" class="settings-option-description">Apply updated backend code while keeping sessions.</span>
+        </span>
+        <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
     </div>
+    <p id="settingsError" role="alert"></p>
   </dialog>
   <dialog id="workspaceShare" class="workspace-settings" aria-labelledby="workspaceShareTitle">
     <header>
@@ -3593,11 +3605,26 @@
     const shareSave = document.getElementById("shareSave");
     const shareDisable = document.getElementById("shareDisable");
     const shareLink = document.getElementById("shareLink");
+    const settingsError = document.getElementById("settingsError");
+    const reloadButton = document.getElementById("reloadPycodex");
+    const reloadHint = document.getElementById("reloadPycodexHint");
+    const defaultReloadHint = reloadHint.textContent;
+    let reloadAborter = null;
     const isAdministrator = document.body.dataset.accessRole === "admin";
     for (const dialog of [settingsDialog, shareDialog, newSessionDialog]) {
       dialog.querySelector("[data-close-dialog]").addEventListener("click", () => dialog.close());
       dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
     }
+    settingsDialog.addEventListener("close", () => {
+      if (reloadAborter) {
+        reloadAborter.abort();
+        reloadAborter = null;
+        showToast("Reload canceled");
+      }
+      settingsError.textContent = "";
+      reloadHint.textContent = defaultReloadHint;
+      reloadButton.disabled = false;
+    });
     shareDialog.addEventListener("close", () => { sharePassword.value = ""; });
     customizeButtons.forEach(button => {
       button.addEventListener("click", () => {
@@ -3658,6 +3685,61 @@
       updateSharing("PUT");
     });
     shareDisable.addEventListener("click", () => updateSharing("DELETE"));
+    reloadButton.addEventListener("click", async () => {
+      if (!isAdministrator) return;
+      settingsError.textContent = "";
+      reloadButton.disabled = true;
+      const aborter = reloadAborter = new AbortController();
+      const activeLocal = sessions.filter(s => s.running && s.spinner !== "idle: sleeping");
+      reloadHint.textContent = activeLocal.length
+        ? `Waiting for active turn (${activeLocal.map(s => s.title || s.id).join(", ")})…`
+        : "Checking active sessions…";
+      try {
+        while (true) {
+          const checkResp = await fetch(relativeUrl("api/reload"), {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({session_id: activeSessionId, check_only: true}),
+            signal: aborter.signal,
+          });
+          const checkPayload = await checkResp.json();
+          if (!checkResp.ok || !checkPayload.ok) {
+            throw new Error(checkPayload.error || checkPayload.detail || `HTTP ${checkResp.status}`);
+          }
+          if (checkPayload.status === "ready") break;
+          const names = (checkPayload.running_sessions || []).join(", ");
+          reloadHint.textContent = names
+            ? `Waiting for active turn (${names})…`
+            : "Waiting for active turn to finish…";
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
+        reloadHint.textContent = "Checking syntax & reloading modules…";
+        const response = await fetch(relativeUrl("api/reload"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({session_id: activeSessionId}),
+          signal: aborter.signal,
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+        }
+        if (reloadAborter === aborter) reloadAborter = null;
+        settingsDialog.close();
+        updateSessions(payload.sessions);
+        renderSnapshot(payload.snapshot);
+        showToast(payload.reloaded_modules
+          ? `PyCodex reloaded (${payload.reloaded_modules} modules)`
+          : "PyCodex reloaded");
+      } catch (error) {
+        if (aborter.signal.aborted) return;
+        settingsError.textContent = error.message;
+        reloadHint.textContent = defaultReloadHint;
+        reloadButton.disabled = false;
+      } finally {
+        if (reloadAborter === aborter) reloadAborter = null;
+      }
+    });
     document.getElementById("shareCopy").addEventListener("click", async () => {
       try {
         await navigator.clipboard.writeText(shareLink.value);

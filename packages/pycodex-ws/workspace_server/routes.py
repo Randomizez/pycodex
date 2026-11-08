@@ -181,18 +181,6 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
     ]
 
 
-def _install_workspace_routes(
-    app: Starlette,
-    manager: WorkspaceSessionManager,
-    board_path: "typing.Union[Path, None]",
-    work_dir: Path,
-) -> None:
-    context = WorkspaceRouteContext(manager, board_path, work_dir)
-    app.routes.extend(workspace_routes(
-        lambda request: context, app.state.workspace_sharing,
-    ))
-
-
 def _views_response(manager: WorkspaceSessionManager) -> JSONResponse:
     try:
         views = manager.views.list_views()

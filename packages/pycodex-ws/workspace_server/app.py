@@ -22,8 +22,10 @@ from starlette.routing import Route
 
 from pycodex.bootstrap import build_model, configure_loguru
 from pycodex.config import CodexConfig, DEFAULT_CODEX_CONFIG_PATH
+from pycodex.events import IDLE_SLEEPING_STATUS
 from pycodex.multi_agents import AgentsManager
 from pycodex.utils import uuid7_string
+from pycodex.utils.get_env import get_package_version
 from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
 from pycodex_ws import register_feishu_commands
 from pycodex_ws.server_support import (
@@ -37,10 +39,10 @@ from pycodex_ws.server_support import (
 
 from .routes import (
     WorkspaceRouteContext,
-    _install_workspace_routes,
     _render_workspaces_manager_shell,
     workspace_routes,
 )
+from .reloader import preflight_check, reload_modules_in_place, sync_reloaded_sessions
 from .session_view import (
     JSONValue,
     SPINNER_STATUS_PREVIEW_LIMIT,
@@ -63,6 +65,7 @@ from .workspaces import (
     WorkspaceRegistry,
     WorkspaceSessionManager,
     load_workspace_definitions,
+    session_snapshot,
     workspace_file_path,
 )
 
@@ -146,11 +149,19 @@ def create_app(
         else WorkspaceSessionManager(session_source, state_path)
     )
     board_path = workspace_file_path(state_path, ".html") if enable_board else None
+    resolved_work_dir = Path(work_dir or Path.cwd()).resolve()
     app = _create_lifespan_app(manager.start, manager.close)
     sharing = WorkspaceSharing(password, multi=False)
     _install_auth(app, password, sharing=sharing)
-    _install_workspace_routes(app, manager, board_path, Path(work_dir or Path.cwd()).resolve())
     _install_sharing_routes(app, sharing)
+    _install_reload_routes(
+        app,
+        sharing,
+        lambda: [("", manager)],
+        lambda _connection: WorkspaceRouteContext(manager, board_path, resolved_work_dir),
+        "",
+        (),
+    )
     return app
 
 
@@ -215,17 +226,23 @@ def create_multi_workspace_app(
             entry.definition.workspace_id, entry.definition.workspace_id,
         )
 
-    app.routes.extend(workspace_routes(
-        resolve_workspace, sharing, "/w/{workspace_id}", [
-            Route("/", index, methods=["GET"]),
-            Route("/favicon.ico", favicon, methods=["GET"]),
-            Route("/api/workspaces", workspaces, methods=["GET"]),
-            Route("/api/workspaces", add_workspace, methods=["POST"]),
-            Route("/api/workspaces/{workspace_id}", delete_workspace, methods=["DELETE"]),
-            Route("/w/{workspace_id}", workspace_index_redirect, methods=["GET", "HEAD"]),
-        ],
-    ))
+    leading_routes = [
+        Route("/", index, methods=["GET"]),
+        Route("/favicon.ico", favicon, methods=["GET"]),
+        Route("/api/workspaces", workspaces, methods=["GET"]),
+        Route("/api/workspaces", add_workspace, methods=["POST"]),
+        Route("/api/workspaces/{workspace_id}", delete_workspace, methods=["DELETE"]),
+        Route("/w/{workspace_id}", workspace_index_redirect, methods=["GET", "HEAD"]),
+    ]
     _install_sharing_routes(app, sharing, registry)
+    _install_reload_routes(
+        app,
+        sharing,
+        lambda: [(key, registry._entries[key].manager) for key in registry._order],
+        resolve_workspace,
+        "/w/{workspace_id}",
+        leading_routes,
+    )
     return app
 
 
@@ -263,6 +280,129 @@ def _install_sharing_routes(app, sharing, registry=None):
     app.routes.insert(0, Route(
         prefix + "/api/share", share_settings, methods=["GET", "PUT", "DELETE"],
     ))
+
+
+def _install_reload_routes(
+    app,
+    sharing,
+    get_managers,
+    resolve_workspace,
+    prefix,
+    leading_routes,
+):
+    reloading = False
+
+    def active_sessions() -> "typing.List[str]":
+        active = []
+        for workspace_id, manager in get_managers():
+            for session in manager.list_sessions():
+                if (
+                    session.get("running")
+                    and session.get("spinner") != IDLE_SLEEPING_STATUS
+                ):
+                    title = session.get("title") or session.get("id") or "session"
+                    active.append(
+                        "{0} / {1}".format(workspace_id, title)
+                        if workspace_id
+                        else str(title)
+                    )
+        return active
+
+    async def reload_pycodex(request: Request) -> JSONResponse:
+        nonlocal reloading
+        try:
+            target = resolve_workspace(request).manager
+        except (KeyError, ValueError):
+            raise HTTPException(status_code=404, detail="workspace not found")
+        if request.scope["pycodex.access_role"] != "admin":
+            return JSONResponse({"error": "administrator access required"}, 403)
+        payload = (
+            await _json_object_body(request, max_bytes=4096)
+            if await request.body()
+            else {}
+        )
+        session_id = payload.get("session_id")
+        if session_id is not None and not isinstance(session_id, str):
+            return JSONResponse({"error": "session_id must be a string"}, 422)
+        if payload.get("check_only") is True:
+            active = active_sessions()
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "status": "waiting" if (reloading or active) else "ready",
+                    "active_turns": len(active),
+                    "running_sessions": active,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        while reloading or active_sessions():
+            await asyncio.sleep(0.05)
+        reloading = True
+        try:
+            try:
+                await preflight_check()
+            except Exception as exc:
+                return JSONResponse(
+                    {"ok": False, "status": "preflight_failed", "error": str(exc)},
+                    status_code=400,
+                    headers={"Cache-Control": "no-store"},
+                )
+            reloaded_modules, rollback_modules = reload_modules_in_place()
+            restore_views = lambda: None
+            try:
+                managers = [manager for _wid, manager in get_managers()]
+                restore_views = await sync_reloaded_sessions(managers)
+                refresh_routes()
+                for manager in managers:
+                    manager.refresh_profiles()
+                resolved_id = target.resolve_session_id(
+                    session_id if session_id in target._sessions else None
+                )
+                sessions_payload = target.list_sessions()
+                snapshot_payload = session_snapshot(target.get(resolved_id))
+            except Exception as exc:
+                restore_views()
+                rollback_modules()
+                refresh_routes()
+                return JSONResponse(
+                    {
+                        "ok": False,
+                        "status": "reload_failed",
+                        "error": "{0}: {1}".format(type(exc).__name__, exc),
+                    },
+                    status_code=400,
+                    headers={"Cache-Control": "no-store"},
+                )
+            return JSONResponse(
+                {
+                    "ok": True,
+                    "status": "reloaded",
+                    "reloaded_modules": reloaded_modules,
+                    "version": get_package_version(),
+                    "session_id": resolved_id,
+                    "sessions": sessions_payload,
+                    "snapshot": snapshot_payload,
+                },
+                headers={"Cache-Control": "no-store"},
+            )
+        finally:
+            reloading = False
+
+    app.routes.insert(
+        0, Route(prefix + "/api/reload", reload_pycodex, methods=["POST"])
+    )
+    fixed_routes = list(app.routes)
+
+    def refresh_routes() -> None:
+        from . import routes as routes_module
+
+        app.routes[:] = fixed_routes + list(
+            routes_module.workspace_routes(
+                resolve_workspace, sharing, prefix, leading_routes
+            )
+        )
+
+    refresh_routes()
 
 
 async def _http_exception_response(request: Request, exc: HTTPException) -> JSONResponse:
