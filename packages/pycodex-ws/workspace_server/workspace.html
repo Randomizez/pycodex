@@ -137,6 +137,8 @@
     .settings-link-row button { flex: 0 0 auto; }
     .workspace-settings [role="alert"] { color: var(--danger); }
     .workspace-settings [role="alert"]:empty { display: none; }
+    #oneLineAgentDialog { width: min(680px, calc(100vw - 32px)); }
+    #oneLineAgentDialog textarea { width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--ink); font: 12px/1.5 monospace; resize: vertical; }
     .board {
       border: 0;
       min-width: 0;
@@ -1626,6 +1628,16 @@
         </span>
         <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
       </button>
+      <button id="oneLineAgentSettings" type="button" class="settings-option" aria-labelledby="oneLineAgentLabel" aria-describedby="oneLineAgentHint" aria-haspopup="dialog" aria-controls="oneLineAgentDialog">
+        <span class="settings-option-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg>
+        </span>
+        <span class="settings-option-copy">
+          <span id="oneLineAgentLabel" class="settings-option-title">One-line Agent</span>
+          <span id="oneLineAgentHint" class="settings-option-description">An Agent in your shell, no installation needed.</span>
+        </span>
+        <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+      </button>
       <button id="shareWorkspace" type="button" class="settings-option" aria-labelledby="shareWorkspaceLabel" aria-describedby="shareWorkspaceHint" aria-haspopup="dialog" aria-controls="workspaceShare">
         <span class="settings-option-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></svg>
@@ -1675,6 +1687,35 @@
     </div>
     <p class="settings-note">Sharing ends when this server restarts.</p>
     <p id="shareError" role="alert"></p>
+  </dialog>
+  <dialog id="oneLineAgentDialog" class="workspace-settings" aria-labelledby="oneLineAgentTitle">
+    <header>
+      <h2 id="oneLineAgentTitle">One-line Agent</h2>
+      <button type="button" class="settings-close" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <p>An Agent that runs directly in most shells without installation, for bootstrapping an Agent environment or simple debugging.</p>
+    <form id="oneLineAgentForm">
+      <label for="oneLineAgentProfile">Profile</label>
+      <select id="oneLineAgentProfile"></select>
+      <div class="settings-actions">
+        <button id="oneLineAgentCreate" class="settings-primary" type="submit">Enable One-line Agent</button>
+        <button id="oneLineAgentStop" class="settings-danger" type="button" disabled>Stop</button>
+        <button id="oneLineAgentSession" type="button" hidden>Open latest session</button>
+      </div>
+    </form>
+    <p id="oneLineAgentStatus" role="status"></p>
+    <div id="oneLineAgentCommands" hidden>
+      <label for="oneLineAgentLinux">Bash</label>
+      <textarea id="oneLineAgentLinux" rows="4" spellcheck="false"></textarea>
+      <button type="button" data-copy-one-line-agent="oneLineAgentLinux">Copy Bash command</button>
+      <label for="oneLineAgentWindows">PowerShell</label>
+      <textarea id="oneLineAgentWindows" rows="5" spellcheck="false"></textarea>
+      <button type="button" data-copy-one-line-agent="oneLineAgentWindows">Copy PowerShell command</button>
+      <p class="settings-note">Edit the example task, then copy and run the command in your terminal.</p>
+    </div>
+    <p id="oneLineAgentError" role="alert"></p>
   </dialog>
   <template id="emptyChat">
     <div class="empty-chat">
@@ -3638,7 +3679,7 @@
     const defaultReloadHint = reloadHint.textContent;
     let reloadAborter = null;
     const isAdministrator = document.body.dataset.accessRole === "admin";
-    for (const dialog of [settingsDialog, shareDialog, newSessionDialog]) {
+    for (const dialog of [settingsDialog, shareDialog, newSessionDialog, document.getElementById("oneLineAgentDialog")]) {
       dialog.querySelector("[data-close-dialog]").addEventListener("click", () => dialog.close());
       dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
     }
@@ -3712,6 +3753,83 @@
       updateSharing("PUT");
     });
     shareDisable.addEventListener("click", () => updateSharing("DELETE"));
+    function installOneLineAgentSettings() {
+      const dialog = document.getElementById("oneLineAgentDialog");
+      const profile = document.getElementById("oneLineAgentProfile");
+      const create = document.getElementById("oneLineAgentCreate");
+      const stop = document.getElementById("oneLineAgentStop");
+      const open = document.getElementById("oneLineAgentSession");
+      const status = document.getElementById("oneLineAgentStatus");
+      const error = document.getElementById("oneLineAgentError");
+      const commands = document.getElementById("oneLineAgentCommands");
+      let binding = null;
+
+      async function update(method = "GET") {
+        error.textContent = "";
+        create.disabled = stop.disabled = true;
+        try {
+          const options = {method};
+          if (method === "POST") {
+            options.headers = {"Content-Type": "application/json"};
+            options.body = JSON.stringify({profile: JSON.parse(profile.value)});
+          }
+          const response = await fetch(relativeUrl("api/one-line-agent"), options);
+          const payload = await response.json();
+          if (!response.ok) throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+          binding = payload.binding;
+          const defaultLabel = payload.default_profile === null ? "Default" : `Default (${payload.default_profile})`;
+          profile.replaceChildren(new Option(defaultLabel, "null"));
+          for (const name of payload.profiles) profile.add(new Option(name, JSON.stringify(name)));
+          if (binding) profile.value = JSON.stringify(binding.profile);
+          const enabled = !!binding?.enabled;
+          profile.disabled = enabled;
+          create.disabled = enabled;
+          stop.disabled = !enabled;
+          open.hidden = !binding?.session_id;
+          commands.hidden = !enabled;
+          status.textContent = !enabled ? "One-line Agent is off." :
+            `Enabled · ${binding.session_count} session${binding.session_count === 1 ? "" : "s"} open.`;
+          document.getElementById("oneLineAgentLinux").value = binding?.one_liners?.linux || "";
+          document.getElementById("oneLineAgentWindows").value = binding?.one_liners?.windows || "";
+        } catch (failure) {
+          error.textContent = failure.message;
+          create.disabled = !!binding?.enabled;
+          stop.disabled = !binding?.enabled;
+        }
+      }
+
+      document.getElementById("oneLineAgentSettings").addEventListener("click", () => {
+        if (!isAdministrator) return;
+        settingsDialog.close();
+        status.textContent = "Loading…";
+        commands.hidden = true;
+        dialog.showModal();
+        update();
+      });
+      document.getElementById("oneLineAgentForm").addEventListener("submit", event => {
+        event.preventDefault();
+        update("POST");
+      });
+      stop.addEventListener("click", () => update("DELETE"));
+      open.addEventListener("click", () => {
+        dialog.close();
+        selectSession(binding.session_id);
+      });
+      for (const button of dialog.querySelectorAll("[data-copy-one-line-agent]")) {
+        button.addEventListener("click", async () => {
+          const field = document.getElementById(button.dataset.copyOneLineAgent);
+          try {
+            await navigator.clipboard.writeText(field.value);
+            showToast("Terminal command copied");
+          } catch (failure) {
+            field.focus();
+            field.select();
+            error.textContent = "Select and copy the terminal command.";
+          }
+        });
+      }
+    }
+    installOneLineAgentSettings();
     reloadButton.addEventListener("click", async () => {
       if (!isAdministrator) return;
       settingsError.textContent = "";

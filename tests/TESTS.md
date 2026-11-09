@@ -112,6 +112,25 @@ turn after observing running/waiting. The syntax probe avoids the old pytest
 
 ## 自动化测试
 
+One-line Agent 的 API、profile、token、多 session、关闭、旧会话热重载、临时页签与客户端循环
+回归可单独运行：
+`env -u VIRTUAL_ENV uv run --dev pytest packages/pycodex-ws/tests/test_one_line_agent.py`。
+客户端测试使用真实 Bash/curl 和模拟模型，覆盖更换 key 后缀创建独立 session、
+仅发送任务、不上报 cwd、命令/结果显示、Router 与响应中断后立即结束（不重试，
+不执行未完整收到的命令）。服务端自动把 final 包成 `echo` 显示命令，
+覆盖引号、Unicode、换行及 shell 替换语法的原文展示；显示回传即使失败也不触发
+新模型调用、不串入下一轮工具结果。Commentary 保留在 Web 历史中。
+API 测试覆盖无平台参数的 `/b`、固定 12 字符鉴权前缀及会话后缀、首个请求直接创建 session、
+final 显示回传后及模型失败后 HTTP 保持等待、网页继续对话和 steer（含真实 Bash 常驻 one-liner）、
+空闲时重新运行 one-liner 复用历史并替换旧等待请求、模型忙碌时不接管连接、
+关闭后用旧 key 创建全新对话及更新页签计数、
+原始 UTF-8 命令/结果、关闭时释放等待、仅有 `cmd` 的工具协议、
+保留 profile 指令且不注入 host 环境、路径或 Git/sandbox 元数据、
+并发结果隔离、启动期间
+停用、单个 session 关闭后新调用仍可用；
+含 PowerShell 语法的原文往返测试始终运行，实际执行测试需要 PATH 中有 `powershell.exe`
+或 `pwsh`，否则跳过。测试不调用真实模型。
+
 Workspace 重连诊断折叠的浏览器回归手动运行，不加入 CI。
 使用 Node 18+，在独立目录安装 Playwright 及 Chromium 后运行：
 

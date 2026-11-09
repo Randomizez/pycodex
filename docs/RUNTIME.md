@@ -815,6 +815,86 @@ for a permission/question response. Submission results and event replay are
 bounded in-memory stores; retention and reset behavior are part of the linked
 API contract.
 
+### One-line Agent sessions
+
+Workspace **Settings → One-line Agent** enables a reusable, profile-selected API in
+`workspace_server.one_line_agent`. Each new key suffix creates its own
+`AgentsManager`, Runtime, history and session, using the existing `tools_factory`
+and ordinary threaded Session adapter. Enabling the API alone creates no session.
+`WorkspaceSessionManager.attach_session` registers each frontend-owned temporary
+session. Core, normal `create_session`
+and zero-argument profile factories retain their existing interfaces. The model
+and instructions come directly from the profile, without workspace CLI overrides.
+Only the remote `exec_command(cmd)` is registered; commands run noninteractively
+to completion in the terminal's current directory. No client cwd is collected,
+reported or automatically selected. There are no PTYs or `write_stdin`.
+The prompt explicitly warns that synchronous execution can block the Agent
+indefinitely, with no automatic execution timeout or follow-up interrupt tool.
+It calls for finite operations, command-level time limits where appropriate,
+and detached background processes whose standard streams do not hold the call open.
+On turn completion, the adapter wraps the final response in a quoted `echo`
+command for terminal display, without requiring a model tool call.
+
+ASGI app state holds one service and token (12 URL-safe characters,
+72 random bits) per workspace manager. `T` contains this token followed by a
+nonempty session suffix. The one-liners hardcode suffix `1`; independent sessions or parallel
+clients must choose another suffix. Both clients send raw UTF-8 to `POST /b`,
+under the workspace's existing URL prefix. There is no platform parameter.
+The full loop is inline in the local command, with no downloaded startup script.
+The first request for a suffix creates its session immediately and submits only
+the task. Later requests with the same complete key return combined output
+followed by `LF + [exit N]`. Successful responses contain only the raw command
+text, including generated final-display commands. When no command is available,
+the request remains pending across completed, failed and interrupted turns.
+There is no empty completion response. Web follow-ups, queueing and steer use the existing Runtime;
+issued synchronous commands finish before a steer can take effect.
+Rerunning the one-liner can submit a new task when the Runtime is idle and has no
+pending command result. The adapter queries that state on the worker loop, keeps
+the Runtime/history, and replaces the old reply queue before submission. An old
+waiting request receives HTTP 409 instead of consuming the new caller's command.
+There is no handshake, step counter, polling, response replay or
+automatic retry. Each invocation owns its reply queue and pending tool result;
+requests wait until the Agent supplies a command. Network and HTTP
+failures end the client loop. HTTP handlers and connection state run on the server
+loop; tools and observations cross to it from the session worker. Input enters
+through Runtime and tool results resolve the pending await. Only session/admission
+closure or idle connection replacement releases the old waiting channel with an
+HTTP error. Model failures are shown
+by the ordinary Web session without closing the terminal connection.
+Final text is quoted as literal data, including ASCII and typographic apostrophes,
+so shell substitutions in the answer do not execute in Bash or PowerShell.
+The adapter tracks the command actually sent to the terminal: a display result,
+even with a nonzero exit code, is consumed without entering model history or
+starting another turn. It cannot resolve a later tool's pending result.
+Commentary remains in the workspace history. The local loops execute responses in a local Bash or
+PowerShell process, print each command with its completed output/exit code, and
+return the result in the next request. The short one-liners contain the initial task
+directly. Closing one tab or its Runtime closes only
+that conversation; the next request with the same key creates a fresh Runtime,
+session and history. The settings count includes only open session tabs.
+Task completion also leaves
+the service available. Stop revokes the shared token and closes all
+invocations, including sessions still starting. An admission-close observation
+releases the disconnected tool await before Runtime drains; no turn is cancelled
+and no remote process is killed. The local loop has no task-completion exit
+condition; leave it running for further input from the Web session.
+
+Existing context options omit host AGENTS, skills and permission instructions.
+One-line Agent also disables `include_environment_context`, omitting the host
+environment block, the cwd in user-instruction headings, and workspace/Git/sandbox
+request metadata. Profile instructions and conversation history remain intact.
+Client OS, shell and directory are not supplied;
+the Agent adapts commands from the task and tool results.
+Temporary session tabs are excluded from automatic restoration, while
+rollouts retain the ordinary recording lifecycle. Tokens and connections are
+never restored. Initial installation requires updated code and a restart on the
+workspace server and its Router for their authentication exceptions. Workspace
+Reload does not update a separate Router or replace an already-created
+authentication middleware closure.
+
+See the [One-line Agent protocol](../packages/pycodex-ws/workspace_server/WORKSPACE_API.md#one-line-agent)
+and [usage](../packages/pycodex-ws/README.md#one-line-agent).
+
 ## Frontend customization
 
 Browser workspace pages use the server OS user's `~/.pycodex/frontend/`,

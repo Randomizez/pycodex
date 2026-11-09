@@ -220,6 +220,11 @@ SKILL frontmatter 和 `agents/openai.yaml` 使用安全 YAML 解析；
 它们的 permissions 文本尚有旧差异：network 默认描述和 workspace-write
 的 writable-roots 句子未全面对齐，因此不能套用 full-access 的一致结论。
 
+`ContextConfig.include_environment_context` 默认开启。关闭时不注入环境块，
+user instructions 标题不附加 cwd，turn metadata 只保留 `turn_id`，不采集
+host 的 workspace/Git 信息或附加 sandbox 标签。该开关不移除显式配置的指令
+或历史；AGENTS、skills 和权限说明仍由各自选项控制。
+
 ## MultiAgentV2 developer context
 
 普通 developer message 后依次放两个独立 developer items：Agent 角色指令、

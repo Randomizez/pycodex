@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
-from pycodex_router.protocol import route_path, trusted_agent_request
+from pycodex_router.protocol import one_line_agent_request, route_path, trusted_agent_request
 
 AUTH_COOKIE_NAME = "pycodex_ws_auth"
 
@@ -199,6 +199,9 @@ def install_auth(
         root = request.scope.get("root_path", "")
         if sharing is not None:
             target = sharing.workspace(path)
+            if one_line_agent_request(request.scope):
+                # This endpoint validates its own workspace-scoped temporary token.
+                return await call_next(request)
             cookie = request.cookies.get(cookie_name)
             if path in {"/favicon.ico", "/login"}:
                 return await call_next(request)
@@ -207,7 +210,7 @@ def install_auth(
                 return await call_next(request)
             grant = None if target is None else sharing.grant(target[0], cookie)
             if grant is not None:
-                if target[1].rstrip("/") in {"/api/share", "/api/reload"}:
+                if target[1].rstrip("/") in {"/api/share", "/api/reload", "/api/one-line-agent"}:
                     return JSONResponse({"error": "administrator access required"}, 403)
                 request.scope["pycodex.access_role"] = "visitor"
                 return await call_next(request)

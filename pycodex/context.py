@@ -87,6 +87,7 @@ class ContextConfig:
     multi_agent_subagent_instructions: "typing.Union[str, None]" = None
     multi_agent_hint: "typing.Union[str, None]" = None
     code_mode_only: "typing.Union[bool, None]" = None
+    include_environment_context: "bool" = True
 
     def __post_init__(self):
         if self.code_mode_only is not None and not isinstance(self.code_mode_only, bool):
@@ -228,6 +229,8 @@ class ContextManager:
 
     def get_turn_metadata(self, turn_id: "str") -> "JSONDict":
         metadata: "JSONDict" = {"turn_id": turn_id}
+        if not self.config.include_environment_context:
+            return metadata
         if self._workspace_metadata_turn_id is None:
             self._workspace_metadata_turn_id = turn_id
             self._workspace_metadata_cache = get_workspace_turn_metadata(self.cwd)
@@ -641,13 +644,18 @@ class ContextManager:
         sections: "typing.List[str]" = []
         user_instructions = self._merged_user_instructions()
         if user_instructions is not None:
+            heading = (
+                f"{USER_INSTRUCTIONS_PREFIX}{self.cwd}"
+                if self.config.include_environment_context else "# User instructions"
+            )
             sections.append(
                 (
-                    f"{USER_INSTRUCTIONS_PREFIX}{self.cwd}\n\n"
+                    f"{heading}\n\n"
                     f"<INSTRUCTIONS>\n{user_instructions}\n</INSTRUCTIONS>"
                 )
             )
-        sections.append(self._serialize_environment_context())
+        if self.config.include_environment_context:
+            sections.append(self._serialize_environment_context())
         sections.extend(self._extra_contextual_user_messages)
         if not sections:
             return []

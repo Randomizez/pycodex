@@ -35,6 +35,92 @@ Custom frontends can use `__ACCESS_ROLE__` to hide management controls; authoriz
 is enforced on the server regardless of UI visibility. Sharing does not reduce
 Agent execution permissions, and does not replace Router authentication.
 
+## One-line Agent
+
+`GET/POST/DELETE api/one-line-agent` require workspace administrator authentication.
+POST requires `{"profile": "<name>"}`; `null` selects the current default.
+It enables the workspace's single reusable One-line Agent service without creating a
+session. An existing enabled service returns 409; DELETE revokes it and closes all
+its runs. GET and successful mutations return `{binding, profiles, default_profile}`
+with `Cache-Control: no-store`.
+`binding` is null when no service is registered; otherwise it contains `session_id`
+(latest session whose tab is still open, or null), `session_count` (open session
+tabs, including completed conversations), `profile`,
+`enabled` and
+`one_liners: {linux, windows}` (null after revocation). One-liners contain the
+temporary credential; these responses are administrator-only and not persisted.
+The selected profile is loaded directly; ordinary workspace session factories are
+unchanged. Recorded history is retained, but temporary tabs are not restored after
+a server restart.
+
+`POST b` uses `T`, independently of workspace and Router
+cookies. The short path is relative to the workspace URL, retaining any
+Router/node/workspace prefix. This is the only POST endpoint reachable with
+the token. The first 12 characters of `T` must match the workspace's token
+(72 random bits, URL-safe); the remaining nonempty suffix identifies a session.
+The token and every derived key remain valid until explicit revocation or
+server restart. The supplied one-liners hardcode suffix `1`; use a different suffix for
+an independent session or concurrent client. Suffixes are opaque strings, not counters
+allocated or advanced by the server.
+
+The first request for a suffix immediately creates a session and submits its body
+as the task. Its initial tab title is `OneLineAgent-<suffix>`. Subsequent requests
+with the same complete key return command results to that session and wait for
+the next command. Task completion returns a quoted `echo` command containing the
+final response; after its result is acknowledged, the channel waits for more
+commands. Interruption and model failure leave the waiting request pending.
+Further prompts and steer use the ordinary Web session input
+(`POST api/session/message` or its WebSocket equivalent), retaining the Runtime
+and history. Steer waits for issued synchronous commands to return before
+starting the revised turn.
+If the existing Runtime is idle and no command result is pending, a new request
+with the same key treats its body as a new task and reuses that Runtime/history.
+The adapter replaces the old reply channel before admitting the task; any previous
+waiting request ends with HTTP 409 (`terminal connection was replaced`), so it
+cannot consume the new caller's command. Idle status is queried on the session's
+worker loop. During model execution or startup, a request with no pending command
+result is rejected with 409.
+There is no handshake, step counter, replay cache or
+automatic retry. Closing a session ends that Runtime; the next request with its
+key creates a fresh session and treats the body as its first task. It does not
+restore the closed session's history. Service revocation still
+invalidates every derived key and releases waiting requests with HTTP errors.
+A missing suffix or invalid task returns 422.
+Use one terminal loop per key.
+
+Every client sends raw UTF-8 text. The initial body is only the prompt, with no cwd
+or other client metadata. Command-result bodies contain combined stdout/stderr followed
+by `LF + [exit N]`, where `N` is the integer process exit code. Invalid UTF-8 or
+result format returns 422. Requests are limited to 1 MiB on the wire (413).
+Successful responses are `text/plain; charset=utf-8`: the next tool `cmd` or a
+server-generated `echo` command displaying the final response.
+Idle requests remain pending; there is no polling or empty completion response.
+No session ID, message type or platform-specific encoding is returned.
+Final text is quoted literally
+for Bash and PowerShell, including ASCII and typographic apostrophes. Its display
+command uses the same raw command/result protocol. The server consumes that
+result regardless of exit code, without adding a tool result or user message to
+model history. It tracks the command actually sent, so the display acknowledgement
+cannot resolve a queued tool's result. All assistant messages retain their normal
+workspace history; commentary is not sent to the terminal.
+Model failures remain visible in the
+Web session while the execution channel waits for commands from later turns.
+
+The client executes each response locally, displays the command and completed
+result, and returns that result. The one-liner contains an
+editable example task and starts without an input prompt. Bash uses curl's
+`--data-raw`; PowerShell uses `irm` with a UTF-8 byte body. `exec_command` accepts only `cmd`;
+each command inherits the terminal's current directory without automatic `cd`.
+The complete client loop remains inline in the one-liner; no startup script is fetched.
+
+Requests wait for the next command regardless of task boundaries. Clients execute a response
+only after the HTTP request succeeds, and stop on any network or HTTP error. The server
+session can still be inspected or closed from the workspace after a client exits.
+The local loop has no task-completion exit condition and stays connected for Web
+follow-ups. An idle session can also be continued by rerunning the one-liner with
+the same key and a new task. This does not replay disconnected command execution or restore sessions
+after server restart.
+
 ## Creating sessions
 
 `GET api/sessions` returns `{sessions, profiles, default_profile}`. `profiles`

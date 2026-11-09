@@ -59,6 +59,15 @@ def agent_api_request(scope):
     )
 
 
+def one_line_agent_request(scope):
+    """Only the terminal exchange endpoint; its workspace validates the temporary token."""
+    return (
+        scope["type"] == "http" and scope["method"] == "POST"
+        and re.fullmatch(r"(?:/w/[A-Za-z0-9_-]+)?/b", route_path(scope))
+        is not None
+    )
+
+
 def trusted_agent_request(scope):
     # This flag comes only from the private socket or an authenticated tunnel
     # envelope, never from HTTP headers or the forwarded ASGI scope.

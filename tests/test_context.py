@@ -407,6 +407,36 @@ def test_context_manager_only_includes_enabled_developer_instructions(
     ] == ([] if developer_instructions is None else [developer_instructions])
 
 
+@pytest.mark.parametrize("user_instructions", [None, "user rules"])
+def test_context_manager_can_omit_host_environment(tmp_path, monkeypatch, user_instructions):
+    def unexpected_workspace_metadata(cwd):
+        raise AssertionError("host workspace metadata must not be collected")
+
+    monkeypatch.setattr(
+        "pycodex.context.get_workspace_turn_metadata", unexpected_workspace_metadata,
+    )
+    manager = ContextManager(ContextConfig(
+        cwd=tmp_path,
+        developer_instructions="developer rules",
+        user_instructions=user_instructions,
+        extra_contextual_user_messages=("extra context",),
+        include_permissions_instructions=False,
+        include_skills_instructions=False,
+        include_environment_context=False,
+    ))
+    prompt = manager.build_prompt([UserMessage("hello")], [], True, turn_id="turn_a")
+    text = repr(prompt.input)
+    assert "<environment_context>" not in text
+    assert str(tmp_path) not in text
+    assert "developer rules" in text
+    assert "extra context" in text
+    if user_instructions is not None:
+        assert "# User instructions" in text
+        assert user_instructions in text
+    assert prompt.input[-1] == UserMessage("hello")
+    assert prompt.turn_metadata == {"turn_id": "turn_a"}
+
+
 def test_context_manager_includes_extra_contextual_user_messages() -> "None":
     manager = ContextManager(
         ContextConfig(

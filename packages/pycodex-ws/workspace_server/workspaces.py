@@ -160,12 +160,21 @@ class WorkspaceSessionManager:
         self.persist_workspace_state()
         return session_id
 
+    async def attach_session(self, session, title="", profile=None) -> str:
+        """Register a frontend-owned session for this workspace's current lifetime."""
+        session_id = await self._create_session(title, profile=profile, session=session)
+        self._tab_states[session_id]["temporary"] = True
+        self._subscribe_session_state(session_id)
+        self.persist_workspace_state()
+        return session_id
+
     async def _create_session(
         self,
         title: str = "",
         rollout_path: str = "",
         cwd: "typing.Optional[str]" = None,
         profile: "typing.Optional[str]" = None,
+        session=None,
     ) -> str:
         if profile is not None and (
             not isinstance(profile, str) or profile not in self.profile_factories
@@ -176,7 +185,8 @@ class WorkspaceSessionManager:
         )
         async with self._get_lock():
             session_id = uuid7_string()
-            session = factory()
+            if session is None:
+                session = factory()
             await session.start()
 
             try:
@@ -248,6 +258,7 @@ class WorkspaceSessionManager:
     def persist_workspace_state(self) -> None:
         self._state_store.save_tabs(
             self._tab_states[session_id] for session_id in self._session_order
+            if not self._tab_states[session_id].get("temporary")
         )
         if self._persist_callback is not None:
             self._persist_callback()
