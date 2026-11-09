@@ -704,7 +704,7 @@ async def test_linux_one_liner_executes_only_on_client(
             attach_router(app, registry, target, 6007)
             await stack.enter_async_context(serve(app))
             await eventually(lambda: app.state.router_client.connected)
-            base = address + "/remote/n/" + app.state.router_client.node_id + "/w/alpha"
+            base = address + "/remote/n/" + app.state.router_client.node_id[:5] + "/w/alpha"
         else:
             address = await stack.enter_async_context(serve(interrupt_once if interrupted_response else app))
             base = address
@@ -714,7 +714,7 @@ async def test_linux_one_liner_executes_only_on_client(
                 address + "/remote/login", json={"password": "router-password"},
             )).status_code == 200
             # Workspace authentication is independent of router authentication.
-            login = address + "/remote/n/" + app.state.router_client.node_id + "/login"
+            login = address + "/remote/n/" + app.state.router_client.node_id[:5] + "/login"
         else:
             login = base + "/login"
         assert (await browser.post(login, json={"password": "owner-password"})).status_code == 200

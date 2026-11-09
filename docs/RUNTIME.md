@@ -818,16 +818,22 @@ API contract.
 
 ### Router device IDs
 
-Router device URLs use `/n/<id>/`, where the ID is 16 lowercase Base32 characters:
-the first 80 bits of SHA-256 of the client's 256-bit identity key. The client and
-Router derive the same ID; reconnecting the same client instance keeps it.
-Short IDs locate devices; Agent API requests and data channels still authenticate
-with the complete identity key. Duplicate active IDs are rejected.
+Registration version 2 retains the original 52-character Base32 SHA-256 identity.
+The registration response, device identifiers in API records, aliases and order
+use that full identity. Agent API requests and data channels authenticate with
+the complete identity key. Duplicate active identities are rejected.
 
-Both Router and workspace clients must be updated to use the shorter format.
-Old 52-character links must be reopened from the Router directory. On startup,
-the Router converts saved alias keys to their 16-character prefixes, preserving
-names and order; conflicting prefixes fail without overwriting the file.
+Browser directory links use `/n/<prefix>/` with the identity's first 5 characters.
+The Router resolves that prefix to a full identity; existing 52-character links
+remain valid. Prefixes must be unique among saved identities, including offline
+devices. Ambiguous prefixes do not resolve, and directory links use the full ID.
+Authenticated Agent discovery retains full-ID URLs because older clients'
+private API bridges only accept that format. Original clients can therefore
+connect without upgrading.
+
+Existing full-ID alias files are not rewritten. If a previous short-identity
+version saved 16-character alias keys, registration restores the matching full
+key while preserving the alias and its position.
 
 ### One-line Agent sessions
 

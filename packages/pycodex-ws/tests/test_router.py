@@ -125,9 +125,9 @@ def node_url(address, node_id, root=""):
     return address + root + "/n/" + node_id + "/"
 
 
-def test_device_id_uses_a_stable_16_character_hash():
-    assert device_id("00" * 32) == "mzuhvlpymk6xo3ep"
-    assert re.fullmatch("[a-z2-7]{16}", device_id("01" * 32))
+def test_device_id_preserves_the_original_52_character_identity():
+    assert device_id("00" * 32) == "mzuhvlpymk6xo3epygfy5h4oeaejofefn3rdhm4qfjmr2dk7fesq"
+    assert re.fullmatch("[a-z2-7]{52}", device_id("01" * 32))
     assert device_id("00" * 32) != device_id("01" * 32)
 
 
@@ -1442,6 +1442,96 @@ async def test_registration_retries_occupied_id_without_browser_credentials(
             assert "offline" in response.json()["error"]
 
 
+@pytest.mark.parametrize("root", ["", "/remote"])
+@pytest.mark.parametrize("saved_short_id", [False, True])
+async def test_legacy_client_connects_with_short_public_links(tmp_path, root, saved_short_id):
+    async def echo(websocket):
+        await websocket.accept()
+        await websocket.send_text(await websocket.receive_text())
+        await websocket.close()
+
+    app = Starlette(routes=[
+        Route("/", lambda request: Response("legacy client")),
+        WebSocketRoute("/ws", echo),
+    ])
+    identity = "mzuhvlpymk6xo3epygfy5h4oeaejofefn3rdhm4qfjmr2dk7fesq"
+    aliases_path = tmp_path / "router-aliases.json"
+    saved = {"b" * 52: "Offline device", identity[:16] if saved_short_id else identity: "开发机"}
+    aliases_path.write_text(json.dumps(saved), encoding="utf-8")
+    original = aliases_path.read_bytes()
+    gate = create_app("router-password", aliases_path=aliases_path)
+    assert aliases_path.read_bytes() == original
+    async with serve_router(gate, root) as (address, target):
+        client = RouterClient(app, target, "legacy", 6007, lambda: [workspace_record()])
+        # The old client's expected ID is independent of the current device_id helper.
+        client._identity_key = "00" * 32
+        client.node_id = identity
+        await client.start()
+        try:
+            await eventually(lambda: client.connected)
+            assert list(gate.state.router.nodes) == [identity]
+            assert list(gate.state.router.aliases) == ["b" * 52, identity]
+            assert gate.state.router.aliases[identity] == "开发机"
+            if not saved_short_id:
+                assert aliases_path.read_bytes() == original
+            assert create_app(aliases_path=aliases_path).state.router.aliases == gate.state.router.aliases
+            async with ip_browser(address) as browser:
+                short_url = node_url(address, identity[:5], root)
+                long_url = node_url(address, identity, root)
+                redirect = await browser.get(short_url)
+                assert redirect.status_code == 303
+                assert redirect.headers["location"].startswith(root + "/login?")
+                await login(browser, root)
+                inventory = (await browser.get(root + "/api/workspaces")).json()
+                assert inventory["nodes"][0]["id"] == identity
+                assert inventory["nodes"][0]["url"] == urlsplit(short_url).path
+                for url in (short_url, long_url):
+                    assert (await browser.get(url)).text == "legacy client"
+                    cookies = {"Cookie": browser.build_request("GET", url).headers["cookie"]}
+                    async with connect(
+                        (url + "ws").replace("http:", "ws:"),
+                        extra_headers=cookies, origin=origin(address),
+                    ) as websocket:
+                        await websocket.send("hello")
+                        assert await websocket.recv() == "hello"
+                # Legacy private Agent API bridges only recognize full ID paths.
+                listing = await browser.get(root + "/api/workspaces", headers={
+                    "Authorization": "Bearer " + client._identity_key,
+                })
+                assert listing.json()["nodes"][0]["url"] == urlsplit(long_url).path
+                assert listing.json()["workspaces"][0]["url"] == urlsplit(long_url).path + "w/shared/"
+        finally:
+            await client.close()
+
+
+async def test_short_link_collisions_keep_full_links_and_offline_ownership(monkeypatch):
+    def colliding_id(key):
+        return "a" * 5 + device_id(key)[5:]
+
+    monkeypatch.setattr("pycodex_router.client.device_id", colliding_id)
+    monkeypatch.setattr("pycodex_router.server.device_id", colliding_id)
+    gate = create_app("router-password")
+    first_app = Starlette(routes=[Route("/", lambda request: Response("first"))])
+    second_app = Starlette(routes=[Route("/", lambda request: Response("second"))])
+    async with serve_router(gate) as (address, target):
+        async with device(first_app, target) as first:
+            async with device(second_app, target) as second:
+                async with ip_browser(address) as browser:
+                    await login(browser)
+                    inventory = (await browser.get("/api/workspaces")).json()
+                    assert {node["url"] for node in inventory["nodes"]} == {
+                        "/n/" + first.node_id + "/", "/n/" + second.node_id + "/",
+                    }
+                    assert (await browser.get(node_url(address, first.node_id))).text == "first"
+                    assert (await browser.get(node_url(address, second.node_id))).text == "second"
+                    short_url = node_url(address, "a" * 5)
+                    assert (await browser.get(short_url)).status_code == 503
+                    await first.close()
+                    await eventually(lambda: first.node_id not in gate.state.router.nodes)
+                    assert (await browser.get(short_url)).status_code == 503
+                    assert (await browser.get(node_url(address, second.node_id))).text == "second"
+
+
 async def test_connection_limits_timeouts_and_inventory_changes():
     inventory = [workspace_record()]
     identity_key = secrets.token_hex(32)
@@ -1487,7 +1577,7 @@ async def test_connection_limits_timeouts_and_inventory_changes():
                 snapshot = (await browser.get("/api/workspaces")).json()
                 assert (
                     snapshot["workspaces"][0]["url"]
-                    == urlsplit(prefix).path + "w/new-workspace/"
+                    == "/n/" + node_id[:5] + "/w/new-workspace/"
                 )
 
 
@@ -1503,7 +1593,7 @@ async def test_router_can_be_mounted_under_a_path_prefix(tmp_path):
                     "/remote/login", json={"password": "router-password"}
                 )
                 inventory = (await browser.get("/remote/api/workspaces")).json()
-                destination = node_url(address, client.node_id, "/remote") + "w/shared/"
+                destination = node_url(address, client.node_id[:5], "/remote") + "w/shared/"
                 assert inventory["workspaces"][0]["url"] == urlsplit(destination).path
                 assert (await browser.get(destination)).status_code == 200
                 assert (await browser.get(destination + "image.png")).status_code == 200
@@ -1764,8 +1854,8 @@ async def test_trusted_devices_use_ip_paths_and_keep_browser_header_checks():
                     inventory = await browser.get("/api/workspaces")
                     assert inventory.status_code == 200
                     assert {node["url"] for node in inventory.json()["nodes"]} == {
-                        urlsplit(first_url).path,
-                        urlsplit(second_url).path,
+                        "/n/" + first.node_id[:5] + "/",
+                        "/n/" + second.node_id[:5] + "/",
                     }
                     assert (await browser.get(second_url)).text == "second"
                     for destination in (
@@ -1941,7 +2031,7 @@ async def test_device_order_is_shared_persistent_and_preserves_offline_slots(
                             endpoint, json={"order": []}
                         )).status_code == 409
                         assert (await browser.post(
-                            endpoint, json={"order": order + ["a" * 16]}
+                            endpoint, json={"order": order + ["a" * 52]}
                         )).status_code == 409
                         assert (await browser.post(
                             endpoint, json={"order": order},
@@ -2010,7 +2100,6 @@ async def test_device_order_requires_a_router_password():
 @pytest.mark.parametrize(
     "contents", [
         "{", "[]", '{"invalid": "alias"}', '{"' + "a" * 16 + '": 42}',
-        json.dumps({"a" * 52: "first", "a" * 16 + "b" * 36: "second"}),
     ]
 )
 def test_invalid_alias_files_are_not_replaced(tmp_path, contents):
@@ -2021,22 +2110,10 @@ def test_invalid_alias_files_are_not_replaced(tmp_path, contents):
     assert path.read_text(encoding="utf-8") == contents
 
 
-def test_legacy_aliases_keep_names_and_order_after_shortening(tmp_path):
-    path = tmp_path / "router-aliases.json"
-    legacy = {"b" * 52: "Build server", "a" * 52: "开发机", "c" * 16: ""}
-    path.write_text(json.dumps(legacy), encoding="utf-8")
-    router = create_app(aliases_path=path).state.router
-    expected = {"b" * 16: "Build server", "a" * 16: "开发机", "c" * 16: ""}
-    assert router.aliases == expected
-    assert list(router.aliases) == list(expected)
-    assert json.loads(path.read_text(encoding="utf-8")) == expected
-    assert create_app(aliases_path=path).state.router.aliases == expected
-
-
 def test_alias_write_failure_keeps_previous_state(tmp_path, monkeypatch):
     path = tmp_path / "router-aliases.json"
-    node_id = "a" * 16
-    other_id = "b" * 16
+    node_id = "a" * 52
+    other_id = "b" * 52
     path.write_text(json.dumps({node_id: "original", other_id: ""}), encoding="utf-8")
     router = create_app(aliases_path=path).state.router
     before = path.read_bytes()

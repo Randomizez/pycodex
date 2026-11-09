@@ -37,7 +37,7 @@ def device_id(identity_key):
     ):
         raise ValueError("invalid device identity key")
     digest = hashlib.sha256(bytes.fromhex(identity_key)).digest()
-    return base64.b32encode(digest[:10]).decode("ascii").lower()
+    return base64.b32encode(digest).decode("ascii").rstrip("=").lower()
 
 
 def route_path(scope):
@@ -51,7 +51,7 @@ def agent_api_request(scope):
     if scope["type"] != "http":
         return False
     match = re.fullmatch(
-        r"(?:/n/[a-z2-7]{16})?(?:/w/[^/]+)?/api/(workspaces|sessions|session|session/message)",
+        r"(?:/n/[a-z2-7]{5}(?:[a-z2-7]{47})?)?(?:/w/[^/]+)?/api/(workspaces|sessions|session|session/message)",
         route_path(scope),
     )
     return match is not None and scope["method"] == (

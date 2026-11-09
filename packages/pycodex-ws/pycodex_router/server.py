@@ -189,12 +189,7 @@ class Router:
                 for node_id, alias in aliases.items()
             ):
                 raise ValueError("invalid router aliases file")
-            shortened = {node_id[:16]: alias for node_id, alias in aliases.items()}
-            if len(shortened) != len(aliases):
-                raise ValueError("duplicate router device IDs after shortening")
-            self.aliases = shortened
-            if shortened != aliases:
-                self._save_aliases(shortened)
+            self.aliases = aliases
 
     def _save_aliases(self, aliases):
         if self.aliases_path is not None:
@@ -225,7 +220,7 @@ class Router:
             not isinstance(order, list)
             or any(
                 not isinstance(node_id, str)
-                or not re.fullmatch("[a-z2-7]{16}", node_id)
+                or not re.fullmatch("[a-z2-7]{52}", node_id)
                 for node_id in order
             )
             or len(set(order)) != len(order)
@@ -323,7 +318,15 @@ class Router:
             )
             if node_id not in self.aliases:
                 aliases = dict(self.aliases)
-                aliases[node_id] = ""
+                short_id = node_id[:16]
+                if short_id in aliases:
+                    # Recover names/order saved by the earlier short-identity version.
+                    aliases = {
+                        node_id if key == short_id else key: alias
+                        for key, alias in aliases.items()
+                    }
+                else:
+                    aliases[node_id] = ""
                 self._save_aliases(aliases)
             self.nodes[node_id] = node
             api_url = self.api_url
@@ -382,15 +385,22 @@ class Router:
         finally:
             await close_websocket(websocket)
 
+    def node_for_route(self, route_id):
+        if len(route_id) != 5:
+            return self.nodes.get(route_id)
+        # Include offline identities so a saved short link cannot target a peer.
+        matches = [node_id for node_id in self.aliases if node_id[:5] == route_id]
+        return self.nodes.get(matches[0]) if len(matches) == 1 else None
+
     @asynccontextmanager
     async def connection(self, node_id):
-        node = self.nodes.get(node_id)
+        node = self.node_for_route(node_id)
         if node is None:
             raise TunnelUnavailable("Workspace device is offline.")
         if len(node.streams) >= self.max_connections:
             raise TunnelUnavailable("Workspace device has too many open requests.")
         stream_id = uuid4().hex
-        stream = Stream(node_id)
+        stream = Stream(node.id)
         node.streams[stream_id] = stream
         self.streams[stream_id] = stream
         try:
@@ -507,7 +517,13 @@ class Router:
             if node_id not in self.nodes:
                 continue
             node = self.nodes[node_id]
-            base = request.scope.get("root_path", "") + "/n/" + node.id + "/"
+            route_id = node.id
+            # Older Agent API bridges only accept full identity paths.
+            if not request.scope.get("pycodex.agent_access"):
+                short_id = node.id[:5]
+                if self.node_for_route(short_id) is node:
+                    route_id = short_id
+            base = request.scope.get("root_path", "") + "/n/" + route_id + "/"
             nodes.append({
                 "id": node.id,
                 "name": node.name,
