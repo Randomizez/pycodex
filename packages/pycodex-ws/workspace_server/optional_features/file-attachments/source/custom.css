@@ -1,0 +1,189 @@
+/* Local attachment shelf, using the workspace palette and composer layout. */
+.pycodex-file-upload {
+  position: relative;
+  min-width: 0;
+  border-top: 1px solid var(--line, #dce4e8);
+  color: var(--ink, #18303e);
+}
+.pycodex-file-upload [hidden] { display: none !important; }
+.pycodex-upload-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  padding: 5px 9px;
+  min-width: 0;
+}
+.pycodex-file-upload .pycodex-upload-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  min-height: 32px;
+  padding: 4px 7px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted, #60727e);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.pycodex-file-upload .pycodex-upload-button:hover {
+  background: var(--panel-hover, #edf3f5);
+  color: var(--ink, #18303e);
+}
+.pycodex-file-upload button:focus-visible,
+.pycodex-upload-help summary:focus-visible {
+  outline: 2px solid var(--accent, #087f9a);
+  outline-offset: 2px;
+}
+.pycodex-file-upload button:disabled { cursor: default; }
+.pycodex-upload-toolbar button:disabled { opacity: .5; }
+.pycodex-file-upload svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.pycodex-upload-status {
+  flex: 1 1 160px;
+  min-width: 0;
+  color: var(--muted, #60727e);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.pycodex-upload-status[data-state="error"] { color: var(--danger, #b42318); }
+.pycodex-attachment-tray {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  gap: 6px;
+  max-height: 168px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 8px 10px 3px;
+  margin: 0;
+  list-style: none;
+}
+.pycodex-attachment {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 3px 5px;
+  border: 1px solid var(--line, #dce4e8);
+  border-radius: 9px;
+  background: var(--panel, #f7fafb);
+}
+.pycodex-attachment[data-state="error"] { border-color: var(--danger, #b42318); }
+.pycodex-file-upload .pycodex-attachment-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.pycodex-attachment-open:enabled:hover { background: var(--panel-hover, #edf3f5); }
+.pycodex-attachment-visual {
+  display: grid;
+  place-items: center;
+  flex: 0 0 34px;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  border-radius: 5px;
+  color: var(--muted, #60727e);
+  background: var(--bg, #fff);
+}
+.pycodex-attachment-visual img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pycodex-attachment-info { display: block; min-width: 0; }
+.pycodex-attachment-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 500;
+}
+.pycodex-attachment-detail {
+  display: block;
+  color: var(--muted, #60727e);
+  font-size: 10px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.pycodex-attachment[data-state="error"] .pycodex-attachment-detail { color: var(--danger, #b42318); }
+.pycodex-file-upload .pycodex-attachment-remove { padding: 4px; }
+.pycodex-attachment-progress {
+  position: absolute;
+  left: 7px;
+  bottom: 0;
+  width: calc(100% - 14px);
+  height: 3px;
+  border: 0;
+  accent-color: var(--accent, #087f9a);
+}
+.pycodex-upload-help { position: relative; flex: 0 0 auto; font-size: 11px; color: var(--muted, #60727e); }
+.pycodex-upload-help summary { cursor: pointer; padding: 7px 2px; }
+.pycodex-upload-help > div {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  width: min(290px, calc(100vw - 40px));
+  padding: 12px;
+  border: 1px solid var(--line, #dce4e8);
+  border-radius: 9px;
+  background: var(--bg, #fff);
+  box-shadow: 0 4px 20px #0002;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.pycodex-upload-drop-hint { display: none; }
+.pycodex-upload-drag .composer-surface { outline: 2px dashed var(--accent, #087f9a); outline-offset: 3px; }
+.pycodex-upload-drag .pycodex-upload-drop-hint {
+  display: grid;
+  position: absolute;
+  inset: 0;
+  z-index: 15;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--bg, #fff);
+  opacity: .95;
+  color: var(--accent, #087f9a);
+  font-size: 13px;
+  pointer-events: none;
+}
+.pycodex-upload-preview {
+  width: min(800px, calc(100vw - 32px));
+  max-height: min(80vh, 800px);
+  padding: 0;
+  border: 1px solid var(--line, #dce4e8);
+  border-radius: 12px;
+  background: var(--bg, #fff);
+  color: var(--ink, #18303e);
+  box-shadow: 0 12px 60px #0004;
+}
+.pycodex-upload-preview::backdrop { background: #0006; }
+.pycodex-upload-preview-heading { display: flex; align-items: center; gap: 12px; padding: 12px 16px 4px; }
+.pycodex-upload-preview-heading h2 { flex: 1; min-width: 0; margin: 0; font-size: 15px; overflow-wrap: anywhere; }
+.pycodex-upload-preview-meta { margin: 0; padding: 0 16px 12px; font-size: 12px; color: var(--muted, #60727e); }
+.pycodex-upload-preview-body { padding: 16px; border-top: 1px solid var(--line, #dce4e8); }
+.pycodex-upload-preview-body img { display: block; max-width: 100%; max-height: 60vh; object-fit: contain; margin: auto; }
+.pycodex-upload-preview-body pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 ui-monospace, monospace; }
+.pycodex-upload-preview-body p { margin: 0; font-size: 13px; line-height: 1.6; }
+@media (max-width: 640px) {
+  .pycodex-upload-toolbar { gap: 3px 5px; }
+  .pycodex-file-upload .pycodex-upload-button { min-width: 40px; min-height: 40px; }
+  .pycodex-file-upload .pycodex-attachment-remove { min-width: 40px; }
+  .pycodex-upload-status { flex-basis: 100%; order: 2; padding: 0 4px 2px; }
+  .pycodex-upload-help { margin-left: auto; }
+  .pycodex-attachment-tray { grid-template-columns: 1fr; max-height: 150px; }
+}
