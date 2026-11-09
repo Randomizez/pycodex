@@ -536,6 +536,7 @@ def _build_workspace_entry(
             definition.state_path,
             persist_callback=persist_callback,
             profile_loader=load_profiles,
+            codex_home=Path(args.config).expanduser().resolve().parent,
         ),
     )
 

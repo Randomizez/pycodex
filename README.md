@@ -77,6 +77,8 @@ pycodex --json "Summarize this repository."
 ```
 
 The first command starts an interactive session; the others run a single task.
+Web skill completion is an [optional frontend feature](packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md).
+Apply `skill-completion` through Customize to enable @/$ prefix suggestions.
 The agent can edit files and run commands with your user account's permissions.
 
 | Command | Purpose |

@@ -1,5 +1,8 @@
 import asyncio
 import sys
+import threading
+from concurrent.futures import Future
+from contextlib import ExitStack
 import types
 
 import pytest
@@ -153,7 +156,6 @@ def test_reload_preflight_failure_leaves_running_server_intact(
 ):
     bad_module = tmp_path / "broken_syntax_mod.py"
     bad_module.write_text("def broken(:\n", encoding="utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
     dummy = types.ModuleType("pycodex.broken_syntax_mod")
     dummy.__file__ = str(bad_module)
     monkeypatch.setitem(sys.modules, "pycodex.broken_syntax_mod", dummy)
@@ -182,12 +184,15 @@ def test_reload_preflight_failure_leaves_running_server_intact(
 
 
 def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypatch):
-    release = asyncio.Event()
+    release = Future()
+
+    def finish():
+        if not release.done():
+            release.set_result(None)
 
     async def slow_response(prompt, count):
         if count == 1:
-            asyncio.get_running_loop().call_later(0.1, release.set)
-            await release.wait()
+            await asyncio.wrap_future(release)
         return ModelResponse([AssistantMessage("answer-" + str(count))])
 
     model = ScriptedModelClient(response_factory=slow_response)
@@ -196,7 +201,9 @@ def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypa
         "workspace_server.app.preflight_check",
         lambda: asyncio.sleep(0),
     )
-    with TestClient(create(lambda: make_session(model=model, cwd=tmp_path))) as browser:
+    with ExitStack() as cleanup:
+        browser = cleanup.enter_context(TestClient(create(lambda: make_session(model=model, cwd=tmp_path))))
+        cleanup.callback(finish)
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
         session_id = browser.get(prefix + "/api/session").json()["session_id"]
         assert browser.post(
@@ -216,6 +223,10 @@ def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypa
         assert check.json()["active_turns"] == 1
         assert len(check.json()["running_sessions"]) == 1
 
+        timer = threading.Timer(0.1, release.set_result, args=(None,))
+        timer.start()
+        cleanup.callback(timer.join)
+        cleanup.callback(timer.cancel)
         reloaded = browser.post(prefix + "/api/reload", json={"session_id": session_id})
         assert reloaded.status_code == 200
         assert reloaded.json()["ok"] is True

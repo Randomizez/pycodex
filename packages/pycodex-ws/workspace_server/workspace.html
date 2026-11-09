@@ -4000,6 +4000,13 @@
           return () => frontendEvents.removeEventListener("sessionchange", listener);
         },
         getDraft: () => composer.read(),
+        replaceDraftText: (start, end, text) => {
+          if (typeof text !== "string" || !Number.isInteger(start) || !Number.isInteger(end) ||
+              start < 0 || end < start || end > Composer.size(composer.parts())) {
+            throw new TypeError("Invalid draft text replacement");
+          }
+          composer.replace(start, end, [{type: "text", text}]);
+        },
         setDraft: draft => {
           if (!draft || !Array.isArray(draft.parts)) throw new TypeError("draft.parts must be an array");
           composer.set(draft);

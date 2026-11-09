@@ -194,6 +194,9 @@ Skills 的目录别名按发现的 root 顺序分配：用户 root 在 system ro
 ```
 
 只存在 system skills 时其别名是 `r0`。
+`discover_skills(codex_home)` 同时供模型 context 和网页候选 API
+使用；输入候选按名称去重（同名优先较低 scope rank）、按名称排序，只返回
+名称和简介。补全不会把 skill 正文自动塞入历史，仍由模型按名称读取。
 SKILL frontmatter 和 `agents/openai.yaml` 使用安全 YAML 解析；
 `policy.allow_implicit_invocation: false` 的 skill 不出现在自动 catalog。
 本地仍没有实现上游完整的显式 skill 调用/动态选择器。

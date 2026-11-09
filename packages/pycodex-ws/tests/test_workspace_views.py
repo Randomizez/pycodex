@@ -976,7 +976,11 @@ def test_model_links_open_only_on_click_without_tools_or_new_messages(tmp_path, 
         browser.post("/w/first/api/session/message", json={"prompt": "show A.py"})
         before = wait_snapshot(
             browser,
-            lambda state: state["turns"] and state["turns"][-1]["response"] == reply,
+            lambda state: (
+                state["turns"]
+                and not state["running"]
+                and state["turns"][-1]["response"] == reply
+            ),
             "/w/first/api/session",
         )
         assert browser.get("/w/first/api/views").json() == {"views": []}

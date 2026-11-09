@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pycodex.utils import uuid7_string
+from pycodex.utils.session_persist import resolve_codex_home
 from pycodex_ws.workspace_config import (
     WorkspaceDefinition,
     default_state_path,
@@ -62,11 +63,13 @@ class WorkspaceSessionManager:
         profile_factories: "typing.Optional[typing.Dict[str, SessionFactory]]" = None,
         default_profile: "typing.Optional[str]" = None,
         profile_loader=None,
+        codex_home=None,
     ) -> None:
         if profile_loader is not None and (
             profile_factories is not None or default_profile is not None
         ):
             raise ValueError("profile_loader cannot be combined with static profiles")
+        self.codex_home = resolve_codex_home() if codex_home is None else Path(codex_home)
         self._session_factory = session_factory
         self._profile_loader = profile_loader
         self.profile_factories = dict(profile_factories or {})

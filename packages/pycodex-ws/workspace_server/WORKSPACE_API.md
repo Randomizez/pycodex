@@ -304,6 +304,15 @@ are created when first observed and have separate cursors, excluding earlier
 events. Their WS connection is read-only: `ping` works; `send`/`answer` is rejected.
 Observing a child does not enable interactive requests or rollout recording.
 
+## Skill catalog
+
+`GET api/skills` returns `{skills: [{name, description}]}` with `Cache-Control:
+no-store`. It uses the workspace's configured Codex home and the shared
+`list_skills` discovery operation. Workspace authentication and URL scoping apply;
+no model session is created, and file paths or skill bodies are not returned.
+Optional frontend code performs matching and insertion through the existing
+extension host. The default page makes no automatic skill catalog requests.
+
 ## Built-in page extension host
 
 An optional `mount(host)` export in `~/.pycodex/frontend/custom.js` is called
@@ -333,6 +342,7 @@ The frozen host has `apiVersion: 1`:
 | `selectSession(id)` | Switch to an existing tab; returns a promise |
 | `onSessionChanged(handler)` | Subscribe; returns an unsubscribe function |
 | `getDraft()` | Structured composer draft, including context parts |
+| `replaceDraftText(start, end, text)` | Undoable text replacement using draft offsets; context parts count as one position |
 | `setDraft(draft)` | Replace current draft; `draft.parts` must be an array |
 | `openView(href, srcPath)` | Open a file/Git/workspace link for the current session |
 | `request(path, options)` | Fetch workspace-relative JSON; HTTP failures reject |
