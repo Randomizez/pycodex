@@ -125,6 +125,12 @@ def node_url(address, node_id, root=""):
     return address + root + "/n/" + node_id + "/"
 
 
+def test_device_id_uses_a_stable_16_character_hash():
+    assert device_id("00" * 32) == "mzuhvlpymk6xo3ep"
+    assert re.fullmatch("[a-z2-7]{16}", device_id("01" * 32))
+    assert device_id("00" * 32) != device_id("01" * 32)
+
+
 def client_target(address, key):
     return address.replace("://", "://" + key + "@", 1)
 
@@ -1657,7 +1663,8 @@ async def test_offline_route_requires_its_original_identity_key():
                 assert not key_leaked
 
 
-async def test_data_channel_is_bound_to_its_device(monkeypatch):
+@pytest.mark.parametrize("collision", [False, True])
+async def test_data_channel_is_bound_to_its_device(monkeypatch, collision):
     async def index(request):
         return Response("owner")
 
@@ -1666,6 +1673,19 @@ async def test_data_channel_is_bound_to_its_device(monkeypatch):
     release = asyncio.Event()
     async with serve_router(gate) as (address, target):
         async with device(Starlette(routes=[Route("/", index)]), target) as owner:
+            impostor_key = secrets.token_hex(32)
+            if collision:
+                monkeypatch.setattr(
+                    "pycodex_router.server.device_id",
+                    lambda key: owner.node_id if key == impostor_key else device_id(key),
+                )
+            async with httpx.AsyncClient(base_url=address, trust_env=False) as api:
+                assert (await api.get("/api/workspaces", headers={
+                    "Authorization": "Bearer " + impostor_key,
+                })).status_code == 401
+                assert (await api.get("/api/workspaces", headers={
+                    "Authorization": "Bearer " + owner._identity_key,
+                })).status_code == 200
             serve_request = owner._serve
 
             async def delayed(stream_id):
@@ -1687,7 +1707,7 @@ async def test_data_channel_is_bound_to_its_device(monkeypatch):
                             encode(
                                 {
                                     "stream_id": stream_id,
-                                    "identity_key": secrets.token_hex(32),
+                                    "identity_key": impostor_key,
                                 }
                             )
                         )
@@ -1921,7 +1941,7 @@ async def test_device_order_is_shared_persistent_and_preserves_offline_slots(
                             endpoint, json={"order": []}
                         )).status_code == 409
                         assert (await browser.post(
-                            endpoint, json={"order": order + ["a" * 52]}
+                            endpoint, json={"order": order + ["a" * 16]}
                         )).status_code == 409
                         assert (await browser.post(
                             endpoint, json={"order": order},
@@ -1988,7 +2008,10 @@ async def test_device_order_requires_a_router_password():
 
 
 @pytest.mark.parametrize(
-    "contents", ["{", "[]", '{"invalid": "alias"}', '{"' + "a" * 52 + '": 42}']
+    "contents", [
+        "{", "[]", '{"invalid": "alias"}', '{"' + "a" * 16 + '": 42}',
+        json.dumps({"a" * 52: "first", "a" * 16 + "b" * 36: "second"}),
+    ]
 )
 def test_invalid_alias_files_are_not_replaced(tmp_path, contents):
     path = tmp_path / "router-aliases.json"
@@ -1998,10 +2021,22 @@ def test_invalid_alias_files_are_not_replaced(tmp_path, contents):
     assert path.read_text(encoding="utf-8") == contents
 
 
+def test_legacy_aliases_keep_names_and_order_after_shortening(tmp_path):
+    path = tmp_path / "router-aliases.json"
+    legacy = {"b" * 52: "Build server", "a" * 52: "开发机", "c" * 16: ""}
+    path.write_text(json.dumps(legacy), encoding="utf-8")
+    router = create_app(aliases_path=path).state.router
+    expected = {"b" * 16: "Build server", "a" * 16: "开发机", "c" * 16: ""}
+    assert router.aliases == expected
+    assert list(router.aliases) == list(expected)
+    assert json.loads(path.read_text(encoding="utf-8")) == expected
+    assert create_app(aliases_path=path).state.router.aliases == expected
+
+
 def test_alias_write_failure_keeps_previous_state(tmp_path, monkeypatch):
     path = tmp_path / "router-aliases.json"
-    node_id = "a" * 52
-    other_id = "b" * 52
+    node_id = "a" * 16
+    other_id = "b" * 16
     path.write_text(json.dumps({node_id: "original", other_id: ""}), encoding="utf-8")
     router = create_app(aliases_path=path).state.router
     before = path.read_bytes()

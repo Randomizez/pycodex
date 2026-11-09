@@ -134,71 +134,18 @@ An Agent that runs directly in most shells without installation, for bootstrappi
 an Agent environment or simple debugging.
 
 Open **Settings → One-line Agent**, choose a profile and click **Enable One-line Agent**.
-This enables a reusable API and displays Bash/curl and PowerShell (`irm`)
-one-liners. Replace the example task `看一下这台机器` in the command, then paste
-it into the target terminal. The `T` header contains the 12-character token followed
-by a session suffix, initially `1`. Change only that suffix to `2`, `3`, etc. for a
-separate session or another terminal. Each suffix creates its own temporary session with
-independent history and command results; its tab title is initially `OneLineAgent-<suffix>`.
-Leave the terminal loop running and continue the conversation or steer the Agent
-from its workspace session. When the session is idle, you can also edit the task
-and rerun the one-liner with the same key to continue with its existing history.
-The new caller takes over any previous waiting terminal connection.
-After closing that session
-in the workspace, the same key starts a fresh conversation. Enabling the API alone creates no session.
-Each run starts immediately without reading interactive input. The full client
-loop is in that command; no launcher script, Python, Node or jq is downloaded.
-Both clients use `POST /b` relative to the workspace URL. The API takes no
-platform parameter: it returns the next command as plain UTF-8 text and waits
-when no command is available. Only the local client chooses the interpreter.
-The model and instructions come directly from the selected profile, without
-workspace CLI overrides.
-Host environment and Git metadata are excluded from model requests; the Agent
-learns about the client environment through command results.
+Copy the Bash or PowerShell command, replace the example task `看一下这台机器`,
+and run it in the target terminal. Commands execute on that machine; the terminal
+shows their results and the Agent's final replies.
 
-The Agent runs on the workspace server, but its sole `exec_command` tool executes
-on the client. Commands, results and the conversation are visible in the bound
-session. The executor accepts only `cmd`, waits for completion, and returns combined
-stdout/stderr and the exit code. Commands run in separate, noninteractive processes
-in the terminal's current directory. No cwd is collected or sent, and no directory
-is selected automatically; include `cd` in a command when needed.
-The prompt warns that synchronous execution blocks further commands until it
-returns, and directs the Agent to avoid unbounded waits and foreground services.
-The terminal displays the command, output and exit code together after execution.
-The server automatically wraps each final response in a quoted `echo` command
-for terminal display. Quotes and shell substitutions in the response are treated
-as text. The display command's result, including failure, is consumed by the
-server without another model call. Commentary and model errors remain in the
-workspace session. The terminal loop continues after displaying the final response.
+Leave the terminal running to continue the conversation from its workspace
+session. When idle, you can also edit the task and rerun the command with the same
+key to keep the existing history. For another terminal or an independent session,
+change the key's final session suffix from `1` to `2`, `3`, etc.
 
-The workspace-scoped token can be reused with different session
-suffixes. The first request for a suffix sends only the task and immediately
-creates the session. While a command is waiting, requests with the same complete
-key send combined output followed by `LF + [exit N]`. The request then waits for
-the next command, including across completed, failed or steered turns, without
-polling or empty completion responses. Further prompts use the ordinary Web session
-input, or a new terminal request while the Runtime is idle with no command awaiting
-a result. An idle takeover releases the old waiting request with HTTP 409.
-Steer takes effect after an already-issued synchronous command finishes.
-Network and HTTP errors stop the client; there is no handshake, retry or response
-replay. Completing a task leaves the terminal connected. Close the session, use
-**Stop**, or interrupt the local loop to disconnect it. Use **Stop** before
-enabling another service. Stopping or a server restart revokes access
-for every run and closes their sessions. An already running client command is not
-killed by stopping the server service.
-
-The service, token and session tabs are not restored after a restart; recorded
-history is kept. Both clients send UTF-8 text, and each request is limited to 1 MiB.
-Management requires workspace administrator access. The terminal token grants
-access only to this execution channel, including through a password-protected
-Router; it does not grant access to the normal workspace APIs.
-
-The initial installation needs updated code and a restart on both the workspace
-server and any Router serving it. Workspace Reload does not update a separate
-Router or replace authentication middleware created at startup. A 401 response
-with `{"error":"authentication required"}` comes from cookie authentication before
-the terminal endpoint; that endpoint reports an invalid token as
-`{"detail":"invalid One-line Agent token"}`.
+Use **Stop** to end the service and its sessions. Closing a session and reusing
+its key starts a fresh conversation. After a server restart, enable the service
+again and copy a new command; recorded history is kept.
 
 ## Storage
 

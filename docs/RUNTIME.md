@@ -27,6 +27,7 @@ The top level of `pycodex/` contains eight core modules: `agent`, `runtime`,
 | `pycodex.utils.compat` | Python and asyncio compatibility helpers |
 | `pycodex.utils.doctor` | Configuration and connectivity diagnostics |
 | `pycodex.utils.model_metadata` | Loading and looking up `pycodex/prompts/models.json` |
+| `pycodex.utils.skill_catalog` | Skill names and descriptions for workspace input suggestions |
 | `pycodex.utils.debug` | Debug directory and debugger helpers |
 
 Imports of moved internal modules must use these paths; the old top-level
@@ -814,6 +815,19 @@ frontend. Child views use this mode, so inspecting a child cannot make it wait
 for a permission/question response. Submission results and event replay are
 bounded in-memory stores; retention and reset behavior are part of the linked
 API contract.
+
+### Router device IDs
+
+Router device URLs use `/n/<id>/`, where the ID is 16 lowercase Base32 characters:
+the first 80 bits of SHA-256 of the client's 256-bit identity key. The client and
+Router derive the same ID; reconnecting the same client instance keeps it.
+Short IDs locate devices; Agent API requests and data channels still authenticate
+with the complete identity key. Duplicate active IDs are rejected.
+
+Both Router and workspace clients must be updated to use the shorter format.
+Old 52-character links must be reopened from the Router directory. On startup,
+the Router converts saved alias keys to their 16-character prefixes, preserving
+names and order; conflicting prefixes fail without overwriting the file.
 
 ### One-line Agent sessions
 

@@ -1,5 +1,5 @@
 from pycodex.context import ContextConfig, ContextManager
-from pycodex.skill_catalog import list_skills
+from pycodex.utils.skill_catalog import list_skills
 
 
 def write_skill(home, folder, name, description="A test skill"):

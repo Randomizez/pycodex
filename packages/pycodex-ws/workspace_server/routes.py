@@ -22,7 +22,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.utils.compat import importlib_metadata
-from pycodex.skill_catalog import list_skills
+from pycodex.utils.skill_catalog import list_skills
 from pycodex_ws.server_support import (
     html_response as _html_response,
     json_object_body as _json_object_body,

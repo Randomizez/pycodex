@@ -76,9 +76,10 @@ def normalize_alias(value):
 
 
 class Node:
-    def __init__(self, websocket, node_id, name, workspaces):
+    def __init__(self, websocket, node_id, name, workspaces, identity_key):
         self.websocket = websocket
         self.id = node_id
+        self.identity_key = identity_key
         self.name = name
         self.workspaces = workspaces
         self.streams = {}
@@ -182,13 +183,18 @@ class Router:
         if self.aliases_path is not None and self.aliases_path.exists():
             aliases = json.loads(self.aliases_path.read_text(encoding="utf-8"))
             if not isinstance(aliases, dict) or any(
-                not re.fullmatch("[a-z2-7]{52}", node_id)
+                not re.fullmatch("[a-z2-7]{16}(?:[a-z2-7]{36})?", node_id)
                 or not isinstance(alias, str)
                 or (alias and normalize_alias(alias) != alias)
                 for node_id, alias in aliases.items()
             ):
                 raise ValueError("invalid router aliases file")
-            self.aliases = aliases
+            shortened = {node_id[:16]: alias for node_id, alias in aliases.items()}
+            if len(shortened) != len(aliases):
+                raise ValueError("duplicate router device IDs after shortening")
+            self.aliases = shortened
+            if shortened != aliases:
+                self._save_aliases(shortened)
 
     def _save_aliases(self, aliases):
         if self.aliases_path is not None:
@@ -219,7 +225,7 @@ class Router:
             not isinstance(order, list)
             or any(
                 not isinstance(node_id, str)
-                or not re.fullmatch("[a-z2-7]{52}", node_id)
+                or not re.fullmatch("[a-z2-7]{16}", node_id)
                 for node_id in order
             )
             or len(set(order)) != len(order)
@@ -274,7 +280,12 @@ class Router:
             node_id = device_id(authorization[7:])
         except ValueError:
             return None
-        return self.nodes.get(node_id)
+        node = self.nodes.get(node_id)
+        if node is not None and secrets.compare_digest(
+            authorization[7:], node.identity_key,
+        ):
+            return node
+        return None
 
     async def control(self, websocket):
         if not await self.accept_tunnel(websocket):
@@ -308,6 +319,7 @@ class Router:
                 node_id,
                 name,
                 validate_inventory(message["workspaces"]),
+                message["identity_key"],
             )
             if node_id not in self.aliases:
                 aliases = dict(self.aliases)
@@ -351,10 +363,12 @@ class Router:
         try:
             message = await asyncio.wait_for(control_message(websocket), 10)
             stream = self.streams.get(message["stream_id"])
+            node = self.nodes.get(stream.node_id) if stream is not None else None
             if (
                 stream is None
+                or node is None
                 or stream.ready.done()
-                or device_id(message["identity_key"]) != stream.node_id
+                or not secrets.compare_digest(message["identity_key"], node.identity_key)
             ):
                 await close_websocket(websocket, 1008)
                 return

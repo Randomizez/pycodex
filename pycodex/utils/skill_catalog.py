@@ -1,6 +1,6 @@
 """Skill catalog for workspace input suggestions."""
 
-from .context import discover_skills
+from ..context import discover_skills
 
 
 def list_skills(codex_home):
