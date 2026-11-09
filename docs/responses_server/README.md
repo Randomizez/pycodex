@@ -132,8 +132,11 @@ Gemini 原生输出 parts（包括空文本上的 `thoughtSignature`）在成功
 `functionCall.args`，保留调用签名，下一轮不回放参数分片。复用 core 已有的 reasoning
 item 原样保存契约，不扩展 AssistantMessage、ToolCall 或历史解析器。该状态
 随 rollout、恢复、fork 和保留原条目的 compact checkpoint 保存；adapter
-在下一轮还原 model parts，并过滤已从历史删除的工具调用。状态解释完全留在
-responses_server，不把签名混入工具参数或伪装成加密内容。
+在下一轮还原 model parts，并过滤已从历史删除的工具调用，以及不带
+`thoughtSignature` 的空文本 part。Gemini 流可能以这种空 part 结束，但回放它
+可能触发 `required oneof field 'data'` 的 400；过滤在请求边界执行，旧会话
+恢复同样适用，带签名的空文本仍保留。状态解释完全留在 responses_server，
+不把签名混入工具参数或伪装成加密内容。
 无签名的旧工具历史不能补造签名，原生 API 可能拒绝。
 
 用量中输出 token 包含 `candidatesTokenCount + thoughtsTokenCount`，缓存和

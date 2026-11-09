@@ -144,13 +144,17 @@ def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instruct
 @pytest.mark.parametrize("checkpoint", [False, True])
 @pytest.mark.parametrize("streamed", [False, True])
 def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, checkpoint, streamed):
-    parts = [
+    replayed_parts = [
         {"text": "Need both tools.", "thought": True, "thoughtSignature": "reasoning-signature"},
         {"text": "Running tools."},
         {"functionCall": {"id": "one", "name": "workspace__run", "args": {"value": 7}}, "thoughtSignature": "call-signature"},
         {"functionCall": {"id": "two", "name": "functions__apply_patch", "args": {"input": "*** Begin Patch\n*** End Patch"}}},
         {"text": "", "thoughtSignature": "trailing-signature"},
     ]
+    # A streamed tool call can be followed by an unsigned empty text part.
+    # Preserve the original state in recordings, but omit this invalid input
+    # part when replaying it to Gemini. Signed empty parts must survive.
+    parts = replayed_parts[:4] + [{"text": ""}] + replayed_parts[4:]
     request = {
         "model": "gemini-test", "input": [UserMessage("Do both tasks.").serialize()],
         "tools": [
@@ -204,7 +208,7 @@ def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, che
     assert captures[0]["path"] == "/v1beta/models/gemini-test:streamGenerateContent"
     assert captures[0]["query"] == "alt=sse"
     assert "model" not in captures[0]["body"]
-    assert captures[1]["body"]["contents"][-2] == {"role": "model", "parts": parts}
+    assert captures[1]["body"]["contents"][-2] == {"role": "model", "parts": replayed_parts}
     results = captures[1]["body"]["contents"][-1]["parts"]
     assert [part["functionResponse"]["name"] for part in results] == ["workspace__run", "functions__apply_patch"]
     assert [part["functionResponse"]["id"] for part in results] == ["one", "two"]

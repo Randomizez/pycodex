@@ -31,6 +31,9 @@ def build_gemini_request(request):
                 # opaque reasoning item. Never replay a removed function call.
                 parts = [deepcopy(entry["part"]) for entry in native
                          if "call_id" not in entry or entry["call_id"] in active_call_ids]
+                # Unsigned empty text can end a stream, but is not input data.
+                parts = [part for part in parts
+                         if part.get("text") != "" or "thoughtSignature" in part]
             else:
                 parts = _content_parts(message.get("content"))
                 for call in message.get("tool_calls", []):
