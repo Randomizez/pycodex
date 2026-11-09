@@ -73,6 +73,8 @@ pycodex --json "概括这个仓库。"
 ```
 
 不带问题时进入交互会话，其他命令执行单次任务。
+网页 skill 补全是 [optional feature](packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md)：
+通过 Customize 应用 `skill-completion` 后启用 @/$ 名称前缀补全。
 Agent 可以修改文件、执行命令，使用当前用户的系统权限。
 
 | 命令 | 用途 |

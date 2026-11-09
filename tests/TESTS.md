@@ -55,6 +55,14 @@ fixture 会隔离 HOME；脱离这组 fixture 的测试必须自行隔离 HOME�
 env -u VIRTUAL_ENV uv run --dev pytest packages/pycodex-ws/tests/test_feishu_card.py packages/pycodex-ws/tests/test_feishu_link.py
 ```
 
+Read-only view tests compare snapshots only after the model turn has finished;
+response text may arrive before final status and final IDs. This keeps the full
+snapshot-equality assertion meaningful without racing turn completion.
+
+Backend reload tests use a future wrapped on the server loop and release the
+turn after observing running/waiting. The syntax probe avoids the old pytest
+`pkg_resources` helper. Reload checks passed on Python 3.7, 3.8 and 3.10.
+
 ## CI 环境
 
 - `test.yml` 和 `publish.yml` 分别运行 core 和 workspace job。
@@ -555,6 +563,14 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
 - 普通 function-call 的 JSON 解析失败由 compat server 返回 `response.failed(type=server_error)`；客户端通用重试保持请求和 session 不变，已完成工具不重复执行，失败响应的工具不写入 history。直接收到坏参数时客户端不再自行归类为 retryable。
 - 本地 compat 下游在响应头到达前断连时，返回 `response.failed`；模型客户端用相同请求重试并完成回复，不让网络异常逃出 ASGI。
 - 下游失败的正常错误包含阶段、耗时、timeout 和接收进度；验证响应头前断连、首个 chunk 前失败、读流中断及 HTTP 错误。
+
+### Skill 输入补全
+
+`tests/test_skill_catalog.py` covers catalog discovery and model-context consistency;
+`test_workspace_skills.py` covers API auth/root isolation.
+Optional Web prefix checks: `node packages/pycodex-ws/tests/workspace_skill_picker.mjs`.
+Browser verification is local; integration and behavior are documented in the
+[feature README](../packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md).
 
 ### `tests/test_cli.py`
 

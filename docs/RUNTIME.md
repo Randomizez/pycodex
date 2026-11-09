@@ -741,6 +741,12 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 
 ## Workspace session API
 
+`GET api/skills` returns skill names/descriptions through `list_skills`.
+The optional [Web adapter](../packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md)
+owns completion UI; the host exposes a generic undoable `replaceDraftText` edit.
+Reload import preflight runs off-loop with `subprocess.run`, supporting Python
+3.7 ASGI worker threads without a child watcher and preserving stderr errors.
+
 `GET api/sessions` returns the session list (including each tab's `profile`),
 the available profile names in `profiles`, and `default_profile`, with
 `Cache-Control: no-store`. Each catalog request and new-session creation reloads

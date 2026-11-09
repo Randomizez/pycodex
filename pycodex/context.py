@@ -635,32 +635,7 @@ class ContextManager:
         return f"{SKILLS_OPEN_TAG}\n{body}\n{SKILLS_CLOSE_TAG}"
 
     def _discover_skills(self) -> "typing.List[SkillDescriptor]":
-        codex_home = self.config.codex_home
-        if codex_home is None:
-            return []
-
-        user_root = codex_home / "skills"
-        system_root = user_root / ".system"
-        discovered: "typing.List[SkillDescriptor]" = []
-        seen: "typing.Set[Path]" = set()
-
-        user_paths = _discover_skill_files(user_root, excluded_root=system_root)
-        system_paths = _discover_skill_files(system_root)
-
-        for scope_rank, root, paths in (
-            (3, user_root, user_paths),
-            (0, system_root, system_paths),
-        ):
-            for path in paths:
-                resolved = path.resolve()
-                if resolved in seen:
-                    continue
-                seen.add(resolved)
-                descriptor = _parse_skill_descriptor(path, scope_rank, root)
-                if descriptor is not None:
-                    discovered.append(descriptor)
-
-        return discovered
+        return discover_skills(self.config.codex_home)
 
     def _build_contextual_user_messages(self) -> "typing.List[ContextMessage]":
         sections: "typing.List[str]" = []
@@ -960,3 +935,32 @@ def build_goal_message(goal, budget_limited=False):
         token_budget="none" if budget is None else budget,
         remaining_tokens="unbounded" if budget is None else max(0, budget - goal["tokensUsed"]),
     ))
+
+
+def discover_skills(codex_home):
+    """Discover the same skill descriptors used in model context and input menus."""
+    if codex_home is None:
+        return []
+
+    user_root = codex_home / "skills"
+    system_root = user_root / ".system"
+    discovered: "typing.List[SkillDescriptor]" = []
+    seen: "typing.Set[Path]" = set()
+
+    user_paths = _discover_skill_files(user_root, excluded_root=system_root)
+    system_paths = _discover_skill_files(system_root)
+
+    for scope_rank, root, paths in (
+        (3, user_root, user_paths),
+        (0, system_root, system_paths),
+    ):
+        for path in paths:
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            descriptor = _parse_skill_descriptor(path, scope_rank, root)
+            if descriptor is not None:
+                discovered.append(descriptor)
+
+    return discovered

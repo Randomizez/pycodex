@@ -19,6 +19,7 @@ space. Request failures remain visible; reasoning records need readable text.
 | exec-status | [Exec status](exec-status/README.md) | Running and exited command sessions above the composer. | Chromium fixtures, lifecycle, desktop/mobile; live processes not tested |
 | reasoning-display | [Recorded reasoning](reasoning-display/README.md) | Readable recorded reasoning summaries and text. | Chromium fixtures, opaque filtering, desktop/mobile; live model not tested |
 | session-tips | [Session tips](session-tips/README.md) | Browser-local per-conversation notes in a compact corner card. | Chromium fixtures, session/rollout isolation, refresh, storage failures and desktop/mobile; synthetic sessions |
+| skill-completion | [Skill completion](skill-completion/README.md) | Optional @/$ skill dropdown with prefix filtering, keyboard selection and customizable catalogs. | Chromium default-off, keyboard/click/touch, undo/chips, stale results, custom catalogs and cleanup; Node prefix checks |
 | tool-calls | [Tool calls](tool-calls/README.md) | Recent function/custom calls with paired inputs and results. | Chromium fixtures, lifecycle, desktop/mobile; live tools not tested |
 | voice-input | [Step Plan voice input](voice-input/README.md) | Record speech in-browser, tidy it with Step Plan, and insert it into the current draft. | Chromium simulated microphone, mocked ASR/cleanup, key flow, undo/context, cancellation, mobile focus/layout and cleanup |
 

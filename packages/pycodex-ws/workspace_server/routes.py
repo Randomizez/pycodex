@@ -22,6 +22,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.utils.compat import importlib_metadata
+from pycodex.skill_catalog import list_skills
 from pycodex_ws.server_support import (
     html_response as _html_response,
     json_object_body as _json_object_body,
@@ -98,6 +99,13 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         workspace(request)
         return _websocket_backend_hint_response()
 
+    def skills(request: Request) -> JSONResponse:
+        context = workspace(request)
+        return JSONResponse(
+            {"skills": list_skills(context.manager.codex_home)},
+            headers={"Cache-Control": "no-store"},
+        )
+
     async def sessions(request: Request) -> JSONResponse:
         return _sessions_response(workspace(request).manager)
 
@@ -166,6 +174,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
             )
         ],
         route("/ws/session", websocket_backend_hint, ["GET"]),
+        route("/api/skills", skills, ["GET"]),
         route("/api/sessions", sessions, ["GET"]),
         route("/api/sessions", new_session, ["POST"]),
         route("/frontend/{asset_path:path}", frontend_asset, ["GET", "HEAD"]),
