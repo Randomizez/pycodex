@@ -736,6 +736,14 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 
 ## Workspace session API
 
+Backend reload preflight compiles the loaded source files and checks imports in a
+fresh interpreter before changing the running modules. The import subprocess
+runs in an executor through `subprocess.run`; the ASGI event loop keeps processing
+requests, and Python 3.7 worker threads do not need an asyncio child watcher.
+A failed probe still reports the final stderr lines and leaves the live server
+unchanged.
+
+
 `GET api/sessions` returns the session list (including each tab's `profile`),
 the available profile names in `profiles`, and `default_profile`, with
 `Cache-Control: no-store`. Each catalog request and new-session creation reloads

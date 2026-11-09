@@ -5,10 +5,12 @@ import copy
 import importlib
 import importlib.util
 import os
+import subprocess
 import sys
 import traceback
 import types
 import typing
+from functools import partial
 from pathlib import Path
 
 RELOAD_PREFIXES = ("pycodex", "pycodex_ws", "pycodex_router", "workspace_server")
@@ -65,16 +67,19 @@ async def preflight_check() -> None:
         "for name in sys.argv[1:]:\n"
         "    importlib.import_module(name)\n"
     )
-    process = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-c",
-        script,
-        *names,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
+    # Python 3.7's asyncio subprocess watcher cannot run on an ASGI worker
+    # thread. Run the import probe off-loop without owning asyncio pipe transports.
+    process = await asyncio.get_running_loop().run_in_executor(
+        None,
+        partial(
+            subprocess.run,
+            [sys.executable, "-c", script, *names],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+        ),
     )
-    _stdout, stderr = await process.communicate()
+    stderr = process.stderr
     if process.returncode != 0:
         detail = stderr.decode("utf-8", errors="replace").strip()
         lines = [line for line in detail.splitlines() if line.strip()]

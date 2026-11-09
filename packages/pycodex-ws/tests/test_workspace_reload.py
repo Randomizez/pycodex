@@ -1,6 +1,8 @@
 import asyncio
 import sys
+import threading
 import types
+from concurrent.futures import Future
 
 import pytest
 from starlette.testclient import TestClient
@@ -153,7 +155,6 @@ def test_reload_preflight_failure_leaves_running_server_intact(
 ):
     bad_module = tmp_path / "broken_syntax_mod.py"
     bad_module.write_text("def broken(:\n", encoding="utf-8")
-    monkeypatch.syspath_prepend(str(tmp_path))
     dummy = types.ModuleType("pycodex.broken_syntax_mod")
     dummy.__file__ = str(bad_module)
     monkeypatch.setitem(sys.modules, "pycodex.broken_syntax_mod", dummy)
@@ -182,12 +183,12 @@ def test_reload_preflight_failure_leaves_running_server_intact(
 
 
 def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypatch):
-    release = asyncio.Event()
+    release = Future()
 
     async def slow_response(prompt, count):
         if count == 1:
-            asyncio.get_running_loop().call_later(0.1, release.set)
-            await release.wait()
+            # The source future is thread-safe; wrap it on the server's own loop.
+            await asyncio.wrap_future(release)
         return ModelResponse([AssistantMessage("answer-" + str(count))])
 
     model = ScriptedModelClient(response_factory=slow_response)
@@ -197,29 +198,50 @@ def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypa
         lambda: asyncio.sleep(0),
     )
     with TestClient(create(lambda: make_session(model=model, cwd=tmp_path))) as browser:
-        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        session_id = browser.get(prefix + "/api/session").json()["session_id"]
-        assert browser.post(
-            prefix + "/api/session/message",
-            json={"session_id": session_id, "prompt": "busy-1"},
-        ).status_code == 200
-        wait_snapshot(
-            browser,
-            lambda snap: snap["running"] is True,
-            path=prefix + "/api/session?session_id=" + session_id,
-        )
-        check = browser.post(
-            prefix + "/api/reload", json={"session_id": session_id, "check_only": True}
-        )
-        assert check.status_code == 200
-        assert check.json()["status"] == "waiting"
-        assert check.json()["active_turns"] == 1
-        assert len(check.json()["running_sessions"]) == 1
+        timer = None
+        try:
+            assert (
+                browser.post("/login", json={"password": "admin-password"}).status_code
+                == 200
+            )
+            session_id = browser.get(prefix + "/api/session").json()["session_id"]
+            assert (
+                browser.post(
+                    prefix + "/api/session/message",
+                    json={"session_id": session_id, "prompt": "busy-1"},
+                ).status_code
+                == 200
+            )
+            wait_snapshot(
+                browser,
+                lambda snap: snap["running"] is True,
+                path=prefix + "/api/session?session_id=" + session_id,
+            )
+            check = browser.post(
+                prefix + "/api/reload",
+                json={"session_id": session_id, "check_only": True},
+            )
+            assert check.status_code == 200
+            assert check.json()["status"] == "waiting"
+            assert check.json()["active_turns"] == 1
+            assert len(check.json()["running_sessions"]) == 1
 
-        reloaded = browser.post(prefix + "/api/reload", json={"session_id": session_id})
-        assert reloaded.status_code == 200
-        assert reloaded.json()["ok"] is True
-        assert reloaded.json()["snapshot"]["turns"][-1]["response"] == "answer-1"
+            # Keep the first turn active until the test has observed running and
+            # checked the waiting status; only then allow the reload to finish.
+            timer = threading.Timer(0.1, release.set_result, args=(None,))
+            timer.start()
+            reloaded = browser.post(
+                prefix + "/api/reload", json={"session_id": session_id}
+            )
+            assert reloaded.status_code == 200
+            assert reloaded.json()["ok"] is True
+            assert reloaded.json()["snapshot"]["turns"][-1]["response"] == "answer-1"
+        finally:
+            if timer is not None:
+                timer.cancel()
+                timer.join()
+            if not release.done():
+                release.set_result(None)
 
 
 def test_reload_ignores_idle_sleeping_and_backfills_legacy_turn_fields(
@@ -229,7 +251,9 @@ def test_reload_ignores_idle_sleeping_and_backfills_legacy_turn_fields(
         "workspace_server.app.preflight_check",
         lambda: asyncio.sleep(0),
     )
-    manager = WorkspaceSessionManager(lambda: make_session(cwd=tmp_path), tmp_path / "state")
+    manager = WorkspaceSessionManager(
+        lambda: make_session(cwd=tmp_path), tmp_path / "state"
+    )
     app = create_app(manager, tmp_path / "state", "admin-password", tmp_path, False)
     with TestClient(app) as browser:
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200

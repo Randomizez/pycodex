@@ -55,6 +55,28 @@ fixture 会隔离 HOME；脱离这组 fixture 的测试必须自行隔离 HOME�
 env -u VIRTUAL_ENV uv run --dev pytest packages/pycodex-ws/tests/test_feishu_card.py packages/pycodex-ws/tests/test_feishu_link.py
 ```
 
+## Backend reload compatibility
+
+`packages/pycodex-ws/tests/test_workspace_reload.py` covers both single and multi
+workspace reloads on Python 3.7, 3.8 and 3.10. The active-turn test uses a
+thread-safe future wrapped on the server loop, observes the running/waiting state
+before releasing the turn, and always releases it before teardown. The syntax
+failure test supplies the loaded module's file directly, without relying on
+pytest's old `syspath_prepend` helper or `pkg_resources`.
+
+Run from the repository root with the selected interpreter:
+
+```bash
+uv run --dev --python 3.7 pytest packages/pycodex-ws/tests/test_workspace_reload.py -q
+uv run --dev --python 3.8 pytest packages/pycodex-ws/tests/test_workspace_reload.py -q
+uv run --dev --python 3.10 pytest packages/pycodex-ws/tests/test_workspace_reload.py -q
+```
+
+Verified against the upstream main baseline (2026-11-09): reload tests pass
+10/10 on Python 3.7.17, 3.8.20 and 3.10.12. Full workspace suites pass with
+479 passed / 54 skipped on 3.7, and 533 passed on both 3.8 and 3.10. The 54 skips
+come from the existing Python 3.7 pytest-asyncio configuration.
+
 ## CI 环境
 
 - `test.yml` 和 `publish.yml` 分别运行 core 和 workspace job。
