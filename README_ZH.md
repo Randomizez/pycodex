@@ -27,6 +27,10 @@ python3 -m pip install --upgrade pycodex-ws
 
 ## 配置模型
 
+可从 [config_examples/](config_examples/README.md) 选择 Responses、StepFun、
+Chat Completions、Claude Messages 或 Gemini 模板。向 Agent 提供 endpoint 和 key
+（StepFun Coding Plan 已内置 endpoint），让它按目录说明安装配置或 profile 并验证连接。
+
 创建 `~/.codex/config.toml`。以 OpenAI 为例：
 
 ```toml

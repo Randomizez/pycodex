@@ -1,0 +1,10 @@
+# A Claude Messages gateway accepting Bearer authentication; see README.md.
+# Replace base_url/model and set CLAUDE_API_KEY in the environment or adjacent .env.
+model = "claude-opus-5-5"
+model_provider = "claude"
+compat_api = "messages"
+model_reasoning_effort = "high"
+
+[model_providers.claude]
+base_url = "https://api.example.invalid/v1"
+env_key = "CLAUDE_API_KEY"

@@ -1,0 +1,10 @@
+# Replace base_url/model and set GEMINI_API_KEY in the environment or adjacent .env.
+# Gemini authentication uses x-goog-api-key. Keep the API version in base_url.
+model = "gemini-4-argon-high"
+model_provider = "gemini"
+compat_api = "gemini"
+model_reasoning_effort = "high"
+
+[model_providers.gemini]
+base_url = "https://api.example.invalid/v1beta"
+env_key = "GEMINI_API_KEY"

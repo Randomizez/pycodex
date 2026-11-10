@@ -1,0 +1,9 @@
+# Replace base_url and model with the values from your Chat Completions service.
+# Set CHAT_API_KEY in the environment or adjacent .env; omit env_key if no auth is required.
+model = "step-3.5-flash"
+model_provider = "chat_completions"
+compat_api = "chat_completions"
+
+[model_providers.chat_completions]
+base_url = "https://api.example.invalid/v1"
+env_key = "CHAT_API_KEY"

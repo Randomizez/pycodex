@@ -1,0 +1,10 @@
+# StepFun Coding Plan. Set STEP_API_KEY in the environment or adjacent .env.
+# For other StepFun services, use that service's endpoint, key and model ID.
+model = "step-5-preview"
+model_provider = "stepfun"
+compat_api = "chat_completions"
+model_reasoning_effort = "high"
+
+[model_providers.stepfun]
+base_url = "https://api.stepfun-inc.com/step_plan/v1"
+env_key = "STEP_API_KEY"

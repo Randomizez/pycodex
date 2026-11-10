@@ -28,6 +28,11 @@ python3 -m pip install --upgrade pycodex-ws
 
 ## Configure a model
 
+Start with [config_examples/](config_examples/README.md) for Responses, StepFun,
+Chat Completions, Claude Messages or Gemini. Give an agent your endpoint and key
+(StepFun Coding Plan includes its endpoint) and ask it to follow that guide to
+install and verify a config or profile.
+
 Create `~/.codex/config.toml`. For example, with OpenAI:
 
 ```toml

@@ -51,6 +51,11 @@ Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](ht
 
 ## 配置读取与 profile
 
+[config_examples/](../config_examples/README.md) 提供现有四种 API 的配置模板和
+StepFun Coding Plan 预设，以及 Agent 根据 endpoint/key 安装、核对模型和验证的流程。
+模板是普通 TOML，可作为基础配置或同目录 profile；占位 URL 由 Agent 替换，
+运行时不新增模板展开或自动探测机制。
+
 启动入口使用 `CodexConfig.from_env(config_path, profile, use_default_profile=True)`。
 它沿用既有 dotenv 加载规则，读取一次选中的 TOML，返回 `path`、实际 `profile`
 和冻结的 `provider` / `context` 配置。`from_env()` 默认仍读取

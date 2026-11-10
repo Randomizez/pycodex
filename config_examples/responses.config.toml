@@ -1,0 +1,10 @@
+# Replace base_url and verify the model ID against the endpoint's model catalog.
+# Set RESPONSES_API_KEY in the environment or the adjacent .env file.
+model = "gpt-6-astra"
+model_provider = "responses"
+compat_api = "none"
+model_reasoning_effort = "high"
+
+[model_providers.responses]
+base_url = "https://api.example.invalid/v1"
+env_key = "RESPONSES_API_KEY"
