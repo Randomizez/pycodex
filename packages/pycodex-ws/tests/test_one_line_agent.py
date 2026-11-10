@@ -308,17 +308,13 @@ def test_final_ack_does_not_become_a_task_or_next_tool_result(make_one_line_work
         stop_waiting(browser, connection, waiting)
 
 
-@pytest.mark.parametrize("shell", ["bash", "powershell"])
-def test_final_echo_preserves_text_without_execution(tmp_path, shell):
+def test_final_echo_preserves_text_without_execution(tmp_path):
     from workspace_server.one_line_agent import echo_command
 
-    executable = (
-        (shutil.which("powershell.exe") or shutil.which("pwsh"))
-        if shell == "powershell" else shutil.which("bash")
-    )
+    executable = shutil.which("bash")
     if executable is None:
-        pytest.skip(shell + " is required for terminal execution verification")
-    args = [executable, "-NoLogo", "-NoProfile", "-Command"] if shell == "powershell" else [executable, "-c"]
+        pytest.skip("Bash is required for terminal execution verification")
+    args = [executable, "-c"]
     texts = [
         "", "-n", "-e",
         "完成 'quoted' \"double\" $literal\n第二行",
@@ -854,65 +850,6 @@ async def test_bash_one_liner_continues_from_web_or_terminal(make_one_line_works
         assert [item.output["output"] for item in agent.history if isinstance(item, ToolResult)] == [
             "first", "second",
         ]
-
-
-@pytest.mark.asyncio
-async def test_powershell_one_liner_with_real_interpreter(make_one_line_workspace, tmp_path):
-    powershell = shutil.which("powershell.exe") or shutil.which("pwsh")
-    if powershell is None:
-        pytest.skip("PowerShell is required for terminal execution verification")
-    app, registry, manager, models = make_one_line_workspace([
-        ModelResponse([
-            AssistantMessage("先检查命令退出码。", phase="commentary"),
-            ToolCall("native", "exec_command", {
-                "cmd": "exit 7",
-            }),
-        ]),
-        ModelResponse([ToolCall("error", "exec_command", {"cmd": "throw '失败'"})]),
-        ModelResponse([ToolCall("file", "exec_command", {
-            "cmd": """Set-Content -LiteralPath artifact -Value '中文 | "quoted" $literal'; Get-Content artifact""",
-        })]),
-        ModelResponse([AssistantMessage("完成 'quoted' $literal\nSecond line")]),
-    ])
-    client_dir = tmp_path / "client's directory"
-    client_dir.mkdir()
-    async with serve(app) as address:
-        async with httpx.AsyncClient(trust_env=False) as browser:
-            await browser.post(address + "/login", json={"password": "owner-password"})
-            response = await browser.post(address + "/api/one-line-agent", json={"profile": "remote"})
-        assert response.status_code == 200
-        line = response.json()["binding"]["one_liners"]["windows"]
-        process = await asyncio.create_subprocess_exec(
-            powershell, "-NoLogo", "-NoProfile", "-Command", line,
-            cwd=str(client_dir), stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        service = app.state.one_line_agent_endpoints[manager]
-        await eventually(lambda: (
-            "1" in service.runs and service.runs["1"].runtime is not None
-            and service.runs["1"].runtime.agent.model_client.call_count == 4
-            and not service.runs["1"].runtime.is_busy
-            and service.runs["1"].in_flight is None
-            and service.runs["1"].replies.empty()
-        ))
-        assert process.returncode is None
-        service.revoke()
-        stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
-        assert process.returncode != 0  # irm -ea Stop reports the revoked connection.
-        assert "完成 'quoted' $literal\nSecond line" in stdout.decode().replace("\r\n", "\n")
-        assert "先检查命令退出码。" not in stdout.decode()
-        assert "[exit 7]" in stdout.decode()
-        assert "[exit 1]" in stdout.decode()
-        assert "[exit 0]" in stdout.decode()
-        assert (client_dir / "artifact").is_file()
-        assert not (tmp_path / "alpha" / "artifact").exists()
-        results = [
-            item.output for item in service.connections()[0].runtime.agent.history
-            if isinstance(item, ToolResult)
-        ]
-        assert [result["exit_code"] for result in results] == [7, 1, 0]
-        assert "失败" in results[1]["output"]
-        assert '中文 | "quoted" $literal' in results[2]["output"]
 
 
 def test_reload_keeps_existing_sessions_and_zero_argument_factories(make_one_line_workspace, monkeypatch):

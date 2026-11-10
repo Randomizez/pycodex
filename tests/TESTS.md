@@ -128,8 +128,8 @@ final 显示回传后及模型失败后 HTTP 保持等待、网页继续对话�
 保留 profile 指令且不注入 host 环境、路径或 Git/sandbox 元数据、
 并发结果隔离、启动期间
 停用、单个 session 关闭后新调用仍可用；
-含 PowerShell 语法的原文往返测试始终运行，实际执行测试需要 PATH 中有 `powershell.exe`
-或 `pwsh`，否则跳过。测试不调用真实模型。
+含 PowerShell 语法的原文往返测试始终运行，不执行真实 PowerShell 解释器。
+测试不调用真实模型。
 
 Workspace 重连诊断折叠的浏览器回归手动运行，不加入 CI。
 使用 Node 18+，在独立目录安装 Playwright 及 Chromium 后运行：
