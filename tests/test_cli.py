@@ -172,7 +172,7 @@ def test_model_bootstrap_selects_transport(config_path, monkeypatch, mode):
     if mode == "vllm":
         assert probes == ["http://127.0.0.1:18000/v1"]
         assert client.model == "last"
-        assert launches[0][1] == {"model_provider": "vllm"}
+        assert launches[0][1] == {"model_provider": "vllm", "http_headers": {}}
     elif mode == "managed":
         assert not launches
     else:

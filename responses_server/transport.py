@@ -350,16 +350,17 @@ class OutcommingTransport:
             ) from exc
 
     def _build_headers(self, accept: "str") -> "typing.Dict[str, str]":
-        headers = {
-            "Accept": accept,
-            "Content-Type": "application/json",
-        }
+        headers = {"content-type": "application/json"}
+        headers.update({
+            name.lower(): value for name, value in self.config.outcomming_http_headers.items()
+        })
+        headers["accept"] = accept
         api_key = self.config.outcomming_api_key()
         if api_key is not None:
             if self.config.normalized_outcomming_api() == "gemini":
                 headers["x-goog-api-key"] = api_key
             else:
-                headers["Authorization"] = f"Bearer {api_key}"
+                headers["authorization"] = f"Bearer {api_key}"
         return headers
 
     def _iter_sse_events(self, response):

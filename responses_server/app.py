@@ -107,12 +107,14 @@ def launch_chat_completion_compat_server(
     api_key_env: "typing.Union[str, None]" = None,
     model_provider: "typing.Union[str, None]" = None,
     outcomming_api: "str" = "chat_completions",
+    http_headers: "typing.Union[typing.Dict[str, str], None]" = None,
 ):
     config = CompatServerConfig.from_base_url(
         base_url,
         api_key_env,
         outcomming_api=outcomming_api,
         model_provider=model_provider,
+        http_headers=http_headers,
     )
     server = ManagedResponseServer(config)
     server.start()

@@ -88,6 +88,8 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
         'base_url = "https://base.invalid/v1"\n'
         'env_key = "DEMO_KEY"\n'
         'fallback_models = ["old-a", "old-b"]\n'
+        'http_headers = { "X-Static" = "base", "X-Keep" = "keep" }\n'
+        'env_http_headers = { "X-Token" = "BASE_TOKEN" }\n'
         '[model_providers.demo.query_params]\n'
         'version = "v1"\n'
         'region = "base"\n'
@@ -105,6 +107,8 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
         '[model_providers.demo]\n'
         'base_url = "https://profile.invalid/v1"\n'
         'fallback_models = ["new"]\n'
+        'http_headers = { "X-Static" = "profile" }\n'
+        'env_http_headers = { "X-Token" = "PROFILE_TOKEN" }\n'
         '[model_providers.demo.query_params]\n'
         'region = "profile"\n'
         '[features.multi_agent_v2]\n'
@@ -123,6 +127,8 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
     assert provider.api_key_env == "DEMO_KEY"
     assert provider.reasoning_effort == "high"
     assert provider.fallback_models == ("new",)
+    assert provider.http_headers == {"X-Static": "profile", "X-Keep": "keep"}
+    assert provider.env_http_headers == {"X-Token": "PROFILE_TOKEN"}
     assert provider.query_params == {"version": "v1", "region": "profile"}
     assert provider.beta_features_header == "guardian_approval"
     assert context.model_context_window == 32000
@@ -133,6 +139,16 @@ def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedd
     assert ContextManager(context).resolve_base_instructions() == "中文指令"
     assert ResponsesProviderConfig.from_codex_config(config).model == "base-model"
     assert ContextConfig.from_codex_config(config).multi_agent_max_concurrency == 7
+
+
+@pytest.mark.parametrize("field", ["http_headers", "env_http_headers"])
+@pytest.mark.parametrize("value", [None, [], "header=value", {"X-Test": 3}, {3: "value"}])
+def test_provider_header_config_requires_string_tables(field, value):
+    with pytest.raises(ValueError, match=field):
+        ResponsesProviderConfig.from_mapping({
+            "model": "test", "model_provider": "test",
+            "model_providers": {"test": {"base_url": "https://example.invalid", field: value}},
+        })
 
 
 @pytest.mark.parametrize("embedded", [False, True])

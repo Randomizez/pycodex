@@ -1243,6 +1243,8 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
         api_key_env="DUMMY_KEY",
         sandbox_mode="danger-full-access",
         beta_features_header="guardian_approval",
+        http_headers={"X-Static": "static"},
+        env_http_headers={"X-Custom-Token": "DUMMY_KEY"},
     )
     monkeypatch.setenv("DUMMY_KEY", "test-key")
     client = ResponsesModelClient(
@@ -1296,6 +1298,7 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
     )
 
     try:
+        assert client.list_models_sync() == ["demo-model"]
         response = client._complete_sync(prompt, NOOP_MODEL_STREAM_EVENT_HANDLER)
     finally:
         httpd.shutdown()
@@ -1320,6 +1323,12 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
         assert headers[key.lower()] == value
     assert headers.get("accept-encoding") == "identity"
     assert "connection" not in headers
+    captures = [json.loads(path.read_text()) for path in capture_root.glob("*_*.json")]
+    assert len(captures) == 2
+    for capture in captures:
+        captured_headers = _normalized_headers(capture["headers"])
+        assert captured_headers["x-static"] == "static"
+        assert captured_headers["x-custom-token"] == "test-key"
 
 
 def test_client_and_rollout_use_pinned_codex_version_without_probe(

@@ -1,7 +1,7 @@
 import os
 import typing
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 DEFAULT_OUTCOMMING_TIMEOUT_SECONDS = 300.0
 
@@ -17,6 +17,7 @@ class CompatServerConfig:
     outcomming_api_key_env: "typing.Union[str, None]" = None
     model_provider: "typing.Union[str, None]" = None
     timeout_seconds: "float" = DEFAULT_OUTCOMMING_TIMEOUT_SECONDS
+    outcomming_http_headers: "typing.Dict[str, str]" = field(default_factory=dict, repr=False)
 
     def outcomming_api_key(self) -> "typing.Union[str, None]":
         if self.outcomming_api_key_env is None:
@@ -52,6 +53,7 @@ class CompatServerConfig:
         api_key_env: "typing.Union[str, None]" = None,
         model_provider: "typing.Union[str, None]" = None,
         outcomming_api: "str" = "chat_completions",
+        http_headers: "typing.Union[typing.Dict[str, str], None]" = None,
     ) -> "CompatServerConfig":
         parsed = urllib.parse.urlparse(outcomming_base_url)
         if not parsed.scheme or not parsed.netloc:
@@ -69,4 +71,5 @@ class CompatServerConfig:
             outcomming_api=outcomming_api,
             outcomming_api_key_env=api_key_env,
             model_provider=model_provider,
+            outcomming_http_headers=dict(http_headers) if http_headers is not None else {},
         )

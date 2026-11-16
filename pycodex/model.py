@@ -17,6 +17,7 @@ from urllib3.exceptions import ReadTimeoutError
 
 from .utils.compat import Protocol
 from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
+from .utils.http_headers import build_http_headers
 
 from .events import (
     AssistantDeltaEvent,
@@ -114,8 +115,17 @@ class ResponsesProviderConfig:
     stream_first_data_timeout_ms: "typing.Union[int, None]" = None
     compat_api: "str" = "none"
     model_slug: "typing.Union[str, None]" = None
+    http_headers: "typing.Dict[str, str]" = field(default_factory=dict, repr=False)
+    env_http_headers: "typing.Dict[str, str]" = field(default_factory=dict)
 
     def __post_init__(self):
+        for name in ("http_headers", "env_http_headers"):
+            headers = getattr(self, name)
+            if not isinstance(headers, dict) or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in headers.items()
+            ):
+                raise ValueError(name + " must be a table of strings")
         if self.model_slug is not None and (
             not isinstance(self.model_slug, str) or self.model_slug not in load_models_by_slug()
         ):
@@ -195,6 +205,8 @@ class ResponsesProviderConfig:
             provider_name=provider_name,
             base_url=provider["base_url"],
             api_key_env=api_key_env,
+            http_headers=provider.get("http_headers", {}),
+            env_http_headers=provider.get("env_http_headers", {}),
             compat_api=compat_api,
             wire_api=wire_api,
             query_params=query_params,
@@ -453,6 +465,9 @@ class ResponsesModelClient:
         openai_subagent: "typing.Union[str, None]" = None,
     ) -> "None":
         self._config = config
+        self._provider_headers = build_http_headers(
+            config.http_headers, config.env_http_headers,
+        )
         self._timeout_seconds = timeout_seconds
         self._session_id = session_id or uuid7_string()
         self.recording_metadata = ModelRecordingMetadata(originator, config.provider_name)
@@ -942,12 +957,15 @@ class ResponsesModelClient:
         session_id = self._session_id if prompt.session_id is None else prompt.session_id
         headers = {
             "content-type": "application/json",
-            "accept": "text/event-stream",
-            "x-client-request-id": session_id,
-            "session_id": session_id,
             "originator": self.recording_metadata.originator,
             "user-agent": self._user_agent,
         }
+        headers.update(self._provider_headers)
+        headers.update({
+            "accept": "text/event-stream",
+            "x-client-request-id": session_id,
+            "session_id": session_id,
+        })
         api_key = self._config.api_key()
         if api_key is not None:
             headers["authorization"] = f"Bearer {api_key}"
@@ -966,10 +984,11 @@ class ResponsesModelClient:
 
     def _build_model_list_headers(self) -> "typing.Dict[str, str]":
         headers = {
-            "accept": "application/json",
             "originator": self.recording_metadata.originator,
             "user-agent": self._user_agent,
         }
+        headers.update(self._provider_headers)
+        headers["accept"] = "application/json"
         api_key = self._config.api_key()
         if api_key is not None:
             headers["authorization"] = f"Bearer {api_key}"

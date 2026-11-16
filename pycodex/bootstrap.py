@@ -8,6 +8,7 @@ from .model import (
     ResponsesProviderConfig,
 )
 from .utils import get_debug_dir
+from .utils.http_headers import build_http_headers
 
 if typing.TYPE_CHECKING:
     from responses_server import ManagedResponseServer
@@ -121,10 +122,14 @@ def build_model(
         )
         os.environ.setdefault(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
     elif vllm_endpoint is not None or compat_api != "none":
+        headers = build_http_headers(
+            provider_config.http_headers, provider_config.env_http_headers,
+        )
         if vllm_endpoint:
             managed_server = launch_chat_completion_compat_server(
                 vllm_endpoint,
                 model_provider="vllm",
+                http_headers=headers,
             )
         else:
             managed_server = launch_chat_completion_compat_server(
@@ -132,6 +137,7 @@ def build_model(
                 provider_config.api_key_env,
                 model_provider=provider_config.provider_name,
                 outcomming_api=compat_api,
+                http_headers=headers,
             )
         url, key_env = (
             managed_server.base_url,
@@ -143,6 +149,8 @@ def build_model(
         provider_config,
         base_url=url,
         api_key_env=key_env,
+        http_headers={} if uses_local_responses_compat else provider_config.http_headers,
+        env_http_headers={} if uses_local_responses_compat else provider_config.env_http_headers,
         responses_lite_override=(
             False
             if uses_local_responses_compat
