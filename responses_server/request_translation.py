@@ -123,6 +123,33 @@ def build_outcomming_request(
     return payload
 
 
+def split_tool_images(
+    messages: "typing.List[typing.Dict[str, object]]",
+) -> "typing.List[typing.Dict[str, object]]":
+    """Move tool images after their result group for Chat/Messages backends."""
+    result = []
+    pending_images = []
+    for message in messages:
+        if message.get("role") != "tool" and pending_images:
+            result.append({"role": "user", "content": pending_images})
+            pending_images = []
+        content = message.get("content")
+        if message.get("role") == "tool" and isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if part["type"] == "text":
+                    text_parts.append(part["text"])
+                elif part["type"] == "image_url":
+                    pending_images.append(part)
+                else:
+                    raise ValueError("unsupported tool content part: {!r}".format(part["type"]))
+            message = dict(message, content="".join(text_parts))
+        result.append(message)
+    if pending_images:
+        result.append({"role": "user", "content": pending_images})
+    return result
+
+
 def _responses_input_to_chat_messages(
     instructions: "str",
     input_items: "typing.List[object]",
@@ -133,7 +160,6 @@ def _responses_input_to_chat_messages(
         messages.append({"role": "developer", "content": instructions})
 
     pending_assistant: "typing.Union[typing.Dict[str, object], None]" = None
-    pending_tool_images: "typing.List[typing.Dict[str, object]]" = []
 
     def flush_pending_assistant() -> "None":
         nonlocal pending_assistant
@@ -150,21 +176,12 @@ def _responses_input_to_chat_messages(
         messages.append(pending_assistant)
         pending_assistant = None
 
-    def flush_pending_tool_images() -> "None":
-        if not pending_tool_images:
-            return
-        messages.append({"role": "user", "content": list(pending_tool_images)})
-        del pending_tool_images[:]
-
     for raw_item in input_items:
         if not isinstance(raw_item, dict):
             raise UnsupportedIncommingFeature(
                 "all incomming `input` items must be objects"
             )
         item_type = raw_item.get("type")
-        if item_type not in {"function_call_output", "custom_tool_call_output"}:
-            flush_pending_tool_images()
-
         if item_type == "agent_message":
             if not all(
                 isinstance(raw_item.get(key), str) for key in ("author", "recipient")
@@ -257,14 +274,17 @@ def _responses_input_to_chat_messages(
             text, image_parts = _split_tool_output_parts(
                 raw_item.get("output")
             )
+            if image_parts:
+                content = ([{"type": "text", "text": text}] if text else []) + image_parts
+            else:
+                content = text
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": str(raw_item.get("call_id", "")).strip(),
-                    "content": text,
+                    "content": content,
                 }
             )
-            pending_tool_images.extend(image_parts)
             continue
 
         if item_type == "custom_tool_call":
@@ -290,7 +310,6 @@ def _responses_input_to_chat_messages(
         )
 
     flush_pending_assistant()
-    flush_pending_tool_images()
     return messages
 
 

@@ -212,6 +212,7 @@ def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, che
     results = captures[1]["body"]["contents"][-1]["parts"]
     assert [part["functionResponse"]["name"] for part in results] == ["workspace__run", "functions__apply_patch"]
     assert [part["functionResponse"]["id"] for part in results] == ["one", "two"]
+    assert [part["functionResponse"]["response"] for part in results] == [{"output": "ok"}, {"output": "ok"}]
     assert captures[2]["body"]["contents"][-2]["parts"] == [
         {"text": "Done."}, {"text": "", "thoughtSignature": "answer-signature"},
     ]
@@ -269,11 +270,11 @@ def test_request_instructions_images_tool_results_schema_and_choice(choice, mode
     assert payload["generationConfig"] == {"maxOutputTokens": 2000, "thinkingConfig": {"includeThoughts": True, "thinkingLevel": "high"}}
     assert payload["contents"][0]["parts"] == [{"text": "Agent message from one to two:\nInspect"}]
     assert payload["contents"][1]["parts"] == [{"inlineData": {"mimeType": "image/png", "data": "YQ=="}}]
-    assert payload["contents"][-2]["parts"] == [
-        {"functionResponse": {"id": "call", "name": "workspace__run", "response": {"result": "Image result"}}},
-    ]
     assert payload["contents"][-1] == {"role": "user", "parts": [
-        {"inlineData": {"mimeType": "image/png", "data": "Yg=="}},
+        {"functionResponse": {
+            "id": "call", "name": "workspace__run", "response": {"output": "Image result"},
+            "parts": [{"inlineData": {"mimeType": "image/png", "data": "Yg=="}}],
+        }},
     ]}
     declaration = payload["tools"][0]["functionDeclarations"][0]
     assert declaration["parametersJsonSchema"] == _tool()["parameters"]
@@ -282,6 +283,48 @@ def test_request_instructions_images_tool_results_schema_and_choice(choice, mode
     if names:
         expected["allowedFunctionNames"] = names
     assert payload["toolConfig"]["functionCallingConfig"] == expected
+
+
+def test_parallel_tool_images_keep_their_call_and_next_user_message():
+    request = {
+        "model": "gemini-test", "tools": [_tool("view_image")],
+        "input": [
+            {"type": "function_call", "name": "view_image", "call_id": "one", "arguments": '{"value":1}'},
+            {"type": "function_call", "name": "view_image", "call_id": "two", "arguments": '{"value":2}'},
+            {"type": "function_call_output", "call_id": "one", "output": [
+                {"type": "input_text", "text": "First image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,YQ=="},
+            ]},
+            {"type": "function_call_output", "call_id": "two", "output": [
+                {"type": "input_image", "image_url": "data:image/png;base64,Yg=="},
+            ]},
+            {"type": "message", "role": "user", "content": "Compare them."},
+        ],
+    }
+    canonical = build_outcomming_request(request)
+    original = deepcopy(canonical)
+    payload = build_gemini_request(canonical)
+    assert canonical == original
+    with _bridge([[_response([{"text": "Done."}])]]) as (client, captures):
+        _check_lifecycle(_post(client, request))
+    assert captures[0]["body"] == payload
+    assert canonical["messages"][1]["content"] == [
+        {"type": "text", "text": "First image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}},
+    ]
+    assert captures[0]["body"]["contents"][-2] == {"role": "user", "parts": [
+        {"functionResponse": {
+            "name": "view_image", "id": "one", "response": {"output": "First image"},
+            "parts": [{"inlineData": {"mimeType": "image/png", "data": "YQ=="}}],
+        }},
+        {"functionResponse": {
+            "name": "view_image", "id": "two", "response": {"output": ""},
+            "parts": [{"inlineData": {"mimeType": "image/png", "data": "Yg=="}}],
+        }},
+    ]}
+    assert captures[0]["body"]["contents"][-1] == {
+        "role": "user", "parts": [{"text": "Compare them."}],
+    }
 
 
 @pytest.mark.parametrize("explicit_end", [False, True])

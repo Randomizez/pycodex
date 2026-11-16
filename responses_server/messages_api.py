@@ -1,6 +1,8 @@
 import json
 import typing
 
+from .request_translation import split_tool_images
+
 DEFAULT_MESSAGES_MAX_TOKENS = 32000
 
 
@@ -20,12 +22,12 @@ def build_messages_request(
     raw_messages = outcomming_request.get("messages") or []
     if not isinstance(raw_messages, list):
         raise MessagesAPIAdapterError("outcomming request `messages` must be a list")
+    if any(not isinstance(message, dict) for message in raw_messages):
+        raise MessagesAPIAdapterError("outcomming request messages must be objects")
 
     system_blocks: "typing.List[typing.Dict[str, object]]" = []
     messages: "typing.List[typing.Dict[str, object]]" = []
-    for raw_message in raw_messages:
-        if not isinstance(raw_message, dict):
-            raise MessagesAPIAdapterError("outcomming request messages must be objects")
+    for raw_message in split_tool_images(raw_messages):
         role = str(raw_message.get("role", "")).strip()
         if role in {"developer", "system"}:
             text = str(raw_message.get("content", "") or "")

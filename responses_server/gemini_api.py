@@ -49,18 +49,24 @@ def build_gemini_request(request):
             call_id = message["tool_call_id"]
             if call_id not in calls:
                 raise GeminiAPIAdapterError("Gemini tool result has no matching function call")
-            parts = [{"functionResponse": {
+            output_parts = _content_parts(message.get("content"))
+            function_response = {
                 "name": calls[call_id], "id": call_id,
-                "response": {"result": message.get("content", "")},
-            }}]
+                "response": {"output": "".join(
+                    part["text"] for part in output_parts if "text" in part
+                )},
+            }
+            media_parts = [part for part in output_parts if "inlineData" in part]
+            if media_parts:
+                function_response["parts"] = media_parts
+            parts = [{"functionResponse": function_response}]
             role = "user"
         elif role == "user":
             parts = _content_parts(message.get("content"))
         else:
             raise GeminiAPIAdapterError("unsupported Gemini message role: {!r}".format(role))
         if parts:
-            # Batch parallel function responses, keeping subsequent image input
-            # in its own user content as provided by the canonical translator.
+            # Batch consecutive function responses into one user content.
             if message["role"] == "tool" and contents and all(
                 "functionResponse" in part for part in contents[-1]["parts"]
             ):

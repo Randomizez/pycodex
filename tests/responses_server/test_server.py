@@ -1751,7 +1751,24 @@ def test_responses_server_forwards_input_images_to_outcomming_messages(
                                     "image_url": "data:image/png;base64,AAA",
                                 },
                             ],
-                        }
+                        },
+                        {
+                            "type": "function_call",
+                            "call_id": "call_1",
+                            "name": "view_image",
+                            "arguments": '{"path":"a.png"}',
+                        },
+                        {
+                            "type": "function_call_output",
+                            "call_id": "call_1",
+                            "output": [
+                                {"type": "input_text", "text": "attached"},
+                                {
+                                    "type": "input_image",
+                                    "image_url": "data:image/png;base64,BBB",
+                                },
+                            ],
+                        },
                     ],
                     "tools": [],
                     "tool_choice": "auto",
@@ -1782,7 +1799,37 @@ def test_responses_server_forwards_input_images_to_outcomming_messages(
                     },
                 },
             ],
-        }
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "view_image",
+                    "input": {"path": "a.png"},
+                }
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "attached"}
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": "BBB",
+                    },
+                }
+            ],
+        },
     ]
 
 

@@ -17,6 +17,7 @@ from .gemini_api import iter_chat_chunks as iter_chat_chunks_from_gemini
 from .messages_api import MessagesAPIAdapterError, build_messages_request
 from .messages_api import iter_chat_chunks as iter_chat_chunks_from_messages
 from .messages_api import saw_message_stop as messages_saw_message_stop
+from .request_translation import split_tool_images
 
 
 class OutcommingChatError(RuntimeError):
@@ -77,9 +78,13 @@ class OutcommingTransport:
         self,
         outcomming_request: "typing.Dict[str, object]",
     ):
+        payload = dict(
+            outcomming_request,
+            messages=split_tool_images(outcomming_request["messages"]),
+        )
         request = urllib.request.Request(
             self.config.outcomming_chat_completions_url(),
-            data=json.dumps(outcomming_request).encode("utf-8"),
+            data=json.dumps(payload).encode("utf-8"),
             headers=self._build_headers(accept="text/event-stream"),
             method="POST",
         )

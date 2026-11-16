@@ -67,7 +67,7 @@ prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `ma
 - mock `web_search` 接口对齐（返回空结果）
 - function / custom tool follow-up history 重建
 - 原生 `agent_message` 明文输入转换成 user 消息，保留发送者与接收者标签
-- 结构化 `input_image` content items：user message 里的图片直接转成 chat `image_url` part；tool output 里的图片会在该 `tool` message 之后补一条只带图片的 `user` message（chat backend 普遍会丢弃 `tool` role 里的图片）；`/v1/messages` 侧再转成 Anthropic `image` block
+- 结构化 `input_image` content items：canonical 消息保留工具文本和图片的归属；Chat/Messages 边界将图片放到连续工具结果之后的独立 `user` 消息，Gemini 边界将图片放入所属 `functionResponse.parts`。user message 里的图片按各后端原生格式转换。
 
 ## 统一配置入口
 
@@ -112,8 +112,11 @@ system/developer 指令转换成 `systemInstruction`，工具 schema 使用
 `parametersJsonSchema`，namespace/custom 和 tool_choice 复用现有映射。
 user/tool output 图片使用 `inlineData`；base64 data URL 拆成 MIME 与数据。
 HTTP 图片 URL 需先由调用方读取并转成 data URL，适配器明确拒绝直接传入 URL。
-并行工具结果合在一个 user content 中，
-tool output 图片保持为后续独立的 user content，不混进 functionResponse 所在块。
+文本工具结果使用 `functionResponse.response.output`。
+并行工具结果合在一个 user content 中，tool output 图片保留所属调用，
+使用 `functionResponse.parts[].inlineData`；user 图片使用 `contents[].parts[].inlineData`。
+上游 `ToolResult.is_error` 不进入 Responses 输入，本服务继续将错误作为工具输出文本，
+不从文本猜测错误状态。
 `thought` 文本流映射成 reasoning；
 默认请求 `includeThoughts`，`none/minimal` effort 映射为 `minimal`，
 `low/medium/high` 原样，`xhigh/max` 映射为 `high`。支持多工具返回；
@@ -149,7 +152,7 @@ item 原样保存契约，不扩展 AssistantMessage、ToolCall 或历史解析�
 离线回归：
 
 ```bash
-env -u VIRTUAL_ENV uv run --dev pytest tests/responses_server/test_gemini.py tests/test_cli.py
+env -u VIRTUAL_ENV uv run --dev pytest tests/responses_server tests/test_cli.py
 ```
 
 ## 当前明确不支持
