@@ -19,6 +19,8 @@
 
 `api.example.invalid` 是需要替换的地址，不会指向真实服务。模型名是已支持模型的
 示例，最终须使用目标 endpoint 实际提供的完整 ID，包括 provider 前缀或路由后缀。
+部署名称无法匹配内置模型时，可在顶层添加 `model_slug = "step-5-preview"`
+显式选择提示词和元数据；`model` 保持服务要求的真实名称，slug 必须存在于内置目录。
 StepFun 模板针对 `https://api.stepfun-inc.com/step_plan/v1`，其他 StepFun 产品的
 key 和 endpoint 不应混用；使用其他产品时由 Agent 按该服务说明调整。
 

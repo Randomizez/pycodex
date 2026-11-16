@@ -16,9 +16,15 @@
 - `Agent` 的 history 只维护真实 user/agent/assistant/reasoning/tool items。
 - `ContextManager` 每次请求注入 developer、AGENTS 和 environment，
   不将它们写回真实 history。
-- Agent 使用 client 的原始 model 名称。元数据先取最长 slug 前缀；
+- Agent 使用 client 的原始 model 名称。可在配置或 profile 顶层设置
+  `model_slug`，显式选择 `pycodex/prompts/models.json` 中的准确 slug；
+  它统一决定提示词、模型能力和元数据默认值，不改变 API 请求的 `model`。
+  未设置时，元数据先取最长 model 名称前缀；
   无匹配时仅允许剥掉一个由 ASCII 字母、数字、`_`、`-` 构成的
   provider namespace，例如 `custom/gpt-5.4`。请求里的 model 不改名。
+  非法或未知的显式 `model_slug` 在加载配置时直接报错。
+  显式 slug 随 profile 继承，切换请求模型和创建子 Agent 时继续保留。
+  单独构造 provider/context 配置的 Python 调用方须给两者传入同一 slug。
 - Base instructions 的优先级仍是显式 override、config
   `base_instructions`、`model_instructions_file`、模型 prompt、通用默认。
 - 模型专用 prompt 在 `pycodex/prompts/models.json`，不通过字符串补丁或
@@ -50,6 +56,16 @@ Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](ht
 `default_base_instructions.md`；显式 prompt 配置继续优先。
 
 ## 配置读取与 profile
+
+当部署模型名与内置模型目录不同，可显式选择其元数据，例如：
+
+```toml
+model = "step4pro-v2-final"
+model_slug = "step-5-preview"
+```
+
+此设置不覆盖显式的 system prompt、推理强度、上下文窗口或压缩阈值。
+省略 `model_slug` 时沿用原有模型名匹配，不按部署名称或 vLLM 路径特判。
 
 [config_examples/](../config_examples/README.md) 提供现有四种 API 的配置模板和
 StepFun Coding Plan 预设，以及 Agent 根据 endpoint/key 安装、核对模型和验证的流程。

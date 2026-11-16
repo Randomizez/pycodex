@@ -1229,7 +1229,8 @@ async def test_runtime_resume_rejects_pending_submission(queue_kind):
             await future
 
 
-def test_model_switch_updates_provider_context_and_usage_together():
+@pytest.mark.parametrize("model_slug", [None, "step-5-preview"])
+def test_model_switch_updates_provider_context_and_usage_together(model_slug):
     from pycodex.model import ResponsesModelClient, ResponsesProviderConfig
 
     client = ResponsesModelClient(
@@ -1238,16 +1239,18 @@ def test_model_switch_updates_provider_context_and_usage_together():
             provider_name="demo",
             base_url="https://example.invalid/v1",
             api_key_env=None,
+            model_slug=model_slug,
         )
     )
-    agent = make_agent(client, ToolRegistry(), ContextConfig(model="gpt-5.6"))
+    agent = make_agent(client, ToolRegistry(), ContextConfig(model="gpt-5.6", model_slug=model_slug))
     context = agent.context_manager
     agent._last_total_usage_tokens = 123
     agent.set_model("step-3.6")
-    expected = ContextManager(config=ContextConfig(model="step-3.6"))
+    expected = ContextManager(config=ContextConfig(model="step-3.6", model_slug=model_slug))
 
     assert client.model == client._config.model == "step-3.6"
     assert agent.model_name == "step-3.6"
+    assert client._config.model_slug == context.config.model_slug == model_slug
     assert (
         context.resolve_model_context_window()
         == expected.resolve_model_context_window()

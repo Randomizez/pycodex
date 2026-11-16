@@ -473,6 +473,33 @@ def test_provider_config_uses_gpt56_model_metadata_defaults(
     assert provider.effective_verbosity() == "low"
 
 
+@pytest.mark.parametrize("model", [
+    "step4pro-v2-final",
+    "step5-merge492mm-2315g56-b300-1113",
+])
+def test_explicit_model_slug_preserves_request_model(model):
+    provider = ResponsesProviderConfig(
+        model, "demo", "http://localhost:8000/v1", None, model_slug="step-5-preview",
+    )
+    client = ResponsesModelClient(provider)
+
+    payload = client._build_payload(Prompt(input=(UserMessage("hello"),), tools=()))
+
+    assert provider.metadata()["slug"] == "step-5-preview"
+    assert client.model == model
+    assert payload["model"] == model
+    assert "model_slug" not in payload
+
+    child = client.with_overrides(model="different-deployment")
+    assert child._config.metadata() is provider.metadata()
+    assert child._build_payload(Prompt(input=(), tools=()))["model"] == "different-deployment"
+
+
+def test_vllm_provider_does_not_override_model_metadata():
+    provider = ResponsesProviderConfig("gpt-6-astra", "vllm", "http://localhost:8000/v1", None)
+    assert provider.metadata()["slug"] == "gpt-6-astra"
+
+
 @pytest.mark.parametrize(
     ("service_tier", "expected"),
     [

@@ -10,7 +10,7 @@ from xml.sax.saxutils import escape
 import yaml
 
 from .utils.codex_config import read_codex_config
-from .utils.model_metadata import model_metadata
+from .utils.model_metadata import load_models_by_slug, model_metadata
 from .protocol import (
     ContextMessage, ConversationItem, JSONDict, Prompt, ToolCall, ToolResult, ToolSpec, UserMessage,
 )
@@ -88,8 +88,13 @@ class ContextConfig:
     multi_agent_hint: "typing.Union[str, None]" = None
     code_mode_only: "typing.Union[bool, None]" = None
     include_environment_context: "bool" = True
+    model_slug: "typing.Union[str, None]" = None
 
     def __post_init__(self):
+        if self.model_slug is not None and (
+            not isinstance(self.model_slug, str) or self.model_slug not in load_models_by_slug()
+        ):
+            raise ValueError("model_slug must name an entry in models.json")
         if self.code_mode_only is not None and not isinstance(self.code_mode_only, bool):
             raise ValueError("code_mode_only must be a boolean")
         if (
@@ -156,6 +161,7 @@ class ContextConfig:
             codex_home=codex_home,
             project_doc_max_bytes=_normalize_int(selected.get("project_doc_max_bytes")),
             model=_normalize_text(selected.get("model")),
+            model_slug=selected.get("model_slug"),
             model_context_window=_normalize_int(selected.get("model_context_window")),
             model_auto_compact_token_limit=_normalize_int(
                 selected.get("model_auto_compact_token_limit")
@@ -393,11 +399,11 @@ class ContextManager:
     def resolve_code_mode_only(self) -> "bool":
         if self.config.code_mode_only is not None:
             return self.config.code_mode_only
-        metadata = model_metadata(self.config.model)
+        metadata = model_metadata(self.config.model_slug or self.config.model)
         return metadata is not None and metadata.get("tool_mode") == "code_mode_only"
 
     def resolve_model_max_context_window(self) -> "typing.Union[int, None]":
-        metadata = model_metadata(self.config.model)
+        metadata = model_metadata(self.config.model_slug or self.config.model)
         context_window = self.config.model_context_window
         if context_window is None and metadata is not None:
             context_window = _normalize_int(metadata.get("context_window"))
@@ -407,7 +413,7 @@ class ContextManager:
         context_window = self.resolve_model_max_context_window()
         if context_window is None:
             return None
-        metadata = model_metadata(self.config.model)
+        metadata = model_metadata(self.config.model_slug or self.config.model)
         effective_percent = None
         if metadata is not None:
             effective_percent = _normalize_int(
@@ -434,7 +440,7 @@ class ContextManager:
         if self.config.model_auto_compact_token_limit is not None:
             return self.config.model_auto_compact_token_limit
 
-        model_slug = self.config.model
+        model_slug = self.config.model_slug or self.config.model
         if model_slug is None:
             return None
         metadata = model_metadata(model_slug)
@@ -443,7 +449,7 @@ class ContextManager:
         return _normalize_int(metadata.get("auto_compact_token_limit"))
 
     def _resolve_model_instructions(self) -> "typing.Union[str, None]":
-        model_slug = self.config.model
+        model_slug = self.config.model_slug or self.config.model
         if model_slug is None:
             return None
         metadata = model_metadata(model_slug)
@@ -493,7 +499,7 @@ class ContextManager:
         )
 
     def _model_message(self, *keys):
-        metadata = model_metadata(self.config.model)
+        metadata = model_metadata(self.config.model_slug or self.config.model)
         value = metadata.get("model_messages") if metadata is not None else None
         for key in keys:
             if value is None:
@@ -630,7 +636,7 @@ class ContextManager:
                 skill.path_to_skill_md.relative_to(skill.root).as_posix(),
             )
             lines.append(f"- {skill.name}: {skill.description} (file: {path_str})")
-        metadata = model_metadata(self.config.model)
+        metadata = model_metadata(self.config.model_slug or self.config.model)
         if metadata is None or metadata.get("include_skills_usage_instructions", True):
             lines.append("### How to use skills")
             lines.extend(SKILLS_GUIDANCE.splitlines())

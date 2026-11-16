@@ -26,7 +26,7 @@ from .events import (
     TokenCountEvent,
     ToolCalledEvent,
 )
-from .utils.model_metadata import model_metadata
+from .utils.model_metadata import load_models_by_slug, model_metadata
 from .protocol import (
     AssistantMessage,
     JSONDict,
@@ -113,8 +113,13 @@ class ResponsesProviderConfig:
     fallback_cooldown_seconds: "int" = 900
     stream_first_data_timeout_ms: "typing.Union[int, None]" = None
     compat_api: "str" = "none"
+    model_slug: "typing.Union[str, None]" = None
 
     def __post_init__(self):
+        if self.model_slug is not None and (
+            not isinstance(self.model_slug, str) or self.model_slug not in load_models_by_slug()
+        ):
+            raise ValueError("model_slug must name an entry in models.json")
         if self.compat_api not in ("none", "chat_completions", "messages", "gemini"):
             raise ValueError("compat_api must be none, chat_completions, messages or gemini")
         cooldown = self.fallback_cooldown_seconds
@@ -186,6 +191,7 @@ class ResponsesProviderConfig:
             raise ValueError("fallback_models must be an array of non-empty model IDs")
         return cls(
             model=selected["model"],
+            model_slug=selected.get("model_slug"),
             provider_name=provider_name,
             base_url=provider["base_url"],
             api_key_env=api_key_env,
@@ -228,7 +234,7 @@ class ResponsesProviderConfig:
         return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
 
     def metadata(self) -> "typing.Union[JSONDict, None]":
-        return model_metadata(self.model)
+        return model_metadata(self.model_slug or self.model)
 
     def use_responses_lite(self) -> "bool":
         if self.responses_lite_override is not None:
@@ -804,7 +810,7 @@ class ResponsesModelClient:
         session_id = self._session_id if prompt.session_id is None else prompt.session_id
         use_responses_lite = self._config.use_responses_lite()
         input_items = [item.serialize() for item in prompt.input]
-        _filter_audio_inputs(input_items, model_metadata(self.model))
+        _filter_audio_inputs(input_items, self._config.metadata())
         if use_responses_lite:
             _strip_image_details(input_items)
 

@@ -46,6 +46,37 @@ def _write_profile(config, name, settings, embedded):
 
 
 @pytest.mark.parametrize("embedded", [False, True])
+def test_profile_selects_model_slug_without_renaming_model(tmp_path, embedded):
+    path = tmp_path / "config.toml"
+    path.write_text('model = "base-model"\nmodel_slug = "gpt-6-astra"\n', encoding="utf-8")
+    _write_profile(path, "stepcast",
+        'model = "step4pro-v2-final"\nmodel_slug = "step-5-preview"\n', embedded,
+    )
+
+    config = CodexConfig.from_env(path, "stepcast")
+    reference = ContextManager(ContextConfig(model="step-5-preview", codex_home=tmp_path))
+    context = ContextManager(config.context)
+
+    assert config.provider.model == config.context.model == "step4pro-v2-final"
+    assert config.provider.model_slug == config.context.model_slug == "step-5-preview"
+    assert config.provider.metadata()["slug"] == "step-5-preview"
+    assert context.resolve_base_instructions() == reference.resolve_base_instructions()
+    assert context.resolve_model_context_window() == reference.resolve_model_context_window()
+    assert context.resolve_auto_compact_token_limit() == reference.resolve_auto_compact_token_limit()
+    assert context.resolve_code_mode_only() == reference.resolve_code_mode_only()
+    assert CodexConfig.from_env(path).provider.model_slug == "gpt-6-astra"
+
+
+@pytest.mark.parametrize("slug", ["", "step-5-preveiw", "step-5-preview:local", 3, []])
+def test_invalid_model_slug_is_rejected_by_both_configs(tmp_path, slug):
+    selected = {"model": "deployment", "model_slug": slug}
+    with pytest.raises(ValueError, match="model_slug"):
+        ResponsesProviderConfig.from_mapping(selected)
+    with pytest.raises(ValueError, match="model_slug"):
+        ContextConfig.from_mapping(selected, tmp_path / "config.toml")
+
+
+@pytest.mark.parametrize("embedded", [False, True])
 def test_profile_layers_provider_and_context_from_custom_config(tmp_path, embedded):
     config = tmp_path / "custom.toml"
     config.write_text(
