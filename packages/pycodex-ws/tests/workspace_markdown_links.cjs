@@ -14,6 +14,10 @@ const {chromium} = require("playwright");
     source.indexOf("    const mathDelimiters ="));
   const rendering = source.slice(source.indexOf("    function renderMarkdownInto("),
     source.indexOf("    async function renderMermaidInto("));
+  const mathConstants = source.slice(source.indexOf("    const mathDelimiters ="),
+    source.indexOf("    const renderMermaidSvg ="));
+  const math = source.slice(source.indexOf("    function isEscapedAt("),
+    source.indexOf("    function renderProtectedMath("));
   const clicks = source.slice(source.indexOf("    function followViewLink("),
     source.indexOf("    function followCanvasLink("));
   const browser = await chromium.launch({headless: true});
@@ -27,7 +31,8 @@ const {chromium} = require("playwright");
     await page.addScriptTag({content: `(() => {
       ${recognition}
       ${renderer}
-      const protectMath = source => ({source, expressions: []});
+      ${mathConstants}
+      ${math}
       const renderProtectedMath = () => {};
       const renderMermaidInto = () => {};
       ${rendering}
@@ -41,6 +46,7 @@ const {chromium} = require("playwright");
       document.addEventListener("click", followMarkdownLink);
       window.linkFixture = {
         opened,
+        protectMath,
         render(text, srcPath) {
           opened.length = 0;
           const root = document.getElementById("content");
@@ -53,6 +59,20 @@ const {chromium} = require("playwright");
     })();`});
     const render = text => page.evaluate(value => linkFixture.render(value), text);
     const anchor = page.locator("#content a");
+    for (const text of [
+      "Ordinary text. ".repeat(15000),
+      String.raw`Escaped \$price and \(unclosed math`,
+      "`$inline code$`\n```python\nvalue = '$fenced code$'\n```",
+    ]) {
+      const result = await page.evaluate(text => linkFixture.protectMath(text), text);
+      assert.equal(result.source, text);
+      assert.deepEqual(result.expressions, []);
+    }
+    const formulas = await page.evaluate(() => linkFixture.protectMath(
+      String.raw`Before $a_b$ then $$c_d$$ and \(e_f\) plus \[g_h\] after.`));
+    assert.deepEqual(formulas.expressions.map(item => item.body), ["a_b", "c_d", "e_f", "g_h"]);
+    assert.deepEqual(formulas.expressions.map(item => item.delimiter.display), [false, true, false, true]);
+    assert.equal(formulas.source, "Before \uE000math0\uE001 then \uE000math1\uE001 and \uE000math2\uE001 plus \uE000math3\uE001 after.");
     for (const href of [
       "TODO.md", "./TODO.md", "/data/project/TODO.md", "TODO.md#L2", "TODO.md:2",
       "git:HEAD:TODO.md", "diff:HEAD:TODO.md",
@@ -91,7 +111,7 @@ const {chromium} = require("playwright");
     await render("[unsafe](javascript:alert(1))");
     assert.equal(await anchor.count(), 0);
     assert.deepEqual(errors, []);
-    console.log("Workspace Markdown file links, clicks and explicit URLs passed");
+    console.log("Workspace Markdown math, file links, clicks and explicit URLs passed");
   } finally {
     await browser.close();
   }

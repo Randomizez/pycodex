@@ -2056,7 +2056,7 @@
         if (!isEscapedAt(source, index)) {
           for (const delimiter of mathDelimiters) {
             if (
-              source.indexOf(delimiter.left, index) !== index ||
+              !source.startsWith(delimiter.left, index) ||
               (delimiter.left === "$" && source[index + 1] === "$")
             ) {
               continue;
@@ -3141,8 +3141,10 @@
       }
       const text = detail ? `${label} · ${detail}` : label;
       if (time.textContent !== text) time.textContent = text;
-      time.dateTime = value;
-      time.title = new Date(value).toLocaleString();
+      if (time.dateTime !== value) {
+        time.dateTime = value;
+        time.title = new Date(value).toLocaleString();
+      }
     }
 
     function renderTurn(turn, renderEntry) {
@@ -3165,10 +3167,12 @@
             header.append(element("span", "message-author"));
             body.before(header);
           }
-          header.firstElementChild.textContent = message.name;
+          if (header.firstElementChild.textContent !== message.name) {
+            header.firstElementChild.textContent = message.name;
+          }
           setMessageTime(body, message.created_at);
           const time = body.parentElement.querySelector(".message-time");
-          if (time) header.append(time);
+          if (time && time.parentElement !== header) header.append(time);
         }
         if (setup && !body.firstElementChild) {
           const notice = element("p", "frontend-notice",
@@ -3191,11 +3195,14 @@
         const response = renderEntry(
           `${key}:response`, turn.response, isControl ? "control" : "response", !isControl
         );
-        response.dataset.finalId = isControl || turn.error ? "" : (turn.final_id || "");
-        response.dataset.sessionId = activeSessionId;
+        const finalId = isControl || turn.error ? "" : (turn.final_id || "");
+        if (response.dataset.finalId !== finalId) response.dataset.finalId = finalId;
+        if (response.dataset.sessionId !== activeSessionId) response.dataset.sessionId = activeSessionId;
         const temporary = !isControl && turn.response_phase !== "final" &&
           ["running", "responding", "tool"].includes(turn.status);
-        response.parentElement.dataset.temporary = String(temporary);
+        if (response.parentElement.dataset.temporary !== String(temporary)) {
+          response.parentElement.dataset.temporary = String(temporary);
+        }
         if (!isControl) {
           const elapsed = turn.prompt_at && turn.response_at
             ? formatDuration(turn.prompt_at, turn.response_at) : "";

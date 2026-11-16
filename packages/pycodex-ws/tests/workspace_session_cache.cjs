@@ -127,6 +127,39 @@ function turn(id, text) {
     assert.deepEqual(requests, ["failed"], "server errors must not silently change sessions");
     await open("a", "a");
 
+    const metadata = await page.evaluate(snapshot => {
+      const first = snapshot.turns[0];
+      first.messages[0].created_at = "2026-11-09T01:00:00Z";
+      first.response_at = "2026-11-09T01:01:00Z";
+      fixture.renderSnapshot(snapshot);
+      const entry = document.getElementById("log").firstElementChild;
+      const response = entry.nextElementSibling;
+      const observer = new MutationObserver(() => {});
+      observer.observe(entry, {attributes: true, childList: true, characterData: true, subtree: true});
+      observer.observe(response, {attributes: true, childList: true, characterData: true, subtree: true});
+      snapshot.turns[79].thinking = "Streaming update";
+      fixture.renderSnapshot(snapshot);
+      const unchanged = observer.takeRecords().length;
+      first.messages[0].name = "Alice";
+      first.messages[0].created_at = "2026-11-09T02:00:00Z";
+      first.response_at = "2026-11-09T02:01:00Z";
+      first.final_id = "new-final";
+      fixture.renderSnapshot(snapshot);
+      observer.disconnect();
+      return {
+        unchanged,
+        author: entry.querySelector(".message-author").textContent,
+        createdAt: entry.querySelector(".message-header time").dateTime,
+        responseAt: response.querySelector("time").dateTime,
+        finalId: response.querySelector(".text").dataset.finalId,
+      };
+    }, snapshots.get("a"));
+    assert.deepEqual(metadata, {
+      unchanged: 0, author: "Alice", createdAt: "2026-11-09T02:00:00Z",
+      responseAt: "2026-11-09T02:01:00Z", finalId: "new-final",
+    }, "streaming must leave historical DOM intact while metadata changes still render");
+    await page.evaluate(snapshot => fixture.renderSnapshot(snapshot), snapshots.get("a"));
+
     await page.evaluate(() => {
       const log = document.getElementById("log");
       window.originalEntry = log.firstElementChild;

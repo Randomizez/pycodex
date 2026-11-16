@@ -1001,6 +1001,12 @@ for the saved session during startup selects the default, while other failures
 remain visible. Visited conversations retain their rendered entry nodes, scroll
 position, draft and disclosure state in page memory. Switching restores those
 nodes immediately and polls for updates; unchanged messages reuse the nodes.
+Chat snapshots are polled every two seconds, so live text arrives in batches
+without a typewriter animation. Completed replies are rendered as Markdown.
+Math delimiter detection checks the current prefix instead of searching the
+remaining text at every character. Refreshing live text does not rewrite
+unchanged historical authors, timestamps or reply attributes, or move their
+timestamp nodes. This avoids mutation notifications for unchanged ordinary messages.
 Closed sessions release their cached state when the session list is refreshed.
 Pending Mermaid rendering can complete in detached entries without scrolling
 the active conversation. Refreshing the page discards the rendered caches.

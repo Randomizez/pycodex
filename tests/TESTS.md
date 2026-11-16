@@ -153,6 +153,7 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 覆盖首次直接加载、已删除的保存会话、服务错误、切换即时复用节点、
 内容更新、展开状态、草稿、手机滚动、新建/关闭会话及切走后的 Mermaid
 异步完成，以及逐条消息的稳定 DOM 身份、作者/时间更新、未知时间和手机布局。
+流式更新还检查历史消息不产生多余 DOM mutation，元数据实际变化仍及时更新。
 所有请求使用离线 fixture，不访问真实会话或 CDN。
 
 Markdown 文件链接的浏览器回归使用与页面相同版本的渲染和清洗库，手动运行：
@@ -164,7 +165,8 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 
 覆盖 `[TODO](TODO.md)`、绝对/相对路径、行号和 Git/diff 链接的点击接管、
 Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 和邮件链接，
-以及可执行 URL 拒绝。脚本读取真实页面的渲染/点击代码，使用本地依赖，不请求 CDN。
+以及可执行 URL 拒绝；公式预处理覆盖长纯文本、转义、代码围栏和四种公式分隔符。
+脚本读取真实页面的渲染/点击代码，使用本地依赖，不请求 CDN。
 
 ### HTTP 框架依赖
 
