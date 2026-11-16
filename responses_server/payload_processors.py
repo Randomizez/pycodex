@@ -72,7 +72,7 @@ def _replace_developer_messages(
 
 PAYLOAD_POST_PROCESSORS: "typing.Dict[str, PayloadPostProcessor]" = {
     "stepfun": _replace_developer_messages,
-    "vllm": _identity,
+    "vllm": _replace_developer_messages,
 }
 """Mapping from normalized `model_provider` name to payload rewrite hook."""
 

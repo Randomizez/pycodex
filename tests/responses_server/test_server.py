@@ -120,7 +120,7 @@ def test_responses_server_streams_text_from_chat_backend(tmp_path) -> "None":
     assert request["path"] == "/v1/chat/completions"
     assert request["body"]["stream"] is True
     assert request["body"]["messages"] == [
-        {"role": "developer", "content": "Be concise."},
+        {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "hi"},
     ]
 
@@ -1580,7 +1580,7 @@ def test_responses_server_reconstructs_tool_history_for_outcomming_chat(
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["messages"] == [
-        {"role": "developer", "content": "Be concise."},
+        {"role": "system", "content": "Be concise."},
         {"role": "user", "content": "hi"},
         {
             "role": "assistant",
@@ -1681,7 +1681,7 @@ def test_responses_server_forwards_input_images_to_outcomming_chat(tmp_path) -> 
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["messages"] == [
-        {"role": "developer", "content": "Be concise."},
+        {"role": "system", "content": "Be concise."},
         {
             "role": "user",
             "content": [
