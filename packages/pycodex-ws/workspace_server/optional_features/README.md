@@ -23,6 +23,7 @@ space. Request failures remain visible; reasoning records need readable text.
 | skill-completion | [Skill completion](skill-completion/README.md) | Optional @/$ skill dropdown with prefix filtering, keyboard selection and customizable catalogs. | Chromium default-off, keyboard/click/touch, undo/chips, stale results, custom catalogs and cleanup; Node prefix checks |
 | tool-calls | [Tool calls](tool-calls/README.md) | Recent function/custom calls with paired inputs and results. | Chromium fixtures, lifecycle, desktop/mobile; live tools not tested |
 | voice-input | [Step Plan voice input](voice-input/README.md) | Record speech in-browser, tidy it with Step Plan, and insert it into the current draft. | Chromium simulated microphone, mocked ASR/cleanup, key flow, undo/context, cancellation, mobile focus/layout and cleanup |
+| xiaoai-notifications | [XiaoAI speaker notifications](xiaoai-notifications/README.md) | Speak a short final result on one selected Xiaomi speaker and retain its delivery record in chat; explicit backend adaptation required. | Isolated device/queue tests, real Runtime completion/steer/restart checks and Chromium synthetic desktop/mobile records |
 
 Each published row links its feature name to `<feature-id>/README.md`.
 Only list features whose source and documentation are present in this library;
