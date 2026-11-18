@@ -304,6 +304,15 @@ class StreamRouter:
             if isinstance(value, int):
                 current_usage[key] = value
 
+        if (
+            not isinstance(usage.get("total_tokens"), int)
+            and any(isinstance(value, int) for _, value in scalar_mappings[:2])
+            and isinstance(current_usage.get("input_tokens"), int)
+            and isinstance(current_usage.get("output_tokens"), int)
+        ):
+            current_usage["total_tokens"] = (
+                current_usage["input_tokens"] + current_usage["output_tokens"]
+            )
         detail_mappings = (
             (
                 "input_tokens_details",

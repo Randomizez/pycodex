@@ -262,3 +262,66 @@ def test_http_text_and_reasoning_lifecycle(tmp_path, backend):
         assert [item["content"][0]["text"] for item in items] == ["thinking", "answer"]
     finally:
         server.stop()
+
+
+@pytest.mark.parametrize("cache_creation,cache_read", [
+    (0, 0), (150000, 0), (0, 150000), (20000, 130000),
+])
+def test_messages_usage_includes_cached_input_and_partial_output(
+    tmp_path, cache_creation, cache_read,
+):
+    chunks = build_messages_text_events("answer")
+    chunks[0]["data"]["message"]["usage"] = {
+        "input_tokens": 11, "output_tokens": 0,
+        "cache_creation_input_tokens": cache_creation,
+        "cache_read_input_tokens": cache_read,
+    }
+    server = build_messages_server(CaptureStore(tmp_path / "capture"), chunks)
+    server.start()
+    app = ManagedResponseServer.build_app(CompatServerConfig(
+        outcomming_base_url=server.base_url + "/v1", outcomming_api="messages",
+    ))
+    try:
+        with TestClient(app) as client:
+            response = client.post("/v1/responses", json={"model": "test", "input": []})
+        assert response.status_code == 200
+        events = [
+            json.loads(line[6:]) for line in response.text.splitlines()
+            if line.startswith("data: ")
+        ]
+        usage = events[-1]["response"]["usage"]
+        input_tokens = 11 + cache_creation + cache_read
+        assert usage == {
+            "input_tokens": input_tokens,
+            "output_tokens": 6,
+            "total_tokens": input_tokens + 6,
+            "input_tokens_details": {
+                "cached_tokens": cache_read,
+                "cache_creation_input_tokens": cache_creation,
+                "cache_read_input_tokens": cache_read,
+            },
+        }
+    finally:
+        server.stop()
+
+
+@pytest.mark.parametrize("explicit_total", [None, 99])
+def test_partial_usage_updates_total_without_overwriting_explicit_total(explicit_total):
+    output_usage = {"output_tokens": 6}
+    if explicit_total is not None:
+        output_usage["total_tokens"] = explicit_total
+    transport = ScriptedTransport([[
+        _chunk(content="answer"),
+        {"choices": [], "usage": {
+            "input_tokens": 11, "output_tokens": 0, "total_tokens": 11,
+        }},
+        {"choices": [], "usage": output_usage},
+        {"choices": [], "usage": {"input_tokens_details": {"cached_tokens": 3}}},
+        {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]])
+    usage = list(_stream(transport))[-1][1]["response"]["usage"]
+    assert usage == {
+        "input_tokens": 11, "output_tokens": 6,
+        "total_tokens": 17 if explicit_total is None else explicit_total,
+        "input_tokens_details": {"cached_tokens": 3},
+    }

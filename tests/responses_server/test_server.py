@@ -1158,6 +1158,55 @@ def test_inline_history_instructions_keeps_prefix_and_message_positions(content)
     assert translated[6] == messages[6]
 
 
+@pytest.mark.parametrize("tool_choice", ["auto", "none"])
+def test_messages_keeps_history_instruction_after_tool_result(tmp_path, tool_choice):
+    capture_path = tmp_path / "capture"
+    backend = build_fake_messages_server(
+        CaptureStore(capture_path), build_messages_text_events("Hello"),
+    )
+    request = {
+        "model": "test-model", "instructions": "Base rules", "stream": True,
+        "input": [
+            {"type": "message", "role": "user", "content": "Continue the task."},
+            {"type": "function_call", "call_id": "inspect", "name": "inspect", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "inspect", "output": "Inspection complete."},
+            {"type": "message", "role": "developer", "content": "Context usage has reached 90%."},
+        ],
+        "tools": [{
+            "type": "function", "name": "inspect", "description": "Inspect the task.",
+            "parameters": {"type": "object", "properties": {}},
+        }],
+        "tool_choice": tool_choice,
+    }
+    backend.start()
+    try:
+        app = ManagedResponseServer.build_app(CompatServerConfig(
+            outcomming_base_url=backend.base_url + "/v1", outcomming_api="messages",
+            model_provider="claude",
+        ))
+        with TestClient(app) as client:
+            response = client.post("/v1/responses", json=request)
+            assert response.status_code == 200
+            assert "event: response.completed" in response.text
+    finally:
+        backend.stop()
+    captures = sorted(capture_path.glob("*_POST_*.json"))
+    assert len(captures) == 1
+    capture = json.loads(captures[0].read_text())
+    body = capture["body"]
+    assert capture["path"] == "/v1/messages"
+    assert body["tools"]
+    assert body["tool_choice"] == {"type": tool_choice}
+    assert body["system"] == [{"type": "text", "text": "Base rules"}]
+    assert [message["role"] for message in body["messages"]] == ["user", "assistant", "user", "user"]
+    assert body["messages"][-2]["content"] == [{
+        "type": "tool_result", "tool_use_id": "inspect", "content": "Inspection complete.",
+    }]
+    assert body["messages"][-1]["content"] == [{
+        "type": "text", "text": "<system-reminder>\nContext usage has reached 90%.\n</system-reminder>",
+    }]
+
+
 def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> "None":
     capture_store = CaptureStore(tmp_path / "chat_capture")
     fake_chat_server = build_fake_chat_server(

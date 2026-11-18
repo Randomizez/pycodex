@@ -1,7 +1,7 @@
 import json
 import typing
 
-from .request_translation import split_tool_images
+from .request_translation import inline_history_instructions, split_tool_images
 
 DEFAULT_MESSAGES_MAX_TOKENS = 32000
 
@@ -27,7 +27,7 @@ def build_messages_request(
 
     system_blocks: "typing.List[typing.Dict[str, object]]" = []
     messages: "typing.List[typing.Dict[str, object]]" = []
-    for raw_message in split_tool_images(raw_messages):
+    for raw_message in split_tool_images(inline_history_instructions(raw_messages)):
         role = str(raw_message.get("role", "")).strip()
         if role in {"developer", "system"}:
             text = str(raw_message.get("content", "") or "")
@@ -350,7 +350,7 @@ def _translate_tool_choice(
         elif choice == "required":
             translated = {"type": "any"}
         elif choice == "none":
-            return None
+            return {"type": "none"}
         else:
             raise MessagesAPIAdapterError(
                 f"unsupported tool_choice for messages API: {raw_tool_choice!r}"
@@ -432,7 +432,12 @@ def _translate_usage(raw_usage: "object") -> "typing.Dict[str, object]":
     usage: "typing.Dict[str, object]" = {}
     input_tokens = raw_usage.get("input_tokens")
     output_tokens = raw_usage.get("output_tokens")
+    cache_creation = raw_usage.get("cache_creation_input_tokens")
+    cache_read = raw_usage.get("cache_read_input_tokens")
     if isinstance(input_tokens, int):
+        input_tokens += sum(
+            value for value in (cache_creation, cache_read) if isinstance(value, int)
+        )
         usage["input_tokens"] = input_tokens
     if isinstance(output_tokens, int):
         usage["output_tokens"] = output_tokens
@@ -443,12 +448,11 @@ def _translate_usage(raw_usage: "object") -> "typing.Dict[str, object]":
         usage["total_tokens"] = input_tokens + output_tokens
 
     input_details: "typing.Dict[str, int]" = {}
-    cache_creation = raw_usage.get("cache_creation_input_tokens")
     if isinstance(cache_creation, int):
         input_details["cache_creation_input_tokens"] = cache_creation
-    cache_read = raw_usage.get("cache_read_input_tokens")
     if isinstance(cache_read, int):
         input_details["cache_read_input_tokens"] = cache_read
+        input_details["cached_tokens"] = cache_read
     if input_details:
         usage["input_tokens_details"] = input_details
     return usage
