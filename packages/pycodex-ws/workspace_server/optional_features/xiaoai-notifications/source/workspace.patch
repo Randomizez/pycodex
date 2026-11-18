@@ -1,0 +1,186 @@
+diff --git a/packages/pycodex-ws/workspace_server/session_view.py b/packages/pycodex-ws/workspace_server/session_view.py
+index 485c772..98bf81f 100644
+--- a/packages/pycodex-ws/workspace_server/session_view.py
++++ b/packages/pycodex-ws/workspace_server/session_view.py
+@@ -75,6 +75,7 @@ class WebSessionView:
+         self._rollout_path = ""
+         self._recorded_rollout_path = ""
+         self._input_request = None
++        self._notifications = []
+         self._accepts_input = True
+         self._spinner_status = ""
+         self._max_context_window: "typing.Union[int, None]" = None
+@@ -197,6 +198,12 @@ class WebSessionView:
+             self._subscribers.clear()
+         self._publish_to_queues(subscribers, None)
+
++    def set_notification_records(self, records) -> None:
++        with self._lock:
++            self._notifications = [dict(record) for record in records]
++            self.publish({"type": "event", "kind": "notification_updated",
++                          "snapshot": self.snapshot()})
++
+     def snapshot(self) -> "typing.Dict[str, object]":
+         with self._lock:
+             return {
+@@ -210,6 +217,7 @@ class WebSessionView:
+                 "rollout_path": self._rollout_path,
+                 "recorded_rollout_path": self._recorded_rollout_path,
+                 "input_request": _json_safe(self._input_request),
++                "notifications": [dict(record) for record in self._notifications],
+                 "queued_inputs": [
+                     {"queue": turn["queue"], "prompt": "\n".join(message.text for message in turn["messages"])}
+                     for queue in ("steer", "enqueue")
+diff --git a/packages/pycodex-ws/workspace_server/sessions.py b/packages/pycodex-ws/workspace_server/sessions.py
+index 0a4d303..dfa242e 100644
+--- a/packages/pycodex-ws/workspace_server/sessions.py
++++ b/packages/pycodex-ws/workspace_server/sessions.py
+@@ -280,6 +280,9 @@ class WorkspaceInteractiveSession:
+     def snapshot(self) -> "typing.Dict[str, object]":
+         return self.view.snapshot()
+
++    def set_notification_records(self, records) -> None:
++        self.view.set_notification_records(records)
++
+     def summary(self) -> "typing.Dict[str, object]":
+         return self.view.summary()
+
+@@ -413,6 +416,9 @@ class ThreadedWorkspaceInteractiveSession:
+     def snapshot(self) -> "typing.Dict[str, object]":
+         return self._view.snapshot()
+
++    def set_notification_records(self, records) -> None:
++        self._view.set_notification_records(records)
++
+     def summary(self) -> "typing.Dict[str, object]":
+         return self._view.summary()
+
+diff --git a/packages/pycodex-ws/workspace_server/workspace.html b/packages/pycodex-ws/workspace_server/workspace.html
+index 6002071..297c654 100644
+--- a/packages/pycodex-ws/workspace_server/workspace.html
++++ b/packages/pycodex-ws/workspace_server/workspace.html
+@@ -834,6 +834,14 @@
+       white-space: pre-wrap;
+       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+     }
++    .entry.notification {
++      border-left: 2px solid var(--accent);
++      padding: 5px 10px;
++      color: var(--muted);
++      font-size: 13px;
++      white-space: pre-wrap;
++    }
++    .entry.notification[data-state="quiet_hours"] { border-left-color: var(--line); }
+     .entry.compaction {
+       display: flex;
+       align-items: center;
+@@ -2890,6 +2898,7 @@
+           item.model_errors || [],
+         ]),
+         snapshot.input_request || null,
++        snapshot.notifications || [],
+       ]);
+     }
+
+@@ -3006,7 +3015,7 @@
+       suppressScrollSave = true;
+       try {
+         const turns = Array.isArray(snapshot.turns) ? snapshot.turns : [];
+-        renderConversation(turns, state.inputRequest);
++        renderConversation(turns, state.inputRequest, snapshot.notifications || []);
+         setSpinner(snapshot.spinner || "");
+         updateContextMeter(snapshot);
+         // Hidden mobile panes have no layout; restore their scroll when shown.
+@@ -3034,7 +3043,7 @@
+       state.scrollTop = log.scrollTop;
+     }
+
+-    function renderConversation(turns, inputRequest) {
++    function renderConversation(turns, inputRequest, notifications = []) {
+       const previous = new Map(
+         Array.from(log.children, entry => [entry.dataset.entryKey, entry])
+       );
+@@ -3054,8 +3063,29 @@
+         entries.push(entry);
+         return entry.querySelector(":scope > .text");
+       }
+-      turns.forEach(turn => renderTurn(turn, renderEntry));
+-      if (!turns.length && !inputRequest) {
++      function renderNotification(record) {
++        const labels = {
++          accepted: "已发送播报", quiet_hours: "免打扰未播报",
++          prepared: "准备播报", sending: "正在发送播报",
++          superseded: "状态已变化，未播报", failed: "播报失败",
++          delivery_unknown: "播报结果未确认",
++        };
++        const when = new Date(record.created * 1000).toLocaleString("zh-CN", {
++          timeZone: "Asia/Shanghai", month: "2-digit", day: "2-digit",
++          hour: "2-digit", minute: "2-digit", hourCycle: "h23",
++        });
++        const text = `音箱通知 · ${labels[record.state] || record.state} · ${when}（北京）\n` +
++          (record.speech || "通知内容生成失败，请查看本轮回复。");
++        const body = renderEntry(`notification:${record.id}`, text, "notification");
++        body.parentElement.dataset.state = record.state;
++      }
++      const turnIds = new Set(turns.map(turn => turn.turn_id));
++      notifications.filter(record => !turnIds.has(record.turn_id)).forEach(renderNotification);
++      turns.forEach(turn => {
++        renderTurn(turn, renderEntry);
++        notifications.filter(record => record.turn_id === turn.turn_id).forEach(renderNotification);
++      });
++      if (!turns.length && !inputRequest && !notifications.length) {
+         let empty = log.querySelector(".empty-chat");
+         if (!empty) {
+           log.appendChild(document.getElementById("emptyChat").content.cloneNode(true));
+diff --git a/packages/pycodex-ws/workspace_server/workspaces.py b/packages/pycodex-ws/workspace_server/workspaces.py
+index 8c0bd82..f0b8adf 100644
+--- a/packages/pycodex-ws/workspace_server/workspaces.py
++++ b/packages/pycodex-ws/workspace_server/workspaces.py
+@@ -18,6 +18,7 @@ from pycodex_ws.workspace_config import (
+ )
+
+ from .workspace_views import WorkspaceViewStore
++from .notifications import SessionNotifications
+
+ SessionFactory = typing.Callable[[], object]
+
+@@ -85,6 +86,7 @@ class WorkspaceSessionManager:
+             workspace_file_path(state_path, ".pycodex-ws.json")
+         )
+         self._persist_callback = persist_callback
++        self.notifications = SessionNotifications(state_path)
+         self.views = views if views is not None else WorkspaceViewStore(
+             workspace_file_path(state_path, ".pycodex-views.json")
+         )
+@@ -135,6 +137,7 @@ class WorkspaceSessionManager:
+             if watchers:
+                 await asyncio.gather(*watchers)
+         finally:
++            await self.notifications.close()
+             for watcher in watchers:
+                 watcher.cancel()
+             if watchers:
+@@ -199,6 +202,7 @@ class WorkspaceSessionManager:
+                 raise
+
+             self._sessions[session_id] = session
++            self.notifications.bind(session_id, session)
+             self._session_order.append(session_id)
+             summary = session_summary(session)
+             self._tab_states[session_id] = {
+@@ -233,6 +237,7 @@ class WorkspaceSessionManager:
+             watcher.cancel()
+             await asyncio.gather(watcher, return_exceptions=True)
+         await session.close()
++        self.notifications.unbind(session_id)
+         self.persist_workspace_state()
+
+     async def _watch_session_state(self, session_id: str, session, subscriber) -> None:
+@@ -246,6 +251,7 @@ class WorkspaceSessionManager:
+                 previous = self._tab_states[session_id]
+                 state = dict(previous)
+                 snapshot = event["snapshot"]
++                self.notifications.observe(session_id, session, event)
+                 state["title"] = str(snapshot.get("title") or "")
+                 state["cwd"] = snapshot["cwd"]
+                 state["rollout_path"] = str(snapshot["recorded_rollout_path"] or "")
