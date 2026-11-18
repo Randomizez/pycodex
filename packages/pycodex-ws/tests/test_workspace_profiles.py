@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 from pycodex import AssistantMessage, ModelResponse
 from pycodex.bootstrap import LOCAL_RESPONSES_SERVER_API_KEY_ENV
 from pycodex.multi_agents import AgentsManager
+from pycodex.utils import model_metadata as metadata_module
 from tests.responses_server.fake_chat_completions_server import RunningASGITestServer
 from workspace_server import (
     WorkspaceDefinition,
@@ -25,6 +26,60 @@ from workspace_server import (
 )
 from workspace_server import app as app_module
 from test_workspace_server import make_session, wait_snapshot
+
+
+@pytest.mark.parametrize("explicit_slug", [False, True])
+def test_new_sessions_reload_model_metadata(tmp_path, monkeypatch, explicit_slug):
+    catalog = json.loads(metadata_module.DEFAULT_MODELS_PATH.read_text(encoding="utf-8"))
+    model = next(item for item in catalog["models"] if item["slug"] == "gpt-6-astra")
+    old_prompt = model["model_messages"]["instructions_template"]
+    old_window = model["context_window"]
+    metadata_path = tmp_path / "models.json"
+    metadata_path.write_text(json.dumps(catalog), encoding="utf-8")
+    monkeypatch.setattr(metadata_module, "DEFAULT_MODELS_PATH", metadata_path)
+    config_path = tmp_path / "config.toml"
+    request_model = "deployment" if explicit_slug else "custom/gpt-6-astra-test"
+    config_path.write_text(
+        'model = "{}"\n'.format(request_model)
+        + ('model_slug = "gpt-6-astra"\n' if explicit_slug else ""),
+        encoding="utf-8",
+    )
+    definition = WorkspaceDefinition("test", None, tmp_path, False)
+    entry = app_module._build_workspace_entry(
+        definition, build_parser().parse_args(["--config", str(config_path), "--toolset"]),
+    )
+    with TestClient(create_app(entry.manager, None)) as browser:
+        initial_id = browser.get("/api/sessions").json()["sessions"][0]["id"]
+        initial = entry.manager.get(initial_id)._session.runtime.agent
+        assert initial.context_manager.resolve_base_instructions() == old_prompt
+        assert initial.model_client.reasoning_effort == "low"
+        model["default_reasoning_level"] = "high"
+        model["default_verbosity"] = "medium"
+        model["use_responses_lite"] = False
+        model["tool_mode"] = "standard"
+        model["context_window"] = 96000
+        model["model_messages"]["instructions_template"] = "Fresh model instructions."
+        metadata_path.write_text(json.dumps(catalog), encoding="utf-8")
+
+        response = browser.post("/api/sessions")
+        assert response.status_code == 200
+        created = response.json()
+        assert created["snapshot"]["model"] == request_model + ":high"
+        latest = entry.manager.get(created["session_id"])._session.runtime.agent
+        assert latest.context_manager.resolve_base_instructions() == "Fresh model instructions."
+        assert latest.context_manager.resolve_model_max_context_window() == 96000
+        assert latest.context_manager.resolve_code_mode_only() is False
+        assert latest.model_client._config.use_responses_lite() is False
+        assert latest.model_client._config.effective_verbosity() == "medium"
+
+        assert initial.context_manager.resolve_base_instructions() == old_prompt
+        assert initial.context_manager.resolve_model_max_context_window() == old_window
+        assert initial.context_manager.resolve_code_mode_only() is True
+        assert initial.model_client.reasoning_effort == "low"
+        assert initial.model_client._config.use_responses_lite() is True
+        child_client = initial.model_client.with_overrides()
+        assert child_client.reasoning_effort == "low"
+        assert child_client._config.metadata() is initial.model_client._config.metadata()
 
 
 @pytest.mark.parametrize("multi", [False, True])

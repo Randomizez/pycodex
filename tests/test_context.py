@@ -14,7 +14,7 @@ from pycodex import (
     ToolResult,
     UserMessage,
 )
-from pycodex.utils.model_metadata import model_metadata
+from pycodex.utils.model_metadata import load_models_by_slug, model_metadata
 from tests.fakes import ScriptedModelClient, make_agent
 
 
@@ -110,11 +110,12 @@ def test_context_manager_resolves_gpt56_model_metadata() -> "None":
     ],
 )
 def test_metadata_uses_upstream_longest_prefix(slug, expected):
-    metadata = model_metadata(slug)
+    catalog = load_models_by_slug()
+    metadata = model_metadata(slug, catalog)
     if expected is None:
         assert metadata is None
         return
-    assert metadata is model_metadata(expected)
+    assert metadata is model_metadata(expected, catalog)
     manager = ContextManager(ContextConfig(model=slug))
     reference = ContextManager(ContextConfig(model=expected))
     assert manager.resolve_base_instructions() == reference.resolve_base_instructions()

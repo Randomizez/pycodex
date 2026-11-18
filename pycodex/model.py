@@ -117,6 +117,9 @@ class ResponsesProviderConfig:
     model_slug: "typing.Union[str, None]" = None
     http_headers: "typing.Dict[str, str]" = field(default_factory=dict, repr=False)
     env_http_headers: "typing.Dict[str, str]" = field(default_factory=dict)
+    model_catalog: "typing.Dict[str, JSONDict]" = field(
+        default_factory=load_models_by_slug, repr=False, compare=False,
+    )
 
     def __post_init__(self):
         for name in ("http_headers", "env_http_headers"):
@@ -127,7 +130,7 @@ class ResponsesProviderConfig:
             ):
                 raise ValueError(name + " must be a table of strings")
         if self.model_slug is not None and (
-            not isinstance(self.model_slug, str) or self.model_slug not in load_models_by_slug()
+            not isinstance(self.model_slug, str) or self.model_slug not in self.model_catalog
         ):
             raise ValueError("model_slug must name an entry in models.json")
         if self.compat_api not in ("none", "chat_completions", "messages", "gemini"):
@@ -155,6 +158,7 @@ class ResponsesProviderConfig:
     @classmethod
     def from_mapping(
         cls, selected: "typing.Mapping[str, typing.Any]",
+        model_catalog: "typing.Union[typing.Dict[str, JSONDict], None]" = None,
     ) -> "ResponsesProviderConfig":
         provider_name = selected.get("model_provider", "openai")
         provider = selected.get("model_providers", {}).get(provider_name)
@@ -201,6 +205,7 @@ class ResponsesProviderConfig:
             raise ValueError("fallback_models must be an array of non-empty model IDs")
         return cls(
             model=selected["model"],
+            model_catalog=load_models_by_slug() if model_catalog is None else model_catalog,
             model_slug=selected.get("model_slug"),
             provider_name=provider_name,
             base_url=provider["base_url"],
@@ -246,7 +251,7 @@ class ResponsesProviderConfig:
         return max(int(self.stream_idle_timeout_ms), 1) / 1000.0
 
     def metadata(self) -> "typing.Union[JSONDict, None]":
-        return model_metadata(self.model_slug or self.model)
+        return model_metadata(self.model_slug or self.model, self.model_catalog)
 
     def use_responses_lite(self) -> "bool":
         if self.responses_lite_override is not None:

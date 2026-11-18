@@ -1,7 +1,7 @@
 import json
 import typing
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid5
@@ -89,10 +89,13 @@ class ContextConfig:
     code_mode_only: "typing.Union[bool, None]" = None
     include_environment_context: "bool" = True
     model_slug: "typing.Union[str, None]" = None
+    model_catalog: "typing.Dict[str, JSONDict]" = field(
+        default_factory=load_models_by_slug, repr=False, compare=False,
+    )
 
     def __post_init__(self):
         if self.model_slug is not None and (
-            not isinstance(self.model_slug, str) or self.model_slug not in load_models_by_slug()
+            not isinstance(self.model_slug, str) or self.model_slug not in self.model_catalog
         ):
             raise ValueError("model_slug must name an entry in models.json")
         if self.code_mode_only is not None and not isinstance(self.code_mode_only, bool):
@@ -126,6 +129,7 @@ class ContextConfig:
         cls,
         selected: "typing.Mapping[str, typing.Any]",
         config_path: "typing.Union[str, Path]",
+        model_catalog: "typing.Union[typing.Dict[str, JSONDict], None]" = None,
     ) -> "ContextConfig":
         path = Path(config_path)
         model_instructions_file = selected.get("model_instructions_file")
@@ -152,6 +156,7 @@ class ContextConfig:
 
         return cls(
             base_instructions=_normalize_text(selected.get("base_instructions")),
+            model_catalog=load_models_by_slug() if model_catalog is None else model_catalog,
             developer_instructions=_normalize_text(
                 selected.get("developer_instructions")
             ),
@@ -399,11 +404,15 @@ class ContextManager:
     def resolve_code_mode_only(self) -> "bool":
         if self.config.code_mode_only is not None:
             return self.config.code_mode_only
-        metadata = model_metadata(self.config.model_slug or self.config.model)
+        metadata = model_metadata(
+            self.config.model_slug or self.config.model, self.config.model_catalog,
+        )
         return metadata is not None and metadata.get("tool_mode") == "code_mode_only"
 
     def resolve_model_max_context_window(self) -> "typing.Union[int, None]":
-        metadata = model_metadata(self.config.model_slug or self.config.model)
+        metadata = model_metadata(
+            self.config.model_slug or self.config.model, self.config.model_catalog,
+        )
         context_window = self.config.model_context_window
         if context_window is None and metadata is not None:
             context_window = _normalize_int(metadata.get("context_window"))
@@ -413,7 +422,9 @@ class ContextManager:
         context_window = self.resolve_model_max_context_window()
         if context_window is None:
             return None
-        metadata = model_metadata(self.config.model_slug or self.config.model)
+        metadata = model_metadata(
+            self.config.model_slug or self.config.model, self.config.model_catalog,
+        )
         effective_percent = None
         if metadata is not None:
             effective_percent = _normalize_int(
@@ -443,7 +454,7 @@ class ContextManager:
         model_slug = self.config.model_slug or self.config.model
         if model_slug is None:
             return None
-        metadata = model_metadata(model_slug)
+        metadata = model_metadata(model_slug, self.config.model_catalog)
         if metadata is None:
             return None
         return _normalize_int(metadata.get("auto_compact_token_limit"))
@@ -452,7 +463,7 @@ class ContextManager:
         model_slug = self.config.model_slug or self.config.model
         if model_slug is None:
             return None
-        metadata = model_metadata(model_slug)
+        metadata = model_metadata(model_slug, self.config.model_catalog)
         if metadata is None:
             return None
 
@@ -499,7 +510,9 @@ class ContextManager:
         )
 
     def _model_message(self, *keys):
-        metadata = model_metadata(self.config.model_slug or self.config.model)
+        metadata = model_metadata(
+            self.config.model_slug or self.config.model, self.config.model_catalog,
+        )
         value = metadata.get("model_messages") if metadata is not None else None
         for key in keys:
             if value is None:
@@ -636,7 +649,9 @@ class ContextManager:
                 skill.path_to_skill_md.relative_to(skill.root).as_posix(),
             )
             lines.append(f"- {skill.name}: {skill.description} (file: {path_str})")
-        metadata = model_metadata(self.config.model_slug or self.config.model)
+        metadata = model_metadata(
+            self.config.model_slug or self.config.model, self.config.model_catalog,
+        )
         if metadata is None or metadata.get("include_skills_usage_instructions", True):
             lines.append("### How to use skills")
             lines.extend(SKILLS_GUIDANCE.splitlines())

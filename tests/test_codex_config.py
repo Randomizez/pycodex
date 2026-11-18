@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -6,6 +7,39 @@ from pycodex.config import CodexConfig
 from pycodex.context import ContextConfig, ContextManager
 from pycodex.model import ResponsesProviderConfig
 from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
+from pycodex.utils import model_metadata as metadata_module
+
+
+def test_new_config_accepts_added_model_and_keeps_previous_catalog(tmp_path, monkeypatch):
+    metadata_path = tmp_path / "models.json"
+    first_model = {
+        "slug": "first",
+        "context_window": 10000,
+        "model_messages": {"instructions_template": "First instructions"},
+    }
+    metadata_path.write_text(json.dumps({"models": [first_model]}), encoding="utf-8")
+    monkeypatch.setattr(metadata_module, "DEFAULT_MODELS_PATH", metadata_path)
+    config_path = tmp_path / "config.toml"
+    config_path.write_text('model = "deployment"\nmodel_slug = "first"\n', encoding="utf-8")
+    first = CodexConfig.from_env(config_path)
+    assert first.provider.model_catalog is first.context.model_catalog
+
+    second_model = dict(first_model, slug="second", context_window=20000)
+    metadata_path.write_text(
+        json.dumps({"models": [first_model, second_model]}), encoding="utf-8",
+    )
+    config_path.write_text('model = "deployment"\nmodel_slug = "second"\n', encoding="utf-8")
+    second = CodexConfig.from_env(config_path)
+    assert second.provider.model_catalog is second.context.model_catalog
+    assert second.provider.metadata()["slug"] == "second"
+    assert ContextManager(second.context).resolve_model_max_context_window() == 20000
+    assert first.provider.metadata()["slug"] == "first"
+    assert "second" not in first.provider.model_catalog
+
+    metadata_path.write_text("{invalid json", encoding="utf-8")
+    with pytest.raises(json.JSONDecodeError):
+        CodexConfig.from_env(config_path)
+    assert ContextManager(first.context).resolve_base_instructions() == "First instructions"
 
 
 @pytest.mark.parametrize("existing_dotenv", [False, True])

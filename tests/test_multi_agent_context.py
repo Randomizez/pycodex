@@ -116,7 +116,7 @@ def test_role_default_and_mode_blocks_remain_separate(tmp_path, monkeypatch, eff
             "mode": {"explicit": "Explicit", "proactive": "Proactive"},
         },
     }}
-    monkeypatch.setattr("pycodex.context.model_metadata", lambda model: metadata)
+    monkeypatch.setattr("pycodex.context.model_metadata", lambda model, catalog: metadata)
     config = ContextConfig(
         cwd=tmp_path, base_instructions="Base", developer_instructions="Custom",
         include_permissions_instructions=False, include_skills_instructions=False,

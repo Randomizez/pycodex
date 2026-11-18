@@ -8,6 +8,7 @@ from .context import ContextConfig
 from .model import ResponsesProviderConfig
 from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
 from .utils.dotenv import load_codex_dotenv
+from .utils.model_metadata import load_models_by_slug
 
 
 @dataclass(frozen=True)
@@ -28,9 +29,10 @@ class CodexConfig:
         path = Path(config_path)
         load_codex_dotenv(path)
         selected = read_codex_config(path, profile, use_default_profile)
+        model_catalog = load_models_by_slug()
         return cls(
             path=path,
             profile=selected["profile"],
-            provider=ResponsesProviderConfig.from_mapping(selected),
-            context=ContextConfig.from_mapping(selected, path),
+            provider=ResponsesProviderConfig.from_mapping(selected, model_catalog),
+            context=ContextConfig.from_mapping(selected, path, model_catalog),
         )
