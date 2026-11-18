@@ -8,6 +8,7 @@ from ..protocol import (
     ModelResponse,
     ToolCall,
     ToolResult,
+    ToolSpec,
     UserMessage,
 )
 from .random_ids import uuid7_string
@@ -70,6 +71,8 @@ async def compact_history(
     history: "typing.Sequence[ConversationItem]",
     model_client: "ModelClient",
     context_manager: "ContextManager",
+    tools: "typing.List[ToolSpec]",
+    parallel_tool_calls: "bool",
     stream_event_handler: "typing.Union[typing.Callable[[ModelEvent], None], None]" = None,
     prune_tool_results_on_context_error: "bool" = False,
     session_file: "typing.Union[str, None]" = None,
@@ -89,8 +92,8 @@ async def compact_history(
         compact_prompt = UserMessage(text=DEFAULT_COMPACT_PROMPT)
         prompt = context_manager.build_prompt(
             list(history) + [compact_prompt],
-            [],
-            False,
+            tools,
+            parallel_tool_calls,
             turn_id=turn_id,
             reasoning_effort=model_client.reasoning_effort,
             capture_context=False,

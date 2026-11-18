@@ -2,9 +2,12 @@ import json
 
 import pytest
 
+from pycodex import ContextConfig, ContextLengthExceeded, ResponsesModelClient, ResponsesProviderConfig
+from pycodex.events import TokenCountEvent
 from pycodex.protocol import (
     AssistantMessage,
     ContextMessage,
+    ModelResponse,
     ToolCall,
     ToolResult,
     UserMessage,
@@ -19,6 +22,80 @@ from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.session_persist import (
     load_resumed_session_path,
 )
+from tests.fakes import ScriptedModelClient, make_agent, make_runtime, make_tools
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["manual", "auto", "overflow"])
+@pytest.mark.parametrize("code_mode_only", [False, True])
+@pytest.mark.parametrize("lite", [False, True])
+async def test_compact_preserves_request_prefix_and_tools(tmp_path, phase, code_mode_only, lite):
+    serializer = ResponsesModelClient(ResponsesProviderConfig(
+        "fixture", "fixture", "https://example.invalid/v1", None,
+        responses_lite_override=lite,
+    ))
+
+    def respond(prompt, call_count):
+        if phase == "overflow" and call_count <= 2:
+            raise ContextLengthExceeded("Your input exceeds the context window")
+        is_compact = prompt.input[-1].text == DEFAULT_COMPACT_PROMPT
+        return ModelResponse([AssistantMessage("summary" if is_compact else "answer")])
+
+    class PayloadModelClient(ScriptedModelClient):
+        def __init__(self):
+            super().__init__(response_factory=respond, model="fixture")
+            self.payloads = []
+
+        async def complete(self, prompt, event_handler):
+            self.payloads.append(serializer._build_payload(prompt))
+            response = await super().complete(prompt, event_handler)
+            if phase == "auto" and self.call_count == 1:
+                event_handler(TokenCountEvent({"total_tokens": 12}))
+            return response
+
+    model = PayloadModelClient()
+    agent = make_agent(
+        model, make_tools(), ContextConfig(
+            cwd=tmp_path, codex_home=tmp_path, code_mode_only=code_mode_only,
+            model_auto_compact_token_limit=10 if phase == "auto" else None,
+            include_skills_instructions=False, include_permissions_instructions=False,
+        ),
+        parallel_tool_calls=not code_mode_only,
+        initial_history=(
+            UserMessage("old request"),
+            ToolCall("old", "exec_command", {"cmd": "inspect"}),
+            ToolResult("old", "exec_command", "old output"),
+            AssistantMessage("old answer"),
+        ),
+    )
+    runtime = make_runtime(agent)
+    try:
+        await agent.run_turn([UserMessage("current request")])
+        if phase == "manual":
+            await agent.compact()
+            await agent.run_turn([UserMessage("continue")])
+        elif phase == "auto":
+            await agent.run_turn([UserMessage("continue")])
+    finally:
+        await runtime.close()
+
+    ordinary = model.payloads[0]
+    prefix_length = ordinary["input"].index(UserMessage("old request").serialize())
+    compact_payloads = [
+        payload for prompt, payload in zip(model.prompts, model.payloads)
+        if prompt.input[-1].text == DEFAULT_COMPACT_PROMPT
+    ]
+    assert len(compact_payloads) == (2 if phase == "overflow" else 1)
+    assert compact_payloads[0]["input"][:len(ordinary["input"])] == ordinary["input"]
+    for payload in model.payloads:
+        assert payload["input"][:prefix_length] == ordinary["input"][:prefix_length]
+        assert payload.get("tools") == ordinary.get("tools")
+        assert payload["parallel_tool_calls"] == ordinary["parallel_tool_calls"]
+        assert payload["prompt_cache_key"] == agent.session_id
+        assert payload["tool_choice"] == ordinary["tool_choice"]
+    if phase == "overflow":
+        assert any(item["type"] == "function_call" for item in compact_payloads[0]["input"])
+        assert not any(item["type"] == "function_call" for item in compact_payloads[1]["input"])
 
 
 def test_compact_replaces_all_prior_context_with_language_preserving_summary():

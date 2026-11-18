@@ -602,6 +602,10 @@ class Agent:
                 self.history,
                 self.model_client,
                 self.context_manager,
+                self.tool_registry.model_visible_specs(
+                    self.context_manager.resolve_code_mode_only(),
+                ),
+                self._parallel_tool_calls,
                 handle_compact_stream_event,
                 prune_tool_results_on_context_error,
                 str(recorder.rollout_path) if recorder is not None else None,
