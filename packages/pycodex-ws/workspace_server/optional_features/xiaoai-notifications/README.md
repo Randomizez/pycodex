@@ -135,10 +135,10 @@ uv run --dev pytest "$feature/source/runtime_checks.py"
 NODE_PATH=/path/to/playwright/node_modules node "$feature/source/verify.cjs"
 ```
 
-The 44 passing unit checks cover default-off behavior, explicit device selection, private
+The 46 passing unit checks cover default-off behavior, explicit device selection, private
 file permissions, 401 recovery including non-JSON error bodies, no replay of
 other failures, final-only generation, structured requests, quiet-time boundaries,
-stale results, duplicate events, restart and per-session records. Tests use
+stale results, duplicate events, restart, `/resume` isolation and per-session records. Tests use
 temporary credentials and fake model/device responses.
 
 Three passing real Runtime tests check completion, quiet time, restart restoration and

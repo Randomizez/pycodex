@@ -59,6 +59,7 @@ class SessionNotifications:
         self.queue = None
         self.worker = None
         self.sessions = {}
+        self.session_keys = {}
         self.lock = threading.RLock()
         self.last_speech_end = 0
         self.db = None
@@ -85,15 +86,25 @@ class SessionNotifications:
     def bind(self, session_id, session):
         if self.enabled:
             self.sessions[session_id] = session
-            session.set_notification_records(self.records(session_id, session.snapshot()))
+            snapshot = session.snapshot()
+            self.session_keys[session_id] = session_key(snapshot, session_id)
+            session.set_notification_records(self.records(session_id, snapshot))
 
     def unbind(self, session_id):
         self.sessions.pop(session_id, None)
+        self.session_keys.pop(session_id, None)
 
     def observe(self, session_id, session, event):
-        if not self.enabled or self.closed or event.get("kind") not in KINDS:
+        if not self.enabled or self.closed:
             return
         snapshot = event.get("snapshot") or {}
+        if snapshot:
+            key = session_key(snapshot, session_id)
+            if key != self.session_keys.get(session_id):
+                self.session_keys[session_id] = key
+                session.set_notification_records(self.records(session_id, snapshot))
+        if event.get("kind") not in KINDS:
+            return
         kind = event["kind"]
         payload = event.get("payload") or {}
         # Steer interruptions and input requests are intermediate events, not
@@ -121,6 +132,7 @@ class SessionNotifications:
                 return
         item = {
             "event_id": event_id, "session_id": session_id, "turn_id": turn_id,
+            "session_key": key,
             "kind": kind, "title": shorten(snapshot.get("title"), 180),
             "runtime_status": KINDS[kind],
             "background_active": bool(payload.get("background_work_count")) or
@@ -193,6 +205,8 @@ class SessionNotifications:
         if item["kind"] not in KINDS or not self.latest(item):
             return False
         snapshot = session.snapshot()
+        if session_key(snapshot, item["session_id"]) != item["session_key"]:
+            return False
         if snapshot.get("queued_inputs"):
             return False
         if snapshot.get("running"):
@@ -260,3 +274,4 @@ class SessionNotifications:
             self.db.close()
             self.db = None
         self.sessions.clear()
+        self.session_keys.clear()

@@ -99,6 +99,28 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
         payload = self.service.command.call_args_list[0].args[1]
         self.assertEqual(payload["latest_request"], "检查部署\n保留已有设置")
 
+    async def test_resume_rebinds_visible_records_without_generating(self):
+        self.service.observe("session", self.session, self.session.event())
+        await self.drain()
+        self.assertEqual(len(self.session.records), 1)
+        original = self.session.state["recorded_rollout_path"]
+        self.session.state["recorded_rollout_path"] = "/private/other.jsonl"
+        self.service.observe("session", self.session, {
+            "kind": "session_state", "snapshot": self.session.snapshot()})
+        self.assertEqual(self.session.records, [])
+        self.session.state["recorded_rollout_path"] = original
+        self.service.observe("session", self.session, {
+            "kind": "session_state", "snapshot": self.session.snapshot()})
+        self.assertEqual(len(self.session.records), 1)
+        self.assertEqual(self.service.command.await_count, 2)
+
+    async def test_resume_invalidates_queued_speech_even_with_same_turn_id(self):
+        self.service.observe("session", self.session, self.session.event())
+        self.session.state["recorded_rollout_path"] = "/private/other.jsonl"
+        await self.drain()
+        self.assertEqual(self.service.command.await_count, 0)
+        self.assertEqual(self.session.records, [])
+
     async def test_normal_speech_is_recorded_and_duplicate_not_replayed(self):
         event = self.session.event()
         self.service.observe("session", self.session, event)
