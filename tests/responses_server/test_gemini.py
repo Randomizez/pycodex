@@ -10,7 +10,7 @@ from starlette.testclient import TestClient
 
 from pycodex.model import ResponsesModelClient, ResponsesProviderConfig
 from pycodex.context import ContextConfig, ContextManager
-from pycodex.protocol import ToolResult, UserMessage
+from pycodex.protocol import ContextMessage, Prompt, ToolCall, ToolResult, ToolSpec, UserMessage
 from pycodex.utils.session_persist import SessionRolloutRecorder, load_resumed_session_path
 from responses_server import CompatServerConfig, ManagedResponseServer
 from responses_server.gemini_api import GeminiAPIAdapterError, build_gemini_request
@@ -79,6 +79,47 @@ def _post(client, request):
     assert response.status_code == 200
     return [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
 
+
+@pytest.mark.parametrize("tool_choice", ["auto", "none"])
+def test_history_instruction_keeps_its_position_in_gemini_after_tool_result(tool_choice):
+    tools = [ToolSpec("inspect", "Inspect the task.", {
+        "type": "object", "properties": {},
+    })]
+    reminder = ContextMessage("Context usage has reached 90%.", role="developer")
+    history = [
+        UserMessage("Continue the task."),
+        ToolCall("inspect", "inspect", {}),
+        ToolResult("inspect", "inspect", "Inspection complete."),
+        reminder,
+    ]
+    model = ResponsesModelClient(ResponsesProviderConfig(
+        model="gemini-test", provider_name="gemini", base_url="https://example.invalid/v1beta",
+        api_key_env=None, responses_lite_override=False,
+    ))
+    request = model._build_payload(Prompt(
+        history, tools, base_instructions="Base rules",
+    ))
+    request["tool_choice"] = tool_choice
+    with _bridge([[_response([{"text": "Hello"}])]]) as (bridge, captures):
+        _check_lifecycle(_post(bridge, request))
+    assert len(captures) == 1
+    payload = captures[0]["body"]
+    assert request["input"][-1] == reminder.serialize()
+    assert payload["tools"]
+    assert payload["toolConfig"]["functionCallingConfig"]["mode"] == (
+        "NONE" if tool_choice == "none" else "AUTO"
+    )
+    assert reminder.role == "developer"
+    assert payload["systemInstruction"]["parts"] == [
+        {"text": "Base rules"},
+    ]
+    assert [content["role"] for content in payload["contents"]] == ["user", "model", "user", "user"]
+    assert payload["contents"][-2]["parts"] == [{"functionResponse": {
+        "name": "inspect", "id": "inspect", "response": {"output": "Inspection complete."},
+    }}]
+    assert payload["contents"][-1]["parts"] == [{
+        "text": "<system-reminder>\n" + reminder.text + "\n</system-reminder>",
+    }]
 
 def _tool(name="run", kind="function"):
     if kind == "custom":

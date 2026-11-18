@@ -123,6 +123,29 @@ def build_outcomming_request(
     return payload
 
 
+def inline_history_instructions(
+    messages: "typing.List[typing.Dict[str, object]]",
+) -> "typing.List[typing.Dict[str, object]]":
+    """Keep non-prefix instructions in order for APIs with only a top-level system."""
+    result = []
+    in_system_prefix = True
+    for message in messages:
+        if message["role"] in {"system", "developer"}:
+            if not in_system_prefix:
+                content = message["content"]
+                if isinstance(content, list):
+                    content = [{"type": "text", "text": "<system-reminder>\n"}] + content + [
+                        {"type": "text", "text": "\n</system-reminder>"},
+                    ]
+                else:
+                    content = "<system-reminder>\n" + content + "\n</system-reminder>"
+                message = dict(message, role="user", content=content)
+        else:
+            in_system_prefix = False
+        result.append(message)
+    return result
+
+
 def split_tool_images(
     messages: "typing.List[typing.Dict[str, object]]",
 ) -> "typing.List[typing.Dict[str, object]]":

@@ -5,6 +5,7 @@ import socket
 import threading
 import typing
 import urllib.error
+from copy import deepcopy
 from types import SimpleNamespace
 
 import pytest
@@ -12,7 +13,7 @@ import requests
 from starlette.testclient import TestClient
 
 from responses_server import CompatServerConfig, ManagedResponseServer
-from responses_server.request_translation import build_outcomming_request
+from responses_server.request_translation import build_outcomming_request, inline_history_instructions
 from responses_server.payload_processors import PAYLOAD_POST_PROCESSORS
 from responses_server.tools.custom_adapter import (
     APPLY_PATCH_CHAT_DESCRIPTION,
@@ -1122,6 +1123,39 @@ def test_responses_server_preserves_request_model_without_default_override(
     assert len(request_files) == 1
     request = json.loads(request_files[0].read_text())
     assert request["body"]["model"] == "gpt-5.4"
+
+
+@pytest.mark.parametrize("content", [
+    "Later developer instruction",
+    [{"type": "text", "text": "Later developer instruction"},
+     {"type": "image_url", "image_url": {"url": "data:image/png;base64,YQ=="}}],
+])
+def test_inline_history_instructions_keeps_prefix_and_message_positions(content):
+    messages = [
+        {"role": "system", "content": "Base rules"},
+        {"role": "developer", "content": "Developer rules"},
+        {"role": "user", "content": "First task"},
+        {"role": "developer", "content": content},
+        {"role": "assistant", "content": "First result"},
+        {"role": "system", "content": "Later system instruction"},
+        {"role": "user", "content": "Next task"},
+    ]
+    original = deepcopy(messages)
+    translated = inline_history_instructions(messages)
+    assert messages == original
+    assert translated[:3] == messages[:3]
+    assert [item["role"] for item in translated] == [
+        "system", "developer", "user", "user", "assistant", "user", "user",
+    ]
+    if isinstance(content, list):
+        assert translated[3]["content"] == [
+            {"type": "text", "text": "<system-reminder>\n"},
+        ] + content + [{"type": "text", "text": "\n</system-reminder>"}]
+    else:
+        assert translated[3]["content"] == "<system-reminder>\n" + content + "\n</system-reminder>"
+    assert translated[4] == messages[4]
+    assert translated[5]["content"] == "<system-reminder>\nLater system instruction\n</system-reminder>"
+    assert translated[6] == messages[6]
 
 
 def test_responses_server_stepfun_drops_developer_messages(tmp_path) -> "None":

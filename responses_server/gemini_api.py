@@ -5,6 +5,8 @@ import re
 import uuid
 from copy import deepcopy
 
+from .request_translation import inline_history_instructions
+
 
 class GeminiAPIAdapterError(ValueError):
     pass
@@ -14,7 +16,7 @@ def build_gemini_request(request):
     contents = []
     system_parts = []
     calls = {}
-    for message in request.get("messages", []):
+    for message in inline_history_instructions(request.get("messages", [])):
         role = message["role"]
         if role in {"system", "developer"}:
             system_parts.extend(_content_parts(message.get("content")))
