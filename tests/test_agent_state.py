@@ -570,6 +570,9 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
         def __init__(self):
             self.call_count = 0
 
+        def stop_retry(self):
+            pass
+
         async def complete(self, prompt, event_handler):
             self.call_count += 1
             if phase != "pre_turn" and self.call_count == 1:

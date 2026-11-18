@@ -393,7 +393,7 @@ async def test_cli_receipt_and_empty_input_without_result_tasks(monkeypatch, jso
     ]
     assert view.lines[3] == (
         "Extra commands: /help, /history, /title, /cd, /model, /effort, /resume, "
-        "/compact, /queue"
+        "/compact, /retry, /queue"
     )
     assert signal.getsignal(signal.SIGINT) == previous_sigint
     results = [json.loads(line) for line in view.lines if line.startswith("{")]

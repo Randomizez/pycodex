@@ -34,6 +34,14 @@ class ScriptedModelClient:
         self.recording_metadata = ModelRecordingMetadata("pycodex", None)
         self.prompts: "typing.List[Prompt]" = []
         self.call_count = 0
+        self.retry_error_code = None
+        self.last_error = None
+
+    def set_retry_error_code(self, code):
+        self.retry_error_code = code
+
+    def stop_retry(self):
+        pass
 
     def with_overrides(
         self, model, reasoning_effort, session_id=None, openai_subagent=None,

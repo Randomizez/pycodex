@@ -34,6 +34,7 @@ from .model import (
     ContextLengthExceeded,
     ModelClient,
     ModelControl,
+    ModelRequestInterrupted,
     ResponsesIncompleteError,
 )
 from .protocol import (
@@ -158,6 +159,7 @@ class Agent:
     def stop_asap(self) -> "None":
         if self.is_running:
             self._stop_requested = True
+            self.model_client.stop_retry()
 
     def request_follow_up(self) -> "None":
         """Keep the active turn open for input at its next safe boundary."""
@@ -324,7 +326,7 @@ class Agent:
                 history=self.history,
             )
             return result
-        except TurnInterrupted:
+        except (TurnInterrupted, ModelRequestInterrupted) as exc:
             self._emit(
                 TurnInterruptedEvent(
                     turn.turn_id,
@@ -333,6 +335,8 @@ class Agent:
                     self._background_work_count(TurnInterruptedEvent),
                 )
             )
+            if isinstance(exc, ModelRequestInterrupted):
+                raise TurnInterrupted() from exc
             raise
         except Exception as exc:
             if isinstance(exc, ContextLengthExceeded) and exc.usage is not None:

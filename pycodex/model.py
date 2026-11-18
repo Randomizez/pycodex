@@ -74,6 +74,9 @@ class ModelClient(Protocol):
     ) -> "ModelClient":
         """Construct an independent client for a child Agent."""
 
+    def stop_retry(self) -> "None":
+        """Stop retrying after the issued request completes."""
+
     async def complete(
         self,
         prompt: "Prompt",
@@ -83,6 +86,12 @@ class ModelClient(Protocol):
 
 
 class ModelControl(ModelClient, Protocol):
+    retry_error_code: "typing.Union[int, None]"
+    last_error: "typing.Union[ResponsesApiError, None]"
+
+    def set_retry_error_code(self, code: "typing.Union[int, None]") -> "None":
+        """Select a numeric error code to retry indefinitely, or disable it."""
+
     @property
     def endpoint(self) -> "str":
         """Return the active API base URL, safe for display."""
@@ -381,12 +390,32 @@ def _filter_audio_inputs(items, metadata):
 
 
 class ResponsesApiError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: "str",
+        http_status: "typing.Union[int, None]" = None,
+        error_code: "typing.Union[str, int, None]" = None,
+    ) -> "None":
+        super().__init__(message)
+        self.http_status = http_status
+        self.error_code = error_code
+
+    def matches_code(self, code: "int") -> "bool":
+        return self.http_status == code or str(self.error_code) == str(code)
+
+
+class ModelRequestInterrupted(RuntimeError):
+    """A cooperative stop ended retries after an issued request finished."""
 
 
 class ContextLengthExceeded(ResponsesApiError):
-    def __init__(self, message: "str") -> "None":
-        super().__init__(message)
+    def __init__(
+        self,
+        message: "str",
+        http_status: "typing.Union[int, None]" = None,
+        error_code: "typing.Union[str, int, None]" = None,
+    ) -> "None":
+        super().__init__(message, http_status, error_code)
         self.usage: "typing.Union[typing.Dict[str, int], None]" = None
         self.token_limit: "typing.Union[int, None]" = None
         requested = re.search(r"requested\s+([0-9,]+)\s+tokens", message, re.IGNORECASE)
@@ -427,8 +456,10 @@ class ResponsesRetryableError(ResponsesApiError):
         self,
         message: "str",
         retry_delay_seconds: "typing.Union[float, None]" = None,
+        http_status: "typing.Union[int, None]" = None,
+        error_code: "typing.Union[str, int, None]" = None,
     ) -> "None":
-        super().__init__(message)
+        super().__init__(message, http_status, error_code)
         self.retry_delay_seconds = retry_delay_seconds
 
 
@@ -479,6 +510,21 @@ class ResponsesModelClient:
         self._user_agent = user_agent or build_user_agent(originator)
         self._openai_subagent = openai_subagent
         self._model_cooldowns: "typing.Dict[str, float]" = {}
+        self.retry_error_code: "typing.Union[int, None]" = None
+        self.last_error: "typing.Union[ResponsesApiError, None]" = None
+        self._retry_wakeup: "typing.Union[asyncio.Event, None]" = None
+        self._retry_stopped = False
+
+    def set_retry_error_code(self, code: "typing.Union[int, None]") -> "None":
+        if code != self.retry_error_code:
+            self.retry_error_code = code
+            if self._retry_wakeup is not None:
+                self._retry_wakeup.set()
+
+    def stop_retry(self) -> "None":
+        if self._retry_wakeup is not None:
+            self._retry_stopped = True
+            self._retry_wakeup.set()
 
     @property
     def model(self) -> "str":
@@ -576,6 +622,9 @@ class ResponsesModelClient:
     ) -> "ModelResponse":
         retries = 0
         max_retries = self._config.effective_stream_max_retries()
+        self.last_error = None
+        self._retry_stopped = False
+        self._retry_wakeup = asyncio.Event()
         models = tuple(dict.fromkeys((self.model,) + self._config.fallback_models))
         now = monotonic()
         self._model_cooldowns = {
@@ -611,12 +660,27 @@ class ResponsesModelClient:
 
         try:
             while True:
+                if self._retry_stopped:
+                    raise ModelRequestInterrupted()
+                retry_code = self.retry_error_code
                 try:
                     response = await asyncio.to_thread(request_client._complete_sync, prompt, receive)
                     self._model_cooldowns.pop(request_client.model, None)
+                    self.last_error = None
                     return response
-                except (ResponsesRetryableError, ResponsesModelUnavailableError) as exc:
-                    if (
+                except ResponsesApiError as exc:
+                    self.last_error = exc
+                    if self._retry_stopped:
+                        raise ModelRequestInterrupted() from exc
+                    if retry_code is not None and self.retry_error_code != retry_code:
+                        raise
+                    infinite = self.retry_error_code is not None
+                    if infinite:
+                        if not exc.matches_code(self.retry_error_code):
+                            raise
+                    elif not isinstance(exc, (ResponsesRetryableError, ResponsesModelUnavailableError)):
+                        raise
+                    elif (
                         isinstance(exc, ResponsesModelUnavailableError)
                         or (isinstance(exc, ResponsesFirstDataTimeout) and len(models) > 1)
                         or retries >= max_retries
@@ -642,21 +706,45 @@ class ResponsesModelClient:
                         retries = 0
                         continue
                     retries += 1
-                    delay_seconds = exc.retry_delay_seconds
+                    delay_seconds = (
+                        exc.retry_delay_seconds
+                        if isinstance(exc, ResponsesRetryableError) else None
+                    )
                     if delay_seconds is None:
                         delay_seconds = self._retry_delay_seconds(retries)
+                    self._retry_wakeup.clear()
                     event_handler(
                         StreamErrorEvent(
-                            f"Reconnecting... {retries}/{max_retries}",
+                            f"Reconnecting... {retries}/∞"
+                            if infinite else f"Reconnecting... {retries}/{max_retries}",
                             retries,
-                            max_retries,
+                            0 if infinite else max_retries,
                             delay_seconds,
                             str(exc),
                         )
                     )
                     if delay_seconds > 0:
-                        await asyncio.sleep(delay_seconds)
+                        waiter = asyncio.ensure_future(self._retry_wakeup.wait())
+                        try:
+                            await asyncio.wait({waiter}, timeout=delay_seconds)
+                        finally:
+                            if not waiter.done():
+                                waiter.cancel()
+                                try:
+                                    await waiter
+                                except asyncio.CancelledError:
+                                    pass
+                    if self._retry_stopped:
+                        raise ModelRequestInterrupted() from exc
+                    if infinite and self.retry_error_code is None:
+                        raise
+                    if (
+                        self.retry_error_code is not None
+                        and not exc.matches_code(self.retry_error_code)
+                    ):
+                        raise
         finally:
+            self._retry_wakeup = None
             with callback_lock:
                 active = False
 
@@ -712,7 +800,7 @@ class ResponsesModelClient:
                             f"{error_body[:500]}"
                         )
                         if _is_context_length_error_message(error_body):
-                            raise ContextLengthExceeded(message)
+                            raise ContextLengthExceeded(message, http_status=response.status_code)
                         if response.status_code >= 500 or response.status_code in (408, 429):
                             raise ResponsesRetryableError(
                                 message,
@@ -720,10 +808,11 @@ class ResponsesModelClient:
                                     "rate_limit_exceeded" if response.status_code == 429 else "",
                                     error_body,
                                 ),
+                                http_status=response.status_code,
                             )
                         if response.status_code in (403, 404):
-                            raise ResponsesModelUnavailableError(message)
-                        raise ResponsesApiError(message)
+                            raise ResponsesModelUnavailableError(message, http_status=response.status_code)
+                        raise ResponsesApiError(message, http_status=response.status_code)
                     if first_timeout is not None:
                         remaining = first_timeout - (monotonic() - diagnostics.started_at)
                         if remaining <= 0:
@@ -1369,25 +1458,29 @@ class ResponsesModelClient:
             )
 
         message = str(error.get("message") or "responses stream failed")
-        code = str(error.get("code") or error.get("type") or "").strip()
+        error_code = error.get("code")
+        if error_code is None:
+            error_code = error.get("type")
+        code = str(error_code or "").strip()
         formatted = self._format_response_failed_error(message, code, session_id)
         if code == "context_length_exceeded" or _is_context_length_error_message(
             message
         ):
-            raise ContextLengthExceeded(formatted)
+            raise ContextLengthExceeded(formatted, error_code=error_code)
         if code in {"model_not_found", "model_not_available", "permission_denied"}:
-            raise ResponsesModelUnavailableError(formatted)
+            raise ResponsesModelUnavailableError(formatted, error_code=error_code)
         if code in {
             "insufficient_quota",
             "invalid_prompt",
             "model_output_invalid",
             "usage_not_included",
         }:
-            raise ResponsesApiError(formatted)
+            raise ResponsesApiError(formatted, error_code=error_code)
 
         raise ResponsesRetryableError(
             formatted,
             retry_delay_seconds=self._try_parse_retry_after_seconds(code, message),
+            error_code=error_code,
         )
 
     def _format_incomplete_stream_error(

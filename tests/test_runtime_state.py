@@ -621,6 +621,9 @@ async def test_steer_during_tool_follow_up_compact_preserves_completed_tools(ove
         def __init__(self):
             self.prompts = []
 
+        def stop_retry(self):
+            pass
+
         async def complete(self, prompt, event_handler):
             self.prompts.append(prompt)
             number = len(self.prompts)

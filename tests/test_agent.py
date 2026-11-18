@@ -985,6 +985,9 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
             self.prompts = []
             self.call_count = 0
 
+        def stop_retry(self):
+            pass
+
         async def complete(self, prompt, event_handler):
             del event_handler
             self.prompts.append(prompt)
@@ -1061,6 +1064,9 @@ async def test_runtime_steer_batches_messages_into_next_request() -> "None":
         def __init__(self) -> "None":
             self.prompts = []
             self.call_count = 0
+
+        def stop_retry(self):
+            pass
 
         async def complete(self, prompt, event_handler):
             self.prompts.append(prompt)

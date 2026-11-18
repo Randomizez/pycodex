@@ -409,10 +409,11 @@ async def test_user_can_retry_during_cooldown_and_recover(monkeypatch, recovered
 async def test_rate_limit_retry_after_is_honored_before_fallback(monkeypatch):
     model_client = client(monkeypatch)
     seen = []
-    sleeps = []
+    waits = []
 
-    async def fake_sleep(seconds):
-        sleeps.append(seconds)
+    async def fake_wait(waiters, timeout):
+        waits.append(timeout)
+        return set(), set(waiters)
 
     def send(self, request, **kwargs):
         model = json.loads(request.body)["model"]
@@ -426,11 +427,11 @@ async def test_rate_limit_retry_after_is_honored_before_fallback(monkeypatch):
         return success()
 
     monkeypatch.setattr(requests.Session, "send", send)
-    monkeypatch.setattr("pycodex.model.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("pycodex.model.asyncio.wait", fake_wait)
     events = []
     await model_client.complete(Prompt(input=[], tools=[]), events.append)
     assert seen == [MODELS[0], MODELS[0]]
-    assert sleeps == [8]
+    assert waits == [8]
     retry = next(e for e in events if e.kind == "stream_error")
     assert retry.delay_seconds == 8
     assert retry.message == "Reconnecting... 1/1"
@@ -441,8 +442,9 @@ async def test_fallback_event_uses_provider_reason_and_attempt_timing(monkeypatc
     model_client = client(monkeypatch)
     seen = []
 
-    async def fake_sleep(seconds):
-        assert seconds in (8, 12)
+    async def fake_wait(waiters, timeout):
+        assert timeout in (8, 12)
+        return set(), set(waiters)
 
     def send(self, request, **kwargs):
         model = json.loads(request.body)["model"]
@@ -458,7 +460,7 @@ async def test_fallback_event_uses_provider_reason_and_attempt_timing(monkeypatc
         return success()
 
     monkeypatch.setattr(requests.Session, "send", send)
-    monkeypatch.setattr("pycodex.model.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("pycodex.model.asyncio.wait", fake_wait)
     events = []
     await model_client.complete(Prompt(input=[], tools=[]), events.append)
     assert seen == [MODELS[0], MODELS[0], MODELS[1]]

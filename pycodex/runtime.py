@@ -204,6 +204,7 @@ class AgentRuntime:
                 "effort",
                 "resume",
                 "compact",
+                "retry",
             )
             + tuple(self.command_handlers)
             + ("queue",)
@@ -408,13 +409,20 @@ class AgentRuntime:
         return receipt
 
     async def _run_command(self, receipt, command, argument, sender):
+        async def execute():
+            self._active_commands[receipt.submission_id]["status"] = "running"
+            self._publish(
+                CommandStartedEvent(receipt.submission_id, command, sender)
+            )
+            return await self._execute_command(command[1:], argument)
+
         try:
-            async with self._get_command_lock():
-                self._active_commands[receipt.submission_id]["status"] = "running"
-                self._publish(
-                    CommandStartedEvent(receipt.submission_id, command, sender)
-                )
-                result = await self._execute_command(command[1:], argument)
+            # Retry controls must remain usable while a compact holds the lock.
+            if command == "/retry" and argument:
+                result = await execute()
+            else:
+                async with self._get_command_lock():
+                    result = await execute()
         except asyncio.CancelledError:
             del self._active_commands[receipt.submission_id]
             receipt.future.cancel()
@@ -474,6 +482,37 @@ class AgentRuntime:
                 effort = client.reasoning_effort
                 self.publish_state("effort")
             return {"kind": "effort", "reasoning_effort": effort}
+        if command == "retry":
+            client = typing.cast(ModelControl, self.agent.model_client)
+            if not argument:
+                self.require_idle("retry")
+                if client.last_error is None:
+                    raise ValueError("No failed model request to retry.")
+                await self.start()
+                submission_id, _future = self.trigger()
+                return {
+                    "kind": "retry", "submission_id": submission_id,
+                    "lines": ["Retrying the failed model request."],
+                }
+            try:
+                code = int(argument)
+            except ValueError:
+                code = None
+            client.set_retry_error_code(code)
+            lines = [
+                "Infinite retry disabled." if code is None
+                else "Retrying error code {0} indefinitely.".format(code)
+            ]
+            result = {"kind": "retry", "lines": lines}
+            if (
+                code is not None and not self.is_busy
+                and client.last_error is not None
+                and client.last_error.matches_code(code)
+            ):
+                await self.start()
+                result["submission_id"], _future = self.trigger()
+                lines.append("Retrying the failed model request.")
+            return result
         if command == "resume":
             if not argument:
                 return {
