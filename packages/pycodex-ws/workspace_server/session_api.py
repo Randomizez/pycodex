@@ -1,7 +1,6 @@
 """Resource endpoints for custom frontends, scoped to an existing session."""
 
 import base64
-import hashlib
 import json
 
 from starlette.exceptions import HTTPException
@@ -9,7 +8,6 @@ from starlette.responses import JSONResponse
 from starlette.routing import Route
 
 from pycodex.utils.history import serialize_history_item
-from pycodex.utils.session_persist import read_rollout_history_page
 
 
 def _encode_cursor(value):
@@ -33,51 +31,27 @@ def _decode_cursor(value):
         raise HTTPException(422, "invalid history cursor") from error
 
 
-def _history_digest(items):
-    return hashlib.sha256(
-        json.dumps(items, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-
-
-def history_page(session_id, path, history, before, limit):
+def history_page(session_id, revision, history, before, limit):
     cursor = _decode_cursor(before) if before is not None else None
-    if path is not None:
-        stat = path.stat()
-        source = "{0}:rollout:{1}:{2}".format(session_id, stat.st_dev, stat.st_ino)
-    else:
-        source = session_id + ":memory"
+    source = "{0}:history:{1}".format(session_id, revision)
     if cursor is not None and cursor["source"] != source:
-        raise HTTPException(409, "history source changed; restart pagination")
-    offset = cursor["before"] if cursor is not None else None
-    if path is not None:
-        try:
-            page = read_rollout_history_page(path, offset, limit)
-        except ValueError as error:
-            raise HTTPException(409, str(error)) from error
-        next_before = page.pop("next_before")
-    else:
-        items = [serialize_history_item(item) for item in history]
-        end = len(items) if offset is None else offset
-        if cursor is not None and (
-            end > len(items) or cursor.get("prefix") != _history_digest(items[:end])
-        ):
-            raise HTTPException(409, "active history changed; restart pagination")
-        start = max(0, end - limit)
-        page = {"items": [
-            {"index": index, "type": "response_item", "payload": items[index]}
-            for index in range(start, end)
-        ]}
-        next_before = start if start else None
+        raise HTTPException(409, "active history changed; restart pagination")
+    end = cursor["before"] if cursor is not None else len(history)
+    if end > len(history):
+        raise HTTPException(409, "history cursor is beyond the current history")
+    start = max(0, end - limit)
     next_cursor = None
-    if next_before is not None:
-        next_value = {"source": source, "before": next_before}
-        if path is None:
-            next_value["prefix"] = _history_digest(items[:next_before])
-        next_cursor = _encode_cursor(next_value)
-    return dict(
-        page, next_cursor=next_cursor,
-        source="rollout" if path is not None else "active_history",
-    )
+    if start:
+        next_cursor = _encode_cursor({"source": source, "before": start})
+    return {
+        "source": "active_history",
+        "revision": revision,
+        "items": [
+            {"index": index, "type": "response_item", "payload": serialize_history_item(item)}
+            for index, item in enumerate(history[start:end], start)
+        ],
+        "next_cursor": next_cursor,
+    }
 
 
 def session_api_routes(resolve_manager, read_json, prefix=""):

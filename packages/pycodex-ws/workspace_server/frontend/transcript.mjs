@@ -12,9 +12,7 @@ function transcriptBlocks(records) {
   for (const record of records) {
     const item = record.payload;
     const key = `record:${record.index}`;
-    if (record.type === "compacted") {
-      blocks.push({key, kind: "compaction", label: "Compaction", body: item.message});
-    } else if (item.type === "function_call" || item.type === "custom_tool_call") {
+    if (item.type === "function_call" || item.type === "custom_tool_call") {
       const block = {
         key: `call:${item.call_id}`, kind: "tool", callId: item.call_id,
         toolName: item.name,
@@ -83,6 +81,7 @@ export class TranscriptView {
     this.agentId = agentId;
     this.records = new Map();
     this.source = null;
+    this.revision = null;
     this.nextCursor = null;
     this.agentSessionId = null;
     this.active = false;
@@ -247,17 +246,20 @@ export class TranscriptView {
       const lastIndex = previous.length ? previous[previous.length - 1].index : -1;
       let cursor = newest.next_cursor;
       // A burst can exceed one page; fill the gap before merging with loaded history.
-      if (!older && !reset && this.source === newest.source && previous.length) {
+      const replaced = this.source !== newest.source || this.revision !== newest.revision;
+      if (!older && !reset && !replaced && previous.length) {
         while (records.length && records[0].index > lastIndex && cursor !== null) {
           const earlier = await page(cursor);
-          if (earlier.source !== newest.source) throw Object.assign(new Error("History changed"), {status: 409});
+          if (earlier.source !== newest.source || earlier.revision !== newest.revision) {
+            throw Object.assign(new Error("History changed"), {status: 409});
+          }
           records = earlier.items.concat(records);
           cursor = earlier.next_cursor;
         }
       }
       if (this.requestController !== controller) return;
       const overlap = records.filter(item => this.records.has(item.index));
-      const changed = reset || this.source !== newest.source || (!older && previous.length && (
+      const changed = reset || replaced || (!older && previous.length && (
         !overlap.length || overlap.some(item =>
           JSON.stringify(item) !== JSON.stringify(this.records.get(item.index)))
       ));
@@ -269,6 +271,7 @@ export class TranscriptView {
       this.records = new Map(Array.from(this.records).sort((left, right) => left[0] - right[0]));
       if (older || changed || !previous.length) this.nextCursor = newest.next_cursor;
       this.source = newest.source;
+      this.revision = newest.revision;
       this.showError("");
       this.render();
     } catch (error) {
@@ -296,7 +299,7 @@ export class TranscriptView {
     node.dataset.key = block.key;
     node.dataset.kind = block.kind;
     if (block.toolName) node.dataset.tool = block.toolName;
-    node.open = block.kind !== "reasoning" && block.kind !== "compaction";
+    node.open = block.kind !== "reasoning";
     const heading = this.element("summary", "transcript-marker");
     const line = this.element("span", "transcript-marker-line");
     const label = this.element("span", "transcript-label");

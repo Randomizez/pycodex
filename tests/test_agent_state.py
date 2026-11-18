@@ -107,11 +107,13 @@ async def test_failed_compact_preserves_history_and_rollout(
     if failure == "checkpoint":
         monkeypatch.setattr(recorder, "append_compacted_history", fail_checkpoint)
     agent._last_total_usage_tokens = 100
+    revision = agent.history_revision
 
     with pytest.raises((RuntimeError, OSError), match="synthetic failure"):
         await agent.compact()
 
     assert agent.history == history
+    assert agent.history_revision == revision
     if persisted:
         assert recorder.rollout_path.read_bytes() == original_rollout
     else:
@@ -135,13 +137,17 @@ async def test_manual_compact_resets_usage_before_next_turn():
         initial_history=(UserMessage("old prompt"),),
     )
     agent._last_total_usage_tokens = 100
+    revision = agent.history_revision
 
     result = await agent.compact()
 
     assert agent.history == result.history
+    assert agent.history_revision != revision
+    compacted_revision = agent.history_revision
     assert agent._last_total_usage_tokens is None
     assert (await agent.run_turn([UserMessage("continue")])).output_text == "next answer"
     assert model.call_count == 2
+    assert agent.history_revision == compacted_revision
 
 
 @pytest.mark.asyncio
@@ -680,7 +686,9 @@ async def test_empty_compaction_does_not_create_rollout(tmp_path):
         ContextConfig(),
         session_file_path=tmp_path / "rollout.jsonl",
     )
+    revision = agent.history_revision
     assert await agent.compact() is None
+    assert agent.history_revision == revision
     agent.shutdown()
     assert not agent.session_file_path.exists()
 
@@ -1017,7 +1025,9 @@ async def test_resume_reads_history_and_continues_same_file(tmp_path, session_aw
     assert not original_path.exists()
     restored_bytes = source.session_file_path.read_bytes()
 
+    revision = agent.history_revision
     resumed = agent.resume(str(source.session_file_path))
+    assert agent.history_revision != revision
 
     assert agent.history == (
         UserMessage("restored"),

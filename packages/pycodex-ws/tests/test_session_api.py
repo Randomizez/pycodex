@@ -8,6 +8,8 @@ from starlette.testclient import TestClient
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolRegistry, UserMessage
 from pycodex.events import AssistantDeltaEvent
 from pycodex.tools import ClockManager
+from pycodex.utils.history import serialize_history_item
+from pycodex.utils.session_persist import read_rollout_history_page
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
     ThreadedWorkspaceInteractiveSession, WorkspaceInteractiveSession,
@@ -136,7 +138,7 @@ def test_user_message_names_in_unrecorded_history():
     from workspace_server.session_api import history_page
 
     history = (UserMessage("named", name="reviewer"), UserMessage("unnamed"))
-    items = history_page("memory", None, history, None, 100)["items"]
+    items = history_page("memory", "revision-1", history, None, 100)["items"]
     assert items[0]["payload"]["name"] == "reviewer"
     assert items[1]["payload"]["name"] == "user"
 
@@ -223,7 +225,7 @@ def test_history_pages_survive_append_and_reject_a_different_session(api_setup):
             result = client.post(prefix + "/api/session/message", json={"prompt": prompt}).json()
             assert wait_submission(client, base, result["submission_id"])["result"]["output_text"] == "done"
         latest = client.get(base + "/history?limit=2").json()
-        assert latest["source"] == "rollout"
+        assert latest["source"] == "active_history"
         assert len(latest["items"]) == 2
         assert latest["items"][0]["payload"]["content"][0]["text"] == "third"
         result = client.post(prefix + "/api/session/message", json={"prompt": "fourth"}).json()
@@ -240,6 +242,53 @@ def test_history_pages_survive_append_and_reject_a_different_session(api_setup):
             prefix + "/api/sessions/" + other + "/history",
             params={"before": latest["next_cursor"]},
         ).status_code == 409
+        appended = client.get(base + "/history?limit=2").json()
+        assert appended["revision"] == latest["revision"]
+        command = client.post(base + "/commands", json={"command": "compact"}).json()
+        assert wait_submission(client, base, command["submission_id"])["status"] == "completed"
+        compacted = client.get(base + "/history").json()
+        assert compacted["revision"] != latest["revision"]
+        assert all(item["type"] == "response_item" for item in compacted["items"])
+        assert len(compacted["items"]) == 1
+        assert "first" not in compacted["items"][0]["payload"]["content"][0]["text"]
+        assert client.get(base + "/history", params={"before": latest["next_cursor"]}).status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_recorded_transcript_matches_history_after_compact_and_resume(tmp_path):
+    model = ScriptedModelClient([
+        ModelResponse([AssistantMessage("First answer")]),
+        ModelResponse([AssistantMessage("Second answer")]),
+        ModelResponse([AssistantMessage("Current summary")]),
+    ])
+    session = make_session(model=model, cwd=tmp_path)
+    await session.start()
+    try:
+        agent = session.runtime.agent
+        await session.runtime.submit_user_turn("First prompt")
+        await session.runtime.submit_user_turn("Second prompt")
+        before = await session.api_query("history", {"limit": 2})
+        await agent.compact()
+        after = await session.api_query("history", {"limit": 200})
+        assert after["source"] == "active_history"
+        assert after["revision"] != before["revision"]
+        assert [record["payload"] for record in after["items"]] == [
+            serialize_history_item(item) for item in agent.history
+        ]
+        assert len(after["items"]) == 1
+        assert after["items"][0]["type"] == "response_item"
+        assert "Current summary" in after["items"][0]["payload"]["content"][0]["text"]
+        rollout = agent.recorded_session_file_path
+        assert any(
+            record["payload"].get("content", [{}])[0].get("text") == "First prompt"
+            for record in read_rollout_history_page(rollout)["items"]
+        )
+        agent.resume(rollout)
+        restored = await session.api_query("history", {"limit": 200})
+        assert restored["items"] == after["items"]
+        assert restored["revision"] != after["revision"]
+    finally:
+        await session.close()
 
 
 @pytest.mark.asyncio
@@ -266,13 +315,16 @@ def test_active_history_cursor_detects_compaction():
     from starlette.exceptions import HTTPException
 
     history = tuple(UserMessage(str(index)) for index in range(5))
-    page = history_page("memory-session", None, history, None, 2)
+    page = history_page("memory-session", "revision-1", history, None, 2)
     assert page["next_cursor"]
     appended = history + (AssistantMessage("new answer"),)
-    older = history_page("memory-session", None, appended, page["next_cursor"], 2)
+    older = history_page("memory-session", "revision-1", appended, page["next_cursor"], 2)
     assert [item["index"] for item in older["items"]] == [1, 2]
     with pytest.raises(HTTPException) as caught:
-        history_page("memory-session", None, (UserMessage("summary"),), page["next_cursor"], 2)
+        history_page(
+            "memory-session", "revision-2", (UserMessage("replacement"),) + history[1:],
+            page["next_cursor"], 2,
+        )
     assert caught.value.status_code == 409
 
 
