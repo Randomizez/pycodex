@@ -20,7 +20,7 @@ const {chromium} = require("playwright");
     source.indexOf("    function renderProtectedMath("));
   const clicks = source.slice(source.indexOf("    function followViewLink("),
     source.indexOf("    function followCanvasLink("));
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE});
   try {
     const page = await browser.newPage();
     const errors = [];
@@ -73,12 +73,20 @@ const {chromium} = require("playwright");
     assert.deepEqual(formulas.expressions.map(item => item.body), ["a_b", "c_d", "e_f", "g_h"]);
     assert.deepEqual(formulas.expressions.map(item => item.delimiter.display), [false, true, false, true]);
     assert.equal(formulas.source, "Before \uE000math0\uE001 then \uE000math1\uE001 and \uE000math2\uE001 plus \uE000math3\uE001 after.");
-    for (const href of [
+    const workspaceLinks = [
       "TODO.md", "./TODO.md", "/data/project/TODO.md", "TODO.md#L2", "TODO.md:2",
       "git:HEAD:TODO.md", "diff:HEAD:TODO.md",
       "diff:/data/project/old.py../data/project/new.py#R2",
+    ];
+    for (const [destination, href] of [
+      ...workspaceLinks.map(href => [href, href]),
+      ["file:///data/pycodex/tests/test_agent.py", "/data/pycodex/tests/test_agent.py"],
+      ["file:///data/pycodex/pycodex/agent.py#L411-L416", "/data/pycodex/pycodex/agent.py#L411"],
+      ["file:///data/a%20%23b.py#L2", "/data/a%20%23b.py#L2"],
+      ["file:///C:/project/file.py", "C:/project/file.py"],
     ]) {
-      await render(`[TODO](${href})`);
+      await render(`[TODO](${destination})`);
+      assert.equal(await anchor.count(), 1, destination);
       assert.equal(await anchor.getAttribute("href"), href);
       assert.equal(await anchor.getAttribute("data-workspace-link"), href);
       assert.equal(await anchor.getAttribute("target"), null);
@@ -108,8 +116,19 @@ const {chromium} = require("playwright");
       assert.equal(await anchor.getAttribute("data-workspace-link"), null);
       assert.equal(await anchor.getAttribute("target"), "_blank");
     }
-    await render("[unsafe](javascript:alert(1))");
+    for (const href of [
+      "file://server/share", "file:////server/share", "file:///%5Cserver/share",
+      "javascript:alert(1)", "data:text/html,test",
+    ]) {
+      await render(`[link](${href})`);
+      assert.equal(await anchor.count(), 0, href);
+    }
+    const example = "[source](file:///data/app.py)";
+    await render("`" + example + "`");
+    assert.equal(await page.locator("code").textContent(), example);
     assert.equal(await anchor.count(), 0);
+    await render("![image](file:///data/image.png)");
+    assert.equal(await page.locator("#content img[src], #content a").count(), 0);
     assert.deepEqual(errors, []);
     console.log("Workspace Markdown math, file links, clicks and explicit URLs passed");
   } finally {

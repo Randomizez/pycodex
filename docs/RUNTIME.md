@@ -1167,6 +1167,9 @@ no messages or tool results to the conversation. They also work with an empty
 existing names.
 
 Ordinary Markdown file links accept absolute or relative paths.
+In chat and Markdown previews, `file:///` links with an empty host also open
+absolute paths on the workspace server. For example,
+`[source](file:///data/project/app.py#L42-L48)` selects line 42.
 Use Git-style expressions for comparisons:
 
 | Markdown link | View |

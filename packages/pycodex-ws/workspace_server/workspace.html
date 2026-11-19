@@ -1843,11 +1843,21 @@
     if (markdownRenderer) {
       // Bare filenames such as TODO.md must not become http://TODO.md.
       markdownRenderer.linkify.set({fuzzyLink: false});
+      function workspaceFilePath(href) {
+        if (!/^file:\/\/\/(?!\/|%2f|%5c)/i.test(href)) return null;
+        const path = href.slice("file://".length)
+          .replace(/^\/([a-z]:\/)/i, "$1")
+          .replace(/#(L[1-9]\d*)-L[1-9]\d*$/i, "#$1");
+        return isWorkspaceLink(path) ? path : null;
+      }
+      const validateLink = markdownRenderer.validateLink;
+      markdownRenderer.validateLink = href => validateLink(href) || workspaceFilePath(href) !== null;
       markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
         const token = tokens[index];
         const href = token.attrGet("href");
-        if (isWorkspaceLink(href)) {
-          token.attrSet("data-workspace-link", href);
+        const destination = workspaceFilePath(href) || href;
+        if (isWorkspaceLink(destination)) {
+          token.attrSet("data-workspace-link", destination);
           // Preserve file/URI destinations without widening DOMPurify's protocol allowlist.
           token.attrSet("href", "#");
         }

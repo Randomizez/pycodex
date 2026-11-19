@@ -55,8 +55,9 @@ in a scrollable log. New retries update the same row and preserve its open state
 refreshing starts collapsed. Other model diagnostics and final errors stay visible.
 
 Click Markdown links to open files and comparisons, for example
-`[source](app.py:42)` or `[changes](diff:HEAD:app.py)`. In a code or diff view,
-select text and choose **Insert into chat** to add editable context to the draft.
+`[source](app.py:42)` or `[changes](diff:HEAD:app.py)`. A Markdown link such as
+`[source](file:///data/project/app.py#L42-L48)` opens the workspace file at line 42.
+In a code or diff view, select text and choose **Insert into chat** to add editable context to the draft.
 Click a context block to edit or remove it before sending.
 See [view links and supported formats](../../docs/RUNTIME.md#workspace-content-views).
 

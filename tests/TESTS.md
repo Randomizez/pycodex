@@ -165,7 +165,7 @@ npm install --prefix /tmp/pycodex-browser-check playwright markdown-it@14.1.0 do
 NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests/workspace_markdown_links.cjs
 ```
 
-覆盖 `[TODO](TODO.md)`、绝对/相对路径、行号和 Git/diff 链接的点击接管、
+覆盖 `[TODO](TODO.md)`、绝对/相对路径、`file:///` 文件链接及行号范围起点、Git/diff 链接的点击接管、
 Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 和邮件链接，
 以及可执行 URL 拒绝；公式预处理覆盖长纯文本、转义、代码围栏和四种公式分隔符。
 脚本读取真实页面的渲染/点击代码，使用本地依赖，不请求 CDN。
