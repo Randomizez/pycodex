@@ -1198,6 +1198,29 @@
       overflow: auto;
     }
     .context-block-editor:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+    .session-refresh {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 6px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .session-refresh[hidden] { display: none; }
+    .session-refresh[data-state="loading"]::before {
+      content: "";
+      flex: 0 0 auto;
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--line-strong);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: session-refresh-spin 800ms linear infinite;
+    }
+    @keyframes session-refresh-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .session-refresh[data-state="loading"]::before { animation: none; }
+    }
     .spinner-wrap {
       position: relative;
       display: flex;
@@ -1485,6 +1508,8 @@
       </div>
       <div id="log" class="log" aria-label="Conversation"></div>
       <form id="composer" class="composer">
+        <div id="sessionRefresh" class="session-refresh" data-state="loading"
+             role="status" aria-live="polite" aria-atomic="true">Loading latest session…</div>
         <p id="frontendRecovery" class="frontend-notice" hidden>
           Using the built-in interface; customizations are temporarily ignored.
           <a>Re-enable customizations</a>
@@ -1788,6 +1813,7 @@
     let pollTimer = null;
     let boardPollTimer = null;
     let sessionPoll = null;
+    let sessionNeedsRefresh = true;
     let boardPollInFlight = false;
     let lastBoardSignature = null;
     let resizeStart = null;
@@ -2893,6 +2919,15 @@
       ]);
     }
 
+    function setSessionRefresh(status) {
+      sessionNeedsRefresh = status !== "ready";
+      const notice = document.getElementById("sessionRefresh");
+      notice.hidden = !sessionNeedsRefresh;
+      notice.dataset.state = status;
+      notice.textContent = status === "loading" ? "Loading latest session…"
+        : status === "error" ? "Unable to load latest session. Retrying…" : "";
+    }
+
     async function pollSession() {
       const requestedSessionId = activeSessionId;
       if (sessionPoll) {
@@ -2901,6 +2936,7 @@
       }
       const request = {sessionId: requestedSessionId, controller: new AbortController()};
       sessionPoll = request;
+      if (sessionNeedsRefresh) setSessionRefresh("loading");
       try {
         const path = requestedSessionId
           ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
@@ -2923,6 +2959,7 @@
         renderSnapshot(payload.snapshot);
       } catch (error) {
         if (sessionPoll === request && requestedSessionId === activeSessionId) {
+          if (sessionNeedsRefresh) setSessionRefresh("error");
           setSpinner(`poll error: ${error.message}`);
         }
       } finally {
@@ -2981,6 +3018,7 @@
 
     function renderSnapshot(snapshot) {
       if (!snapshot) return;
+      setSessionRefresh("ready");
       updatePromptPlaceholder(snapshot);
       updateSessionDirectory(snapshot);
       const state = stateForSession(activeSessionId);
@@ -3311,6 +3349,7 @@
       if (!sessionId || sessionId === activeSessionId) return;
       saveActiveSessionUiState();
       activeSessionId = sessionId;
+      setSessionRefresh("loading");
       renderTabs();
       updatePromptPlaceholder();
       updateSessionDirectory();

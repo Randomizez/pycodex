@@ -351,13 +351,15 @@ class Composer {
 const cwdName = {};
 const cwdLabel = {dataset: {defaultCwd: "/a"}, querySelector: () => cwdName};
 const canvasTab = {};
+const sessionRefresh = {hidden: false, dataset: {}, textContent: ""};
 const contentTabs = {
   dataset: {boardTitle: "Old tooltip", boardPath: "/board.html"},
   querySelector: () => canvasTab,
 };
 const document = {
   title: "Workspace",
-  getElementById: id => id === "sessionCwd" ? cwdLabel : contentTabs,
+  getElementById: id => id === "sessionRefresh" ? sessionRefresh
+    : id === "sessionCwd" ? cwdLabel : contentTabs,
 };
 const requestAnimationFrame = () => {};
 const markVisibleFinalRead = () => {};

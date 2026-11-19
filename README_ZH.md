@@ -120,6 +120,8 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 
 访问 `http://127.0.0.1:6007`。工作区沿用 CLI 的模型配置，提供对话、
 实时 HTML Canvas 和文件/diff 查看器。聊天每两秒轮询更新，完整回复按 Markdown 渲染。
+打开或切换会话时，输入框上方显示加载提示，直到最新状态加载完成；
+即使缓存中的旧消息已立即显示，也能看到页面仍在更新。
 点击文件链接查看代码，选中文字后
 用 **Insert into chat** 加入下一条消息。
 

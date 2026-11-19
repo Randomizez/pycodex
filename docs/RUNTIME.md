@@ -1019,6 +1019,15 @@ original template for comparison with future upgrades.
 
 ## Workspace content views
 
+Opening the page or selecting a session shows a loading indicator above the
+composer until a current snapshot has been rendered. Cached conversation nodes,
+drafts and scroll positions remain immediately available while it refreshes.
+A failed refresh keeps the cached content and shows a retry notice; the existing
+poll loop retries it. Routine polling after a successful refresh stays quiet.
+Responses from a session that has been left cannot clear the active refresh
+notice. This status is independent of the Agent's working/tool indicator and
+completion notifications; its animation respects reduced-motion preferences.
+
 The entire left workspace pane is the board. When `enable_board` is true, it starts
 with a permanent Canvas tab for live HTML, followed by read-only file/diff tabs.
 All tabs scroll together horizontally.
