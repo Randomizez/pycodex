@@ -220,7 +220,7 @@ class WorkspaceInteractiveSession:
         if resource == "history":
             agent = runtime.agent
             return await run_in_threadpool(
-                history_page, agent.session_id, agent.history_revision,
+                history_page, agent.session_id, agent.recorded_session_file_path,
                 agent.history, options.get("before"), options["limit"],
             )
         if resource == "agents":

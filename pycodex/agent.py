@@ -114,7 +114,6 @@ class Agent:
         self._parallel_tool_calls = parallel_tool_calls
         self.event_handler = event_handler
         self._history: "typing.List[ConversationItem]" = list(initial_history)
-        self.history_revision = uuid7_string()
         # Agent identity stays fixed when resume changes the rollout session.
         self.agent_id = session_id
         self.agent_path = agent_path
@@ -205,7 +204,6 @@ class Agent:
             restored_history = list(resumed["history"])
             self._configure_recording(session_id, resumed["rollout_path"], resume=True)
             self._history = restored_history
-            self.history_revision = uuid7_string()
             self.context_manager.reset_history_context()
             self._last_total_usage_tokens = None
         self.is_shutdown = False
@@ -621,7 +619,6 @@ class Agent:
             if recorder is not None:
                 recorder.append_compacted_history(compact_result.history, self._history)
             self._history = list(compact_result.history)
-            self.history_revision = uuid7_string()
             self.context_manager.reset_history_context()
             self._last_total_usage_tokens = None
         except Exception as exc:
