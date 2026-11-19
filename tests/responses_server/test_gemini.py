@@ -13,7 +13,11 @@ from pycodex.context import ContextConfig, ContextManager
 from pycodex.protocol import ContextMessage, Prompt, ToolCall, ToolResult, ToolSpec, UserMessage
 from pycodex.utils.session_persist import SessionRolloutRecorder, load_resumed_session_path
 from responses_server import CompatServerConfig, ManagedResponseServer
-from responses_server.gemini_api import GeminiAPIAdapterError, build_gemini_request
+from responses_server.gemini_api import (
+    SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+    GeminiAPIAdapterError,
+    build_gemini_request,
+)
 from responses_server.request_translation import build_outcomming_request
 from tests.responses_server.fake_chat_completions_server import RunningASGITestServer
 from tests.responses_server.test_stream_events import _check_lifecycle
@@ -114,6 +118,10 @@ def test_history_instruction_keeps_its_position_in_gemini_after_tool_result(tool
         {"text": "Base rules"},
     ]
     assert [content["role"] for content in payload["contents"]] == ["user", "model", "user", "user"]
+    assert payload["contents"][1]["parts"] == [{
+        "functionCall": {"name": "inspect", "args": {}, "id": "inspect"},
+        "thoughtSignature": SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+    }]
     assert payload["contents"][-2]["parts"] == [{"functionResponse": {
         "name": "inspect", "id": "inspect", "response": {"output": "Inspection complete."},
     }}]
@@ -577,3 +585,57 @@ def test_reasoning_only_retry_discards_its_continuation_state():
     state = [item for item in items if "provider_data" in item]
     assert len(state) == 1
     assert state[0]["provider_data"][0]["part"]["thoughtSignature"] == "retained"
+
+
+def test_unsigned_and_mixed_provider_calls_attach_validator_bypass_signature():
+    request = {
+        "model": "gemini-test",
+        "tools": [
+            {"type": "namespace", "name": "collaboration", "tools": [
+                {"type": "function", "name": "spawn_agent", "parameters": {"type": "object"}},
+            ]},
+            {"type": "function", "name": "exec", "parameters": {"type": "object"}},
+        ],
+        "input": [
+            {"type": "message", "role": "user", "content": "Phase zero"},
+            {"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "Ready"},
+            ]},
+            {"type": "reasoning", "summary": [], "provider_data": [
+                {"provider": "gemini", "part": {"text": "Ready", "thoughtSignature": "phase0-sig"}},
+            ]},
+            {"type": "function_call", "namespace": "collaboration", "name": "spawn_agent",
+             "call_id": "call_delegate_1",
+             "arguments": '{"task_name":"worker_1","message":"Phase one","fork_turns":"all"}'},
+            {"type": "function_call_output", "call_id": "call_delegate_1",
+             "output": '{"task_name":"/root/worker_1"}'},
+            {"type": "agent_message", "author": "/root/worker_1", "recipient": "/root",
+             "content": [{"type": "input_text", "text": "Message Type: FINAL_ANSWER\nDone"}]},
+            {"type": "reasoning", "summary": [], "provider_data": [
+                {"provider": "gemini", "call_id": "call_exec", "part": {
+                    "functionCall": {"id": "call_exec", "name": "exec", "args": {"input": "pwd"}},
+                    "thoughtSignature": "exec-sig",
+                }},
+            ]},
+            {"type": "function_call", "name": "exec",
+             "call_id": "call_exec", "arguments": '{"input":"pwd"}'},
+            {"type": "function_call_output", "call_id": "call_exec",
+             "output": "/data/pycodex"},
+        ],
+    }
+    payload = build_gemini_request(build_outcomming_request(request))
+    assert payload["contents"][1] == {"role": "model", "parts": [
+        {"text": "Ready", "thoughtSignature": "phase0-sig"},
+        {
+            "functionCall": {
+                "name": "collaboration__spawn_agent",
+                "args": {"task_name": "worker_1", "message": "Phase one", "fork_turns": "all"},
+                "id": "call_delegate_1",
+            },
+            "thoughtSignature": SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+        },
+    ]}
+    assert payload["contents"][4] == {"role": "model", "parts": [{
+        "functionCall": {"id": "call_exec", "name": "exec", "args": {"input": "pwd"}},
+        "thoughtSignature": "exec-sig",
+    }]}

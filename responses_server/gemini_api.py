@@ -1,11 +1,16 @@
 """Gemini generateContent request and streaming response adapter."""
 
+import base64
 import json
 import re
 import uuid
 from copy import deepcopy
 
 from .request_translation import inline_history_instructions
+
+SKIP_THOUGHT_SIGNATURE_VALIDATOR = base64.b64encode(
+    b"skip_thought_signature_validator"
+).decode("ascii")
 
 
 class GeminiAPIAdapterError(ValueError):
@@ -36,16 +41,17 @@ def build_gemini_request(request):
                 # Unsigned empty text can end a stream, but is not input data.
                 parts = [part for part in parts
                          if part.get("text") != "" or "thoughtSignature" in part]
+                native_call_ids = {
+                    entry["call_id"] for entry in native
+                    if "call_id" in entry and "functionCall" in entry["part"]
+                }
+                for call in message.get("tool_calls", []):
+                    if call["id"] not in native_call_ids:
+                        parts.append(_unsigned_function_call_part(call))
             else:
                 parts = _content_parts(message.get("content"))
                 for call in message.get("tool_calls", []):
-                    function = call["function"]
-                    arguments = json.loads(function["arguments"])
-                    if not isinstance(arguments, dict):
-                        raise GeminiAPIAdapterError("Gemini function arguments must be objects")
-                    parts.append({"functionCall": {
-                        "name": function["name"], "args": arguments, "id": call["id"],
-                    }})
+                    parts.append(_unsigned_function_call_part(call))
             role = "model"
         elif role == "tool":
             call_id = message["tool_call_id"]
@@ -114,6 +120,19 @@ def build_gemini_request(request):
         config["streamFunctionCallArguments"] = True
         payload["toolConfig"] = {"functionCallingConfig": config}
     return payload
+
+
+def _unsigned_function_call_part(call):
+    function = call["function"]
+    arguments = json.loads(function["arguments"])
+    if not isinstance(arguments, dict):
+        raise GeminiAPIAdapterError("Gemini function arguments must be objects")
+    return {
+        "functionCall": {
+            "name": function["name"], "args": arguments, "id": call["id"],
+        },
+        "thoughtSignature": SKIP_THOUGHT_SIGNATURE_VALIDATOR,
+    }
 
 
 def _content_parts(content):

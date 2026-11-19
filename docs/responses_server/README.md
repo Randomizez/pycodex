@@ -149,7 +149,9 @@ item 原样保存契约，不扩展 AssistantMessage、ToolCall 或历史解析�
 可能触发 `required oneof field 'data'` 的 400；过滤在请求边界执行，旧会话
 恢复同样适用，带签名的空文本仍保留。状态解释完全留在 responses_server，
 不把签名混入工具参数或伪装成加密内容。
-无签名的旧工具历史不能补造签名，原生 API 可能拒绝。
+缺少 Gemini `provider_data` 调用记录的历史或合成 `functionCall`（例如
+跨后端恢复历史或合成的工具委派）在请求边界附加官方免校验占位
+`thoughtSignature`（`skip_thought_signature_validator` 的 base64）。
 
 用量中输出 token 包含 `candidatesTokenCount + thoughtsTokenCount`，缓存和
 思考用量分别写入 cached_tokens/reasoning_tokens。只更新真实出现的 token 字段，
