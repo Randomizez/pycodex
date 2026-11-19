@@ -13,12 +13,12 @@ async function main() {
     WORKSPACE_TITLE: 'Voice input check', ENABLE_BOARD: 'false', ACCESS_ROLE: 'admin',
     BOARD_URL: 'about:blank', CWD_LABEL: '/test',
   }[name] || '')).replace('</head>', '<link rel="stylesheet" href="frontend/custom.css"></head>')
-    .replace('</body>', '<script type="module" src="frontend/custom.js" data-pycodex-custom-script></script></body>')
-    .replace('    startContentViews();', `
-      window.voiceFixture = {composer, selectSession, setSessionsOpen, sessionState,
-        active: () => activeSessionId};
-      startContentViews();`)
-    .replace('await extension.mount(Object.freeze({', 'window.voiceFixture.dispose = await extension.mount(Object.freeze({');
+    .replace('</body>', '<script type="module" src="frontend/custom.js" data-pycodex-custom-script></script></body>');
+  const entry = fs.readFileSync(path.join(workspace, 'workspace.mjs'), 'utf8') + `
+    window.voiceFixture = {composer, selectSession, setSessionsOpen, sessionState: sessionUI.sessionState,
+      active: () => sessionUI.activeId};`;
+  const hostModule = fs.readFileSync(path.join(workspace, 'custom_frontend.mjs'), 'utf8')
+    .replace('return extension.mount(Object.freeze({', 'return window.voiceFixture.dispose = await extension.mount(Object.freeze({');
   const browser = await chromium.launch({headless: true,
     executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
     args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
@@ -98,7 +98,9 @@ async function main() {
         body:fs.readFileSync(path.join(frontend, 'voice-input.js'),'utf8') + '\nexport {transcript};'});
       if (url.pathname.startsWith('/assets/')) return route.fulfill({
         contentType:url.pathname.endsWith('.css') ? 'text/css' : 'text/javascript',
-        body:fs.readFileSync(path.join(workspace, url.pathname.slice('/assets/'.length)))});
+        body:url.pathname === '/assets/workspace.mjs' ? entry
+          : url.pathname === '/assets/custom_frontend.mjs' ? hostModule
+          : fs.readFileSync(path.join(workspace, url.pathname.slice('/assets/'.length)))});
       if (request.method() === 'POST') workspacePosts.push(url.pathname);
       if (url.pathname === '/api/sessions') return route.fulfill({json:{sessions, profiles:[], default_profile:null}});
       if (url.pathname === '/api/views') return route.fulfill({json:{views:[]}});

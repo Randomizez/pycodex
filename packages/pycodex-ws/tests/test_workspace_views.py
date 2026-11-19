@@ -1016,13 +1016,15 @@ def test_page_imports_match_shipped_module():
     assert (workspace / "content_views.mjs").stat().st_size < 50000
     assert (workspace / "content_views.css").stat().st_size < 8000
     page = (workspace / "workspace.html").read_text(encoding="utf-8")
+    assert 'type="module" src="assets/workspace.mjs"' in page
+    entry = (workspace / "workspace.mjs").read_text(encoding="utf-8")
     imports = re.findall(
-        r'^\s*import (\{[^\n]+\}) from "\./assets/content_views\.mjs";',
-        page, re.MULTILINE,
+        r'^\s*import (\{[^\n]+\}) from "(\./[^"]+\.mjs)";',
+        entry, re.MULTILINE,
     )
     assert imports
     script = "\n".join(
-        'import {0} from "./content_views.mjs";'.format(names) for names in imports
+        'import {0} from "{1}";'.format(names, module) for names, module in imports
     )
     result = subprocess.run(
         ["node", "--input-type=module", "-e", script], cwd=str(workspace),

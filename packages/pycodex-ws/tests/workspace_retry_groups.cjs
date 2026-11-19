@@ -1,15 +1,6 @@
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const {chromium} = require("playwright");
-
-const source = fs.readFileSync(
-  path.join(__dirname, "../workspace_server/workspace.html"), "utf8");
-const helpers = source.slice(source.indexOf("    function element("),
-  source.indexOf("    function renderMarkdownInto("));
-const controller = source.slice(source.indexOf("    function renderConversation("),
-  source.indexOf("    async function markVisibleFinalRead("));
-const style = source.match(/<style>([\s\S]*?)<\/style>/)[1];
+const {openWorkspaceFixture} = require("./workspace_browser_assets.cjs");
 
 (async () => {
   const browser = await chromium.launch({headless: true});
@@ -19,20 +10,21 @@ const style = source.match(/<style>([\s\S]*?)<\/style>/)[1];
     });
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    await page.setContent(`<style>${style}
+    await openWorkspaceFixture(page, `<link rel="stylesheet" href="assets/workspace.css"><style>
       body {display:block;height:auto;overflow:auto}
       .log {height:800px;width:100%;box-sizing:border-box}
       </style><div id="log" class="log"></div>`);
-    await page.addScriptTag({content: `
+    await page.evaluate(async () => {
+      const {createConversationRenderer} = await import("/assets/conversation.mjs");
       const log = document.getElementById("log");
       let activeSessionId = "a";
-      const isNearBottom = () => false;
-      const scrollToBottom = () => {};
       const renderMarkdownInto = (body, text) => {body.textContent = text;};
-      ${helpers}
-      ${controller}
+      const view = createConversationRenderer({
+        log, renderMarkdownInto, builtinFrontend: false,
+      });
+      const renderConversation = (turns, input) => view.renderConversation(activeSessionId, turns, input);
       const retry = (n, limit = "∞") => "Reconnecting... " + n + "/" + limit +
-        "\\nresponses request failed with status 502: <html>" +
+        "\nresponses request failed with status 502: <html>" +
         "<img src=x onerror='window.retryXss=true'></html>";
       const turn = {turn_id:"turn-a", prompt:"hello", model_errors:[], messages:[
         {message_id:"input-a", name:"user", text:"hello", created_at:null},
@@ -44,14 +36,14 @@ const style = source.match(/<style>([\s\S]*?)<\/style>/)[1];
         },
         mixed() {
           turn.model_errors = [retry(1, "5"), retry(2, "5"),
-            "Falling back: primary -> secondary\\nservice unavailable", retry(1)];
+            "Falling back: primary -> secondary\nservice unavailable", retry(1)];
           turn.error = "Final request failure";
           renderConversation([turn], null);
         },
         switchTo(id) {activeSessionId = id; renderConversation([turn], null);},
         reload() {log.replaceChildren(); renderConversation([turn], null);}
       };
-    `});
+    });
     await page.evaluate(() => retryFixture.render(4));
     const groups = page.locator(".model-retry-group");
     assert.equal(await groups.count(), 1);

@@ -1,48 +1,27 @@
 // Run manually with Playwright, markdown-it and DOMPurify installed; see tests/TESTS.md.
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
 const path = require("node:path");
+const {openWorkspaceFixture} = require("./workspace_browser_assets.cjs");
 const {chromium} = require("playwright");
 
 (async () => {
-  const directory = path.join(__dirname, "../workspace_server");
-  const source = fs.readFileSync(path.join(directory, "workspace.html"), "utf8");
-  const controller = fs.readFileSync(path.join(directory, "frontend/content_views.mjs"), "utf8");
-  const recognition = controller.slice(controller.indexOf("export function isWorkspaceLink("),
-    controller.indexOf("export class ContentTabs")).replace("export ", "");
-  const renderer = source.slice(source.indexOf("    const markdownRenderer ="),
-    source.indexOf("    const mathDelimiters ="));
-  const rendering = source.slice(source.indexOf("    function renderMarkdownInto("),
-    source.indexOf("    async function renderMermaidInto("));
-  const mathConstants = source.slice(source.indexOf("    const mathDelimiters ="),
-    source.indexOf("    const renderMermaidSvg ="));
-  const math = source.slice(source.indexOf("    function isEscapedAt("),
-    source.indexOf("    function renderProtectedMath("));
-  const clicks = source.slice(source.indexOf("    function followViewLink("),
-    source.indexOf("    function followCanvasLink("));
   const browser = await chromium.launch({headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE});
   try {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
-    await page.setContent('<div id="content"></div>');
+    await openWorkspaceFixture(page, '<div id="content"></div>');
     await page.addScriptTag({path: require.resolve("markdown-it/dist/markdown-it.min.js")});
     await page.addScriptTag({path: path.join(path.dirname(require.resolve("dompurify")), "purify.min.js")});
-    await page.addScriptTag({content: `(() => {
-      ${recognition}
-      ${renderer}
-      ${mathConstants}
-      ${math}
-      const renderProtectedMath = () => {};
-      const renderMermaidInto = () => {};
-      ${rendering}
-      const activeSessionId = "session-a";
+    await page.evaluate(async () => {
+      const {createMarkdownRenderer, createViewLinkHandlers, protectMath} = await import("/assets/markdown.mjs");
+      const {renderMarkdownInto} = createMarkdownRenderer(document.getElementById("content"));
       const opened = [];
-      const contentTabs = {
-        open: async (href, srcPath, sessionId) => opened.push({href, srcPath, sessionId}),
-      };
-      const showToast = message => {throw new Error(message);};
-      ${clicks}
+      const {followMarkdownLink} = createViewLinkHandlers({
+        getActiveSessionId: () => "session-a",
+        openView: async (href, srcPath, sessionId) => opened.push({href, srcPath, sessionId}),
+        showToast(message) {throw new Error(message);},
+      });
       document.addEventListener("click", followMarkdownLink);
       window.linkFixture = {
         opened,
@@ -56,7 +35,7 @@ const {chromium} = require("playwright");
           renderMarkdownInto(root, text);
         },
       };
-    })();`});
+    });
     const render = text => page.evaluate(value => linkFixture.render(value), text);
     const anchor = page.locator("#content a");
     for (const text of [
@@ -94,7 +73,7 @@ const {chromium} = require("playwright");
       assert.deepEqual(await page.evaluate(() => linkFixture.opened), [
         {href, srcPath: undefined, sessionId: "session-a"},
       ]);
-      assert.equal(page.url(), "about:blank");
+      assert.equal(page.url(), "http://workspace.test/");
     }
     await page.evaluate(() => linkFixture.render("[TODO](TODO.md)", "/project/docs/index.md"));
     await anchor.click();

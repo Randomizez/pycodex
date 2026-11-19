@@ -52,8 +52,8 @@ def test_optional_frontend_files_and_builtin_recovery(workspace_setup):
         (directory / "custom.js").write_text("document.body.dataset.custom = 'yes';", encoding="utf-8")
         page = client.get(prefix + "/")
         assert page.headers["cache-control"] == "no-store"
-        assert page.text.index('href="frontend/custom.css"') > page.text.index("</style>")
-        assert page.text.index('src="frontend/custom.js"') > page.text.index("startContentViews();")
+        assert page.text.index('href="frontend/custom.css"') > page.text.index('href="assets/workspace.css"')
+        assert page.text.index('src="frontend/custom.js"') > page.text.index('src="assets/workspace.mjs"')
         assert client.get(prefix + "/?builtin=1").text == original.text
 
         template = directory / "workspace.html"
@@ -129,7 +129,17 @@ def test_custom_assets_are_confined_and_refreshed(workspace_setup, tmp_path):
             assert client.get(prefix + "/frontend/" + name).status_code == 404
         (assets / "theme.css").write_text("body { color: blue; }", encoding="utf-8")
         assert "blue" in client.get(prefix + "/frontend/assets/theme.css").text
-        assert client.get(prefix + "/assets/content_views.mjs").status_code == 200
+        for asset in (
+            "workspace.css", "workspace.mjs", "workspace_dom.mjs", "markdown.mjs",
+            "conversation.mjs", "sessions_ui.mjs", "dialogs.mjs", "custom_frontend.mjs",
+            "content_views.mjs", "content_views.css", "editor.mjs", "editor.css",
+        ):
+            response = client.get(prefix + "/assets/" + asset)
+            assert response.status_code == 200, asset
+            assert response.headers["content-type"].startswith(
+                "text/css" if asset.endswith(".css") else "text/javascript"
+            )
+            assert response.content
         assert client.get(prefix + "/api/session").status_code == 200
         if prefix:
             assert client.get("/w/missing/frontend/custom.css").status_code == 404

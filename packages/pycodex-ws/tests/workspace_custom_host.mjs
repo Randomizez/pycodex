@@ -1,12 +1,7 @@
 // Run manually: node packages/pycodex-ws/tests/workspace_custom_host.mjs
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {mountCustomFrontend} from "../workspace_server/custom_frontend.mjs";
 
-const source = readFileSync(new URL("../workspace_server/workspace.html", import.meta.url), "utf8");
-const initialize = source.slice(
-  source.indexOf("    async function mountCustomFrontend("),
-  source.indexOf("\n    startContentViews();", source.indexOf("    async function mountCustomFrontend(")),
-);
 const moduleUrl = "data:text/javascript," + encodeURIComponent(
   "export let host; export function mount(value) { host = value; }",
 );
@@ -16,23 +11,18 @@ let draft = {parts: [{type: "text", text: "original"}]};
 const state = {};
 const events = new EventTarget();
 const opened = [];
-const run = new Function(
-  "document", "getSession", "sessionById", "selectSession", "frontendEvents",
-  "composer", "stateForSession", "resizePrompt", "contentTabs", "relativeUrl", "fetch",
-  `${initialize.replaceAll("activeSessionId", "getSession()")}\nreturn mountCustomFrontend();`,
-);
-await run(
-  {querySelector: () => ({src: moduleUrl})},
-  () => activeSession,
-  id => ["first", "second"].includes(id),
-  async id => { activeSession = id; },
-  events,
-  {read: () => draft, set: value => { draft = value; }},
-  () => state, () => {},
-  {open: async (...args) => { opened.push(args); }},
-  path => "/w/test/" + path,
-  async path => ({ok: true, json: async () => ({path})}),
-);
+globalThis.document = {querySelector: () => ({src: moduleUrl})};
+globalThis.window = {location: {href: "https://workspace.test/w/test/"}};
+globalThis.fetch = async url => ({ok: true, json: async () => ({path: new URL(url).pathname})});
+await mountCustomFrontend({
+  getActiveSessionId: () => activeSession,
+  sessionById: id => ["first", "second"].includes(id),
+  selectSession: async id => { activeSession = id; },
+  frontendEvents: events,
+  composer: {read: () => draft, set: value => { draft = value; }},
+  stateForSession: () => state, resizePrompt() {},
+  contentTabs: {open: async (...args) => { opened.push(args); }},
+});
 const host = extension.host;
 assert.equal(host.apiVersion, 1);
 assert.equal(host.getActiveSessionId(), "first");

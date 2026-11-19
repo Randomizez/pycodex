@@ -8,12 +8,13 @@ async function main() {
   const feature = path.resolve(__dirname, "..");
   const workspace = process.env.PYCODEX_NOTIFICATION_WORKSPACE || path.resolve(feature, "../..");
   const source = fs.readFileSync(path.join(workspace, "workspace.html"), "utf8");
-  assert(source.includes("function renderNotification(record)"), "Apply workspace.patch first");
+  assert(fs.readFileSync(path.join(workspace, "conversation.mjs"), "utf8").includes("function renderNotification(record)"), "Apply workspace.patch first");
   const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
     WORKSPACE_TITLE: "Speaker notifications", ENABLE_BOARD: "false",
     ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/example",
-  }[name] || "")).replace("    startContentViews();",
-    "    window.notificationFixture = {selectSession, renderSnapshot};\n    startContentViews();");
+  }[name] || ""));
+  const entry = fs.readFileSync(path.join(workspace, "workspace.mjs"), "utf8") +
+    "\nwindow.notificationFixture = {selectSession, renderSnapshot};";
   const sessions = ["a", "b"].map(id => ({
     id, title: id === "a" ? "页面检查" : "文档整理", cwd: "/example", running: false,
   }));
@@ -51,7 +52,7 @@ async function main() {
       if (url.pathname === "/") return route.fulfill({contentType: "text/html", body: html});
       if (url.pathname.startsWith("/assets/")) return route.fulfill({
         contentType: url.pathname.endsWith(".css") ? "text/css" : "text/javascript",
-        body: fs.readFileSync(path.join(workspace, path.basename(url.pathname))),
+        body: url.pathname === "/assets/workspace.mjs" ? entry : fs.readFileSync(path.join(workspace, path.basename(url.pathname))),
       });
       if (url.pathname === "/api/session") {
         const id = url.searchParams.get("session_id") || "a";

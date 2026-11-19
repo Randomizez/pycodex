@@ -47,6 +47,15 @@ class WorkspaceRouteContext:
 
 def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
     view_asset_cache = {}
+    asset_types = {
+        "workspace.mjs": "text/javascript", "workspace.css": "text/css",
+        "workspace_dom.mjs": "text/javascript", "sessions_ui.mjs": "text/javascript",
+        "conversation.mjs": "text/javascript", "markdown.mjs": "text/javascript",
+        "dialogs.mjs": "text/javascript", "custom_frontend.mjs": "text/javascript",
+        "content_views.mjs": "text/javascript", "content_views.css": "text/css",
+        "content_views.LICENSE.txt": "text/plain", "editor.mjs": "text/javascript",
+        "editor.css": "text/css",
+    }
 
     def workspace(request):
         try:
@@ -92,9 +101,8 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
 
     def view_asset(request: Request) -> Response:
         workspace(request)
-        return _view_asset_response(
-            request.url.path.rsplit("/", 1)[-1], request, view_asset_cache
-        )
+        name = request.url.path.rsplit("/", 1)[-1]
+        return _view_asset_response(name, asset_types[name], request, view_asset_cache)
 
     async def websocket_backend_hint(request: Request) -> JSONResponse:
         workspace(request)
@@ -171,10 +179,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         route("/api/views/{view_id}", close_view, ["DELETE"]),
         *[
             route("/assets/" + asset, view_asset, ["GET", "HEAD"])
-            for asset in (
-                "content_views.mjs", "content_views.css", "content_views.LICENSE.txt",
-                "editor.mjs", "editor.css",
-            )
+            for asset in asset_types
         ],
         route("/ws/session", websocket_backend_hint, ["GET"]),
         route("/api/skills", skills, ["GET"]),
@@ -301,16 +306,7 @@ def _view_asset_encoding(accept_encoding: str) -> str:
     raise HTTPException(status_code=406, detail="no acceptable asset encoding")
 
 
-def _view_asset_response(asset_name: str, request: Request, cache: dict) -> Response:
-    media_types = {
-        "content_views.mjs": "text/javascript",
-        "content_views.css": "text/css",
-        "content_views.LICENSE.txt": "text/plain",
-        "editor.mjs": "text/javascript",
-        "editor.css": "text/css",
-    }
-    if asset_name not in media_types:
-        raise HTTPException(status_code=404, detail="asset not found")
+def _view_asset_response(asset_name: str, media_type: str, request: Request, cache: dict) -> Response:
     encoding = _view_asset_encoding(request.headers.get("accept-encoding", ""))
     path = Path(__file__).with_name(asset_name)
     stat = path.stat()
@@ -341,7 +337,7 @@ def _view_asset_response(asset_name: str, request: Request, cache: dict) -> Resp
     headers["Content-Length"] = str(len(body))
     return Response(
         b"" if request.method == "HEAD" else body,
-        media_type=media_types[asset_name], headers=headers,
+        media_type=media_type, headers=headers,
     )
 
 

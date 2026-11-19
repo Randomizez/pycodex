@@ -26,6 +26,14 @@ packages = ["workspace_server", "pycodex_ws", "pycodex_router"]
 exclude = ["workspace_server/frontend"]
 artifacts = [
     "workspace_server/workspace.html",
+    "workspace_server/workspace.css",
+    "workspace_server/workspace.mjs",
+    "workspace_server/workspace_dom.mjs",
+    "workspace_server/markdown.mjs",
+    "workspace_server/conversation.mjs",
+    "workspace_server/sessions_ui.mjs",
+    "workspace_server/dialogs.mjs",
+    "workspace_server/custom_frontend.mjs",
     "workspace_server/workspaces.html",
     "workspace_server/content_views.mjs",
     "workspace_server/content_views.css",

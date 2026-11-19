@@ -203,8 +203,7 @@ def document():
     ui = re.sub(r"^import .*?;\n", "", (SOURCE / "uploads.mjs").read_text(), flags=re.S).replace("export ", "")
     entry = re.sub(r"^import .*?;\n", "", (SOURCE / "custom.js").read_text(), flags=re.S).replace("export ", "")
     composer = (WORKSPACE / "frontend/composer.mjs").read_text().replace("export ", "")
-    shell = (WORKSPACE / "workspace.html").read_text()
-    css = re.search(r"<style>(.*?)</style>", shell, re.S).group(1)
+    css = (WORKSPACE / "workspace.css").read_text()
     # Separate the real sources' lexical scopes, as modules do in production.
     scripts = "window.Composer=(()=>{" + composer + ";return Composer;})();\n"
     names = "AttachmentQueue,attachmentPayload,draftError,draftStats,fileParts,formatBytes,insertText,rasterBlob,removeAttachment"

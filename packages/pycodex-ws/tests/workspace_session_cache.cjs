@@ -11,14 +11,14 @@ const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
   ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test",
 }[name] || "")).replace("</body>", `<script type="module">
   window.fixtureReady = true;
-</script></body>`).replace("    startContentViews();", `
-    window.fixture = {
-      switchSession, createSession, closeSession, pollSession, restoreSessionScroll,
-      renderSnapshot, updateSessions, sessionState, composer, renderMermaidInto, setSessionsOpen,
-      active: () => activeSessionId,
-      stop: () => {clearInterval(pollTimer); clearInterval(boardPollTimer); stopContentViews();},
-    };
-    startContentViews();`);
+</script></body>`);
+const entry = fs.readFileSync(path.join(directory, "workspace.mjs"), "utf8") + `
+  window.fixture = {
+    switchSession, createSession, closeSession, pollSession, restoreSessionScroll,
+    renderSnapshot, updateSessions, sessionState: sessionUI.sessionState, composer, renderMermaidInto: markdown.renderMermaidInto, setSessionsOpen,
+    active: () => sessionUI.activeId,
+    stop: () => {clearInterval(pollTimer); clearInterval(boardPollTimer); stopContentViews();},
+  };`;
 
 function turn(id, text) {
   const prompt = "Question " + id;
@@ -79,7 +79,7 @@ function turn(id, text) {
       if (url.pathname.startsWith("/assets/")) {
         const name = url.pathname.slice("/assets/".length);
         return route.fulfill({
-          body: fs.readFileSync(path.join(directory, name)),
+          body: name === "workspace.mjs" ? entry : fs.readFileSync(path.join(directory, name)),
           contentType: name.endsWith(".css") ? "text/css" : "text/javascript",
         });
       }

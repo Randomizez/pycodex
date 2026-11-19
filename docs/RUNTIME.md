@@ -921,6 +921,10 @@ Browser workspace pages use the server OS user's `~/.pycodex/frontend/`,
 independently of `CODEX_HOME` and the workspace configuration. A
 `workspace.html` in that directory replaces the packaged template. Only a
 missing file selects the package default; read failures remain errors.
+The packaged `workspace.html` contains the DOM and template placeholders.
+Its `assets/workspace.css` and `assets/workspace.mjs` load relative to the workspace.
+The entry module connects session polling, conversation and Markdown rendering,
+dialogs and the customization host. These native modules ship directly in the ws package.
 Optional `custom.css` and `custom.js` are inserted after the page's styles and
 module, respectively, including when using the packaged template. Lazy-loaded
 editor styles are inserted before `custom.css`, preserving that order when a
@@ -958,15 +962,9 @@ entries and the management navigation are hidden for workspace visitors.
 The prompt and its development guidance belong to the editable frontend;
 the Python customization module only loads templates and serves their resources.
 The button uses the page's path metadata and `navigator.languages`
-in preference order. Its context includes the installed `WORKSPACE_API.md`
-path, API implementation paths, and a quick reference for the host,
-state/models, commands/results, history, descendant/background inventories and
-WS replay/reset. The full API reference lives beside `workspace.html` and ships
-in the wheel and sdist; it does not require a source checkout. Reasoning guidance
-distinguishes recorded readable content from the display `thinking` field and
-does not promise live reasoning deltas. Feature reference code is adapted
-into a coherent frontend, without requiring a plugin registry or runtime
-composition system.
+in preference order. It directs the Agent to the installed `WORKSPACE_API.md` for
+the host, HTTP and WebSocket contracts, and to the feature catalog and contribution guide.
+The reference ships in both wheel and sdist. Feature code is adapted into the user's frontend.
 The packaged `optional_features/README.md` is a Markdown feature catalog opened in the
 existing view area; users choose features by name or ID in ordinary chat text.
 Agent status is built into the context ring popover; clicking a root or child
