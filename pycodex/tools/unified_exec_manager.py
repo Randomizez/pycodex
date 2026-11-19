@@ -34,6 +34,7 @@ DEFAULT_EXEC_YIELD_TIME_MS = 10_000
 DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250
 DEFAULT_LOGIN = True
 DEFAULT_TTY = False
+DEFAULT_WAKE_ME_UP_WHEN_DONE = False
 DEFAULT_SESSION_ID_START = 1000
 UNIFIED_EXEC_OUTPUT_MAX_BYTES = 1024 * 1024
 # Match upstream unified exec's short post-exit output close wait.
@@ -175,6 +176,7 @@ class UnifiedExecManager:
         tty: "bool" = DEFAULT_TTY,
         yield_time_ms: "int" = DEFAULT_EXEC_YIELD_TIME_MS,
         max_output_tokens: "typing.Union[int, None]" = None,
+        wake_me_up_when_done: "bool" = DEFAULT_WAKE_ME_UP_WHEN_DONE,
     ) -> "JSONValue":
         session_id = await self._allocate_session_id()
         command = self._build_shell_command(cmd, shell, login)
@@ -215,7 +217,11 @@ class UnifiedExecManager:
         )
         session = await self._get_session(session_id)
         if session is not None:
-            asyncio.create_task(self._notify_when_session_completes(session_id))
+            asyncio.create_task(
+                self._notify_when_session_completes(
+                    session_id, wake_me_up_when_done=wake_me_up_when_done
+                )
+            )
         return output
 
     async def write_stdin(
@@ -360,16 +366,22 @@ class UnifiedExecManager:
             session.output_event.set()
         session.output_event.set()
 
-    async def _notify_when_session_completes(self, session_id: "int") -> "None":
+    async def _notify_when_session_completes(
+        self,
+        session_id: "int",
+        wake_me_up_when_done: "bool" = True,
+    ) -> "None":
         from ..runtime import SubmissionInterrupted
 
-        if self._notify_hook is None:
+        if self._notify_hook is None and self._state_listener is None:
             return
         session = await self._get_session(session_id)
         if session is None:
             return
         await session.process.wait()
         self._state_changed()
+        if not wake_me_up_when_done:
+            return
         with self._lock:
             if self._sessions.get(session_id) is not session:
                 return

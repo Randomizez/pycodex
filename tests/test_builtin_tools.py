@@ -245,11 +245,18 @@ async def test_grep_files_tool_returns_matching_paths(tmp_path) -> "None":
 @pytest.mark.asyncio
 async def test_exec_command_tool_schema_omits_skipped_approval_fields() -> "None":
     tool = ExecCommandTool(UnifiedExecManager())
+    assert (
+        tool.description
+        == "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+    )
     properties = tool.input_schema["properties"]
 
     assert "sandbox_permissions" not in properties
     assert "justification" not in properties
     assert "prefix_rule" not in properties
+    assert properties["wake_me_up_when_done"]["type"] == "boolean"
+    assert properties["wake_me_up_when_done"]["default"] is False
+    assert "wake_me_up_when_done: bool = False," in make_registry().get_tool("exec").spec().description
 
 
 @pytest.mark.asyncio
@@ -291,9 +298,16 @@ async def test_exec_command_tool_passes_optional_max_output_tokens() -> "None":
 
     await tool.run(context, {"cmd": "true"})
     assert manager.calls[-1]["max_output_tokens"] is None
+    assert manager.calls[-1]["wake_me_up_when_done"] is False
 
     await tool.run(context, {"cmd": "true", "max_output_tokens": 0})
     assert manager.calls[-1]["max_output_tokens"] == 0
+
+    await tool.run(context, {"cmd": "true", "wake_me_up_when_done": True})
+    assert manager.calls[-1]["wake_me_up_when_done"] is True
+    for invalid in ("false", 1, None):
+        with pytest.raises(ValueError, match="wake_me_up_when_done must be a boolean"):
+            await tool.run(context, {"cmd": "true", "wake_me_up_when_done": invalid})
 
 
 @pytest.mark.asyncio
@@ -400,26 +414,85 @@ async def test_exec_command_notifies_hook_when_background_session_exits(
     tmp_path,
 ) -> "None":
     notifications = []
+    state_changes = []
+    exited = asyncio.Event()
     notified = asyncio.Event()
 
     async def on_completed(event):
         notifications.append(event)
         notified.set()
 
+    def on_state_changed():
+        state_changes.append(manager.background_work_count(False))
+        if state_changes[-1] == 0:
+            exited.set()
+
     manager = UnifiedExecManager()
-    manager.bind(on_completed, None, None)
-    output = await manager.exec_command(
-        "printf done",
+    manager.bind(on_completed, None, on_state_changed)
+    default_output = await manager.exec_command(
+        "sleep 0.05; printf quiet",
         cwd=tmp_path,
         yield_time_ms=1,
     )
+    assert default_output["session_id"] == 1000
+    await asyncio.wait_for(exited.wait(), timeout=1.0)
+    await asyncio.sleep(0)
+    assert notifications == []
 
-    assert output["session_id"] == 1000
+    output = await manager.exec_command(
+        "sleep 0.05; printf done",
+        cwd=tmp_path,
+        yield_time_ms=1,
+        wake_me_up_when_done=True,
+    )
+
+    assert output["session_id"] == 1001
     await asyncio.wait_for(notified.wait(), timeout=1.0)
     assert len(notifications) == 1
     assert notifications[0]["type"] == "exec_command_completed"
-    assert notifications[0]["session_id"] == 1000
+    assert notifications[0]["session_id"] == 1001
     assert notifications[0]["exit_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_exec_command_wakes_idle_runtime_only_when_opted_in(tmp_path) -> "None":
+    woke = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 1:
+            return ModelResponse([ToolCall("bg_default", "exec_command", {
+                "cmd": "sleep 0.3", "login": False, "yield_time_ms": 250,
+            })])
+        if count == 2:
+            return ModelResponse([AssistantMessage("started quiet background job")])
+        if count == 3:
+            return ModelResponse([ToolCall("bg_wake", "exec_command", {
+                "cmd": "sleep 0.3", "login": False, "yield_time_ms": 250,
+                "wake_me_up_when_done": True,
+            })])
+        if count == 4:
+            return ModelResponse([AssistantMessage("started waking background job")])
+        woke.set()
+        return ModelResponse([AssistantMessage("woke after background job")])
+
+    client = ScriptedModelClient(response_factory=respond)
+    runtime = make_runtime(make_agent(client, make_registry(), ContextConfig(cwd=tmp_path)))
+    await runtime.start()
+    try:
+        first = await runtime.submit_user_turn("run quiet")
+        assert first.output_text == "started quiet background job"
+        await asyncio.sleep(0.2)
+        assert client.call_count == 2
+
+        second = await runtime.submit_user_turn("run waking")
+        assert second.output_text == "started waking background job"
+        await asyncio.wait_for(woke.wait(), timeout=2.0)
+        await wait_for_runtime_idle(runtime)
+        assert client.call_count == 5
+        assert "<exec_command_completed>" in runtime.agent.history[-2].text
+        assert runtime.agent.history[-1] == AssistantMessage("woke after background job")
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

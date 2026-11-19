@@ -1720,9 +1720,10 @@ Clock countdowns pause on turn/manual-compact start events and rearm on success,
 including successful manual compaction. Terminal events retain the single
 aggregate `background_work_count`.
 
-An exiting exec session can invoke `<exec_command_completed>` through
-`AgentRuntime.maybe_invoke` only while that Runtime is idle and accepting input;
-busy notifications are dropped. `clock.set_period` likewise uses `maybe_invoke`,
+An `exec_command(..., wake_me_up_when_done=True)` session that exits in the
+background invokes `<exec_command_completed>` through `AgentRuntime.maybe_invoke`
+only while that Runtime is idle and accepting input (`wake_me_up_when_done`
+defaults to `False`); busy notifications are dropped. `clock.set_period` likewise uses `maybe_invoke`,
 with one period per Agent/session and a timezone-aware ISO 8601 `current_time`
 captured when the timer expires. Starting a turn cancels the pending countdown;
 a successful reply rearms it. `clock.set_period(period_m=null)` disables the

@@ -146,7 +146,7 @@ grammar, also matches the direct-tool captures.
 | Namespace packaging | MAv2 tools belong to `collaboration`. Responses-lite also groups ordinary tools under `functions`; ordinary Responses can leave ordinary function tools ungrouped. Python emits flat tools in both paths. | Remains in scope. |
 | `spawn_agent` description | Python omits upstream's available model/effort/tier list and retains local inheritance/override guidance. | Intentional: no hardcoded OpenAI-specific capability lists. |
 | `request_user_input` | The earlier audit retained an unavailable tool; the model-facing declaration and stub were removed on 2026-10-31. | Intentional: generic Runtime input services remain, without restoring interaction-mode machinery. |
-| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, and retains local background-invocation wording. | Intentional: sandbox enforcement and its request parameters are outside the local contract. |
+| `exec_command` | Python omits `sandbox_permissions`, `justification` and `prefix_rule`, aligns description with upstream, and adds optional `wake_me_up_when_done` (`default: false`) for idle background-exit wake-ups. | Intentional: sandbox enforcement parameters remain outside the local contract; idle wake-up is opt-in. |
 
 No generic catalog-schema override mechanism is required by this snapshot:
 `model_messages.tools` is null in every bundled model at the source reference,

@@ -18,6 +18,7 @@ from .unified_exec_manager import (
     DEFAULT_EXEC_YIELD_TIME_MS,
     DEFAULT_LOGIN,
     DEFAULT_TTY,
+    DEFAULT_WAKE_ME_UP_WHEN_DONE,
     UNIFIED_EXEC_OUTPUT_SCHEMA,
     UnifiedExecManager,
 )
@@ -28,11 +29,7 @@ MAX_EXEC_YIELD_TIME_MS = 30_000
 
 class ExecCommandTool(BaseTool):
     name = "exec_command"
-    description = (
-        "Runs a command in a PTY, returning output or a session ID for ongoing interaction. "
-        "For long tasks, you can reply first; when the task finishes, you will be "
-        "invoked to continue."
-    )
+    description = "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
     input_schema = {
         "type": "object",
         "properties": {
@@ -64,6 +61,14 @@ class ExecCommandTool(BaseTool):
                 "type": "boolean",
                 "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true.",
             },
+            "wake_me_up_when_done": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "True wakes the idle agent when a background session finishes; "
+                    "false or omitted does not."
+                ),
+            },
         },
         "required": ["cmd"],
         "additionalProperties": False,
@@ -78,6 +83,11 @@ class ExecCommandTool(BaseTool):
         cmd = str(args.get("cmd", "")).strip()
         if not cmd:
             return "Error: `cmd` is required."
+        wake_me_up_when_done = args.get(
+            "wake_me_up_when_done", DEFAULT_WAKE_ME_UP_WHEN_DONE
+        )
+        if not isinstance(wake_me_up_when_done, bool):
+            raise ValueError("wake_me_up_when_done must be a boolean")
 
         return await self._manager.exec_command(
             cmd=cmd,
@@ -93,6 +103,7 @@ class ExecCommandTool(BaseTool):
                 MAX_EXEC_YIELD_TIME_MS,
             ),
             max_output_tokens=self._optional_int(args, "max_output_tokens"),
+            wake_me_up_when_done=wake_me_up_when_done,
         )
 
     def _optional_string(
