@@ -32,7 +32,7 @@
   本地 `step-3.5-flash`、`step-3.5-flash-2603`、`step-3.7-flash`、
   `step-5-preview` 均通过该表接入；新增模型也应沿用这个入口。
   Step 的调用指引使用当前工具接口和声明名称，不引用未注册的并行工具。
-  `gemini-4-argon` 和 `gemini-4-carbon` 使用基于 Antigravity CLI 1.4.12 模板的本地适配，
+  `gemini-4` 系列使用基于 Antigravity CLI 1.4.12 官方模板的统一条目，
   沿用同样的 `model_messages.instructions_template` 和 personality 变量。
   原名带后缀或单层 provider namespace 时也按现有前缀规则匹配。
 - `AgentsManager` 构造根和子 Runtime，Agent 仍由 Runtime 单向控制；
@@ -49,9 +49,8 @@ steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 ses
 仅第一条请求携带。历史对比及其测试隔离边界见
 [Steer semantics](ALIGNMENT.md#steer-semantics)。
 
-Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.12-4768735748292608/linux-x64/cli_linux_x64.tar.gz)
-中的身份、并行工具调用、行为与沟通模板，并适配为 pycodex 身份、现有工具接口和文件链接格式。
-`gemini-4-carbon-high` 匹配 `gemini-4-carbon` 条目，默认 prompt 直接沿用同一发布包的
+`gemini-4-*`（例如 `gemini-4-argon-preview`、`gemini-4-carbon-high`）统一匹配
+`gemini-4` 条目，默认 prompt 直接沿用 [Antigravity CLI 1.4.12 官方发布包](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.12-4768735748292608/linux-x64/cli_linux_x64.tar.gz) 的
 `<identity>`、`<guidelines>`、`<communication_style>`、`<function_call>` 和
 `<ephemeral_message>` 段落，不再保留 Codex CLI 身份；模型名与鉴权方式不变。
 `gemini-pool` profile 另通过 provider `http_headers` 声明官方客户端的 `user-agent` 和
