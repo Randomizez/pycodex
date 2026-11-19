@@ -13,6 +13,14 @@ Chat 接口限制不属于本服务的适配目标，vLLM 参数映射按其后�
 `StreamRouter` 内始终保留 canonical payload，避免污染 tool hydration
 和 mock `web_search` follow-up。
 
+Responses 的 developer 消息在 canonical 请求中保留角色与顺序，包括工具结果后的
+动态 context 阈值提醒。默认、vLLM 和 Step 的 Chat Completions 边界在原位置将其
+转换为 system。Claude Messages 和 Gemini 只将连续开头的 system/developer 指令
+放入顶层 system / systemInstruction；对话开始后的指令在原位置转换为带
+`<system-reminder>` 标记的 user 消息，保留文本及媒体内容。两种 API 没有对话内
+developer 角色，这个边界转换保留顺序，但不等同于原生 developer 的指令优先级。
+compat 启动统一关闭 Responses lite，向本服务发送普通 Responses 请求。
+
 当前 HTTP backend 直接使用 Starlette 与 Uvicorn，不依赖 FastAPI、
 Pydantic 或 `pydantic-core`。独立测试里的 fake outcomming chat backend
 也使用 Starlette。Python 3.6 使用 Starlette 0.19.x。
@@ -108,7 +116,8 @@ env_key = "GEMINI_API_KEY"
 转换为 Responses 模型列表；生成请求仍使用调用方指定的 model。
 不自动探测或回退到其他 API。
 
-system/developer 指令转换成 `systemInstruction`，工具 schema 使用
+前缀 system/developer 指令转换成 `systemInstruction`，对话内指令按上面的
+位置保留规则转换；工具 schema 使用
 `parametersJsonSchema`，namespace/custom 和 tool_choice 复用现有映射。
 user/tool output 图片使用 `inlineData`；base64 data URL 拆成 MIME 与数据。
 HTTP 图片 URL 需先由调用方读取并转成 data URL，适配器明确拒绝直接传入 URL。

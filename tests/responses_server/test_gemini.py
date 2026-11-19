@@ -151,8 +151,26 @@ def _streamed_parts(part):
 
 
 @pytest.mark.parametrize("instructions", [None, "Explicit system rules"])
-def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instructions):
-    model = "gemini-4-argon-preview"
+@pytest.mark.parametrize(
+    "model, identity, tool_guidance",
+    [
+        (
+            "gemini-4-argon-preview",
+            "You are Codex, a coding agent based on Gemini 4 Argon.",
+            "Do NOT batch operations if they depend on the output",
+        ),
+        (
+            "gemini-4-carbon-high",
+            "<identity>\nYou are Antigravity, a powerful agentic AI coding assistant"
+            " designed by the Google Deepmind team working on Advanced Agentic Coding.",
+            "Do NOT batch operations if they depend on the output of a previous"
+            " operation in the same batch.",
+        ),
+    ],
+)
+def test_gemini_model_prompt_reaches_native_system_instruction(
+    tmp_path, instructions, model, identity, tool_guidance
+):
     context = ContextManager(ContextConfig(
         model=model, personality="pragmatic", cwd=tmp_path,
         base_instructions=instructions,
@@ -169,9 +187,9 @@ def test_argon_model_prompt_reaches_native_system_instruction(tmp_path, instruct
         _check_lifecycle(_post(bridge, request))
     system_text = "\n".join(part["text"] for part in captures[0]["body"]["systemInstruction"]["parts"])
     if instructions is None:
-        assert system_text.startswith("You are Codex, a coding agent based on Gemini 4 Argon.")
+        assert system_text.startswith(identity)
         assert "You are a deeply pragmatic, effective software engineer." in system_text
-        assert "Do NOT batch operations if they depend on the output" in system_text
+        assert tool_guidance in system_text
         assert "{{" not in system_text
         assert "task_boundary" not in system_text
         assert "notify_user" not in system_text

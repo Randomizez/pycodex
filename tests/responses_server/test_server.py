@@ -2997,11 +2997,13 @@ def test_responses_server_includes_stream_failure_timing(
         assert "first_chunk=not_received, chunks=0" in response.text
 
 
-def test_responses_server_includes_downstream_http_error_status(monkeypatch) -> "None":
+@pytest.mark.parametrize("outcomming_api", ["chat_completions", "messages", "gemini"])
+@pytest.mark.parametrize("status", [502, 504])
+def test_responses_server_includes_downstream_http_error_status(monkeypatch, outcomming_api, status) -> "None":
     def open_response(*args, **kwargs):
         raise urllib.error.HTTPError(
             "https://example.invalid/v1/chat/completions",
-            504,
+            status,
             "Gateway Timeout",
             {},
             io.BytesIO(b"upstream timed out"),
@@ -3011,7 +3013,10 @@ def test_responses_server_includes_downstream_http_error_status(monkeypatch) -> 
         "responses_server.transport.urllib.request.urlopen", open_response
     )
     app = ManagedResponseServer.build_app(
-        CompatServerConfig(outcomming_base_url="https://example.invalid/v1")
+        CompatServerConfig(
+            outcomming_base_url="https://example.invalid/v1",
+            outcomming_api=outcomming_api,
+        )
     )
     with TestClient(app) as client:
         response = client.post(
@@ -3022,8 +3027,11 @@ def test_responses_server_includes_downstream_http_error_status(monkeypatch) -> 
     assert "event: response.failed" in response.text
     assert "upstream timed out" in response.text
     assert "phase=reading_error_body" in response.text
-    assert "status=504" in response.text
+    assert "status={0}".format(status) in response.text
     assert "exception=HTTPError" in response.text
+    assert response.status_code == 200
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert events[-1]["response"]["error"]["http_status"] == status
 
 
 def test_responses_server_turns_initial_models_disconnect_into_bad_gateway(

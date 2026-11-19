@@ -1461,25 +1461,27 @@ class ResponsesModelClient:
         error_code = error.get("code")
         if error_code is None:
             error_code = error.get("type")
+        http_status = error.get("http_status")
         code = str(error_code or "").strip()
         formatted = self._format_response_failed_error(message, code, session_id)
         if code == "context_length_exceeded" or _is_context_length_error_message(
             message
         ):
-            raise ContextLengthExceeded(formatted, error_code=error_code)
+            raise ContextLengthExceeded(formatted, http_status=http_status, error_code=error_code)
         if code in {"model_not_found", "model_not_available", "permission_denied"}:
-            raise ResponsesModelUnavailableError(formatted, error_code=error_code)
+            raise ResponsesModelUnavailableError(formatted, http_status=http_status, error_code=error_code)
         if code in {
             "insufficient_quota",
             "invalid_prompt",
             "model_output_invalid",
             "usage_not_included",
         }:
-            raise ResponsesApiError(formatted, error_code=error_code)
+            raise ResponsesApiError(formatted, http_status=http_status, error_code=error_code)
 
         raise ResponsesRetryableError(
             formatted,
             retry_delay_seconds=self._try_parse_retry_after_seconds(code, message),
+            http_status=http_status,
             error_code=error_code,
         )
 

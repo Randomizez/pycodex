@@ -25,9 +25,11 @@ class OutcommingChatError(RuntimeError):
         self,
         message: "str",
         error_type: "typing.Union[str, None]" = None,
+        http_status: "typing.Union[int, None]" = None,
     ) -> "None":
         super().__init__(message)
         self.error_type = error_type
+        self.http_status = http_status
 
 
 class OutcommingTransport:
@@ -139,7 +141,8 @@ class OutcommingTransport:
             progress["phase"] = "reading_error_body"
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
-                f"outcomming chat request failed with status {exc.code}: {body[:500]}"
+                f"outcomming chat request failed with status {exc.code}: {body[:500]}",
+                http_status=exc.code,
             ) from exc
         except TimeoutError as exc:
             raise OutcommingChatError(
@@ -246,7 +249,8 @@ class OutcommingTransport:
             progress["phase"] = "reading_error_body"
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
-                f"outcomming {api} request failed with status {exc.code}: {body[:500]}"
+                f"outcomming {api} request failed with status {exc.code}: {body[:500]}",
+                http_status=exc.code,
             ) from exc
         except TimeoutError as exc:
             raise OutcommingChatError(
@@ -338,7 +342,8 @@ class OutcommingTransport:
             progress["phase"] = "reading_error_body"
             body = exc.read().decode("utf-8", errors="replace")
             raise OutcommingChatError(
-                f"outcomming request failed with status {exc.code}: {body[:500]}"
+                f"outcomming request failed with status {exc.code}: {body[:500]}",
+                http_status=exc.code,
             ) from exc
         except TimeoutError as exc:
             raise OutcommingChatError(

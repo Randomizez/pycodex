@@ -32,7 +32,7 @@
   本地 `step-3.5-flash`、`step-3.5-flash-2603`、`step-3.7-flash`、
   `step-5-preview` 均通过该表接入；新增模型也应沿用这个入口。
   Step 的调用指引使用当前工具接口和声明名称，不引用未注册的并行工具。
-  `gemini-4-argon` 使用基于 Antigravity CLI 1.4.12 模板的本地适配，
+  `gemini-4-argon` 和 `gemini-4-carbon` 使用基于 Antigravity CLI 1.4.12 模板的本地适配，
   沿用同样的 `model_messages.instructions_template` 和 personality 变量。
   原名带后缀或单层 provider namespace 时也按现有前缀规则匹配。
 - `AgentsManager` 构造根和子 Runtime，Agent 仍由 Runtime 单向控制；
@@ -51,6 +51,19 @@ steer/follow-up 请求继续携带，后续新 turn 才省略，不是整个 ses
 
 Gemini Argon 的默认 prompt 取自 [Antigravity CLI 1.4.12 官方发布包](https://storage.googleapis.com/antigravity-public/antigravity-cli/1.4.12-4768735748292608/linux-x64/cli_linux_x64.tar.gz)
 中的身份、并行工具调用、行为与沟通模板，并适配为 pycodex 身份、现有工具接口和文件链接格式。
+`gemini-4-carbon-high` 匹配 `gemini-4-carbon` 条目，默认 prompt 直接沿用同一发布包的
+`<identity>`、`<guidelines>`、`<communication_style>`、`<function_call>` 和
+`<ephemeral_message>` 段落，不再保留 Codex CLI 身份；模型名与鉴权方式不变。
+`gemini-pool` profile 另通过 provider `http_headers` 声明官方客户端的 `user-agent` 和
+`x-goog-api-client`（`google-genai-sdk/1.77.0 ...`），使传输层指纹也与 agy 一致。
+`gemini-pool` 网关上 Carbon 会拒绝 systemInstruction 里的 Codex 提示语
+（`403 PERMISSION_DENIED`，`reason=codex_cli_prompt` 或上游 429 蜜罐），
+Argon 路由不受该规则影响；Headers、工具名和工具 schema 都不参与判定。
+尚未对齐的官方请求差异：`accept-encoding: gzip`（urllib 不能解压 gzip，不能照抄）、
+`Connection: close`（urllib 在 `do_open` 固定写入，需跨 provider 改传输层）、
+AGY 运行时段落（artifacts / conversation_transcript / slash_commands / messaging /
+subagents / skills / user_information，描述 pycodex 不具备的能力与路径）、
+AGY 工具名与 `thinkingBudget: -1`（会破坏 pycodex 工具执行或丢掉 effort 控制）。
 不引入 Antigravity 专用 UI、KI 目录或未验证的模型条件分支；这是本地适配，
 不表示与官方最终请求的完整 system prompt 相同。未匹配到模型条目时仍使用
 `default_base_instructions.md`；显式 prompt 配置继续优先。

@@ -1,14 +1,17 @@
 import asyncio
+import io
 import json
 import threading
+import urllib.error
 
 import pytest
 import requests
 
 from pycodex import BaseTool, ContextConfig, ResponsesModelClient, ResponsesProviderConfig, ToolRegistry
 from pycodex.model import ResponsesApiError, ResponsesRetryableError
-from pycodex.protocol import Prompt, ToolCall, ToolResult, UserMessage
+from pycodex.protocol import AssistantMessage, Prompt, ToolCall, ToolResult, UserMessage
 from pycodex.runtime import SubmissionInterrupted
+from responses_server import CompatServerConfig, ManagedResponseServer
 from tests.fakes import make_agent, make_runtime, wait_for_runtime_idle
 from tests.test_model_fallback import Response
 
@@ -29,6 +32,74 @@ def answer():
         }},
         {"type": "response.completed"},
     ])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [502, 503])
+async def test_retry_matches_gemini_http_status_carried_inside_response_failed(monkeypatch, status):
+    attempts = []
+
+    class GeminiResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def __iter__(self):
+            payload = {
+                "candidates": [{
+                    "content": {"role": "model", "parts": [{"text": "done"}]},
+                    "finishReason": "STOP",
+                }],
+                "usageMetadata": {
+                    "promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11,
+                },
+            }
+            yield ("data: " + json.dumps(payload) + "\n").encode()
+            yield b"\n"
+
+    def open_response(request, **kwargs):
+        attempts.append(request)
+        if len(attempts) <= 2:
+            raise urllib.error.HTTPError(
+                request.full_url, status, "Bad Gateway", {},
+                io.BytesIO(b"write: connection reset by peer"),
+            )
+        return GeminiResponse()
+
+    monkeypatch.setattr("responses_server.transport.urllib.request.urlopen", open_response)
+    server = ManagedResponseServer(CompatServerConfig(
+        outcomming_base_url="https://example.invalid/v1beta", outcomming_api="gemini",
+    ))
+    server.start()
+    try:
+        model = ResponsesModelClient(ResponsesProviderConfig(
+            model="gemini-test", provider_name="gemini_pool", base_url=server.base_url,
+            api_key_env=None, stream_max_retries=0,
+        ))
+        monkeypatch.setattr(model, "_retry_delay_seconds", lambda *args: 0)
+        model.set_retry_error_code(502)
+        prompt = Prompt(input=[UserMessage("hello")], tools=[])
+        events = []
+        if status == 502:
+            result = await model.complete(prompt, events.append)
+            assert [item.text for item in result.items if isinstance(item, AssistantMessage)] == ["done"]
+            assert len(attempts) == 3
+            retries = [event for event in events if event.kind == "stream_error"]
+            assert [event.message for event in retries] == ["Reconnecting... 1/∞", "Reconnecting... 2/∞"]
+            assert all("response.failed" in event.error for event in retries)
+        else:
+            with pytest.raises(ResponsesRetryableError) as failed:
+                await model.complete(prompt, events.append)
+            assert failed.value.http_status == 503
+            assert model.last_error is failed.value
+            assert len(attempts) == 1
+            assert not any(event.kind == "stream_error" for event in events)
+    finally:
+        server.stop()
 
 
 @pytest.mark.asyncio
