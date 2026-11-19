@@ -7,7 +7,7 @@ const {chromium} = require("playwright");
 async function main() {
   const feature = path.resolve(__dirname, "..");
   const workspace = process.env.PYCODEX_NOTIFICATION_WORKSPACE || path.resolve(feature, "../..");
-  const source = fs.readFileSync(path.join(workspace, "workspace.html"), "utf8");
+  const source = fs.readFileSync(path.join(workspace, "workspace.template.html"), "utf8");
   assert(fs.readFileSync(path.join(workspace, "conversation.mjs"), "utf8").includes("function renderNotification(record)"), "Apply workspace.patch first");
   const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
     WORKSPACE_TITLE: "Speaker notifications", ENABLE_BOARD: "false",

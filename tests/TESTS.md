@@ -399,8 +399,8 @@ env -u VIRTUAL_ENV uv run --dev python -m tests.compare_context_requests \
   编辑器加载/创建期间切换标签、迟到实例销毁、阅读状态恢复、加载错误可见，
   HTML 预览更新时复用实例、切换时释放、原生资源引用保留，
   滚动消息按 frame 和文档版本校验，以及关闭后释放编辑器和 Markdown/图片缓存。
-  另用页面实际的 ES module import 检查随包分发的 JS 导出，防止 HTML 与旧 bundle
-  不一致导致整个聊天脚本无法启动。包含实时 transcript 的 `content_views.mjs` 和 `content_views.css` 分别限制在 50,000/8,000 字节内，Monaco 继续独立延迟加载。
+  用构建后 HTML 的实际入口链接随包分发的 JS，检查所需导出和静态资源地址，
+  覆盖旧进程直接刷新时的页面启动。包含实时 transcript 的 `content_views.mjs` 和 `content_views.css` 分别限制在 50,000/8,000 字节内，Monaco 继续独立延迟加载。
   静态资源测试覆盖 gzip/identity 协商、拒绝的编码、HEAD、按表示区分的 ETag/304、
   文件更新后的缓存失效、每个应用实例的缓存隔离及 API 不进入压缩路径。
   `test_workspace_pdf.py` 覆盖本地 PDF 原文件响应、GET/HEAD 和下载、

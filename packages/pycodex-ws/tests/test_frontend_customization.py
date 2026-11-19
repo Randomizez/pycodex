@@ -52,8 +52,8 @@ def test_optional_frontend_files_and_builtin_recovery(workspace_setup):
         (directory / "custom.js").write_text("document.body.dataset.custom = 'yes';", encoding="utf-8")
         page = client.get(prefix + "/")
         assert page.headers["cache-control"] == "no-store"
-        assert page.text.index('href="frontend/custom.css"') > page.text.index('href="assets/workspace.css"')
-        assert page.text.index('src="frontend/custom.js"') > page.text.index('src="assets/workspace.mjs"')
+        assert page.text.index('href="frontend/custom.css"') > page.text.index('</style>')
+        assert page.text.index('src="frontend/custom.js"') > page.text.index('<script type="module">')
         assert client.get(prefix + "/?builtin=1").text == original.text
 
         template = directory / "workspace.html"

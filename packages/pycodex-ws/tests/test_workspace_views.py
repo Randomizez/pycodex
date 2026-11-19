@@ -1016,18 +1016,23 @@ def test_page_imports_match_shipped_module():
     assert (workspace / "content_views.mjs").stat().st_size < 50000
     assert (workspace / "content_views.css").stat().st_size < 8000
     page = (workspace / "workspace.html").read_text(encoding="utf-8")
-    assert 'type="module" src="assets/workspace.mjs"' in page
-    entry = (workspace / "workspace.mjs").read_text(encoding="utf-8")
-    imports = re.findall(
-        r'^\s*import (\{[^\n]+\}) from "(\./[^"]+\.mjs)";',
-        entry, re.MULTILINE,
-    )
-    assert imports
-    script = "\n".join(
-        'import {0} from "{1}";'.format(names, module) for names, module in imports
-    )
+    # The process that serves this page may still have the pre-split asset routes.
+    assert re.findall(r'(?:href|src)="(assets/[^"]+)"', page) == ["assets/content_views.css"]
+    inline_entry = re.search(r'<script type="module">(.+?)</script>', page, re.DOTALL)
+    assert inline_entry
+    script = """
+        import assert from "node:assert/strict";
+        import {readFileSync} from "node:fs";
+        import {SourceTextModule} from "node:vm";
+        const page = new SourceTextModule(readFileSync(0, "utf8"));
+        const viewer = new SourceTextModule(readFileSync("content_views.mjs", "utf8"));
+        assert.deepEqual(page.dependencySpecifiers, ["./assets/content_views.mjs"]);
+        assert.deepEqual(viewer.dependencySpecifiers, []);
+        await page.link(() => viewer);
+    """
     result = subprocess.run(
-        ["node", "--input-type=module", "-e", script], cwd=str(workspace),
+        ["node", "--experimental-vm-modules", "--input-type=module", "-e", script],
+        cwd=str(workspace), input=inline_entry.group(1),
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30, universal_newlines=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr

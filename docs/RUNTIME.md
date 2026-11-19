@@ -921,10 +921,12 @@ Browser workspace pages use the server OS user's `~/.pycodex/frontend/`,
 independently of `CODEX_HOME` and the workspace configuration. A
 `workspace.html` in that directory replaces the packaged template. Only a
 missing file selects the package default; read failures remain errors.
-The packaged `workspace.html` contains the DOM and template placeholders.
-Its `assets/workspace.css` and `assets/workspace.mjs` load relative to the workspace.
-The entry module connects session polling, conversation and Markdown rendering,
-dialogs and the customization host. These native modules ship directly in the ws package.
+Edit the built-in DOM and placeholders in `workspace.template.html`, styles in
+`workspace.css`, and page behavior in `workspace.mjs` and its imported modules.
+The frontend build embeds the stylesheet and bundled entry module in `workspace.html`.
+The server reads that file on each page request. A browser refresh picks up a
+deployed frontend update even when the running server predates the module split.
+The viewer and lazy-loaded editor keep their existing workspace-relative asset URLs.
 Optional `custom.css` and `custom.js` are inserted after the page's styles and
 module, respectively, including when using the packaged template. Lazy-loaded
 editor styles are inserted before `custom.css`, preserving that order when a
@@ -1437,10 +1439,10 @@ package's Python requirements are unchanged. Monaco does not officially support
 mobile browsers; viewport and touch checks supplement, but do not establish,
 support across real mobile browsers.
 
-Frontend sources and exact dependency versions live in
-`packages/pycodex-ws/workspace_server/frontend/`, with `package-lock.json` fixing transitive
-dependencies. After changing those sources, rebuild the generated assets using
-Node 18+ from the repository root:
+The page sources live beside `workspace.html`. The viewer sources and build
+toolchain live in `packages/pycodex-ws/workspace_server/frontend/`, with
+`package-lock.json` fixing transitive dependencies. After editing the page or
+viewer sources, rebuild the generated assets using Node 18+ from the repository root:
 
 ```bash
 npm --prefix packages/pycodex-ws/workspace_server/frontend ci
@@ -1448,10 +1450,10 @@ npm --prefix packages/pycodex-ws/workspace_server/frontend run build
 ```
 
 The build collects licenses and third-party notices for bundled packages and stages every output
-before replacing the public JS entry. For an isolated preview, pass a staging
+before replacing the assets and finally the page. For an isolated preview, pass a staging
 directory with `npm --prefix packages/pycodex-ws/workspace_server/frontend run build -- /tmp/workspace-assets`.
-The wheel contains the generated assets, without frontend sources, `node_modules`
-or the build toolchain.
+The wheel ships the built page, its editable template and page modules, and
+the compiled viewer assets. The viewer sources and build toolchain ship in the sdist.
 
 ## Observation
 

@@ -8,7 +8,7 @@ async function main() {
   const frontend = __dirname;
   const feature = path.resolve(frontend, '..');
   const workspace = path.resolve(feature, '../..');
-  const source = fs.readFileSync(path.join(workspace, 'workspace.html'), 'utf8');
+  const source = fs.readFileSync(path.join(workspace, 'workspace.template.html'), 'utf8');
   const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
     WORKSPACE_TITLE: 'Voice input check', ENABLE_BOARD: 'false', ACCESS_ROLE: 'admin',
     BOARD_URL: 'about:blank', CWD_LABEL: '/test',

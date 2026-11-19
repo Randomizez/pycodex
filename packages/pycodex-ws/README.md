@@ -87,8 +87,8 @@ Custom files live in the server user's `~/.pycodex/frontend/`:
 - `workspace.html`: optional full-page override; otherwise the packaged page is used.
 - Other files: available at workspace-relative `frontend/<path>` URLs.
 
-The packaged `workspace.html` loads its stylesheet and native JavaScript modules from `assets/`.
-Full-page overrides can use the same workspace-relative asset paths.
+The frontend build embeds the page styles and JavaScript in the packaged `workspace.html`.
+Once the updated files are on the server, refresh the browser to load the new interface.
 
 Refresh to apply changes and keep the selected conversation. Open the workspace
 with `?builtin=1` to bypass all customizations; click “Re-enable customizations”

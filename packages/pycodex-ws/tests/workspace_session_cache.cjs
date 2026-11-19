@@ -5,7 +5,7 @@ const path = require("node:path");
 const {chromium} = require("playwright");
 
 const directory = path.join(__dirname, "../workspace_server");
-const source = fs.readFileSync(path.join(directory, "workspace.html"), "utf8");
+const source = fs.readFileSync(path.join(directory, "workspace.template.html"), "utf8");
 const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
   WORKSPACE_TITLE: "Session cache test", ENABLE_BOARD: "true",
   ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test",

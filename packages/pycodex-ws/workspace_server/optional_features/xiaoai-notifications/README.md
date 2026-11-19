@@ -61,6 +61,8 @@ feature=packages/pycodex-ws/workspace_server/optional_features/xiaoai-notificati
 git apply --check "$feature/source/workspace.patch"
 git apply "$feature/source/workspace.patch"
 cp "$feature/source/notifications.py" packages/pycodex-ws/workspace_server/notifications.py
+npm --prefix packages/pycodex-ws/workspace_server/frontend ci
+npm --prefix packages/pycodex-ws/workspace_server/frontend run build
 env -u VIRTUAL_ENV uv sync --dev
 ```
 
