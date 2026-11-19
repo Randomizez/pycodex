@@ -129,6 +129,9 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 Open `http://127.0.0.1:6007`. The workspace uses the same model configuration as
 the CLI and provides conversations, a live HTML Canvas, and file/diff viewers.
 Chat updates arrive through two-second polling; completed replies render as Markdown.
+When opening or switching conversations, a loading indicator above the input
+stays visible until the latest session snapshot arrives, including when cached
+messages are shown immediately.
 Click file links to inspect code, then select text and use **Insert into chat**
 to include it in your next message.
 Each input displays its author and creation time, including separate messages

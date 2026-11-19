@@ -42,6 +42,7 @@ function turn(id, text) {
     ]);
     snapshots.get("a").turns[79].model_errors = ["Reconnecting... 1/5\nExample diagnostic"];
     const requests = [];
+    const failures = new Set(["failed"]);
     const blocked = new Map();
     const list = () => tabs.map(id => ({id, title: id, cwd: "/" + id, running: false}));
     function block(key) {
@@ -88,7 +89,7 @@ function turn(id, text) {
         const id = url.searchParams.get("session_id") || tabs[0];
         requests.push(id);
         if (blocked.has(id)) await blocked.get(id);
-        if (id === "failed") return route.fulfill({status: 503, json: {}});
+        if (failures.has(id)) return route.fulfill({status: 503, json: {}});
         if (!tabs.includes(id)) return route.fulfill({status: 404, json: {}});
         return route.fulfill({json: {session_id: id, sessions: list(), snapshot: snapshots.get(id)}});
       }
@@ -119,12 +120,22 @@ function turn(id, text) {
       }
       await page.evaluate("fixture.stop()");
     }
-    await open("b", "b");
+    const releaseInitial = block("b");
+    const initialOpen = open("b", "b");
+    await page.waitForRequest(request => {
+      const url = new URL(request.url());
+      return url.pathname === "/api/session" && url.searchParams.get("session_id") === "b";
+    });
+    await page.locator("#sessionRefresh").waitFor({state: "visible"});
+    releaseInitial();
+    await initialOpen;
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), false);
     assert.deepEqual(requests, ["b"], "saved session should be the first and only request");
     await open("missing", "a");
     assert.deepEqual(requests, ["missing", "a"], "deleted saved session should select the default");
     await open("failed", null);
     assert.deepEqual(requests, ["failed"], "server errors must not silently change sessions");
+    assert.match(await page.locator("#sessionRefresh").textContent(), /Unable to load latest session/);
     await open("a", "a");
 
     const metadata = await page.evaluate(snapshot => {
@@ -170,6 +181,8 @@ function turn(id, text) {
     await page.evaluate("fixture.switchSession('b')");
     const releaseA = block("a");
     await page.evaluate(() => {window.selection = fixture.switchSession("a");});
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), true);
+    assert.match(await page.locator("#sessionRefresh").textContent(), /Loading latest session/);
     assert.equal(await page.evaluate(() => document.getElementById("log").firstElementChild === originalEntry), true);
     assert.equal(await page.locator(".model-retry-group").getAttribute("open"), "");
     assert.equal(await page.evaluate("document.getElementById('log').scrollTop"), 123);
@@ -181,6 +194,27 @@ function turn(id, text) {
     assert.equal(await page.evaluate(() => document.getElementById("log").firstElementChild === originalEntry), true);
     assert.equal(await page.locator(".model-retry-group").getAttribute("open"), "");
 
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), false);
+    const releaseBackground = block("a");
+    await page.evaluate(() => {window.backgroundPoll = fixture.pollSession();});
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), false,
+      "Routine polling must not flash a loading indicator");
+    releaseBackground();
+    await page.evaluate("window.backgroundPoll");
+
+    await page.evaluate("fixture.switchSession('b')");
+    failures.add("a");
+    await page.evaluate("fixture.switchSession('a')");
+    assert.match(await page.locator("#sessionRefresh").textContent(), /Unable to load latest session/);
+    assert.equal(await page.locator(".response").last().textContent(), "Updated while inactive");
+    failures.delete("a");
+    const releaseRetry = block("a");
+    await page.evaluate(() => {window.retry = fixture.pollSession();});
+    assert.equal(await page.locator("#sessionRefresh").getAttribute("data-state"), "loading");
+    releaseRetry();
+    await page.evaluate("window.retry");
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), false);
+
     await page.setViewportSize({width: 390, height: 844});
     await page.evaluate(() => {
       document.querySelector(".workspace").dataset.mobilePane = "chat";
@@ -188,12 +222,38 @@ function turn(id, text) {
     });
     await page.evaluate("fixture.switchSession('b')");
     await page.evaluate(() => {document.querySelector(".workspace").dataset.mobilePane = "board";});
-    await page.evaluate("fixture.switchSession('a')");
+    const releaseMobile = block("a");
+    await page.evaluate(() => {window.mobileSelection = fixture.switchSession("a");});
     await page.evaluate(() => {
       document.querySelector(".workspace").dataset.mobilePane = "chat";
       fixture.restoreSessionScroll();
     });
+    await page.locator("#sessionRefresh").waitFor({state: "visible"});
+    assert.equal(await page.locator("#sessionRefresh").evaluate(node => {
+      const rect = node.getBoundingClientRect();
+      const prompt = document.getElementById("prompt").getBoundingClientRect();
+      return rect.top >= 0 && rect.bottom <= prompt.top && rect.right <= innerWidth;
+    }), true, "Refresh status stays visible above the mobile input");
+    await page.emulateMedia({reducedMotion: "reduce"});
+    assert.equal(await page.locator("#sessionRefresh").evaluate(node =>
+      getComputedStyle(node, "::before").animationName), "none");
+    await page.emulateMedia({reducedMotion: "no-preference"});
+    releaseMobile();
+    await page.evaluate("window.mobileSelection");
     assert.equal(await page.evaluate("document.getElementById('log').scrollTop"), 123);
+
+    const releaseOldA = block("a");
+    const releaseNewB = block("b");
+    await page.evaluate(() => {window.oldPoll = fixture.pollSession();});
+    await page.evaluate(() => {window.newSelection = fixture.switchSession("b");});
+    releaseOldA();
+    await page.evaluate("window.oldPoll");
+    assert.equal(await page.locator("#sessionRefresh").getAttribute("data-state"), "loading",
+      "An old session's request must not clear the current session's refresh status");
+    releaseNewB();
+    await page.evaluate("window.newSelection");
+    assert.equal(await page.locator("#sessionRefresh").isVisible(), false);
+    await page.evaluate("fixture.switchSession('a')");
 
     const releaseCreate = block("create");
     await page.evaluate(() => {window.creation = fixture.createSession();});
