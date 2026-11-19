@@ -90,6 +90,9 @@ Agent 可以修改文件、执行命令，使用当前用户的系统权限。
 | `/compact` | 压缩历史，释放上下文 |
 | `/queue <message>` | 等当前任务完成后再执行 |
 
+压缩保留工具声明、指令前缀和普通采样的 tool choice，由摘要提示引导模型完成压缩。
+只有取得可用摘要并成功写入 checkpoint 后，才替换原历史。
+
 Agent 工作时可直接发送消息调整方向，或用 `/queue` 排队。
 会话默认保存在 `~/.codex/sessions`。
 Ctrl+C 或 Ctrl+D 会在已发出的操作完成后退出。完整选项见 `pycodex --help`。

@@ -183,12 +183,17 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
   Starlette 0.19.x；安装和运行不需要 FastAPI、Pydantic 或 pydantic-core。
 - `tests/responses_server/test_server.py` 覆盖路由别名、JSON 响应和 HTTP 错误，
   并通过真实本地下游验证 SSE、tool follow-up 和模型请求转换。
+- 动态 system/developer 指令保留对话位置：Chat 在原位置转换为 system，
+  Messages/Gemini 仅将前缀指令放入顶层，后续指令转为带 `<system-reminder>` 的
+  user 消息；覆盖工具结果后的提醒、对话中间的指令以及文本/媒体内容保持。
 - `tests/responses_server/test_namespaces.py` 覆盖 chat/messages 的 namespace
   function/custom 工具往返、同名工具及 tool_choice、工具移除后的历史回放、
   mock search follow-up、请求间映射隔离，以及歧义名称在下游请求前的拒绝。
 - `tests/responses_server/test_stream_events.py` 验证 added/delta/done 的顺序、
   ID/索引及增量/最终内容一致性、即时转发、reasoning/正文切换、工具条目、
   重试丢弃和 mock search follow-up，以及 chat/messages 两种 HTTP 后端。
+  Messages 用量包含缓存写入/读取，保留缓存明细；输入/输出分片更新总量，
+  下游显式总量优先，后续只含明细的分片不覆盖它。
 - `packages/pycodex-ws/tests/test_workspace_server.py` 覆盖单/多 workspace 的 JSON 对象校验、
   非 JSON Content-Type 拒绝、JSON HTTP 错误、登录和 WebSocket。
   `test_workspace_views.py` 还在文件打开操作阻塞时并发轮询会话，

@@ -21,6 +21,10 @@ Responses 的 developer 消息在 canonical 请求中保留角色与顺序，包
 developer 角色，这个边界转换保留顺序，但不等同于原生 developer 的指令优先级。
 compat 启动统一关闭 Responses lite，向本服务发送普通 Responses 请求。
 
+Compact 沿用普通采样的工具声明、tool choice 和前部指令，由摘要提示引导模型。
+边界仍按各 API 的原生工具选择格式转换；显式传入 `none` 时，Chat 透传该值，
+Messages 转换为 `{"type":"none"}`，Gemini 使用 function calling 的 `NONE` 模式。
+
 当前 HTTP backend 直接使用 Starlette 与 Uvicorn，不依赖 FastAPI、
 Pydantic 或 `pydantic-core`。独立测试里的 fake outcomming chat backend
 也使用 Starlette。Python 3.6 使用 Starlette 0.19.x。
@@ -46,6 +50,11 @@ assistant 正文。
 Responses 请求里的 `reasoning.effort` 会转换为下游 chat 请求的
 `chat_template_kwargs.reasoning_effort`。这与 vLLM Responses renderer 的
 prompt 渲染路径一致，也保留 provider 自定义 effort 值（例如 `max`）。
+
+Messages 的输入用量包含普通输入、缓存写入和缓存读取 token，缓存读取量同时
+映射到 `input_tokens_details.cached_tokens`，并保留原生缓存字段。输入与输出
+用量分片到达时，累计两者生成 `total_tokens`；下游显式提供的总量优先。
+缓存 token 仍占用上下文空间，计入 Agent 的压缩阈值。
 
 ## 目录边界
 

@@ -97,6 +97,10 @@ The agent can edit files and run commands with your user account's permissions.
 | `/compact` | Summarize history to free context |
 | `/queue <message>` | Submit a task after the current one finishes |
 
+Compaction preserves the tool declarations, instruction prefix and ordinary
+tool choice, and asks the model to produce a summary.
+History changes only after a usable summary and successful checkpoint write.
+
 Send a message while the agent is working to redirect it, or use `/queue` to
 wait. Sessions are saved under `~/.codex/sessions` by default.
 Ctrl+C or Ctrl+D closes the session after issued operations finish.
