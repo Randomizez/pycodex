@@ -459,7 +459,7 @@ def _session_response(
     session_id = request.query_params.get("session_id")
     sessions = manager.list_sessions()
     if recent_only:
-        sessions.sort(key=lambda item: (item["last_message_at"], item["id"]), reverse=True)
+        sessions.sort(key=lambda item: (item["last_user_at"], item["id"]), reverse=True)
         if not session_id and sessions:
             session_id = sessions[0]["id"]
     try:
