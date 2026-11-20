@@ -393,6 +393,11 @@ def test_closing_active_tab_restores_visited_tab(late_poll, initial_pane):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
+def test_session_order_tracks_user_input_and_keeps_mobile_dots_stable():
+    script = Path(__file__).with_name("workspace_session_switch.mjs")
+    subprocess.run(["node", str(script), "ordering"], check=True, timeout=10)
+
+
 def test_typed_event_wire_preserves_existing_fields():
     call = ToolCall("call", "echo", {"text": "hello"})
     result = ToolResult("call", "echo", "hello")
@@ -1664,13 +1669,14 @@ def test_recent_session_poll_limits_summaries_without_losing_old_sessions(tmp_pa
         full = browser.get(prefix + "/api/sessions").json()["sessions"]
         assert len(full) == 24
         assert len(browser.get(path).json()["sessions"]) == 24
-        expected = sorted(full, key=lambda row: (row["last_message_at"], row["id"]), reverse=True)
+        expected = sorted(full, key=lambda row: (row["last_user_at"], row["id"]), reverse=True)
         recent = browser.get(path, params={"recent": "true"}).json()
         assert recent["session_id"] == first
         assert recent["sessions"] == expected[:20]
         assert recent["workspace_running"] is False
         assert recent["sessions"][0]["has_reply"] is True
         assert recent["sessions"][0]["reply_at"] == snapshot["turns"][-1]["response_at"]
+        assert 0 < recent["sessions"][0]["last_user_at"] <= recent["sessions"][0]["last_message_at"]
         selected = browser.get(path, params={"recent": "true", "session_id": old}).json()
         assert selected["sessions"][:19] == expected[:19]
         assert selected["sessions"][19]["id"] == selected["session_id"] == old

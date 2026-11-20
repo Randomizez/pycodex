@@ -546,8 +546,21 @@ class WebSessionView:
         loop.call_soon_threadsafe(publish)
 
 
+def _session_timestamp(value):
+    if not isinstance(value, str):
+        return 0
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
 def session_timing(turns):
-    last_message_at = 0
+    last_user_at = 0
+    last_response_at = 0
     first_prompt_at = None
     reply_at = None
     has_reply = False
@@ -564,18 +577,12 @@ def session_timing(turns):
         if str(turn.get("response") or "").strip():
             reply_at = response_at
             has_reply = True
-        for value in (*message_times, prompt_at, response_at):
-            if not isinstance(value, str):
-                continue
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            last_message_at = max(last_message_at, parsed.timestamp())
+        for value in (*message_times, prompt_at):
+            last_user_at = max(last_user_at, _session_timestamp(value))
+        last_response_at = max(last_response_at, _session_timestamp(response_at))
     return {
-        "last_message_at": last_message_at,
+        "last_user_at": last_user_at,
+        "last_message_at": max(last_user_at, last_response_at),
         "reply_at": reply_at if has_reply else first_prompt_at,
         "has_reply": has_reply,
     }

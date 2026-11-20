@@ -2,47 +2,62 @@ import {messageSignature} from "./conversation.mjs";
 import {PromptHistory} from "./content_views.mjs";
 import {isNearBottom, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
 
-function sessionActivity(session) {
-  if (session.last_message_at != null) return session.last_message_at;
+function sessionActivity(session, stateById) {
+  const lastUserAt = session.last_user_at ??
+    stateById.get(session.id)?.legacyReplyTiming?.timing?.last_user_at;
+  if (lastUserAt != null) return lastUserAt;
   const match = /^([0-9a-f]{8})-([0-9a-f]{4})-7/i.exec(session.last_final_id || "");
   return match ? Number.parseInt(match[1] + match[2], 16) / 1000 : 0;
 }
 
-function orderBySessionActivity(items, activityFor) {
+function orderBySessionActivity(items, stateById) {
+  const times = new Map(items.map(session => [session.id, sessionActivity(session, stateById)]));
   return [...items].sort((left, right) =>
-    activityFor(right) - activityFor(left) ||
+    times.get(right.id) - times.get(left.id) ||
     String(right.id).localeCompare(String(left.id))
   );
 }
 
-function recentSessions(items, activeId) {
-  const ordered = orderBySessionActivity(items, sessionActivity);
+function recentSessions(items, activeId, stateById) {
+  const ordered = orderBySessionActivity(items, stateById);
   const visible = ordered.slice(0, 20);
   const active = ordered.find(session => session.id === activeId);
   if (active && !visible.includes(active)) visible[visible.length - 1] = active;
   return visible;
 }
 
+export function keepMobileSessionOrder(items, previousIds) {
+  const remaining = new Map(items.map(session => [session.id, session]));
+  const slots = previousIds.map(id => {
+    const session = remaining.get(id);
+    remaining.delete(id);
+    return session;
+  });
+  const additions = remaining.values();
+  return slots.map(session => session ?? additions.next().value)
+    .concat(Array.from(additions)).filter(Boolean);
+}
+
 function replyTimingFromSnapshot(snapshot) {
   let firstPromptAt = null;
   let replyAt = null;
   let hasReply = false;
-  let lastMessageAt = 0;
+  let lastUserAt = 0;
   for (const turn of snapshot?.turns || []) {
     if (turn.kind === "control" || turn.kind === "compaction") continue;
     firstPromptAt ||= turn.prompt_at;
-    const timestamps = [turn.prompt_at, turn.response_at,
+    const timestamps = [turn.prompt_at,
       ...(turn.messages || []).map(message => message.created_at)];
     for (const timestamp of timestamps) {
       const milliseconds = Date.parse(timestamp);
-      if (Number.isFinite(milliseconds)) lastMessageAt = Math.max(lastMessageAt, milliseconds / 1000);
+      if (Number.isFinite(milliseconds)) lastUserAt = Math.max(lastUserAt, milliseconds / 1000);
     }
     if (String(turn.response || "").trim()) {
       replyAt = turn.response_at;
       hasReply = true;
     }
   }
-  return {has_reply: hasReply, reply_at: hasReply ? replyAt : firstPromptAt, last_message_at: lastMessageAt};
+  return {has_reply: hasReply, reply_at: hasReply ? replyAt : firstPromptAt, last_user_at: lastUserAt};
 }
 
 export function formatReplyAge(session, now = Date.now()) {
@@ -135,7 +150,7 @@ export function createSessionsUI({
   }
 
   function sessionReplyTiming(session) {
-    if (typeof session.has_reply === "boolean") return session;
+    if (session.last_user_at != null) return session;
     if (session.turn_count === 0) return {has_reply: false};
     const state = stateForSession(session.id);
     const key = JSON.stringify([session.turn_count, session.last_final_id, session.running]);
@@ -160,18 +175,17 @@ export function createSessionsUI({
           if (isSidebarOpen()) renderTabs();
         });
     }
-    return previous?.timing;
+    return previous?.timing ?? session;
   }
 
   function orderVisibleSessions() {
-    if (sessions.every(session => session.last_message_at != null)) return sessions;
-    return orderBySessionActivity(sessions, session => session.last_message_at ??
-      sessionState.get(session.id)?.legacyReplyTiming?.timing?.last_message_at ?? sessionActivity(session));
+    if (sessions.every(session => session.last_user_at != null)) return sessions;
+    return orderBySessionActivity(sessions, sessionState);
   }
 
   function updateSessions(nextSessions, workspaceRunning) {
     const incomingSessions = Array.isArray(nextSessions) ? nextSessions : sessions;
-    const ordered = recentSessions(incomingSessions, activeSessionId);
+    const ordered = recentSessions(incomingSessions, activeSessionId, sessionState);
     ordered.forEach((session) => {
       const sessionId = session.id || "";
       if (!sessionId) return;
@@ -260,7 +274,7 @@ export function createSessionsUI({
       }
       stateForSession(activeSessionId).externalCall = payload.external_call || null;
       const active = payload.sessions?.find(session => session.id === activeSessionId);
-      if (active && typeof active.has_reply !== "boolean") {
+      if (active && active.last_user_at == null) {
         Object.assign(active, replyTimingFromSnapshot(payload.snapshot));
       }
       updateSessions(payload.sessions || [], payload.workspace_running);

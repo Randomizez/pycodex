@@ -332,9 +332,12 @@ timing in session summaries, without requesting other sessions' snapshots.
 If the running backend predates these fields, the expanded sidebar fetches
 and caches missing times for the visible sessions, up to three requests at once.
 Before those times arrive it uses time-ordered final reply IDs when available.
-It returns at most 20 tabs, sorted by latest visible user message or assistant
-reply, with newer tab IDs first on ties. If the selected tab lies outside the
-limit, it takes the last slot. Hiding tabs does not close or delete sessions.
+It returns at most 20 tabs, sorted by latest user message, with newer tab IDs
+first on ties. Assistant replies update the elapsed-time label without
+reordering the list. The compact phone controls keep existing dots in place as
+the list reorders; tapping any part of a dot switches sessions. If the
+selected tab lies outside the limit, it takes the last slot. Hiding tabs does
+not close or delete sessions.
 Unchanged text and attributes are not rewritten, and DOM entries move only when
 their position changes.
 Hovering for 100 ms previews it; leaving schedules dismissal after 150 ms,

@@ -2,7 +2,7 @@ import {Composer, mountContentViews} from "./content_views.mjs";
 import {encodeViewPath, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
-import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge, keepMobileSessionOrder} from "./sessions_ui.mjs";
 import {fillRuntimeInfo, installDialogs, setupContextDetails} from "./dialogs.mjs";
 import {mountCustomFrontend} from "./custom_frontend.mjs";
 import {createSessionBanners, loadEmbeddedBanners} from "./banners.mjs";
@@ -369,7 +369,8 @@ function renderTabs() {
   updateSessionControls();
   const visible = sessionUI.orderVisibleSessions();
   renderSessionList(tabsEl, false, visible);
-  renderSessionList(mobileSessionDots, true, visible);
+  const dotIds = Array.from(mobileSessionDots.children, dot => dot.dataset.sessionId);
+  renderSessionList(mobileSessionDots, true, keepMobileSessionOrder(visible, dotIds));
   if (mobileSessionDots.dataset.activeSessionId !== sessionUI.activeId && mobileSessionDots.clientWidth) {
     mobileSessionDots.querySelector(".active")?.scrollIntoView({block: "nearest", inline: "nearest"});
   }
@@ -812,6 +813,10 @@ for (const container of [tabsEl, mobileSessionDots]) {
     const tab = event.target.closest("[data-session-id]");
     if (!tab) return;
     const sessionId = tab.dataset.sessionId;
+    if (container === mobileSessionDots) {
+      selectSession(sessionId);
+      return;
+    }
     if (event.target.closest(".tab-close")) {
       closeSession(sessionId).catch(error => showToast("Unable to close session: " + error.message));
     } else if (sessionId === sessionUI.activeId && event.target.closest(".tab-label")) {

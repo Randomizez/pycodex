@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {createSessionsUI, formatReplyAge} from "../workspace_server/sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge, keepMobileSessionOrder} from "../workspace_server/sessions_ui.mjs";
 
 // Record cancellation even when the simulated transport delivers a late response.
 globalThis.AbortController = class {
@@ -81,6 +81,7 @@ let serverTabs = tabs.slice();
 const deletions = [];
 const timingRequests = [];
 const replyAt = "2026-11-18T11:57:00+08:00";
+const promptAt = "2026-11-18T11:54:00+08:00";
 function snapshot(id) {
   return {cwd: "/" + id, turns: [{prompt: `prompt ${id}`, response: `answer ${id}`}],
           spinner: "", queued_inputs: []};
@@ -101,7 +102,7 @@ globalThis.fetch = async (path, options = {}) => {
   if (!options.signal) {
     timingRequests.push(new URL(path).searchParams.get("session_id"));
     return {ok: true, json: async () => ({snapshot: {turns: [
-      {response: "reply", response_at: replyAt},
+      {prompt_at: promptAt, response: "reply", response_at: replyAt},
       {kind: "control", response: "not a reply", response_at: "2026-11-18T12:00:00+08:00"},
     ]}})};
   }
@@ -121,8 +122,8 @@ globalThis.fetch = async (path, options = {}) => {
   }
   return reply;
 };
-(async () => {
-  updateSessions([{id: "a", running: false, last_message_at: 1}, {id: "b", running: true}]);
+async function checkClosingActiveSession() {
+  updateSessions([{id: "a", running: false, last_user_at: 1}, {id: "b", running: true}]);
   assert.equal(ui.activeId, "a");
   assert.equal(document.title, "● Workspace");
   updateSessions([{id: "a", running: false}, {id: "b", running: true}]);
@@ -218,13 +219,17 @@ globalThis.fetch = async (path, options = {}) => {
   assert.equal(document.title, "● Workspace");
   updateSessions([]);
   assert.equal(document.title, "Workspace");
+}
+
+async function checkSessionOrder() {
+  updateSessions([{id: "a"}], false);
   const recent = Array.from({length: 25}, (_, index) => ({
-    id: String(index), last_message_at: index,
+    id: String(index), last_user_at: index,
   }));
   updateSessions([...recent, {id: "a"}], false);
   assert.deepEqual(ui.sessions.slice(0, 19), recent.slice(6).reverse());
   assert.equal(ui.sessions[19].id, "a");
-  const modern = {has_reply: true, reply_at: replyAt};
+  const modern = {has_reply: true, reply_at: replyAt, last_user_at: Date.parse(promptAt) / 1000};
   const legacy = {id: "legacy", turn_count: 1};
   assert.equal(ui.sessionReplyTiming(modern), modern);
   assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy)), "读取回复时间…");
@@ -237,10 +242,23 @@ globalThis.fetch = async (path, options = {}) => {
   await new Promise(resolve => setImmediate(resolve));
   const now = Date.parse("2026-11-18T12:00:00+08:00");
   assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy), now), "3 分钟未回复");
+  assert.equal(ui.sessionReplyTiming(legacy).last_user_at, modern.last_user_at);
   assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
   const earlierReply = {...legacy, last_final_id: "019ac000-0000-7000-8000-000000000001"};
   const laterReply = {id: "other", last_final_id: "019ac000-1000-7000-8000-000000000001"};
   updateSessions([earlierReply, laterReply], false);
-  assert.deepEqual(ui.sessions, [laterReply, earlierReply]);
-  assert.deepEqual(ui.orderVisibleSessions(), [earlierReply, laterReply]);
-})().catch(error => { console.error(error); process.exitCode = 1; });
+  assert.deepEqual(ui.sessions, [earlierReply, laterReply], "legacy snapshots use user input time");
+  updateSessions([
+    {...earlierReply, last_user_at: 1, last_message_at: 10},
+    {...laterReply, last_user_at: 2, last_message_at: 2},
+  ], false);
+  assert.deepEqual(ui.orderVisibleSessions().map(session => session.id), ["other", "legacy"],
+                   "assistant replies do not influence order");
+  assert.deepEqual(
+    keepMobileSessionOrder(recent.slice(0, 3).reverse(), ["0", "gone", "2"]),
+    recent.slice(0, 3), "phone dots retain their slots when the list is reordered",
+  );
+}
+
+const run = process.argv[2] === "ordering" ? checkSessionOrder : checkClosingActiveSession;
+run().catch(error => { console.error(error); process.exitCode = 1; });
