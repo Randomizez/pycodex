@@ -419,8 +419,9 @@ export function createSessionsUI({
     if (activeSessionId === sessionId) {
       await switchSession(sessions[0].id);
     }
-    sessionState.delete(sessionId);
-    clearSessionBanners(sessionId);
+    if (sessionState.delete(sessionId)) {
+      clearSessionBanners(sessionId);
+    }
   }
 
   function saveScroll() {
