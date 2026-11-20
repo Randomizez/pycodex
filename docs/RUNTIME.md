@@ -809,7 +809,9 @@ its existing `workspace_server` and `workspace_server.app` imports remain availa
 Each ordinary Session owns one submission store shared by its observed Runtime
 tree; it retains pending receipts and the last 500 completed results. The threaded
 adapter dispatches operations to its worker loop and drains Runtime before stopping
-that loop. Session imports and method signatures remain available through the
+that loop. On Python 3.7 on Unix, Workspace startup on the main thread attaches
+the asyncio child watcher to the server loop so worker subprocesses report their
+exit status. Session imports and method signatures remain available through the
 package and app entry points.
 `workspace_server.routes` constructs the shared route set for single and multi
 workspaces from an explicit manager/board/directory context. HTTP responses,

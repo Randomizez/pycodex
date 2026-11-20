@@ -229,6 +229,7 @@ async def test_web_task_uses_host_and_client_tools_with_correlated_results(make_
             assert (await web.post(step)).status_code == 204
             await eventually(lambda: agent.model_client.call_count == 5 and not runtime.is_busy)
             host, client, via_get, empty_post = [item for item in agent.history if isinstance(item, ToolResult)]
+            assert not host.is_error, host.output
             assert str(agent.context_manager.cwd) in host.output["output"]
             assert client.call_id == "external"
             assert client.output["output"] == "/client's folder\n"

@@ -1,7 +1,9 @@
 import argparse
 import asyncio
+import os
 import secrets
 import sys
+import threading
 from functools import partial
 
 from contextlib import asynccontextmanager
@@ -436,6 +438,13 @@ def _create_lifespan_app(
 ) -> Starlette:
     @asynccontextmanager
     async def lifespan(_app):
+        # Python 3.7's Unix child watcher must be initialized on the main loop
+        # before a session worker starts its first asyncio subprocess.
+        if (
+            sys.version_info < (3, 8) and os.name == "posix"
+            and threading.current_thread() is threading.main_thread()
+        ):
+            asyncio.get_child_watcher().attach_loop(asyncio.get_running_loop())
         await start()
         try:
             yield
