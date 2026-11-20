@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse
+from pycodex.events import EventScope
 from pycodex.protocol import ToolCall
 from pycodex.tools import BaseTool, CodeModeManager, ExecTool, ToolContext, ToolRegistry
 from tests.fakes import ScriptedModelClient
@@ -78,6 +79,27 @@ async def test_concurrent_cells_keep_output_and_namespace_separate(tmp_path):
         assert output_items(await right.exec('text(load("value"))', context)) == ["null"]
     finally:
         await asyncio.gather(left.close(), right.close())
+
+
+@pytest.mark.asyncio
+async def test_exec_cell_tasks_inherit_the_callers_event_observer(tmp_path):
+    manager, _, context = make_manager(tmp_path)
+    seen = []
+    try:
+        with EventScope.observe(seen.append):
+            result = await manager.exec("""
+from pycodex.events import EventScope, RuntimeUpdatedEvent
+
+async def report():
+    EventScope.emit(RuntimeUpdatedEvent("child task"))
+
+EventScope.emit(RuntimeUpdatedEvent("cell"))
+await asyncio.create_task(report())
+""", context)
+        assert result.success, result.output
+        assert [event.reason for event in seen] == ["cell", "child task"]
+    finally:
+        await manager.close()
 
 
 @pytest.mark.asyncio

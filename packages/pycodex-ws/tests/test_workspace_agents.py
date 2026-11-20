@@ -6,7 +6,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
-from pycodex.events import AssistantDeltaEvent
+from pycodex.events import AssistantDeltaEvent, EventScope
 from pycodex.tools import BaseTool, get_tools
 from tests.fakes import ScriptedModelClient, wait_for_runtime_idle
 from workspace_server import (
@@ -311,11 +311,11 @@ async def test_latest_assistant_stream_survives_tools_commands_and_failure(tmp_p
     started = [asyncio.Event(), asyncio.Event()]
 
     class StreamingModel(ScriptedModelClient):
-        async def complete(self, prompt, event_handler):
-            event_handler(AssistantDeltaEvent("正在检查"))
+        async def complete(self, prompt):
+            EventScope.emit(AssistantDeltaEvent("正在检查"))
             started[0].set()
             await release[0].wait()
-            event_handler(AssistantDeltaEvent("最新消息"))
+            EventScope.emit(AssistantDeltaEvent("最新消息"))
             started[1].set()
             await release[1].wait()
             if failure:

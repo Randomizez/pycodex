@@ -3,8 +3,8 @@ import typing
 from typing import Awaitable, Callable, Iterable
 
 from pycodex import Agent, AgentRuntime, AgentsManager, ContextConfig
-from pycodex.events import AssistantDeltaEvent, ModelEvent, ToolCalledEvent
-from pycodex.model import NOOP_MODEL_STREAM_EVENT_HANDLER, ModelRecordingMetadata
+from pycodex.events import AssistantDeltaEvent, EventScope, ToolCalledEvent
+from pycodex.model import ModelRecordingMetadata
 from pycodex.protocol import AssistantMessage, ModelResponse, Prompt, ToolCall
 from pycodex.tools import get_tools
 from pycodex.utils import uuid7_string
@@ -56,11 +56,7 @@ class ScriptedModelClient:
         client._openai_subagent = openai_subagent
         return client
 
-    async def complete(
-        self,
-        prompt: "Prompt",
-        event_handler: "Callable[[ModelEvent], None]" = NOOP_MODEL_STREAM_EVENT_HANDLER,
-    ) -> "ModelResponse":
+    async def complete(self, prompt: "Prompt") -> "ModelResponse":
         self.prompts.append(prompt)
         self.call_count += 1
 
@@ -78,9 +74,9 @@ class ScriptedModelClient:
 
         for item in final_response.items:
             if isinstance(item, AssistantMessage):
-                event_handler(AssistantDeltaEvent(item.text))
+                EventScope.emit(AssistantDeltaEvent(item.text))
             elif isinstance(item, ToolCall):
-                event_handler(ToolCalledEvent(item.call_id, item.name))
+                EventScope.emit(ToolCalledEvent(item.call_id, item.name))
 
         return final_response
 

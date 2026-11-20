@@ -2186,7 +2186,7 @@ def test_threaded_sessions_do_not_block_other_sessions():
         endpoint = "in-process"
         recording_metadata = ModelRecordingMetadata("pycodex", None)
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             workers.append(threading.get_ident())
             started.set()
             assert release.wait(3)

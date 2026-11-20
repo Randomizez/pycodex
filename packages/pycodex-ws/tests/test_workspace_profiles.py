@@ -326,7 +326,7 @@ def test_profile_creation_and_restore(
         agents.append(agent)
         return agent
 
-    async def complete(client, prompt, event_handler=None):
+    async def complete(client, prompt):
         prompts.append(prompt)
         return ModelResponse([AssistantMessage("done")])
 

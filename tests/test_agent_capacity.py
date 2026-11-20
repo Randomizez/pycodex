@@ -26,7 +26,7 @@ def make_tree(tmp_path, capacity, response_factory=None, toolset=(), tools_facto
 def clock_resources(manager, environment, toolset):
     registry = get_tools(manager, environment, toolset)
     clock = environment.clock_manager
-    environment.register_resource("clock", clock, observer=clock.handle_agent_event)
+    environment.register_resource("clock", clock)
     return registry
 
 

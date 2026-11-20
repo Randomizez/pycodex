@@ -3,14 +3,6 @@
 import time
 
 from ..context import build_goal_message
-from ..events import (
-    CompactStartedEvent,
-    TerminalEvent,
-    TokenCountEvent,
-    TurnCompletedEvent,
-    TurnInterruptedEvent,
-    TurnStartedEvent,
-)
 
 
 class GoalManager:
@@ -126,30 +118,31 @@ class GoalManager:
             if steer:
                 self._budget_message = build_goal_message(goal, budget_limited=True)
 
-    def handle_agent_event(self, event):
-        if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
-            self.start()
-            self._continuation_ready = False
-            self._count_tokens = self._goal is not None and self._goal["status"] == "active"
-        elif isinstance(event, TokenCountEvent):
-            if self._count_tokens and event.usage is not None:
-                usage = event.usage
-                cached = usage.get("input_tokens_details", {}).get("cached_tokens", 0)
-                self._pending_tokens += (
-                    max(0, usage.get("input_tokens", 0) - cached)
-                    + max(0, usage.get("output_tokens", 0))
-                )
-        elif isinstance(event, TerminalEvent):
-            self.account(steer=False)
-            self._count_tokens = False
-            if self._goal is not None:
-                if isinstance(event, TurnInterruptedEvent) and self._goal["status"] == "active":
-                    self._goal["status"] = "paused"
-                    self._goal["updatedAt"] = int(time.time())
-                active = self._goal["status"] == "active"
-                self._continuation_ready = active and isinstance(event, TurnCompletedEvent)
-                if not active:
-                    self._last_accounted_at = None
+    def begin_turn(self):
+        self.start()
+        self._continuation_ready = False
+        self._count_tokens = self._goal is not None and self._goal["status"] == "active"
+
+    def record_usage(self, usage):
+        if self._count_tokens:
+            cached = usage.get("input_tokens_details", {}).get("cached_tokens", 0)
+            self._pending_tokens += (
+                max(0, usage.get("input_tokens", 0) - cached)
+                + max(0, usage.get("output_tokens", 0))
+            )
+
+    def finish_turn(self, interrupted):
+        self.account(steer=False)
+        self._count_tokens = False
+        if self._goal is not None:
+            if interrupted and self._goal["status"] == "active":
+                self._goal["status"] = "paused"
+                self._goal["updatedAt"] = int(time.time())
+            if self._goal["status"] != "active":
+                self._last_accounted_at = None
+
+    def schedule_continuation(self):
+        self._continuation_ready = self._goal is not None and self._goal["status"] == "active"
 
     def follow_up_messages(self):
         message, self._budget_message = self._budget_message, None

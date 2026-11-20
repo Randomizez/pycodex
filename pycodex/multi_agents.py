@@ -9,17 +9,6 @@ from typing import TYPE_CHECKING
 
 from .agent import Agent
 from .context import ContextConfig
-from .events import (
-    CommandStartedEvent,
-    CompactStartedEvent,
-    Event,
-    RuntimeUpdatedEvent,
-    SessionClosedEvent,
-    TurnCompletedEvent,
-    TurnFailedEvent,
-    TurnInterruptedEvent,
-    TurnStartedEvent,
-)
 from .protocol import AgentMessage, ConversationItem
 from .tools import get_tools
 from .tools.runtime_services import create_agent_runtime_environment
@@ -111,7 +100,10 @@ class AgentsManager:
         agent.context_manager.agent_path = agent.agent_path
         return runtime
 
-    def _notify_parents(self, agent_id):
+    def mark_used(self, agent_id):
+        self._runtimes.move_to_end(agent_id)
+
+    def notify_parents(self, agent_id):
         parent_agent_id = self.get_parent_agent_id(agent_id)
         while parent_agent_id is not None:
             parent = self._runtimes[parent_agent_id]
@@ -184,7 +176,7 @@ class AgentsManager:
         runtime.agent.tool_registry.runtime_environment.set_state_listener(None)
         del self._runtimes[agent_id]
         self._runtimes[parent_agent_id].publish_update("agents")
-        self._notify_parents(parent_agent_id)
+        self.notify_parents(parent_agent_id)
 
     async def _make_spawn_room(self, caller_agent_id):
         caller = self._runtimes[caller_agent_id]
@@ -285,7 +277,7 @@ class AgentsManager:
                     ),
                     runtime.agent.model_client.reasoning_effort,
                 )
-            self._notify_parents(runtime.agent.agent_id)
+            self.notify_parents(runtime.agent.agent_id)
             await runtime.start()
             await self.send_message(
                 caller_agent_id, runtime.agent.agent_id, message, trigger_turn=True,
@@ -313,7 +305,7 @@ class AgentsManager:
         recipient.message(item)
         if trigger_turn:
             recipient.trigger()
-        self._runtimes.move_to_end(recipient_agent_id)
+        self.mark_used(recipient_agent_id)
         return ""
 
     async def interrupt_agent(self, caller_agent_id, target):
@@ -369,33 +361,12 @@ class AgentsManager:
                 )
             raise errors[0]
 
-    def handle_event(self, agent_id, event: "Event") -> "None":
-        self._runtimes[agent_id]
-        if isinstance(event, (TurnStartedEvent, CompactStartedEvent, CommandStartedEvent)):
-            self._runtimes.move_to_end(agent_id)
-        text = None
-        if isinstance(event, TurnCompletedEvent):
-            text = event.output_text or ""
-        elif isinstance(event, TurnFailedEvent):
-            text = "Agent errored: {0}: {1}".format(event.error_type, event.error)
-        elif isinstance(event, RuntimeUpdatedEvent):
-            if event.reason == "agents":
-                return
-        elif not isinstance(
-            event,
-            (
-                TurnStartedEvent,
-                TurnInterruptedEvent,
-                CompactStartedEvent,
-                SessionClosedEvent,
-            ),
-        ):
-            return
+    def finish_turn(self, agent_id, final_answer):
         parent_agent_id = self.get_parent_agent_id(agent_id)
-        if parent_agent_id is not None and text is not None:
+        if parent_agent_id is not None and final_answer is not None:
             parent = self._runtimes[parent_agent_id]
             if parent.accepts_input:
                 parent.message(
-                    self._message(agent_id, parent_agent_id, text, "FINAL_ANSWER"),
+                    self._message(agent_id, parent_agent_id, final_answer, "FINAL_ANSWER"),
                 )
-        self._notify_parents(agent_id)
+        self.notify_parents(agent_id)

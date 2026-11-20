@@ -9,6 +9,7 @@ description = "A minimal Python extraction of Codex's main agent loop"
 readme = "README.md"
 requires-python = ">=3.6.2"
 dependencies = [
+    "aiocontextvars>=0.2.2; python_version < '3.7'",
     "dataclasses>=0.8; python_version < '3.7'",
     "importlib_metadata>=4.8.3; python_version < '3.8'",
     "loguru>=0.7.3",

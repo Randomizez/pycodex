@@ -2,38 +2,33 @@ import asyncio
 import json
 import typing
 from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from time import monotonic
 
-from .agent import BASE_EVENT_HANDLER, Agent, TurnInterrupted
+from .agent import Agent
 from .events import (
-    AssistantDeltaEvent,
+    BASE_EVENT_HANDLER,
     CommandCompletedEvent,
     CommandFailedEvent,
     CommandStartedEvent,
-    CompactStartedEvent,
     Event,
+    EventScope,
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
-    MessagesAddedEvent,
+    ModelRequestInterrupted,
     RuntimeUpdatedEvent,
     SessionClosedEvent,
     SessionStateEvent,
-    StreamErrorEvent,
-    ToolCompletedEvent,
-    TurnCompletedEvent,
     TurnEvent,
-    TurnFailedEvent,
-    TurnInputReadyEvent,
-    TurnInterruptedEvent,
-    TurnStartedEvent,
+    TurnInterrupted,
 )
 from .model import ModelControl, RetryCodes, matches_retry_codes
-from .protocol import AgentMessage, AssistantMessage, ToolResult, TurnResult, UserMessage
+from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
 from .tools.runtime_services import close_resources
 from .utils import uuid7_string
-from .utils.event_helpers import shorten_title
+from .utils.event_helpers import shorten_title, visible_input_text
 from .utils.history import conversation_history_to_turns
 from .utils.truncation import truncate_tool_result_for_history
 from .utils.session_persist import (
@@ -154,7 +149,8 @@ class AgentRuntime:
         self._queue_event = None
         self._current_submission: "typing.Union[_QueuedSubmission, None]" = None
         self.event_handler = BASE_EVENT_HANDLER
-        self.agent.event_handler = self._handle_agent_event
+        self.agent.event_handler = self._publish_agent_event
+        self.agent.runtime_scope = self._runtime_scope
         self.codex_home = (
             agent.context_manager.config.codex_home or resolve_codex_home()
         )
@@ -187,9 +183,7 @@ class AgentRuntime:
         self._frontends[frontend_id] = event_handler
         if interactive:
             self._interactive_frontends.add(frontend_id)
-        self._notify_handler(
-            event_handler, SessionStateEvent("attach", self.snapshot())
-        )
+        EventScope.notify(SessionStateEvent("attach", self.snapshot()), event_handler)
         return frontend_id
 
     def detach(self, frontend_id):
@@ -282,7 +276,14 @@ class AgentRuntime:
                 "reasoning_effort": client.reasoning_effort,
             },
             "running": execution.running,
-            "active_turn": dict(active) if active is not None else None,
+            "active_turn": None if active is None else {
+                "turn_id": active.turn_id,
+                "submission_id": self._current_submission.submission_id
+                if self._current_submission is not None else active.turn_id,
+                "messages": active.messages,
+                "assistant_text": active.assistant_text,
+                "model_errors": list(active.model_errors),
+            },
             "queued_inputs": [
                 {
                     "submission_id": item.submission_id,
@@ -303,11 +304,18 @@ class AgentRuntime:
         return await self.agent.model_client.list_models()
 
     def publish_update(self, reason):
+        if reason != "agents":
+            self.agents_manager.notify_parents(self.agent.agent_id)
         self._publish(RuntimeUpdatedEvent(reason))
 
     def publish_state(self, reason):
+        try:
+            state = self.snapshot()
+        except (Exception, asyncio.CancelledError) as exc:
+            EventScope.report_observer_error("Session state notification failed: " + reason, exc)
+            return
         self._recorded_rollout_path = self.agent.recorded_session_file_path
-        self._publish(SessionStateEvent(reason, self.snapshot()))
+        self._publish(SessionStateEvent(reason, state))
 
     def require_idle(self, operation):
         if self.is_busy:
@@ -436,38 +444,36 @@ class AgentRuntime:
     async def _run_command(self, receipt, command, argument, sender):
         async def execute():
             self._active_commands[receipt.submission_id]["status"] = "running"
-            self._publish(
-                CommandStartedEvent(receipt.submission_id, command, sender)
-            )
+            self.agents_manager.mark_used(self.agent.agent_id)
+            EventScope.emit(CommandStartedEvent(receipt.submission_id, command, sender))
             return await self._execute_command(command[1:], argument)
 
-        try:
-            # Retry controls must remain usable while a compact holds the lock.
-            if command == "/retry" and argument:
-                result = await execute()
-            else:
-                async with self._get_command_lock():
+        with EventScope.observe(self._publish):
+            try:
+                # Retry controls must remain usable while a compact holds the lock.
+                if command == "/retry" and argument:
                     result = await execute()
-        except asyncio.CancelledError:
-            del self._active_commands[receipt.submission_id]
-            receipt.future.cancel()
-            self._publish(CommandFailedEvent(
-                receipt.submission_id, command, "command caller cancelled",
-                sender, "CancelledError",
-            ))
-            raise
-        except Exception as exc:
-            del self._active_commands[receipt.submission_id]
-            receipt.future.set_exception(exc)
-            self._publish(CommandFailedEvent(
-                receipt.submission_id, command, str(exc), sender, type(exc).__name__,
-            ))
-        else:
-            del self._active_commands[receipt.submission_id]
-            receipt.future.set_result(result)
-            self._publish(
-                CommandCompletedEvent(receipt.submission_id, command, result, sender)
-            )
+                else:
+                    async with self._get_command_lock():
+                        result = await execute()
+            except asyncio.CancelledError:
+                del self._active_commands[receipt.submission_id]
+                receipt.future.cancel()
+                EventScope.emit(CommandFailedEvent(
+                    receipt.submission_id, command, "command caller cancelled",
+                    sender, "CancelledError",
+                ))
+                raise
+            except Exception as exc:
+                del self._active_commands[receipt.submission_id]
+                receipt.future.set_exception(exc)
+                EventScope.emit(CommandFailedEvent(
+                    receipt.submission_id, command, str(exc), sender, type(exc).__name__,
+                ))
+            else:
+                del self._active_commands[receipt.submission_id]
+                receipt.future.set_result(result)
+                EventScope.emit(CommandCompletedEvent(receipt.submission_id, command, result, sender))
 
     async def _execute_command(self, command, argument):
         if command in {"help", "history", "compact"} and argument:
@@ -572,7 +578,7 @@ class AgentRuntime:
             if current is not None:
                 self._triggered_submission.turn_id = current.turn_id
         self._publish(
-            InputQueuedEvent(submission_id, message, queue, sender, queue == "enqueue", busy)
+            InputQueuedEvent(submission_id, message, queue, sender, queue == "enqueue", busy),
         )
         return SubmittedInput(submission_id, "turn", future)
 
@@ -752,6 +758,7 @@ class AgentRuntime:
         queued.futures.append(future)
         # Publish after the input layer attaches the execution identity.
         loop.call_soon(self._notify_queue_change)
+        loop.call_soon(self._wake_worker)
         return queued.submission_id, future
 
     def _notify_queue_change(self):
@@ -759,7 +766,6 @@ class AgentRuntime:
         if self.agent.is_shutdown:
             return
         self.publish_update("queue")
-        self._wake_worker()
 
     def message(self, text: "typing.Union[str, UserMessage, AgentMessage, ToolResult]") -> "None":
         """Deliver input to an open runtime's mailbox."""
@@ -890,81 +896,63 @@ class AgentRuntime:
             if not future.done():
                 future.set_exception(exc)
 
-    def _handle_agent_event(self, event: "TurnEvent") -> "None":
-        if isinstance(event, TurnStartedEvent):
-            self._turn_started_at = monotonic()
-            self._turn_finished_at = None
-        elif isinstance(event, (TurnCompletedEvent, TurnFailedEvent, TurnInterruptedEvent)):
-            self._turn_finished_at = monotonic()
-        queued = self._current_submission
-        if queued is not None and event.turn_id == queued.turn_id:
-            event = replace(
-                event, submission_id=event.submission_id or queued.submission_id
-            )
-        if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
-            self._wait_interrupted = False
-            if self._input_activity is not None and not self._steer_queue:
-                self._input_activity.clear()
-        elif isinstance(event, TurnInputReadyEvent):
-            self._deliver_messages()
-        elif isinstance(event, TurnCompletedEvent):
-            self._last_agent_status = {"completed": event.output_text}
-        elif isinstance(event, TurnFailedEvent):
-            self._last_agent_status = {
-                "errored": "{0}: {1}".format(event.error_type, event.error),
-            }
-        elif isinstance(event, TurnInterruptedEvent):
+    @contextmanager
+    def _runtime_scope(self, turn_scope, manual=False):
+        agent_id = self.agent.agent_id
+        self.agents_manager.mark_used(agent_id)
+        self._wait_interrupted = False
+        if self._input_activity is not None and not self._steer_queue:
+            self._input_activity.clear()
+        if manual:
+            try:
+                with turn_scope:
+                    self.agents_manager.notify_parents(agent_id)
+                    yield
+            finally:
+                self.agents_manager.notify_parents(agent_id)
+            return
+
+        self._last_agent_status = "running"
+        self._turn_started_at = monotonic()
+        self._turn_finished_at = None
+        final_answer = None
+        try:
+            with turn_scope as turn:
+                self._active_turn = turn
+                turn.deliver_messages = self._deliver_messages
+                if not self.title:
+                    prompt = visible_input_text(turn.messages)
+                    if prompt:
+                        self.title = shorten_title(prompt)
+                        self.publish_state("auto_title")
+                self.agents_manager.notify_parents(agent_id)
+                yield
+        except (TurnInterrupted, ModelRequestInterrupted, asyncio.CancelledError):
             self._last_agent_status = "interrupted"
-        if isinstance(event, TurnStartedEvent):
-            self._last_agent_status = "running"
-            self._active_turn = {
-                "turn_id": event.turn_id,
-                "submission_id": event.submission_id or event.turn_id,
-                "messages": event.messages,
-                "assistant_text": "",
-                "model_errors": [],
-            }
-        elif self._active_turn is not None:
-            if isinstance(event, AssistantDeltaEvent):
-                self._active_turn["assistant_text"] += event.delta
-            elif isinstance(event, MessagesAddedEvent) and any(
-                isinstance(message, AssistantMessage) for message in event.messages
-            ):
-                self._active_turn["assistant_text"] = ""
-            elif isinstance(event, StreamErrorEvent):
-                self._active_turn["assistant_text"] = ""
-                self._active_turn["model_errors"].append(event.detail())
-            elif isinstance(event, ToolCompletedEvent):
-                self._active_turn["assistant_text"] = ""
-            elif isinstance(
-                event, (TurnCompletedEvent, TurnFailedEvent, TurnInterruptedEvent)
-            ):
-                self._active_turn = None
-        if isinstance(event, TurnStartedEvent) and not self.title:
-            prompt = event.visualize()
-            if prompt:
-                self.title = shorten_title(prompt)
-                self.publish_state("auto_title")
+            raise
+        except Exception as exc:
+            error = "{0}: {1}".format(type(exc).__name__, exc)
+            self._last_agent_status = {"errored": error}
+            final_answer = "Agent errored: " + error
+            raise
+        else:
+            self._last_agent_status = {"completed": turn.output_text}
+            final_answer = turn.output_text or ""
+        finally:
+            self._active_turn = None
+            self._turn_finished_at = monotonic()
+            self.agents_manager.finish_turn(agent_id, final_answer)
+            self._wake_worker()
+
+    @EventScope.router
+    def _publish_agent_event(self, event: "Event") -> "None":
+        queued = self._current_submission
+        if isinstance(event, TurnEvent) and queued is not None and event.turn_id == queued.turn_id:
+            event = replace(event, submission_id=event.submission_id or queued.submission_id)
         if self.agent.recorded_session_file_path != self._recorded_rollout_path:
             self.publish_state("recording")
         self._publish(event)
 
+    @EventScope.router
     def _publish(self, event: "Event"):
-        self._notify_handler(
-            lambda event: self.agents_manager.handle_event(self.agent.agent_id, event),
-            event,
-        )
-        for handler in (self.event_handler,) + tuple(self._frontends.values()):
-            self._notify_handler(handler, event)
-
-    @staticmethod
-    def _notify_handler(handler, event):
-        try:
-            handler(event)
-        except (Exception, asyncio.CancelledError) as exc:
-            asyncio.get_running_loop().call_exception_handler(
-                {
-                    "message": "Submission event observer failed: " + event.kind,
-                    "exception": exc,
-                }
-            )
+        EventScope.notify(event, self.event_handler, *self._frontends.values())

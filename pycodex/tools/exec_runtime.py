@@ -7,11 +7,12 @@ from copy import deepcopy
 import inspect
 import io
 import json
+import sys
 import traceback
 from types import SimpleNamespace
 import wave
 
-from ..utils.compat import compile_async_cell
+from ..utils.compat import compile_async_cell, copy_context
 from .python_tool_schema import python_tool_signature
 
 _BLOCKED_MODULES = frozenset(("ctypes", "_ctypes", "cffi"))
@@ -65,6 +66,9 @@ class CellTaskFactory:
             task = asyncio.Task(coroutine, loop=self._loop, **kwargs)
         else:
             task = self._previous(self._loop, coroutine, **kwargs)
+        if sys.version_info < (3, 7):
+            # Direct cell tasks bypass the backport's loop.create_task hook.
+            task.context = copy_context()
         if owner is not None:
             self._owners[task] = owner
             owner._tasks.add(task)

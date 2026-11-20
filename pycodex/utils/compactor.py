@@ -1,22 +1,15 @@
 import typing
+from collections import defaultdict, deque
 from dataclasses import dataclass
+from pathlib import Path
 
 from ..protocol import (
     AssistantMessage,
     ContextMessage,
     ConversationItem,
-    ModelResponse,
     ToolCall,
     ToolResult,
-    ToolSpec,
-    UserMessage,
 )
-from .random_ids import uuid7_string
-
-if typing.TYPE_CHECKING:
-    from ..context import ContextManager
-    from ..events import ModelEvent
-    from ..model import ModelClient
 
 DEFAULT_COMPACT_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION. Create a handoff summary for another LLM that will resume the task.
 
@@ -50,10 +43,17 @@ class CompactResult:
     def retained_item_count(self) -> "int":
         return max(len(self.history) - 1, 0)
 
+    @classmethod
+    def from_response(cls, response, session_file, original_item_count, pruned_tool_results):
+        summary = _last_assistant_message(response.items)
+        if summary is None or not summary.strip():
+            raise ValueError("compact response contains no assistant summary")
+        return cls(compact(response.items, session_file), original_item_count, pruned_tool_results)
+
 
 def compact(
     history: "typing.Sequence[ConversationItem]",
-    session_file: "typing.Union[str, None]" = None,
+    session_file: "typing.Union[str, Path, None]" = None,
 ) -> "typing.Tuple[ConversationItem, ...]":
     summary_text = _build_summary_message(_last_assistant_message(history))
     if session_file:
@@ -67,98 +67,25 @@ def compact(
     return build_compacted_history(summary_text)
 
 
-async def compact_history(
-    history: "typing.Sequence[ConversationItem]",
-    model_client: "ModelClient",
-    context_manager: "ContextManager",
-    tools: "typing.List[ToolSpec]",
-    parallel_tool_calls: "bool",
-    stream_event_handler: "typing.Union[typing.Callable[[ModelEvent], None], None]" = None,
-    prune_tool_results_on_context_error: "bool" = False,
-    session_file: "typing.Union[str, None]" = None,
-    turn_id: "typing.Union[str, None]" = None,
-    session_id: "typing.Union[str, None]" = None,
-) -> "typing.Union[CompactResult, None]":
-    from ..model import ContextLengthExceeded, ResponsesIncompleteError
-
-    if not history:
-        return None
-    original_item_count = len(history)
-    pruned_tool_results = 0
-    turn_id = turn_id or uuid7_string()
-
-    noop_stream_event_handler = lambda _event: None
-    while True:
-        compact_prompt = UserMessage(text=DEFAULT_COMPACT_PROMPT)
-        prompt = context_manager.build_prompt(
-            list(history) + [compact_prompt],
-            tools,
-            parallel_tool_calls,
-            turn_id=turn_id,
-            reasoning_effort=model_client.reasoning_effort,
-            capture_context=False,
-            session_id=session_id,
-        )
-        try:
-            response = await model_client.complete(
-                prompt,
-                stream_event_handler or noop_stream_event_handler,
-            )
-            break
-        except ResponsesIncompleteError as exc:
-            if (
-                exc.reason != "max_output_tokens"
-                or _last_assistant_message(exc.partial_items) is None
-            ):
-                raise
-            response = ModelResponse(items=list(exc.partial_items))
-            break
-        except ContextLengthExceeded:
-            if not prune_tool_results_on_context_error:
-                raise
-            pruned_history = prune_oldest_tool_response(history)
-            if pruned_history is None:
-                raise
-            history = pruned_history
-            pruned_tool_results += 1
-
-    summary = _last_assistant_message(response.items)
-    if summary is None or not summary.strip():
-        raise ValueError("compact response contains no assistant summary")
-    compacted_history = compact(
-        response.items,
-        session_file,
-    )
-    return CompactResult(
-        history=compacted_history,
-        original_item_count=original_item_count,
-        pruned_tool_results=pruned_tool_results,
-    )
-
-
 def prune_oldest_tool_response(
-    history: "typing.Sequence[ConversationItem]",
-) -> "typing.Union[typing.Tuple[ConversationItem, ...], None]":
-    items = list(history)
-    tool_result_index = None
-    call_id = None
-    for index, item in enumerate(items):
-        if isinstance(item, ToolResult):
-            tool_result_index = index
-            call_id = item.call_id
-            break
-    if tool_result_index is None:
-        return None
-
-    indexes_to_remove = {tool_result_index}
-    for index, item in enumerate(items[:tool_result_index]):
-        if isinstance(item, ToolCall) and item.call_id == call_id:
-            indexes_to_remove.add(index)
-            break
-
-    return tuple(
-        item for index, item in enumerate(items) if index not in indexes_to_remove
-    )
+    history: "typing.Sequence[ConversationItem]", count: "int" = 1,
+) -> "typing.Optional[typing.Sequence[ConversationItem]]":
+    """Drop the oldest count results together with their matching calls."""
+    if count == 0:
+        return history
+    calls = defaultdict(deque)
+    removed = set()
+    for index, item in enumerate(history):
+        if isinstance(item, ToolCall):
+            calls[item.call_id].append(index)
+        elif isinstance(item, ToolResult):
+            removed.add(index)
+            if calls[item.call_id]:
+                removed.add(calls[item.call_id].popleft())
+            count -= 1
+            if count == 0:
+                return tuple(item for i, item in enumerate(history) if i not in removed)
+    return None
 
 
 def build_compacted_history(

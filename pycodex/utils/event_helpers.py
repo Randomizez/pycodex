@@ -6,6 +6,8 @@ import shlex
 import typing
 from dataclasses import asdict
 
+from ..protocol import AgentMessage, UserMessage
+
 PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
 
 
@@ -90,6 +92,13 @@ def format_error(text, indent=True):
 
 def shorten_title(text: "str", limit: "int" = 48) -> "str":
     return truncate_text(text, limit)
+
+
+def visible_input_text(messages):
+    return "\n".join(
+        message.text for message in messages
+        if isinstance(message, (UserMessage, AgentMessage)) and message.visible
+    )
 
 
 def percent_of_context_window_remaining(total_tokens, context_window_tokens):

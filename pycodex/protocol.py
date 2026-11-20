@@ -438,6 +438,7 @@ class ModelResponse:
     """
 
     items: "typing.List[ModelOutputItem]"
+    usage: "typing.Union[JSONDict, None]" = None
 
     def __post_init__(self) -> "None":
         for item in self.items:

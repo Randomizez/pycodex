@@ -1379,7 +1379,7 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     exec_manager = UnifiedExecManager()
     registry = ToolRegistry()
     registry.register(ExecCommandTool(exec_manager))
-    registry.runtime_environment.register_resource("clock", clock_manager, observer=clock_manager.handle_agent_event)
+    registry.runtime_environment.register_resource("clock", clock_manager)
     registry.runtime_environment.register_resource("exec_command", exec_manager)
     agent = make_agent(
         ScriptedModelClient([]),

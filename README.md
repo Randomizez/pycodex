@@ -101,9 +101,11 @@ The agent can edit files and run commands with your user account's permissions.
 Use `/retry 429|502` to retry either error code indefinitely, or `/retry *` to
 retry every model request error, including disconnects. `/retry off` disables infinite retries.
 
-Compaction preserves the tool declarations, instruction prefix and ordinary
-tool choice, and asks the model to produce a summary.
-History changes only after a usable summary and successful checkpoint write.
+Manual and automatic compaction preserve the tool declarations, instruction
+prefix and ordinary tool choice. The Agent can use its live tools while
+preparing the summary in memory. Success writes one summary checkpoint.
+On failure, completed tool exchanges are saved so the Agent can use their
+results on retry.
 
 Send a message while the agent is working to redirect it, or use `/queue` to
 wait. Sessions are saved under `~/.codex/sessions` by default.
@@ -190,7 +192,12 @@ run_async(main())
 ```
 
 `AgentsManager` creates the runtime; `submit_input` submits work.
-Await `receipt.future` for the result. The example closes the runtime and any
+Await `receipt.future` for the result. Models and tools import `EventScope` from
+`pycodex.events` and call `EventScope.emit(event)` to notify the session’s observers.
+Each observer receives its own copy. During a turn the event loop reports
+observer errors and the Agent continues.
+Custom model clients return token counts in `ModelResponse.usage` for goal accounting
+and automatic compaction. The example closes the runtime and any
 local compatibility server when finished. See [runtime contracts](docs/RUNTIME.md#ownership) for
 custom models, tools and integrations.
 

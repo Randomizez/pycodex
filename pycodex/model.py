@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import re
-import threading
 import typing
 import urllib.parse
 import uuid
@@ -20,8 +19,11 @@ from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
 from .utils.http_headers import build_http_headers
 
 from .events import (
+    BASE_EVENT_HANDLER,
     AssistantDeltaEvent,
+    EventScope,
     ModelEvent,
+    ModelRequestInterrupted,
     ModelRequestTimingEvent,
     StreamErrorEvent,
     TokenCountEvent,
@@ -45,7 +47,7 @@ DEFAULT_ORIGINATOR = "pycodex"
 RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 ModelStreamEventHandler = Callable[[ModelEvent], None]
 RetryCodes = typing.Union[int, typing.FrozenSet[int], Literal["*"]]
-NOOP_MODEL_STREAM_EVENT_HANDLER: "ModelStreamEventHandler" = lambda _event: None
+NOOP_MODEL_STREAM_EVENT_HANDLER: "ModelStreamEventHandler" = BASE_EVENT_HANDLER
 DEFAULT_STREAM_MAX_RETRIES = 5
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
 INITIAL_RETRY_DELAY_SECONDS = 0.2
@@ -81,9 +83,8 @@ class ModelClient(Protocol):
     async def complete(
         self,
         prompt: "Prompt",
-        event_handler: "ModelStreamEventHandler" = NOOP_MODEL_STREAM_EVENT_HANDLER,
     ) -> "ModelResponse":
-        """Return the next batch of model output items for the current prompt."""
+        """Return the output items and any provider usage for this request."""
 
 
 class ModelControl(ModelClient, Protocol):
@@ -414,10 +415,6 @@ def matches_retry_codes(error: "Exception", codes: "RetryCodes") -> "bool":
     )
 
 
-class ModelRequestInterrupted(RuntimeError):
-    """A cooperative stop ended retries after an issued request finished."""
-
-
 class ContextLengthExceeded(ResponsesApiError):
     def __init__(
         self,
@@ -628,7 +625,7 @@ class ResponsesModelClient:
     async def complete(
         self,
         prompt: "Prompt",
-        event_handler: "ModelStreamEventHandler" = NOOP_MODEL_STREAM_EVENT_HANDLER,
+        event_handler: "typing.Optional[ModelStreamEventHandler]" = None,
     ) -> "ModelResponse":
         retries = 0
         max_retries = self._config.effective_stream_max_retries()
@@ -655,116 +652,103 @@ class ResponsesModelClient:
             if first_model == self.model
             else self.with_overrides(model=first_model)
         )
-        loop = asyncio.get_running_loop()
-        active = True
-        callback_lock = threading.Lock()
-
-        def deliver(event):
-            if active:
-                event_handler(event)
-
-        def receive(event):
-            with callback_lock:
-                if active:
-                    loop.call_soon_threadsafe(deliver, event)
-
-        try:
-            while True:
-                if self._retry_stopped:
-                    raise ModelRequestInterrupted()
-                was_infinite = self.retry_error_code is not None
-                try:
-                    response = await asyncio.to_thread(request_client._complete_sync, prompt, receive)
-                except (asyncio.CancelledError, ModelRequestInterrupted):
-                    raise
-                except Exception as exc:
-                    self.last_error = exc
+        with EventScope.worker_events(event_handler) as worker_context:
+            try:
+                while True:
                     if self._retry_stopped:
-                        raise ModelRequestInterrupted() from exc
-                    infinite = self.retry_error_code is not None
-                    if was_infinite and not infinite:
+                        raise ModelRequestInterrupted()
+                    was_infinite = self.retry_error_code is not None
+                    try:
+                        response = await asyncio.to_thread(
+                            worker_context.run, request_client._complete_sync, prompt,
+                        )
+                    except (asyncio.CancelledError, ModelRequestInterrupted):
                         raise
-                    if infinite:
-                        if not matches_retry_codes(exc, self.retry_error_code):
+                    except Exception as exc:
+                        self.last_error = exc
+                        if self._retry_stopped:
+                            raise ModelRequestInterrupted() from exc
+                        infinite = self.retry_error_code is not None
+                        if was_infinite and not infinite:
                             raise
-                    elif not isinstance(exc, (ResponsesRetryableError, ResponsesModelUnavailableError)):
-                        raise
-                    elif (
-                        isinstance(exc, ResponsesModelUnavailableError)
-                        or (isinstance(exc, ResponsesFirstDataTimeout) and len(models) > 1)
-                        or retries >= max_retries
-                    ):
-                        cooldown = self._config.fallback_cooldown_seconds
-                        if len(models) > 1 and cooldown > 0:
-                            self._model_cooldowns[request_client.model] = (
-                                monotonic() + cooldown
+                        if infinite:
+                            if not matches_retry_codes(exc, self.retry_error_code):
+                                raise
+                        elif not isinstance(exc, (ResponsesRetryableError, ResponsesModelUnavailableError)):
+                            raise
+                        elif (
+                            isinstance(exc, ResponsesModelUnavailableError)
+                            or (isinstance(exc, ResponsesFirstDataTimeout) and len(models) > 1)
+                            or retries >= max_retries
+                        ):
+                            cooldown = self._config.fallback_cooldown_seconds
+                            if len(models) > 1 and cooldown > 0:
+                                self._model_cooldowns[request_client.model] = (
+                                    monotonic() + cooldown
+                                )
+                            fallback_model = next(fallback_models, None)
+                            if fallback_model is None:
+                                raise
+                            EventScope.emit(
+                                StreamErrorEvent(
+                                    f"Falling back: {request_client.model} -> {fallback_model}",
+                                    0,
+                                    max_retries,
+                                    0.0,
+                                    str(exc),
+                                )
                             )
-                        fallback_model = next(fallback_models, None)
-                        if fallback_model is None:
-                            raise
-                        event_handler(
+                            request_client = self.with_overrides(model=fallback_model)
+                            retries = 0
+                            continue
+                        retries += 1
+                        delay_seconds = (
+                            exc.retry_delay_seconds
+                            if isinstance(exc, ResponsesRetryableError) else None
+                        )
+                        if delay_seconds is None:
+                            delay_seconds = self._retry_delay_seconds(retries)
+                        self._retry_wakeup.clear()
+                        EventScope.emit(
                             StreamErrorEvent(
-                                f"Falling back: {request_client.model} -> {fallback_model}",
-                                0,
-                                max_retries,
-                                0.0,
+                                f"Reconnecting... {retries}/∞"
+                                if infinite else f"Reconnecting... {retries}/{max_retries}",
+                                retries,
+                                0 if infinite else max_retries,
+                                delay_seconds,
                                 str(exc),
                             )
                         )
-                        request_client = self.with_overrides(model=fallback_model)
-                        retries = 0
-                        continue
-                    retries += 1
-                    delay_seconds = (
-                        exc.retry_delay_seconds
-                        if isinstance(exc, ResponsesRetryableError) else None
-                    )
-                    if delay_seconds is None:
-                        delay_seconds = self._retry_delay_seconds(retries)
-                    self._retry_wakeup.clear()
-                    event_handler(
-                        StreamErrorEvent(
-                            f"Reconnecting... {retries}/∞"
-                            if infinite else f"Reconnecting... {retries}/{max_retries}",
-                            retries,
-                            0 if infinite else max_retries,
-                            delay_seconds,
-                            str(exc),
-                        )
-                    )
-                    if delay_seconds > 0:
-                        waiter = asyncio.ensure_future(self._retry_wakeup.wait())
-                        try:
-                            await asyncio.wait({waiter}, timeout=delay_seconds)
-                        finally:
-                            if not waiter.done():
-                                waiter.cancel()
-                                try:
-                                    await waiter
-                                except asyncio.CancelledError:
-                                    pass
-                    if self._retry_stopped:
-                        raise ModelRequestInterrupted() from exc
-                    if infinite and self.retry_error_code is None:
-                        raise
-                    if (
-                        self.retry_error_code is not None
-                        and not matches_retry_codes(exc, self.retry_error_code)
-                    ):
-                        raise
-                else:
-                    self._model_cooldowns.pop(request_client.model, None)
-                    self.last_error = None
-                    return response
-        finally:
-            self._retry_wakeup = None
-            with callback_lock:
-                active = False
+                        if delay_seconds > 0:
+                            waiter = asyncio.ensure_future(self._retry_wakeup.wait())
+                            try:
+                                await asyncio.wait({waiter}, timeout=delay_seconds)
+                            finally:
+                                if not waiter.done():
+                                    waiter.cancel()
+                                    try:
+                                        await waiter
+                                    except asyncio.CancelledError:
+                                        pass
+                        if self._retry_stopped:
+                            raise ModelRequestInterrupted() from exc
+                        if infinite and self.retry_error_code is None:
+                            raise
+                        if (
+                            self.retry_error_code is not None
+                            and not matches_retry_codes(exc, self.retry_error_code)
+                        ):
+                            raise
+                    else:
+                        self._model_cooldowns.pop(request_client.model, None)
+                        self.last_error = None
+                        return response
+            finally:
+                self._retry_wakeup = None
 
     def _complete_sync(
         self,
         prompt: "Prompt",
-        event_handler: "ModelStreamEventHandler",
     ) -> "ModelResponse":
         payload = self._build_payload(prompt)
         session_id = payload["prompt_cache_key"]
@@ -842,7 +826,6 @@ class ResponsesModelClient:
                     tracked_lines = self._track_stream_lines(lines, diagnostics)
                     result = self._parse_stream(
                         tracked_lines,
-                        event_handler,
                         diagnostics=diagnostics,
                         session_id=session_id,
                     )
@@ -868,7 +851,7 @@ class ResponsesModelClient:
             exc.first_data_seconds = diagnostics.first_data_seconds
             raise
         finally:
-            event_handler(ModelRequestTimingEvent(
+            EventScope.emit(ModelRequestTimingEvent(
                 self.model, monotonic() - diagnostics.started_at,
                 diagnostics.first_data_seconds, "completed" if completed else "failed",
             ))
@@ -1108,12 +1091,10 @@ class ResponsesModelClient:
     def _parse_stream(
         self,
         response,
-        event_handler: "ModelStreamEventHandler",
         diagnostics: "typing.Union[_StreamDiagnostics, None]" = None,
         session_id: "typing.Union[str, None]" = None,
     ) -> "ModelResponse":
         items: "typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]" = ([])
-        saw_completed = False
         last_event_type = ""
 
         for event_name, data in self._iter_sse_events(response, diagnostics):
@@ -1131,7 +1112,7 @@ class ResponsesModelClient:
                 diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
-                event_handler(AssistantDeltaEvent(str(payload.get("delta", ""))))
+                EventScope.emit(AssistantDeltaEvent(str(payload.get("delta", ""))))
                 continue
 
             if event_type == "response.output_item.done":
@@ -1147,7 +1128,7 @@ class ResponsesModelClient:
                     else:
                         action_payload = {}
                     queries = action_payload.get("queries")
-                    event_handler(
+                    EventScope.emit(
                         ToolCalledEvent(
                             call_id=str(item_payload.get("id", "web_search")),
                             tool_name="web_search",
@@ -1183,7 +1164,7 @@ class ResponsesModelClient:
                 parsed = self._parse_output_item(item_payload)
                 if parsed is not None:
                     if isinstance(parsed, ToolCall):
-                        event_handler(ToolCalledEvent(parsed.call_id, parsed.name))
+                        EventScope.emit(ToolCalledEvent(parsed.call_id, parsed.name))
                     items.append(parsed)
                     if diagnostics is not None:
                         diagnostics.output_items_received += 1
@@ -1198,9 +1179,8 @@ class ResponsesModelClient:
                         usage = dict(response_usage)
                 elif isinstance(payload.get("usage"), dict):
                     usage = dict(payload["usage"])
-                event_handler(TokenCountEvent(usage))
-                saw_completed = True
-                break
+                EventScope.emit(TokenCountEvent(usage))
+                return ModelResponse(items=items, usage=usage)
 
             if event_type == "response.incomplete":
                 partial_items = tuple(items)
@@ -1219,12 +1199,9 @@ class ResponsesModelClient:
             if event_type == "response.failed":
                 self._raise_response_failed_error(payload, session_id)
 
-        if not saw_completed:
-            raise ResponsesRetryableError(
-                self._format_incomplete_stream_error(last_event_type, len(items), session_id)
-            )
-
-        return ModelResponse(items=items)
+        raise ResponsesRetryableError(
+            self._format_incomplete_stream_error(last_event_type, len(items), session_id)
+        )
 
     @staticmethod
     def _parse_output_item(

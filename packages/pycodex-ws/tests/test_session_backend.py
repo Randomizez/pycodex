@@ -20,7 +20,7 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.cli import CliSessionView, run_interactive_session
-from pycodex.events import AssistantDeltaEvent
+from pycodex.events import AssistantDeltaEvent, EventScope
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
@@ -515,11 +515,11 @@ async def test_late_frontends_restore_active_stream_and_follow_completion():
         async def list_models(self):
             return [self.model]
 
-        async def complete(self, prompt, event_handler):
-            event_handler(deltas[0])
+        async def complete(self, prompt):
+            EventScope.emit(deltas[0])
             started.set()
             await release.wait()
-            event_handler(deltas[1])
+            EventScope.emit(deltas[1])
             return ModelResponse([AssistantMessage("partial")])
 
     queue = make_queue(StreamingClient())

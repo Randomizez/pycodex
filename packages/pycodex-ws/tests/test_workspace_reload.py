@@ -20,6 +20,7 @@ from workspace_server import (
     create_app,
     create_multi_workspace_app,
 )
+from workspace_server.reloader import reload_modules_in_place
 from test_workspace_server import make_session, wait_snapshot
 
 
@@ -39,6 +40,25 @@ def reload_setup(request, tmp_path):
         return create_app(manager, tmp_path / "state", password, tmp_path, False)
 
     return create, "/w/first" if multi else ""
+
+
+def test_tool_event_scope_import_survives_a_second_backend_reload():
+    with ExitStack() as cleanup:
+        _, rollback = reload_modules_in_place()
+        cleanup.callback(rollback)
+        from pycodex.events import EventScope
+
+        _, rollback = reload_modules_in_place()
+        cleanup.callback(rollback)
+        assert EventScope._current_observer.get() is pycodex.events.BASE_EVENT_HANDLER
+        seen = []
+        with pycodex.events.EventScope.observe(seen.append):
+            EventScope.emit(pycodex.events.RuntimeUpdatedEvent("tool"))
+            _, rollback = reload_modules_in_place()
+            cleanup.callback(rollback)
+            EventScope.emit(pycodex.events.RuntimeUpdatedEvent("after-reload"))
+
+    assert [event.reason for event in seen] == ["tool", "after-reload"]
 
 
 def test_reload_requires_admin_and_validates_payload(reload_setup):

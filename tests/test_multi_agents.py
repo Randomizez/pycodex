@@ -3,6 +3,7 @@ import asyncio
 import pytest
 
 from pycodex import AgentsManager, AssistantMessage, ContextConfig, ModelResponse, ToolCall
+from pycodex.events import RuntimeUpdatedEvent
 from pycodex.protocol import AgentMessage, ToolResult, UserMessage
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import BaseTool, get_tools
@@ -211,6 +212,122 @@ async def test_identical_completed_turns_have_distinct_messages_and_copied_statu
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+async def test_child_delivers_final_answer_once_when_notifications_are_dropped_and_replayed(tmp_path, failed):
+    def respond(prompt, count):
+        if failed:
+            raise ValueError("child failed")
+        return ModelResponse([AssistantMessage("child answer")], usage={"total_tokens": 5})
+
+    root = make_tree(tmp_path, ScriptedModelClient(response_factory=respond))
+    manager = root.agents_manager
+    child = manager._create_runtime(root.agent.agent_id, "/root/worker", None, None, ())
+    events = []
+    publish = child.agent.event_handler
+    child.agent.event_handler = events.append
+    try:
+        turn = child.agent.run_turn([UserMessage("task")])
+        if failed:
+            with pytest.raises(ValueError, match="child failed"):
+                await turn
+            assert child.agent_status == {"errored": "ValueError: child failed"}
+        else:
+            await turn
+            assert child.agent_status == {"completed": "child answer"}
+        answers = tuple(root._steer_queue)
+        assert len(answers) == 1
+        assert "Message Type: FINAL_ANSWER" in answers[0].text
+        assert answers[0].text.endswith("ValueError: child failed" if failed else "child answer")
+        assert child.can_close_for_capacity()
+
+        child.message("next task")
+        await root.submit_input("/help")
+        state = child.state_snapshot()
+        duration = child.turn_elapsed_seconds
+        lru = list(manager._runtimes)
+        for event in events:
+            publish(event)
+        assert child.state_snapshot() == state
+        assert child.turn_elapsed_seconds == duration
+        assert list(manager._runtimes) == lru
+        assert list(child._steer_queue) == [UserMessage("next task")]
+        assert tuple(root._steer_queue) == answers
+    finally:
+        await root.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("manual", [False, True], ids=["direct_turn", "manual_compact"])
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "failure"])
+async def test_parent_observes_child_status_after_release(tmp_path, manual, failed):
+    def respond(prompt, count):
+        if count == 1:
+            return ModelResponse([AssistantMessage("first")])
+        if failed:
+            raise ValueError("second failed")
+        return ModelResponse([AssistantMessage("second")])
+
+    root = make_tree(tmp_path, ScriptedModelClient(response_factory=respond))
+    child = await spawn(root)
+    statuses = []
+
+    def observe(event):
+        if isinstance(event, RuntimeUpdatedEvent) and event.reason == "agents":
+            statuses.append(child.agent_status)
+
+    try:
+        await wait_for_runtime_idle(child)
+        root.event_handler = observe
+        if manual:
+            operation = (await child.submit_input("/compact")).future
+        else:
+            operation = child.agent.run_turn([UserMessage("next")])
+        if failed:
+            with pytest.raises(ValueError, match="second failed"):
+                await operation
+        else:
+            await operation
+
+        expected = {"completed": "first" if manual else "second"}
+        if failed and not manual:
+            expected = {"errored": "ValueError: second failed"}
+        assert "running" in statuses
+        assert statuses[-1] == child.agent_status == expected
+        assert len(messages(root._steer_queue)) == (1 if manual else 2)
+    finally:
+        await root.close()
+
+
+@pytest.mark.asyncio
+async def test_child_input_binding_failure_reaches_parent(tmp_path):
+    def inputs():
+        yield UserMessage("partial")
+        raise ValueError("input failed")
+
+    root = make_tree(tmp_path, ScriptedModelClient([
+        ModelResponse([AssistantMessage("first")]),
+    ]))
+    child = await spawn(root)
+    try:
+        await wait_for_runtime_idle(child)
+        history = child.agent.history
+        events = []
+        child.event_handler = events.append
+        with pytest.raises(ValueError, match="input failed"):
+            await child.agent.run_turn(inputs())
+
+        assert [event.kind for event in events] == ["turn_failed"]
+        assert child.agent_status == {"errored": "ValueError: input failed"}
+        assert child.agent.history == history
+        assert child.agent.model_client.call_count == 1
+        answers = messages(root._steer_queue)
+        assert len(answers) == 2
+        assert answers[-1].text.endswith("Agent errored: ValueError: input failed")
+    finally:
+        await root.close()
+
+
+@pytest.mark.asyncio
 async def test_child_background_invocation_updates_status_and_notifies_parent(tmp_path):
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -391,7 +508,7 @@ async def test_close_signals_whole_tree_before_waiting_and_keeps_child_errors(tm
         await asyncio.sleep(0)
         for runtime in [root] + children + [grandchild]:
             assert not runtime.accepts_input
-            assert runtime.agent._stop_requested
+            assert runtime.agent.execution_snapshot().stop_requested
             assert not runtime._enqueue_queue
         for future in pending:
             with pytest.raises(SubmissionInterrupted):

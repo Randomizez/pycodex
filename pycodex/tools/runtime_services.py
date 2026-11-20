@@ -1,9 +1,10 @@
 import asyncio
 import typing
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Awaitable, Callable
 
-from ..events import CompactStartedEvent, TerminalEvent, TurnStartedEvent
+from ..events import ModelRequestInterrupted, TurnInterrupted
 from ..utils.compat import Literal
 from .clock_manager import ClockManager
 from .goal_manager import GoalManager
@@ -100,17 +101,17 @@ class AgentRuntimeEnvironment:
         self._resources = {}
         self._restart_handlers = []
         self._close_handlers = []
-        self._event_handlers = []
         self._bindings = None
 
-    def register_resource(self, name, manager, restart=None, close=None, observer=None):
+    def register_resource(self, name, manager, restart=None, close=None):
         """Register one shared manager, independently of its callable tools."""
         if name in self._resources or manager in self._resources.values():
             raise ValueError("resource already registered: " + name)
         self._resources[name] = manager
+        if name == "clock":
+            self.clock_manager = manager
         for handler, handlers in (
             (restart, self._restart_handlers), (close, self._close_handlers),
-            (observer, self._event_handlers),
         ):
             if handler is not None:
                 handlers.append(handler)
@@ -144,11 +145,6 @@ class AgentRuntimeEnvironment:
             for item in manager.background_work_snapshot()
         ]
 
-    def event_observers(self, event):
-        return self._event_handlers if isinstance(
-            event, (TerminalEvent, TurnStartedEvent, CompactStartedEvent),
-        ) else []
-
     def dump_state(self):
         managers = {"clock": self.clock_manager.dump_state()}
         goal = self.goal_manager.dump_state()
@@ -179,8 +175,22 @@ class AgentRuntimeEnvironment:
         self.clock_manager.arm_after_reply()
         self.goal_manager.start()
 
-    def handle_agent_event(self, event):
-        self.goal_manager.handle_agent_event(event)
+    @contextmanager
+    def execution(self, save_state, manual=False):
+        self.goal_manager.begin_turn()
+        self.clock_manager.turn_started()
+        interrupted = False
+        try:
+            yield
+        except (TurnInterrupted, ModelRequestInterrupted):
+            interrupted = not manual
+            raise
+        finally:
+            self.goal_manager.finish_turn(interrupted)
+            save_state()
+        if not manual:
+            self.goal_manager.schedule_continuation()
+        self.clock_manager.arm_after_reply()
 
     def tool_completed(self):
         self.goal_manager.account()

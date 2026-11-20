@@ -61,7 +61,7 @@ boundaries instead of adding another Session wrapper or `SubmissionQueue` alias.
 | `AgentRuntime` | Frontend interfaces, session commands, enqueue/mailbox/trigger state, receipts, title/state snapshots, subscriptions, interactive requests and worker lifecycle |
 | `ToolRegistry` | Tool instances and their session-local runtime environment |
 | `AgentRuntimeEnvironment` | Tool resource bindings, lifecycle, background work, goal continuation, plan/input services and restorable manager state |
-| `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, lifecycle observation and recursive close |
+| `AgentsManager` | Construction and registration of the whole Runtime tree, task paths, message delivery, capacity reclamation and recursive close |
 | CLI / web / Feishu | Input transport and event rendering; no command interpretation or direct Agent control |
 
 `Agent.execution_snapshot()` derives immutable running, stop, usage and session
@@ -113,12 +113,12 @@ Do not restore the old collaboration-mode enum or `session_mode` parameter.
 MultiAgentV2's explicit/proactive operating mode is a separate context contract;
 see [Context](CONTEXT.md#multiagentv2-developer-context).
 
-`model_client`, `tool_registry`, `context_manager` and `event_handler` are ordinary
-attributes. `AgentRuntime` holds its Agent and subscribes to events, but the Agent
-has no runtime/queue reference, input-source callback or submission lifecycle API.
-Control flows from Runtime to Agent; events are observations, not instructions to
-settle runtime receipts. There are two backend abstractions, not an additional
-Session wrapper. Queue data remains internal to Runtime.
+`TurnContext` holds the active turn's stop and follow-up flags, compact input,
+streamed model state and completion signal. `Agent` opens it internally per turn
+and binds `EventScope` to its stream filter. An attached `AgentRuntime` supplies
+mailbox delivery during normal sampling and records the
+actual outcome when execution exits. Runtime owns the queues and submission receipts.
+Standalone Agents run the same loop with an empty mailbox.
 
 ## Frontend boundary
 
@@ -576,7 +576,8 @@ rollout in `<rollout-path>.state.json`. The environment aggregates manager-owned
 data; tools have no persistence interface. The current version records the
 clock's `period_m` (`null` disables it) and optional goal state, not timer Tasks,
 callbacks or deadlines.
-The Agent saves after committing a tool result and before tool shutdown. The
+The Agent saves after committing a tool result and before tool shutdown.
+During compaction it defers these tool updates until success or failure. The
 recorder skips unchanged snapshots and atomically replaces changed snapshots;
 write errors propagate, and final tool cleanup still runs after a save failure.
 Unused lazy recordings and unrecorded Agents, including children, create no
@@ -623,30 +624,26 @@ report a notification failure. Runtime still owns the pending user input, and
 the clock waits for the next successful reply before arming again.
 Background events are not queued or cached.
 
-One idle event is cleared on entry and set in `finally`, covering pre-turn
-compaction, sampling, tool execution and manual compaction. `is_running` derives
-from that event, and `wait_until_idle` waits on it without polling or reading an
-execution result. Overlapping execution is rejected; there is no pre-sampling
-Task reservation or cancellation policy.
+Each active turn or manual compaction owns a completion signal and its stop
+flag. `is_running` checks for that active operation, and `wait_until_idle`
+awaits its signal. The `finally` block releases waiting callers on every exit.
 
-The toolcall loop reads in order: auto-compact if needed, sample the model, commit
-its output, then execute tools or finish. Follow-ups and tool handoffs determine
-when a turn ends; do not add a fixed iteration cap or a local iteration-limit
-parameter. Threshold-triggered compaction has one
-call site at the top of the loop: before the first sample it compresses previous
-history and then appends the new user input (`pre_turn`); on tool follow-ups it
-compresses the current history (`mid_turn`). Its `_TurnState` holds only the
-current turn id, logical iteration and latest assistant text; it is local to
-that call, not another admission lifecycle or queue.
+`run_turn` checks the compaction threshold before each ordinary sample and
+delivers queued input at that boundary. When the threshold is reached, the
+first sample compresses previous history before appending new user input
+(`pre_turn`), and a tool follow-up compresses the current history (`mid_turn`).
+`run_turn` samples, runs any requested tools and repeats while work remains.
+Ordinary turns and compaction both call `_run_tools` to record tool calls,
+execute each batch, append results and collect follow-up messages.
 
-Context-overflow recovery belongs to `_sample`: compact once, prepare the next
-request again, and retry that sample once. A failed compact or second overflow
+On a provider overflow, `_sample` compacts the history and retries the
+ordinary sample once. A failed compact or second overflow
 propagates without re-entering recovery. Network retries remain inside the
 provider. Recovery keeps the same logical iteration and turn id and never
 replays tools, unless an explicit cooperative stop ends that execution.
-The bounded attempt loop checks for a stop before either request, including
-after overflow compaction. Only its first actual attempt advances the iteration;
-a stop during pre-turn or follow-up compaction does not count an unsent sample.
+An ordinary sample checks for a stop before its first request and after overflow
+compaction. Both attempts share one logical iteration. A stop during pre-turn
+or follow-up compaction does not count an unsent sample.
 The other stop boundary is after model output and all issued tool results have
 been committed. There is no separate pre-sampling wrapper or stop-check helper.
 
@@ -678,10 +675,10 @@ that execution can stop before sampling too; committed inputs remain in history.
 Ordinary `/queue` input does not request a stop.
 
 Direct `run_turn` callers receive `TurnInterrupted` if a Runtime requests a stop.
-Runtime delivers messages through `TurnInputReadyEvent`, including during direct
-Agent execution. This synchronous coordination propagates delivery errors to the
-turn; ordinary event observers report errors to the loop without failing the
-turn. The Agent does not own or complete Runtime receipts; executing
+Agent calls Runtime's mailbox delivery function before sampling, including
+during direct Agent execution. A failed history write restores the pending
+messages in order and propagates to the caller. `TurnInputReadyEvent` reports
+that the boundary was reached after delivery. Executing
 enqueued or triggered turns requires `runtime.start()`; `close()` discards
 pending turns.
 There are no separate
@@ -731,10 +728,11 @@ Runtime and workspace close wait for issued model/tool operations to finish.
 There is no close timeout that cancels a turn: if a request never finishes,
 close keeps waiting.
 
-Sub-agent services observe ordinary Agent lifecycle events. They retain the last
-completed/failed status, but active execution and pending inputs take precedence
-when reporting busy. Direct calls and background invokes produce the same events;
-status observers no longer inspect raw Task results.
+Runtime tracks ordinary turns from input binding through tool environment cleanup,
+including direct calls and background invokes. After the Agent releases the turn,
+Runtime records its final status and elapsed time and delivers the answer or error
+to the parent through `AgentsManager`. Manual compaction also refreshes the
+parent's view on release and preserves the previous turn result.
 
 ### Feishu connection lifecycle
 
@@ -1460,9 +1458,8 @@ Tool summaries use the pure `summarize_tool_result(call, result)` projection;
 structured exec metadata is displayed from the result object, without parsing
 legacy `Process running...` text. Conversation rows are projected by
 `utils.history.conversation_history_to_turns`, independently of rollout storage.
-That helper module depends on protocol items and the standard library, never events or
-frontends. The compactor's event type import is type-checking-only so loading
-the utils package cannot create an events/utils initialization cycle.
+The history and compaction helpers depend only on protocol items and the
+standard library.
 
 Feishu event projection and request/token caches remain on
 `pycodex_ws.feishu_card.PycodexCard`; `pycodex_ws.feishu_render` builds card JSON
@@ -1533,13 +1530,27 @@ Local tool events carry the existing `ToolCall` and
 Provider tool reports use `ToolCalledEvent`, distinct from local execution
 starting with `ToolStartedEvent`.
 
-The four `ModelEvent` variants cover assistant deltas, tool reports, usage and
-stream errors. The Agent adds turn identity with `dataclasses.replace`; the
-queue similarly adds submission identity without changing the concrete type or
-mutating the producer's event. `Agent._emit(event)` only dispatches; terminal
-events receive their background-work count explicitly at construction.
-Manual compact terminal events notify lifecycle hooks, but auto-compact events
-do not finish or restart the enclosing turn.
+Model stream notifications cover assistant deltas, tool reports, usage, stream
+errors and request timing. The Agent adds turn identity and Runtime adds the
+submission ID. The Agent accounts provider usage from the model result before
+publishing its token count. Terminal events carry the background-work count.
+Manual compaction has its own lifecycle. Automatic compaction runs inside the
+enclosing turn.
+
+Models, tools and commands import `EventScope` from `pycodex.events` and call
+`EventScope.emit(event)`. The observer bound at turn or command entry also
+receives notifications from parallel tool tasks. The Responses transport delivers
+worker-thread notifications on the caller's event loop. Out-of-turn runtime
+updates such as queue or parent-agent state changes go through
+`AgentRuntime.publish_update(reason)`. Direct model callers can bind an observer
+with `EventScope.observe`.
+
+```python
+from pycodex.events import EventScope
+
+with EventScope.observe(events.append):
+    response = await client.complete(prompt)
+```
 
 `InputRequestedEvent` also represents the active request in backend snapshots.
 Commands, session state and provider-specific data keep their existing nested
@@ -1551,12 +1562,12 @@ below the conversation and removes it on resolution; it is not a conversation
 turn. Python observers and custom model clients must use the concrete event
 classes instead of the removed generic interfaces.
 
-Agent and submission event callbacks are observers. A callback exception is
-reported through the owning asyncio loop's exception handler; it does not change
-a successful turn into `turn_failed`, suppress an underlying model error, or
-discard a completed tool result. Background tools observe the same lifecycle
-events through `BaseTool.handle_agent_event`, not a second Task-listener channel.
-No event payload is included in these observer-failure diagnostics.
+Event callbacks receive their own copy of each notification, including mutable
+tool arguments and results. The asyncio loop reports observer exceptions,
+or the logger reports them when a synchronous caller has no running loop.
+Dropping or replaying notifications preserves mailbox contents, goal accounting,
+clock deadlines, persisted history and child final-answer delivery. Each frontend
+can use its notifications to update its display.
 
 The Responses client marshals worker-thread events onto the owning event loop.
 When that request completes or is cancelled, its callback is deactivated; already
@@ -1663,8 +1674,8 @@ adding follow-up messages; outer Agent batches still own history and follow-up
 delivery.
 
 `AgentsManager` delivers child completion and failure as a native `AgentMessage`
-with message type `FINAL_ANSWER`; interruption only updates status. Each terminal
-event is delivered once, even when successive answers are identical. Runtime
+with message type `FINAL_ANSWER`. Interruption updates status. Each completed
+or failed execution sends one answer, even when successive answers are identical. Runtime
 consumes mailbox items at input boundaries after issued tool batches complete.
 A message arriving during active execution requests a follow-up sample; an idle
 recipient keeps it until execution is triggered.
@@ -1684,10 +1695,10 @@ It does not accept IDs or return a status map.
 
 `BaseTool` only provides `spec`, `serialize`, `run` and `follow_up_messages`.
 Factories register shared managers once with
-`environment.register_resource(name, manager, restart=None, close=None, observer=None)`.
+`environment.register_resource(name, manager, restart=None, close=None)`.
 Managers implement `bind(invoke, output, state_changed)`, `shutdown`,
 `set_state_listener`, `background_work_count` and `background_work_snapshot`.
-Optional restart, async cleanup and event callbacks are registered explicitly.
+Optional restart and async cleanup callbacks are registered explicitly.
 Environment binds Runtime capabilities without passing a Runtime object to tools;
 binding alone does not retire cells. Runtime construction and resume explicitly
 restart the environment; CodeModeManager retains its generation isolation and
@@ -1696,9 +1707,9 @@ async cleanup; `Agent.shutdown()` accounts and saves state, then stops resources
 Standalone callers can await environment close as well. Unified exec shutdown
 only disconnects notifications: subprocess survival and output readers retain
 their existing behavior. Goal continuation is requested through the environment.
-Clock countdowns pause on turn/manual-compact start events and rearm on success,
-including successful manual compaction. Terminal events retain the single
-aggregate `background_work_count`.
+The environment pauses the clock when a turn or manual compaction begins and
+rearms it after a successful reply or summary. Goal accounting and the
+environment snapshot finish before the terminal notification.
 
 An `exec_command(..., wake_me_up_when_done=True)` session that exits in the
 background invokes `<exec_command_completed>` through `AgentRuntime.maybe_invoke`
@@ -1848,7 +1859,7 @@ Construction and first-write requirements are in
 [Recording lifecycle](#recording-lifecycle); they also apply to child context
 inheritance and resume.
 
-`ModelClient` requires `model`, `reasoning_effort`, `recording_metadata`, async `complete`, and
+`ModelClient` requires `model`, `reasoning_effort`, `recording_metadata`, async `complete(prompt)`, and
 `with_overrides` for child construction. `Agent.model_name` reads `client.model`
 directly; test clients must supply the properties used by their integration.
 Recording metadata is `ModelRecordingMetadata(originator, provider_name)`;
@@ -1857,7 +1868,10 @@ whether its lazy initial write has completed.
 There is no missing-property fallback or second
 model-name field. `ModelResponse` checks its item
 types at construction instead of allowing the loop to silently discard invalid
-internal values. Runtime/Manager clients implement `ModelControl`, which extends
+internal values. A custom client that reports token usage returns it in
+`ModelResponse(items, usage=...)`. The optional `usage` field carries the
+provider counts for this request. The Agent uses those counts for automatic
+compaction and goal budgets. Runtime/Manager clients implement `ModelControl`, which extends
 `ModelClient` with writable model/effort, endpoint and model listing.
 Switching through `Agent.set_model` updates both the client and
 context; `ResponsesModelClient.model` uses the same provider config as metadata.
@@ -1981,21 +1995,24 @@ rather than a mechanical setter wrapper.
 
 ## Compaction
 
-`compact_history` takes history, client and context explicitly and returns a
-`CompactResult`. It does not receive an Agent or mutate its active history.
-Overflow retries prune paired old tool calls/results only from the local retry
-history. Empty or reasoning-only summaries fail rather than replace history
-with a placeholder.
+Manual and automatic compaction run the same tool loop on the original Agent.
+The compaction caller assembles model and tool input from the committed history,
+the summary instruction and a local list of new tool exchanges. Session viewers
+see the committed history throughout. If the provider rejects the input length,
+subsequent summary requests skip the oldest tool exchanges and include newly
+executed tools and their results.
 
-The Agent commits a successful result after writing the compacted checkpoint,
-then clears stale usage. Model or checkpoint-write failure leaves active history
-unchanged. Manual compaction uses the same idle gate as a normal turn, preventing
+The final tool-free response supplies the summary. A successful compaction
+writes a single checkpoint, replaces active history and clears stale usage.
+On failure or interruption, the Agent adds the buffered exchanges to session
+history and saves them for retry and resume. A process crash during
+compaction can lose tool outputs buffered since the last rollout write.
+Manual compaction uses the same idle gate as a normal turn, preventing
 background wake-ups from racing with it.
 
-Manual, threshold-triggered and overflow-triggered compaction use the same Agent
-implementation for streaming observation, checkpoint commit and terminal events.
-Manual operations emit `compact_started/completed/failed`; automatic
-operations retain the corresponding `auto_compact_*` names and phase metadata.
+`Agent.compact()` emits `compact_started/completed/failed` for the standalone
+command and records usage from its summary requests. Threshold and overflow
+recovery emit `auto_compact_*` progress events within the active turn.
 The interactive shell displays those events without manufacturing its own stream
 events. `Agent.compact()` no longer takes a separate stream callback; observe
 through the Agent's normal event handler. Every compact retry reuses its supplied
@@ -2026,7 +2043,7 @@ Under the default retry policy, ordinary turns report `response.incomplete`.
 For `reason="max_output_tokens"`, completed assistant/reasoning items remain
 available for continuation as described above.
 A compact request can use an already received partial assistant summary for
-that same reason instead of repeatedly restarting compaction.
+that same reason when the partial response contains no tool calls.
 
 ## Responses reliability
 

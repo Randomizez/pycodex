@@ -3,6 +3,7 @@ import inspect
 import sys
 import typing
 from dataclasses import replace
+from unittest.mock import Mock
 
 import pytest
 
@@ -20,7 +21,7 @@ from pycodex import (
     TurnInterrupted,
     UserMessage,
 )
-from pycodex.events import AssistantDeltaEvent, StreamErrorEvent, TokenCountEvent
+from pycodex.events import AssistantDeltaEvent, EventScope, StreamErrorEvent
 from pycodex.protocol import ContextMessage
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import (
@@ -123,16 +124,17 @@ class UsageModelClient:
         self.prompts: "typing.List[object]" = []
         self.call_count = 0
 
-    async def complete(self, prompt, event_handler):
+    async def complete(self, prompt):
         self.prompts.append(prompt)
         self.call_count += 1
         total_tokens = self._usage_by_call.get(self.call_count)
-        if total_tokens is not None:
-            event_handler(TokenCountEvent({"total_tokens": total_tokens}))
         try:
-            return next(self._responses)
+            response = next(self._responses)
         except StopIteration as exc:
             raise RuntimeError("usage model ran out of responses") from exc
+        if total_tokens is not None:
+            return replace(response, usage={"total_tokens": total_tokens})
+        return response
 
 
 def _auto_compact_context(limit: "typing.Union[int, None]") -> "ContextConfig":
@@ -239,6 +241,106 @@ def test_agent_run_turn_is_a_regular_coroutine() -> "None":
     assert not hasattr(agent, "task")
     assert not hasattr(agent, "cancel")
     assert not hasattr(agent, "add_task_listener")
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_restores_outer_observer_and_drops_its_late_emits():
+    release = asyncio.Event()
+    late_task = None
+
+    async def emit_late():
+        await release.wait()
+        EventScope.emit(AssistantDeltaEvent("old"))
+
+    async def respond(prompt, invocation):
+        nonlocal late_task
+        if invocation == 1:
+            late_task = asyncio.create_task(emit_late())
+            raise ValueError("failed turn")
+        release.set()
+        await late_task
+        return ModelResponse([AssistantMessage("new")])
+
+    agent = make_agent(ScriptedModelClient([], respond), ToolRegistry(), ContextConfig())
+    seen = []
+    with EventScope.observe(seen.append):
+        with pytest.raises(ValueError, match="failed turn"):
+            await agent.run_turn([UserMessage("first")], turn_id="same")
+        EventScope.emit(AssistantDeltaEvent("between"))
+        await agent.run_turn([UserMessage("second")], turn_id="same")
+    EventScope.emit(AssistantDeltaEvent("outside"))
+
+    assert [(e.delta, e.turn_id) for e in seen if isinstance(e, AssistantDeltaEvent)] == [
+        ("between", ""), ("new", "same"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_event_scope_copies_events_only_for_external_observers():
+    copies = []
+
+    class CountedDict(dict):
+        def __deepcopy__(self, memo):
+            copies.append("usage")
+            return CountedDict(self)
+
+    class CountedStr(str):
+        def __deepcopy__(self, memo):
+            copies.append("delta")
+            return CountedStr(self)
+
+    class WorkerClient:
+        model = "test"
+        reasoning_effort = None
+        last_error = None
+        retry_error_codes = None
+        recording_metadata = ScriptedModelClient([]).recording_metadata
+
+        async def complete(self, prompt):
+            with EventScope.worker_events() as worker:
+                await asyncio.to_thread(
+                    worker.run, EventScope.emit, AssistantDeltaEvent(CountedStr("chunk")),
+                )
+                await asyncio.sleep(0)
+            return ModelResponse([AssistantMessage("done")], usage=CountedDict(total_tokens=5))
+
+        def set_retry_error_code(self, codes):
+            self.retry_error_codes = codes
+
+        def stop_retry(self):
+            pass
+
+    unobserved = make_agent(WorkerClient(), ToolRegistry(), ContextConfig())
+    await unobserved.run_turn([UserMessage("quiet")])
+    assert copies == []
+
+    seen = []
+    with EventScope.observe(seen.append):
+        await unobserved.run_turn([UserMessage("observed")])
+    assert copies == ["delta", "usage"]
+
+    copies.clear()
+    direct = make_agent(
+        WorkerClient(), ToolRegistry(), ContextConfig(), event_handler=Mock(side_effect=seen.append),
+    )
+    await direct.run_turn([UserMessage("direct")])
+    assert copies == ["delta", "usage"]
+
+    copies.clear()
+    runtime = make_runtime(make_agent(WorkerClient(), ToolRegistry(), ContextConfig()))
+    runtime.register_command("probe", lambda _arg: asyncio.sleep(0, result=CountedDict(ok=1)))
+    await runtime.start()
+    try:
+        await runtime.submit_user_turn("runtime quiet")
+        await (await runtime.submit_input("/probe")).future
+        assert copies == []
+
+        runtime.event_handler = seen.append
+        await runtime.submit_user_turn("runtime observed")
+        await (await runtime.submit_input("/probe")).future
+        assert copies == ["delta", "usage", "usage"]
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -559,12 +661,12 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
             self.prompts = []
             self.call_count = 0
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             self.call_count += 1
             if self.call_count == 1:
-                event_handler(TokenCountEvent({"total_tokens": 12}))
                 return ModelResponse(
+                    usage={"total_tokens": 12},
                     items=[
                         ToolCall(
                             call_id="call_1",
@@ -574,7 +676,7 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
                     ]
                 )
             if self.call_count == 2:
-                event_handler(AssistantDeltaEvent("partial compact summary"))
+                EventScope.emit(AssistantDeltaEvent("partial compact summary"))
                 raise ResponsesIncompleteError(
                     "responses stream ended with `response.incomplete`",
                     [AssistantMessage(text="partial compact summary")],
@@ -615,9 +717,14 @@ async def test_agent_midturn_auto_compact_accepts_partial_incomplete_summary() -
 
 
 @pytest.mark.asyncio
-async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary() -> (
-    "None"
-):
+@pytest.mark.parametrize("reason,partial_items", [
+    ("content_filter", [AssistantMessage("partial compact summary")]),
+    ("max_output_tokens", [
+        AssistantMessage("Checking", phase="commentary"),
+        ToolCall("partial", "echo", {"text": "incomplete"}),
+    ]),
+])
+async def test_agent_midturn_auto_compact_rejects_unusable_partial_reply(reason, partial_items):
     class PartialCompactModelClient:
         model = "test"
         reasoning_effort = None
@@ -625,12 +732,12 @@ async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary()
         def __init__(self) -> "None":
             self.call_count = 0
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             del prompt
             self.call_count += 1
             if self.call_count == 1:
-                event_handler(TokenCountEvent({"total_tokens": 2}))
                 return ModelResponse(
+                    usage={"total_tokens": 2},
                     items=[
                         ToolCall(
                             call_id="call_1",
@@ -642,8 +749,8 @@ async def test_agent_midturn_auto_compact_rejects_non_token_incomplete_summary()
             if self.call_count == 2:
                 raise ResponsesIncompleteError(
                     "responses stream ended with `response.incomplete`",
-                    [AssistantMessage(text="partial compact summary")],
-                    reason="content_filter",
+                    partial_items,
+                    reason=reason,
                 )
             raise AssertionError(f"unexpected call_count={self.call_count}")
 
@@ -988,8 +1095,7 @@ async def test_runtime_waits_for_agent_background_turn_before_next_submission() 
         def stop_retry(self):
             pass
 
-        async def complete(self, prompt, event_handler):
-            del event_handler
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             self.call_count += 1
             if self.call_count == 1:
@@ -1068,16 +1174,16 @@ async def test_runtime_steer_batches_messages_into_next_request() -> "None":
         def stop_retry(self):
             pass
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             self.call_count += 1
             if self.call_count == 1:
                 first_request_started.set()
                 await release_first_request.wait()
-                event_handler(AssistantDeltaEvent("first"))
+                EventScope.emit(AssistantDeltaEvent("first"))
                 return ModelResponse(items=[AssistantMessage(text="first")])
 
-            event_handler(AssistantDeltaEvent("second"))
+            EventScope.emit(AssistantDeltaEvent("second"))
             return ModelResponse(items=[AssistantMessage(text="second")])
 
     model = _DelayedModelClient()
@@ -1134,8 +1240,8 @@ async def test_agent_emits_turn_failed_event_on_model_error() -> "None":
         model = "test"
         reasoning_effort = None
 
-        async def complete(self, prompt, event_handler):
-            del prompt, event_handler
+        async def complete(self, prompt):
+            del prompt
             raise RuntimeError("synthetic client error")
 
     agent = make_agent(
@@ -1226,7 +1332,8 @@ async def test_agent_recovers_after_event_handler_failure(failed_event) -> "None
             raise RuntimeError("synthetic event failure")
 
     model = ScriptedModelClient(response_factory=response_factory)
-    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=handle_event)
+    observer = Mock(side_effect=handle_event)
+    agent = make_agent(model, ToolRegistry(), ContextConfig(), event_handler=observer)
     loop = asyncio.get_running_loop()
     previous_handler = loop.get_exception_handler()
     observer_errors = []
@@ -1445,11 +1552,11 @@ async def test_agent_keeps_done_incomplete_items_without_unresolved_tool_calls()
             self.prompts = []
             self.call_count = 0
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             self.call_count += 1
             if self.call_count == 1:
-                event_handler(AssistantDeltaEvent("partial answer"))
+                EventScope.emit(AssistantDeltaEvent("partial answer"))
                 raise ResponsesIncompleteError(
                     "responses stream ended with `response.incomplete`",
                     [
@@ -1500,7 +1607,7 @@ async def test_agent_keeps_reasoning_done_item_from_incomplete_response() -> "No
             self.prompts = []
             self.call_count = 0
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             self.call_count += 1
             if self.call_count == 1:
@@ -1552,8 +1659,8 @@ async def test_agent_emits_token_count_for_context_length_error() -> "None":
         model = "test"
         reasoning_effort = None
 
-        async def complete(self, prompt, event_handler):
-            del prompt, event_handler
+        async def complete(self, prompt):
+            del prompt
             raise ContextLengthExceeded(error_message)
 
     agent = make_agent(
@@ -1678,32 +1785,38 @@ async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() 
         UserMessage(text="old prompt"),
         ToolCall(call_id="call_old", name="echo", arguments={"text": "large"}),
         ToolResult(call_id="call_old", name="echo", output="large output"),
+        ToolCall("call_recent", "echo", {"text": "more"}),
+        ToolResult("call_recent", "echo", "more output"),
         AssistantMessage(text="old answer"),
     )
 
     def response_factory(prompt, call_count):
         if call_count == 1:
             raise ContextLengthExceeded(_context_length_error_message())
-        if call_count == 2:
-            compact_items = _conversation_items(prompt)
-            assert any(isinstance(item, ToolResult) for item in compact_items)
+        outputs = [item.call_id for item in prompt.input if isinstance(item, ToolResult)]
+        calls = [item.call_id for item in prompt.input if isinstance(item, ToolCall)]
+        assert calls == outputs
+        if call_count in (2, 3):
+            assert outputs == (["call_old", "call_recent"] if call_count == 2 else ["call_recent"])
             raise ContextLengthExceeded(_context_length_error_message())
-        if call_count == 3:
-            compact_items = _conversation_items(prompt)
-            assert not any(isinstance(item, ToolCall) for item in compact_items)
-            assert not any(isinstance(item, ToolResult) for item in compact_items)
-            return ModelResponse(items=[AssistantMessage(text="summary without tools")])
         if call_count == 4:
-            retry_items = _conversation_items(prompt)
-            assert not any(isinstance(item, ToolCall) for item in retry_items)
-            assert not any(isinstance(item, ToolResult) for item in retry_items)
+            assert outputs == []
+            return ModelResponse([ToolCall("during_compact", "echo", {"text": "fresh output"})])
+        if call_count == 5:
+            assert outputs == ["during_compact"]
+            assert prompt.input[-1].output == "fresh output"
+            return ModelResponse([AssistantMessage("summary with fresh output")])
+        if call_count == 6:
+            assert outputs == []
             return ModelResponse(items=[AssistantMessage(text="final after prune")])
         raise AssertionError(f"unexpected call_count={call_count}")
 
     model = ScriptedModelClient(response_factory=response_factory)
+    tools = ToolRegistry()
+    tools.register(EchoTool())
     agent = make_agent(
         model,
-        ToolRegistry(),
+        tools,
         ContextConfig(),
         event_handler=events.append,
         initial_history=initial_history,
@@ -1712,15 +1825,15 @@ async def test_agent_prunes_old_tool_responses_when_context_compact_overflows() 
     result = await agent.run_turn([UserMessage("new prompt")])
 
     assert result.output_text == "final after prune"
-    assert model.call_count == 4
+    assert model.call_count == 6
     assert not any(isinstance(item, ToolCall) for item in result.history)
     assert not any(isinstance(item, ToolResult) for item in result.history)
     auto_completed = [
         event for event in events if event.kind == "auto_compact_completed"
     ][0]
-    assert auto_completed.pruned_tool_results == 1
+    assert auto_completed.pruned_tool_results == 2
     assert auto_completed.summary == (
-        "compact(5 items) -> 0 items + [summary] " "(dropped 1 old tool response)"
+        "compact(7 items) -> 0 items + [summary] (dropped 2 old tool responses)"
     )
 
 
@@ -1732,9 +1845,9 @@ async def test_agent_relays_stream_error_events() -> "None":
         model = "test"
         reasoning_effort = None
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             del prompt
-            event_handler(
+            EventScope.emit(
                 StreamErrorEvent("Reconnecting... 1/5", 1, 5, 0, "disconnected")
             )
             return ModelResponse(items=[AssistantMessage(text="done")])

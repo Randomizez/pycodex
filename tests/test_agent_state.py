@@ -21,9 +21,10 @@ from pycodex import (
     TurnInterrupted,
     UserMessage,
 )
-from pycodex.events import TokenCountEvent, TurnStartedEvent
+from pycodex.events import EventScope, ModelRequestInterrupted
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
+from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT
 from pycodex.utils.history import serialize_history_item
 from pycodex.utils.session_persist import (
     list_resumable_sessions,
@@ -117,6 +118,35 @@ async def test_failed_compact_preserves_history_and_rollout(
     else:
         assert not recorder.rollout_path.exists()
     assert agent._last_total_usage_tokens == 100
+    assert not agent.is_running
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase,failed_events", [
+    ("manual", ["compact_failed"]),
+    ("pre_turn", ["auto_compact_failed", "turn_failed"]),
+])
+async def test_compaction_reports_environment_save_failure(tmp_path, monkeypatch, phase, failed_events):
+    events = []
+    agent = make_agent(
+        ScriptedModelClient([ModelResponse([AssistantMessage("summary")])]),
+        ToolRegistry(), ContextConfig(model_auto_compact_token_limit=10),
+        initial_history=(UserMessage("old prompt"),),
+        session_file_path=tmp_path / "rollout.jsonl", event_handler=events.append,
+    )
+    agent._last_total_usage_tokens = 10
+
+    def fail_save(state):
+        raise OSError("environment write failed")
+
+    monkeypatch.setattr(agent._rollout_recorder, "save_environment_state", fail_save)
+    with pytest.raises(OSError, match="environment write failed"):
+        if phase == "manual":
+            await agent.compact()
+        else:
+            await agent.run_turn([UserMessage("new prompt")])
+
+    assert [e.kind for e in events if e.kind.endswith(("_completed", "_failed"))] == failed_events
     assert not agent.is_running
 
 
@@ -438,7 +468,7 @@ def test_agent_builds_independent_contexts_from_explicit_config(tmp_path):
 def test_runtime_subscribes_to_agent_without_injecting_a_back_reference():
     from pycodex import AgentRuntime
 
-    client = ScriptedModelClient([])
+    client = ScriptedModelClient([ModelResponse([AssistantMessage("answer")])])
     tools = ToolRegistry()
     events = []
     agent = make_agent(client, tools, ContextConfig(), event_handler=events.append)
@@ -465,8 +495,8 @@ def test_runtime_subscribes_to_agent_without_injecting_a_back_reference():
     assert not hasattr(queue, "set_event_handler")
     assert not hasattr(agent, "submission_queue")
     assert not hasattr(agent, "runtime")
-    agent._emit(TurnStartedEvent("direct", ()))
-    assert events[-1].kind == "turn_started"
+    assert agent.ask("direct").output_text == "answer"
+    assert events[-1].kind == "turn_completed"
 
 
 @pytest.mark.asyncio
@@ -567,13 +597,12 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
         def stop_retry(self):
             pass
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.call_count += 1
             if phase != "pre_turn" and self.call_count == 1:
                 if phase == "context_length_exceeded":
                     raise ContextLengthExceeded("input exceeds the context window")
-                event_handler(TokenCountEvent({"total_tokens": 100}))
-                return ModelResponse([ToolCall("count_call", "count", {})])
+                return ModelResponse([ToolCall("count_call", "count", {})], usage={"total_tokens": 100})
             assert self.call_count == (1 if phase == "pre_turn" else 2)
             agent.stop_asap()
             return ModelResponse([AssistantMessage("summary")])
@@ -606,6 +635,69 @@ async def test_stop_during_compaction_prevents_next_sample_without_advancing_ite
         assert not any(event.kind == "turn_failed" for event in events)
         if phase == "pre_turn":
             assert agent.history[-1] == UserMessage("new prompt")
+    finally:
+        agent.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["auto_tool_interrupt", "auto_retry_interrupt", "manual_retry_interrupt"])
+async def test_compaction_interruption_normalizes_errors_without_auto_compact_failed_event(mode):
+    events = []
+
+    class StopTool(BaseTool):
+        name = "stop_tool"
+        description = "Requests a cooperative stop while executing."
+
+        async def run(self, context, args):
+            agent.stop_asap()
+            return "ran"
+
+    class StoppingClient:
+        model = "test"
+        reasoning_effort = None
+
+        def __init__(self):
+            self.call_count = 0
+
+        def stop_retry(self):
+            pass
+
+        async def complete(self, prompt):
+            self.call_count += 1
+            if mode != "manual_retry_interrupt" and self.call_count == 1:
+                raise ContextLengthExceeded("input exceeds the context window")
+            if mode == "auto_tool_interrupt":
+                return ModelResponse([ToolCall("c1", "stop_tool", {})])
+            agent.stop_asap()
+            raise ModelRequestInterrupted()
+
+    tools = ToolRegistry()
+    tools.register(StopTool())
+    client = StoppingClient()
+    agent = make_agent(
+        client,
+        tools,
+        ContextConfig(),
+        initial_history=(UserMessage("old prompt"),),
+        event_handler=events.append,
+    )
+    try:
+        with pytest.raises(TurnInterrupted):
+            if mode == "manual_retry_interrupt":
+                await agent.compact()
+            else:
+                await agent.run_turn([UserMessage("new prompt")])
+        kinds = [event.kind for event in events]
+        if mode == "manual_retry_interrupt":
+            assert kinds == ["compact_started", "compact_failed"]
+            assert (events[-1].error, events[-1].error_type) == ("turn interrupted", "TurnInterrupted")
+        else:
+            assert client.call_count == 2
+            assert "auto_compact_started" in kinds
+            assert "auto_compact_failed" not in kinds
+            assert kinds[-1] == "turn_interrupted"
+            if mode == "auto_tool_interrupt":
+                assert any(isinstance(item, ToolResult) and item.output == "ran" for item in agent.history)
     finally:
         agent.shutdown()
 
@@ -1367,7 +1459,7 @@ async def test_subagents_keep_turns_compaction_and_followup_in_memory(
         encoding="utf-8",
     )
 
-    async def complete(client, prompt, event_handler):
+    async def complete(client, prompt):
         return ModelResponse([AssistantMessage("answer")])
 
     monkeypatch.setattr(ResponsesModelClient, "complete", complete)
@@ -1435,7 +1527,7 @@ async def test_manual_compact_shares_agent_events_and_clock_lifecycle(failed):
     clock = ClockManager()
     clock.set_period(1)
     tools = ToolRegistry()
-    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
+    tools.runtime_environment.register_resource("clock", clock)
     initial_history = (UserMessage("old prompt"),)
     agent = make_agent(
         ScriptedModelClient(response_factory=respond),
@@ -1494,6 +1586,12 @@ async def test_tool_observer_failure_does_not_abort_execution_or_commit():
 
     def observe(event):
         events.append(event.kind)
+        if event.kind == "turn_input_ready":
+            raise asyncio.CancelledError()
+        if event.kind == "tool_started":
+            event.call.arguments["value"] = "changed before execution"
+        if event.kind == "tool_completed":
+            event.result.output["value"] = "changed after execution"
         if event.kind in {"tool_started", "tool_completed", "turn_completed"}:
             raise ValueError("observer unavailable")
 
@@ -1519,7 +1617,7 @@ async def test_tool_observer_failure_does_not_abort_execution_or_commit():
         loop.set_exception_handler(previous_handler)
     assert result.output_text == "answer"
     assert "turn_failed" not in events
-    assert len(observer_errors) == 3
+    assert len(observer_errors) == 5
     assert next(
         item for item in result.history if isinstance(item, ToolResult)
     ).output == {
@@ -1528,13 +1626,17 @@ async def test_tool_observer_failure_does_not_abort_execution_or_commit():
 
 
 @pytest.mark.asyncio
-async def test_follow_up_messages_do_not_split_tool_call_result_groups():
+@pytest.mark.parametrize("compact", [False, True], ids=["turn", "compact"])
+async def test_follow_up_messages_do_not_split_tool_call_result_groups(compact):
+    tool_histories = []
+
     class NoticeTool(BaseTool):
         name = "notice"
         description = "Produces a notification after tool results."
         supports_parallel = False
 
         async def run(self, context, args):
+            tool_histories.append(context.history)
             assert not any(
                 isinstance(item, UserMessage) and item.text.startswith("notice:")
                 for item in context.history
@@ -1557,7 +1659,14 @@ async def test_follow_up_messages_do_not_split_tool_call_result_groups():
             ModelResponse([AssistantMessage("done")]),
         ]
     )
-    await make_agent(model, tools, ContextConfig()).run_turn([UserMessage("start")])
+    agent = make_agent(model, tools, ContextConfig(), initial_history=(UserMessage("start"),))
+    if compact:
+        await agent.compact()
+    else:
+        await agent.run_turn([])
+    assert (UserMessage(DEFAULT_COMPACT_PROMPT) in tool_histories[0]) == compact
+    assert tool_histories[0][-1].call_id == "second"
+    assert tool_histories[1] == tool_histories[0] + (ToolResult("first", "notice", "first"),)
     assert model.prompts[-1].input[-4:] == [
         ToolResult("first", "notice", "first"),
         ToolResult("second", "notice", "second"),
@@ -1582,18 +1691,22 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
     try:
         tools = ToolRegistry()
         manager = tools.runtime_environment.clock_manager
-        tools.runtime_environment.register_resource("clock", manager, observer=broken_observer)
+        with pytest.raises(TypeError):
+            tools.runtime_environment.register_resource("clock", manager, observer=broken_observer)
+        tools.runtime_environment.register_resource("clock", manager)
         agent = make_agent(
             ScriptedModelClient([ModelResponse([AssistantMessage("done")])]),
             tools,
             ContextConfig(),
         )
-        assert (await agent.run_turn([UserMessage("test")])).output_text == "done"
-        assert len(failures) == 2
+        with EventScope.observe(broken_observer):
+            assert (await agent.run_turn([UserMessage("test")])).output_text == "done"
+        assert failures
         assert all(
             item["message"].startswith("Agent event observer failed:")
             for item in failures
         )
+        observer_failure_count = len(failures)
         background = make_agent(
             ScriptedModelClient(response_factory=fail), ToolRegistry(), ContextConfig()
         )
@@ -1602,7 +1715,7 @@ async def test_tool_observer_errors_do_not_change_result_and_invoke_errors_propa
             await runtime.maybe_invoke({"type": "test_notification", "value": 1})
         await runtime.close()
         assert not background.is_running
-        assert len(failures) == 2
+        assert len(failures) == observer_failure_count
     finally:
         loop.set_exception_handler(previous_handler)
 

@@ -6,7 +6,7 @@ from pycodex import (
     AssistantMessage, BaseTool, ContextConfig, ContextLengthExceeded,
     ModelResponse, ToolCall, ToolRegistry, ToolResult, UserMessage,
 )
-from pycodex.events import MessagesAddedEvent, TokenCountEvent
+from pycodex.events import MessagesAddedEvent
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.tools import ClockManager, ExecCommandTool, UnifiedExecManager
 from pycodex.tools.runtime_services import AgentRuntimeEnvironment
@@ -346,7 +346,9 @@ async def test_message_observer_can_deliver_more_mail_without_losing_identity():
 
 @pytest.mark.asyncio
 async def test_failed_mail_commit_restores_pending_messages_in_order(monkeypatch):
-    runtime = make_runtime(make_agent(ScriptedModelClient([]), ToolRegistry(), ContextConfig()))
+    model = ScriptedModelClient([ModelResponse([])])
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    runtime.agent.event_handler = lambda event: None
     first = UserMessage("same", name="Alice")
     second = UserMessage("same", name="Bob")
     receive = runtime.agent.receive_messages
@@ -358,11 +360,13 @@ async def test_failed_mail_commit_restores_pending_messages_in_order(monkeypatch
     runtime.message(first)
     monkeypatch.setattr(runtime.agent, "receive_messages", fail)
     with pytest.raises(OSError, match="history write failed"):
-        runtime._deliver_messages()
+        await runtime.agent.run_turn([])
+    assert runtime.agent_status == {"errored": "OSError: history write failed"}
+    assert model.call_count == 0
     assert list(runtime._steer_queue) == [first, second]
     assert runtime.agent.history == ()
     monkeypatch.setattr(runtime.agent, "receive_messages", receive)
-    runtime._deliver_messages()
+    await runtime.agent.run_turn([])
     assert [message.message_id for message in runtime.agent.history] == [first.message_id, second.message_id]
     assert not runtime._steer_queue
     await runtime.close()
@@ -484,7 +488,7 @@ async def test_background_notification_steer_reports_only_failures(source, faile
     else:
         manager = ClockManager(seconds_per_minute=0.001)
         manager.set_period(1)
-        tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
+        tools.runtime_environment.register_resource("clock", manager)
         notification = manager._wait_and_notify(manager._generation, 1)
         tag = "clock_tick"
 
@@ -624,15 +628,13 @@ async def test_steer_during_tool_follow_up_compact_preserves_completed_tools(ove
         def stop_retry(self):
             pass
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.prompts.append(prompt)
             number = len(self.prompts)
             if number == 1:
-                if not overflow:
-                    event_handler(TokenCountEvent({"total_tokens": 100}))
                 return ModelResponse([
                     AssistantMessage("old commentary"), ToolCall("count_call", "count", {}),
-                ])
+                ], usage=None if overflow else {"total_tokens": 100})
             if overflow and number == 2:
                 raise ContextLengthExceeded("input exceeds the context window")
             if number == (3 if overflow else 2):

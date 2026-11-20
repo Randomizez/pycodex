@@ -215,7 +215,7 @@ async def test_effort_commands_update_next_request_and_broadcast(
     queue = make_queue(client)
     payloads = []
 
-    async def respond(prompt, event_handler):
+    async def respond(prompt):
         payloads.append(client._build_payload(prompt))
         return ModelResponse([AssistantMessage("done")])
 
@@ -279,7 +279,7 @@ async def test_effort_changes_reject_queued_or_active_work(active, monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def respond(prompt, event_handler):
+    async def respond(prompt):
         started.set()
         await release.wait()
         return ModelResponse([AssistantMessage("done")])

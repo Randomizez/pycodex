@@ -5,7 +5,6 @@ import math
 import typing
 from datetime import datetime, timedelta
 
-from ..events import CompactCompletedEvent, CompactStartedEvent, TurnCompletedEvent, TurnStartedEvent
 from ..protocol import JSONDict
 
 
@@ -26,12 +25,6 @@ class ClockManager:
     def bind(self, invoke, output, state_changed):
         self._notify_hook = invoke
         self._state_listener = state_changed
-
-    def handle_agent_event(self, event):
-        if isinstance(event, (TurnStartedEvent, CompactStartedEvent)):
-            self.turn_started()
-        elif isinstance(event, (TurnCompletedEvent, CompactCompletedEvent)):
-            self.arm_after_reply()
 
     def background_work_count(self, after_reply):
         return int(self.enabled if after_reply else self.armed)

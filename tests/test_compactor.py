@@ -3,7 +3,6 @@ import json
 import pytest
 
 from pycodex import ContextConfig, ContextLengthExceeded, ResponsesModelClient, ResponsesProviderConfig
-from pycodex.events import TokenCountEvent
 from pycodex.protocol import (
     AssistantMessage,
     ContextMessage,
@@ -46,11 +45,11 @@ async def test_compact_preserves_request_prefix_and_tools(tmp_path, phase, code_
             super().__init__(response_factory=respond, model="fixture")
             self.payloads = []
 
-        async def complete(self, prompt, event_handler):
+        async def complete(self, prompt):
             self.payloads.append(serializer._build_payload(prompt))
-            response = await super().complete(prompt, event_handler)
+            response = await super().complete(prompt)
             if phase == "auto" and self.call_count == 1:
-                event_handler(TokenCountEvent({"total_tokens": 12}))
+                return ModelResponse(response.items, usage={"total_tokens": 12})
             return response
 
     model = PayloadModelClient()
@@ -96,6 +95,125 @@ async def test_compact_preserves_request_prefix_and_tools(tmp_path, phase, code_
     if phase == "overflow":
         assert any(item["type"] == "function_call" for item in compact_payloads[0]["input"])
         assert not any(item["type"] == "function_call" for item in compact_payloads[1]["input"])
+
+
+@pytest.mark.asyncio
+async def test_auto_compact_can_poll_a_command_from_the_previous_turn(tmp_path):
+    start = ToolCall("start", "exec", (
+        'result = await tools.exec_command(cmd="read a; read b; echo got-$a-$b", yield_time_ms=50)\n'
+        'store("handle", result["session_id"])'
+    ), tool_type="custom")
+    polls = [
+        ToolCall(word, "exec", (
+            'text(await tools.write_stdin(session_id=load("handle"), chars=%r, yield_time_ms=500))'
+            % (word + "\n")
+        ), tool_type="custom")
+        for word in ("first", "second")
+    ]
+    model = ScriptedModelClient([
+        ModelResponse([start]), ModelResponse([AssistantMessage("Command started")]),
+        ModelResponse([polls[0]]),
+        ModelResponse([AssistantMessage("Checking the result", phase="commentary"), polls[1]]),
+        ModelResponse([AssistantMessage("The command returned got-first-second")]),
+        ModelResponse([AssistantMessage("Continued")]),
+    ])
+    rollout = tmp_path / "rollout.jsonl"
+    agent = make_agent(
+        model, make_tools(), ContextConfig(
+            cwd=tmp_path, code_mode_only=True, model_auto_compact_token_limit=50,
+        ), session_file_path=rollout,
+    )
+    runtime = make_runtime(agent)
+    try:
+        await agent.run_turn([UserMessage("Start the command")])
+        before = rollout.read_bytes()
+        agent._last_total_usage_tokens = 50
+        result = await agent.run_turn([UserMessage("Continue")])
+    finally:
+        await runtime.close()
+
+    first_request, after_first, after_second = model.prompts[2:5]
+    assert first_request.input[-1] == UserMessage(DEFAULT_COMPACT_PROMPT)
+    assert after_second.input.count(UserMessage(DEFAULT_COMPACT_PROMPT)) == 1
+    assert after_first.input[-1].call_id == "first"
+    assert after_second.input[-1].call_id == "second"
+    assert "got-first-second" in after_second.input[-1].output
+    assert result.output_text == "Continued"
+    assert "got-first-second" in result.history[0].text
+    assert result.history[1] == UserMessage("Continue")
+    saved = rollout.read_bytes()
+    assert saved.startswith(before)
+    assert [json.loads(line)["type"] for line in saved[len(before):].splitlines()] == [
+        "compacted", "response_item", "event_msg", "response_item",
+    ]
+    assert load_resumed_session_path(rollout)["history"] == result.history
+
+
+@pytest.mark.asyncio
+async def test_failed_compact_keeps_executed_tools_for_retry_and_resume(tmp_path):
+    call = ToolCall("once", "exec_command", {"cmd": "echo ran >> count; cat count"})
+    original = (UserMessage("Original request"),)
+    rollout = tmp_path / "rollout.jsonl"
+
+    def respond(prompt, call_count):
+        if call_count == 1:
+            return ModelResponse([AssistantMessage("Checking", phase="commentary"), call])
+        if call_count == 2:
+            assert not rollout.exists()
+            assert agent.history == original
+            assert prompt.input[-1].call_id == call.call_id
+            raise ContextLengthExceeded("input exceeds the context window")
+        if call_count == 3:
+            assert not any(isinstance(item, (ToolCall, ToolResult)) for item in prompt.input)
+            return ModelResponse([])
+        return ModelResponse([AssistantMessage("Finished")])
+
+    model = ScriptedModelClient(response_factory=respond)
+    agent = make_agent(
+        model, make_tools(), ContextConfig(cwd=tmp_path, code_mode_only=False),
+        initial_history=original, session_file_path=rollout,
+    )
+    runtime = make_runtime(agent)
+    try:
+        with pytest.raises(ValueError, match="no assistant summary"):
+            await agent.compact()
+        assert agent.history[0] == UserMessage("Original request")
+        assert not agent.history[1].visible
+        assert agent.history[2] == call
+        assert agent.history[3].call_id == call.call_id
+        assert UserMessage(DEFAULT_COMPACT_PROMPT) not in agent.history
+        restored = load_resumed_session_path(agent.session_file_path)["history"]
+        assert [item.call_id for item in restored if isinstance(item, (ToolCall, ToolResult))] == [
+            "once", "once",
+        ]
+        await agent.compact()
+        assert model.prompts[-1].input[-2] == model.prompts[1].input[-1]
+        assert (tmp_path / "count").read_text() == "ran\n"
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_compact_keeps_memory_unchanged_when_rollout_write_fails(tmp_path, monkeypatch):
+    call = ToolCall("once", "exec_command", {"cmd": "echo ok"})
+    original = (UserMessage("Original request"),)
+    model = ScriptedModelClient([
+        ModelResponse([call]),
+        ModelResponse([]),
+    ])
+    agent = make_agent(
+        model, make_tools(), ContextConfig(cwd=tmp_path, code_mode_only=False),
+        initial_history=original, session_file_path=tmp_path / "rollout.jsonl",
+    )
+
+    def fail_append(items, initial_history=()):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent._rollout_recorder, "append_history_items", fail_append)
+    with pytest.raises(OSError, match="disk full"):
+        await agent.compact()
+    assert agent.history == original
+    agent.shutdown()
 
 
 def test_compact_replaces_all_prior_context_with_language_preserving_summary():

@@ -36,7 +36,9 @@ from pycodex import (
 from pycodex.utils.compat import ThreadingHTTPServer
 from pycodex.events import (
     AssistantDeltaEvent,
+    EventScope,
     ModelRequestTimingEvent,
+    RuntimeUpdatedEvent,
     TokenCountEvent,
     ToolCalledEvent,
 )
@@ -50,6 +52,7 @@ from pycodex.utils.session_persist import (
     load_resumed_session_path,
 )
 from tests.fake_responses_server import CaptureStore, build_handler
+from tests.fakes import make_agent, make_runtime
 
 EXPECTED_RESPONSES_REQUEST_BODY_JSON = """{
   "model": "demo-model",
@@ -166,6 +169,51 @@ def _normalized_headers(headers: "typing.Dict[str, str]") -> "typing.Dict[str, s
 
 
 @pytest.mark.asyncio
+async def test_concurrent_turns_route_global_emits_from_provider_threads_and_parallel_tools():
+    owner = threading.get_ident()
+    overlap = threading.Barrier(2)
+
+    class LocalClient(ResponsesModelClient):
+        def _complete_sync(self, prompt):
+            if any(isinstance(item, ToolResult) for item in prompt.input):
+                return ModelResponse([AssistantMessage("done")])
+            assert threading.get_ident() != owner
+            overlap.wait(timeout=5)
+            name = prompt.input[-1].text
+            EventScope.emit(AssistantDeltaEvent(name))
+            return ModelResponse([
+                ToolCall(str(index), "report", {"label": name + str(index)}) for index in range(2)
+            ])
+
+    class Report(BaseTool):
+        name = "report"
+        description = "Report from the tool task."
+
+        async def run(self, context, args):
+            await asyncio.sleep(0)
+            EventScope.emit(RuntimeUpdatedEvent(args["label"]))
+            return "reported"
+
+    async def run(name):
+        tools = ToolRegistry()
+        tools.register(Report())
+        client = LocalClient(ResponsesProviderConfig(name, name, "https://example.invalid/v1", None))
+        runtime = make_runtime(make_agent(client, tools, ContextConfig()))
+        seen = []
+        runtime.attach(lambda event: seen.append((threading.get_ident(), event)))
+        try:
+            await runtime.agent.run_turn([UserMessage(name)], turn_id="same-turn-id")
+        finally:
+            await runtime.close()
+        assert all(thread == owner for thread, event in seen)
+        assert [event.delta for _, event in seen if isinstance(event, AssistantDeltaEvent)] == [name]
+        assert sorted(event.reason for _, event in seen if isinstance(event, RuntimeUpdatedEvent)
+                      and event.reason[-1:].isdigit()) == [name + "0", name + "1"]
+
+    await asyncio.wait_for(asyncio.gather(run("left"), run("right")), 10)
+
+
+@pytest.mark.asyncio
 async def test_cancelled_provider_stream_cannot_deliver_late_events():
     loop = asyncio.get_running_loop()
     started = asyncio.Event()
@@ -175,16 +223,16 @@ async def test_cancelled_provider_stream_cannot_deliver_late_events():
     owner_thread = threading.get_ident()
 
     class LocalClient(ResponsesModelClient):
-        def _complete_sync(self, prompt, event_handler):
+        def _complete_sync(self, prompt):
             if prompt.turn_id == "old":
                 loop.call_soon_threadsafe(started.set)
                 if not release.wait(3):
                     raise RuntimeError("test stream was not released")
-                event_handler(TokenCountEvent({"total_tokens": 777}))
-                event_handler(AssistantDeltaEvent("stale"))
+                EventScope.emit(TokenCountEvent({"total_tokens": 777}))
+                EventScope.emit(AssistantDeltaEvent("stale"))
                 loop.call_soon_threadsafe(finished.set)
             else:
-                event_handler(TokenCountEvent({"total_tokens": 22}))
+                EventScope.emit(TokenCountEvent({"total_tokens": 22}))
             return ModelResponse([AssistantMessage("answer")])
 
     client = LocalClient(
@@ -1299,7 +1347,7 @@ def test_responses_model_client_wire_headers_and_body_match_builders(
 
     try:
         assert client.list_models_sync() == ["demo-model"]
-        response = client._complete_sync(prompt, NOOP_MODEL_STREAM_EVENT_HANDLER)
+        response = client._complete_sync(prompt)
     finally:
         httpd.shutdown()
         server_thread.join(timeout=5)
@@ -1471,7 +1519,8 @@ def test_responses_model_client_parses_sse_stream() -> "None":
         b"\n",
     ]
 
-    response = client._parse_stream(stream, events.append)
+    with EventScope.observe(events.append):
+        response = client._parse_stream(stream)
 
     assert len(response.items) == 2
     assert isinstance(response.items[0], ToolCall)
@@ -1485,6 +1534,9 @@ def test_responses_model_client_parses_sse_stream() -> "None":
             "total_tokens": 18,
         }
     )
+    assert response.usage == events[-1].usage
+    events[-1].usage.clear()
+    assert response.usage["total_tokens"] == 18
 
 
 def test_responses_model_client_formats_transport_stream_errors(monkeypatch) -> "None":
@@ -1529,7 +1581,6 @@ def test_responses_model_client_formats_transport_stream_errors(monkeypatch) -> 
     with pytest.raises(RuntimeError) as exc_info:
         client._complete_sync(
             Prompt(input=[UserMessage(text="hi")], tools=[]),
-            NOOP_MODEL_STREAM_EVENT_HANDLER,
         )
 
     message = str(exc_info.value)
@@ -1567,7 +1618,7 @@ def test_responses_model_client_formats_incomplete_stream_errors() -> "None":
     ]
 
     with pytest.raises(RuntimeError) as exc_info:
-        client._parse_stream(stream, NOOP_MODEL_STREAM_EVENT_HANDLER)
+        client._parse_stream(stream)
 
     message = str(exc_info.value)
     assert message.startswith("responses stream ended before `response.completed`")
@@ -1603,7 +1654,8 @@ def test_responses_model_client_raises_response_incomplete_with_partial_items() 
     ]
 
     with pytest.raises(ResponsesIncompleteError) as exc_info:
-        client._parse_stream(stream, events.append)
+        with EventScope.observe(events.append):
+            client._parse_stream(stream)
 
     message = str(exc_info.value)
     assert message.startswith("responses stream ended with `response.incomplete`")
@@ -1639,7 +1691,8 @@ def test_responses_model_client_incomplete_does_not_promote_text_deltas_to_items
     ]
 
     with pytest.raises(ResponsesIncompleteError) as exc_info:
-        client._parse_stream(stream, events.append)
+        with EventScope.observe(events.append):
+            client._parse_stream(stream)
 
     assert "- output_items_received: 0" in str(exc_info.value)
     assert exc_info.value.partial_items == ()
@@ -2276,7 +2329,7 @@ async def test_responses_model_client_does_not_retry_terminal_incomplete(monkeyp
     calls = []
     events = []
 
-    def complete_sync(prompt, event_handler):
+    def complete_sync(prompt):
         calls.append(prompt)
         raise ResponsesIncompleteError(
             "terminal response.incomplete",
@@ -2534,7 +2587,8 @@ def test_responses_model_client_emits_event_for_web_search_call() -> "None":
         b"\n",
     ]
 
-    response = client._parse_stream(stream, seen.append)
+    with EventScope.observe(seen.append):
+        response = client._parse_stream(stream)
 
     assert response.items == [AssistantMessage(text="done")]
     assert (

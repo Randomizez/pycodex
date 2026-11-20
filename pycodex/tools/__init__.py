@@ -110,9 +110,7 @@ def get_tools(
         elif tool is exec_command_tool:
             runtime_environment.register_resource(tool.name, unified_exec_manager)
         elif tool is set_period_tool:
-            runtime_environment.register_resource(
-                "clock", clock_manager, observer=clock_manager.handle_agent_event,
-            )
+            runtime_environment.register_resource("clock", clock_manager)
     return registry
 
 

@@ -94,8 +94,9 @@ Agent 可以修改文件、执行命令，使用当前用户的系统权限。
 `/retry 429|502` 对这两个错误码中的任意一个无限重试。`/retry *` 对所有模型请求错误
 无限重试，包括连接中断。用 `/retry off` 关闭无限重试。
 
-压缩保留工具声明、指令前缀和普通采样的 tool choice，由摘要提示引导模型完成压缩。
-只有取得可用摘要并成功写入 checkpoint 后，才替换原历史。
+手动与自动压缩共用摘要流程，保留工具声明、指令前缀和普通采样的 tool choice。
+Agent 可以在内存中调用当前会话的工具并生成摘要。成功时写入一条摘要 checkpoint，
+再替换活跃历史。压缩报错时保存已经执行的工具调用及结果，供重试使用。
 
 Agent 工作时可直接发送消息调整方向，或用 `/queue` 排队。
 会话默认保存在 `~/.codex/sessions`。
@@ -171,6 +172,10 @@ run_async(main())
 ```
 
 `AgentsManager` 创建 runtime，`submit_input` 提交任务，等待 `receipt.future` 获取结果。
+模型和工具从 `pycodex.events` 导入 `EventScope`，调用 `EventScope.emit(event)` 通知当前会话的订阅者。
+每个订阅者收到独立副本。订阅者在 turn 中抛出异常时，事件循环报告错误，Agent 继续执行。
+自定义模型客户端通过 `ModelResponse.usage` 返回用量，
+供 goal 记账和自动压缩使用。
 示例结束时会关闭 runtime 和本地兼容服务。
 自定义模型、工具与集成方式见[运行时文档](docs/RUNTIME.md#ownership)。
 

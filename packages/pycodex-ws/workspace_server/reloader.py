@@ -9,6 +9,7 @@ import sys
 import traceback
 import types
 import typing
+from contextvars import ContextVar
 from functools import partial
 from pathlib import Path
 
@@ -206,6 +207,8 @@ def _update_class_in_place(
         if attr in ("__dict__", "__weakref__"):
             continue
         old_val = vars(old_cls).get(attr)
+        if isinstance(old_val, ContextVar) and isinstance(value, ContextVar):
+            continue
         if isinstance(old_val, classmethod) and isinstance(value, classmethod):
             value = classmethod(
                 _update_callable(
@@ -269,6 +272,11 @@ def reload_modules_in_place() -> "typing.Tuple[int, typing.Callable[[], None]]":
             for attr, obj in items
             if isinstance(obj, type) and obj.__module__ == name
         }
+        old_contextvars = {
+            attr: obj
+            for attr, obj in items
+            if isinstance(obj, ContextVar)
+        }
         _evict_same_second_bytecode(getattr(module, "__file__", None))
         spec = getattr(module, "__spec__", None)
         try:
@@ -293,7 +301,9 @@ def reload_modules_in_place() -> "typing.Tuple[int, typing.Callable[[], None]]":
             ):
                 mapping[new_obj] = old_functions[attr]
         for attr, value in list(vars(module).items()):
-            if getattr(value, "__module__", None) == name and isinstance(
+            if attr in old_contextvars and isinstance(value, ContextVar):
+                setattr(module, attr, old_contextvars[attr])
+            elif getattr(value, "__module__", None) == name and isinstance(
                 value, types.FunctionType
             ):
                 setattr(

@@ -320,7 +320,7 @@ async def test_child_queries_and_subscriptions_do_not_enable_interactive_request
 async def test_clock_inventory_exposes_deadline_without_changing_tool_output(tmp_path):
     clock = ClockManager()
     tools = ToolRegistry()
-    tools.runtime_environment.register_resource("clock", clock, observer=clock.handle_agent_event)
+    tools.runtime_environment.register_resource("clock", clock)
     session = make_session(tools=tools, cwd=tmp_path)
     await session.start()
     try:

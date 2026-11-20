@@ -84,6 +84,7 @@ jobs:
       - name: Install Python 3.6 compatibility dependencies
         run: |
           python -m pip install -i https://pypi.org/simple \
+            "aiocontextvars>=0.2.2" \
             "dataclasses>=0.8" \
             "typing_extensions>=4.1.1,<4.2" \
             "importlib_metadata>=4.8.3,<5" \

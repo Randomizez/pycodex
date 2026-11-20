@@ -13,7 +13,9 @@ from pycodex import (
     UserMessage,
 )
 from pycodex.tools import get_tools
+from pycodex.events import EventScope, TokenCountEvent
 from pycodex.utils import session_persist
+from pycodex.utils.compactor import DEFAULT_COMPACT_PROMPT
 from tests.fakes import ScriptedModelClient, make_agent, wait_for_runtime_idle
 
 
@@ -48,14 +50,23 @@ def set_clock_responses(period):
 async def test_clock_state_survives_compaction_close_and_resume(tmp_path):
     runtime = make_runtime(
         tmp_path,
-        set_clock_responses(5) + [ModelResponse([AssistantMessage("summary")])],
+        set_clock_responses(3) + set_clock_responses(5),
     )
+    saved_at_tool_completion = []
+
+    def observe(event):
+        if event.kind == "tool_completed":
+            saved_at_tool_completion.append(json.loads(state_path(runtime.agent).read_text()))
+
+    runtime.event_handler = observe
     await runtime.start()
     try:
         await runtime.submit_user_turn("set clock")
         assert clock(runtime).armed
-        assert json.loads(state_path(runtime.agent).read_text()) == state(5)
+        assert json.loads(state_path(runtime.agent).read_text()) == state(3)
         await runtime.agent.compact()
+        assert saved_at_tool_completion == [state(3), state(3)]
+        assert json.loads(state_path(runtime.agent).read_text()) == state(5)
         assert not any(isinstance(item, ToolCall) for item in runtime.agent.history)
         rollout = runtime.agent.session_file_path
     finally:
@@ -87,6 +98,89 @@ async def test_clock_state_survives_compaction_close_and_resume(tmp_path):
         assert not clock(restored).armed
     finally:
         await restored.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_clock_and_compaction_use_request_results_with_notifications_disabled(tmp_path):
+    usage = {
+        "input_tokens": 40, "input_tokens_details": {"cached_tokens": 30},
+        "output_tokens": 20, "total_tokens": 60,
+    }
+    model = ScriptedModelClient([
+        ModelResponse([ToolCall("clock", "clock.set_period", {"period_m": 5})], usage),
+        ModelResponse([AssistantMessage("automatic summary")], usage),
+        ModelResponse([AssistantMessage("answer")], {"output_tokens": 3, "total_tokens": 9}),
+        ModelResponse([AssistantMessage("manual summary")], usage),
+    ])
+    runtime = AgentsManager(
+        model, ContextConfig(cwd=tmp_path, codex_home=tmp_path, model_auto_compact_token_limit=50),
+        toolset=("clock.set_period",),
+    ).create_root_runtime()
+    agent = runtime.agent
+    goal = agent.tool_registry.runtime_environment.goal_manager
+    goal.create(agent.session_id, "finish the task")
+    agent.event_handler = runtime._publish = lambda event: None
+    runtime.message("pending mail")
+    try:
+        result = await agent.run_turn([UserMessage("start")])
+        assert result.output_text == "answer"
+        assert runtime.title == "start"
+        assert runtime.agent_status == {"completed": "answer"}
+        assert model.prompts[0].input[-2:] == [UserMessage("start"), UserMessage("pending mail")]
+        assert model.prompts[1].input[-1] == UserMessage(DEFAULT_COMPACT_PROMPT)
+        assert agent.execution_snapshot().usage_tokens == 9
+        assert clock(runtime).armed
+        assert goal.take_continuation() is not None
+        saved = json.loads(state_path(agent).read_text())["managers"]
+        assert saved["clock"] == {"period_m": 5}
+        assert saved["goal"]["tokensUsed"] == 33
+
+        await agent.compact()
+        assert agent.execution_snapshot().usage_tokens is None
+        assert goal.take_continuation() is None
+        assert clock(runtime).armed
+        assert json.loads(state_path(agent).read_text())["managers"]["goal"]["tokensUsed"] == 63
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_continues_a_goal_from_returned_usage_when_stream_reports_other_counts(tmp_path):
+    finished = asyncio.Event()
+
+    class Client(ScriptedModelClient):
+        async def complete(self, prompt):
+            EventScope.emit(TokenCountEvent({"total_tokens": 999, "output_tokens": 999}))
+            return await super().complete(prompt)
+
+    def respond(prompt, count):
+        if count == 1:
+            return ModelResponse([AssistantMessage("first reply")], {"total_tokens": 8, "output_tokens": 8})
+        if count == 2:
+            return ModelResponse([ToolCall("done", "update_goal", {"status": "complete"})])
+        finished.set()
+        return ModelResponse([AssistantMessage("finished")])
+
+    model = Client(response_factory=respond)
+    runtime = AgentsManager(
+        model, ContextConfig(cwd=tmp_path, codex_home=tmp_path, model_auto_compact_token_limit=10),
+        toolset=("update_goal",),
+    ).create_root_runtime()
+    goal = runtime.agent.tool_registry.runtime_environment.goal_manager
+    goal.create(runtime.agent.session_id, "check the fixture", token_budget=10)
+    runtime.agent.event_handler = runtime._publish = lambda event: None
+    await runtime.start()
+    try:
+        assert (await runtime.submit_user_turn("begin")).output_text == "first reply"
+        await asyncio.wait_for(finished.wait(), 2)
+        await wait_for_runtime_idle(runtime)
+        assert model.call_count == 3
+        assert "check the fixture" in model.prompts[1].input[-1].text
+        assert goal.dump_state()["status"] == "complete"
+        assert goal.dump_state()["tokensUsed"] == 8
+        assert runtime.agent.execution_snapshot().usage_tokens == 8
+    finally:
+        await runtime.close()
 
 
 @pytest.mark.asyncio

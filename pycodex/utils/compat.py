@@ -5,7 +5,13 @@ import asyncio
 import functools
 import io
 import shlex
+import sys
 import tokenize
+
+if sys.version_info >= (3, 7):
+    from contextvars import ContextVar, copy_context
+else:  # pragma: no cover - Python 3.6 task-local context
+    from aiocontextvars import ContextVar, copy_context
 
 try:
     from http.server import ThreadingHTTPServer

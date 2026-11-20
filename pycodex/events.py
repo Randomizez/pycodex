@@ -1,11 +1,19 @@
-"""Typed events, plain-text views and stateful presentation without frontend I/O."""
+"""Task-scoped notifications, typed events and frontend presentation."""
 
+import asyncio
 import json
+import logging
+import threading
 import typing
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import ClassVar
 
-from .protocol import AgentMessage, ConversationItem, JSONDict, ToolCall, ToolResult, UserMessage
+from .protocol import (
+    AgentMessage, ConversationItem, JSONDict, ToolCall, ToolResult, UserMessage,
+)
+from .utils.compat import ContextVar, copy_context
 from .utils.event_helpers import (
     colorize_cli_message,
     colorize_tool_message,
@@ -15,6 +23,7 @@ from .utils.event_helpers import (
     percent_of_context_window_remaining,
     shorten_title,
     summarize_tool_result,
+    visible_input_text,
 )
 
 DEFAULT_MAIN_PROMPT = "pycodex> "
@@ -128,6 +137,10 @@ class Event:
         pass
 
 
+EventHandler = typing.Callable[[Event], None]
+BASE_EVENT_HANDLER: "EventHandler" = lambda _event: None
+
+
 class TurnEvent(Event):
     turn_id: "str"
     submission_id: "typing.Union[str, None]"
@@ -152,10 +165,7 @@ class TurnStartedEvent(TurnEvent):
     kind: ClassVar[str] = "turn_started"
 
     def visualize(self) -> "str":
-        return "\n".join(
-            message.text for message in self.messages
-            if isinstance(message, (UserMessage, AgentMessage)) and message.visible
-        )
+        return visible_input_text(self.messages)
 
     def render(self, display: "EventDisplay") -> "None":
         display.begin_turn(self)
@@ -163,7 +173,7 @@ class TurnStartedEvent(TurnEvent):
 
 @dataclass(frozen=True)
 class TurnInputReadyEvent(TurnEvent):
-    """Synchronous input coordination; delivery failures must fail the turn."""
+    """Pending input has been delivered for the next sample."""
 
     turn_id: "str"
     submission_id: "typing.Union[str, None]" = None
@@ -725,3 +735,102 @@ class InputResolvedEvent(Event):
 
     def render(self, display: "EventDisplay") -> "None":
         display.set_prompt(display.main_prompt())
+
+
+class TurnInterrupted(RuntimeError):
+    def __init__(self):
+        super().__init__("turn interrupted")
+
+
+class ModelRequestInterrupted(RuntimeError):
+    """A cooperative stop ended retries after an issued request finished."""
+
+
+class EventScope:
+    """Task-scoped observer binding, isolation and worker-thread forwarding."""
+
+    _current_observer = ContextVar("pycodex_event_observer", default=BASE_EVENT_HANDLER)
+
+    @staticmethod
+    def router(fn):
+        """Mark an internal forwarder that delegates leaf isolation to notify."""
+        fn._event_router = True
+        return fn
+
+    @classmethod
+    def wrap(cls, observer):
+        if observer is BASE_EVENT_HANDLER or getattr(observer, "_event_router", False) is True:
+            return observer
+        return lambda event: cls.notify(event, observer)
+
+    @classmethod
+    @contextmanager
+    def _bind(cls, dispatch):
+        token = cls._current_observer.set(dispatch)
+        try:
+            yield
+        finally:
+            cls._current_observer.reset(token)
+
+    @classmethod
+    @contextmanager
+    def observe(cls, observer):
+        """Bind a notification recipient for this execution and its child tasks."""
+        with cls._bind(cls.wrap(observer)):
+            yield
+
+    @classmethod
+    def current(cls):
+        return cls._current_observer.get()
+
+    @classmethod
+    def emit(cls, event):
+        """Publish an event to the observer bound in the current task scope."""
+        cls._current_observer.get()(event)
+
+    @classmethod
+    def notify(cls, event, *observers):
+        for observer in observers:
+            if observer is BASE_EVENT_HANDLER:
+                continue
+            try:
+                observer(deepcopy(event))
+            except (Exception, asyncio.CancelledError) as exc:
+                cls.report_observer_error("Agent event observer failed: " + event.kind, exc)
+
+    @staticmethod
+    def report_observer_error(message, exc):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logging.getLogger(__name__).error(message, exc_info=(type(exc), exc, exc.__traceback__))
+        else:
+            loop.call_exception_handler({"message": message, "exception": exc})
+
+    @classmethod
+    @contextmanager
+    def worker_events(cls, observer=None):
+        """Forward worker events to the caller's loop until the request exits."""
+        loop = asyncio.get_running_loop()
+        lock = threading.Lock()
+        active = True
+
+        def deliver(event):
+            if active:
+                owner.run(cls.emit, event)
+
+        def post(event):
+            with lock:
+                if active:
+                    loop.call_soon_threadsafe(deliver, event)
+
+        scope = cls._bind(cls.current()) if observer is None else cls.observe(observer)
+        with scope:
+            owner = copy_context()
+            with cls._bind(post):
+                worker = copy_context()
+            try:
+                yield worker
+            finally:
+                with lock:
+                    active = False

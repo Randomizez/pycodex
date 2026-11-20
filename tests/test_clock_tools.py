@@ -184,7 +184,7 @@ async def test_clock_wakes_agent_periodically_until_cancelled(monkeypatch) -> "N
     manager = ClockManager(seconds_per_minute=0.01)
     tools = ToolRegistry()
     tools.register(SetPeriodTool(manager))
-    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
+    tools.runtime_environment.register_resource("clock", manager)
     model = ScriptedModelClient(
         [
             ModelResponse(
@@ -252,7 +252,7 @@ async def test_runtime_shutdown_cancels_clock_and_discards_queued_tools() -> "No
     clock = SetPeriodTool(manager)
     clock.exec_only = False
     tools.register(clock)
-    tools.runtime_environment.register_resource("clock", manager, observer=manager.handle_agent_event)
+    tools.runtime_environment.register_resource("clock", manager)
     model = ScriptedModelClient(
         [
             ModelResponse(items=[AssistantMessage(text="done")]),
