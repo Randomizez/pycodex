@@ -756,13 +756,16 @@ Adding, editing or deleting profiles does not require a server restart. Duplicat
 names across the two formats are errors. Provider and context settings share the
 [profile loader](CONTEXT.md#配置读取与-profile).
 `POST api/sessions` creates a session with optional string fields `title` and
-`prompt`, plus an optional `profile` name. Title and prompt default to an empty
+`prompt`, optional `profile` and `name`, and optional boolean `trigger`
+(default `true`). Title and prompt default to an empty
 string; requests with no body still create an empty session. An omitted or null
 profile uses the launch `--profile`, then the current top-level config `profile`, then
 the base config. Unknown
 names fail before creating a session. The selected profile is passed to both
 model and Agent construction on the session's worker thread. CLI overrides
 continue to apply. A nonempty prompt is submitted unchanged through the Runtime.
+With `trigger: false`, `submit_input` places the `UserMessage` in the Runtime
+mailbox without starting a turn or creating a rollout file, leaving the session idle.
 The response includes the new session ID, session list and snapshot. These
 fields are general frontend inputs: the API does not select prompts, infer
 reply languages or interpret feature-specific flags.
@@ -804,6 +807,9 @@ command receipt without waiting for completion. Runtime owns these command
 tasks, serializes them with the same command lock and drains them on close.
 The default remains synchronous command completion. These are host command
 tasks, not Agent-owned turn tasks or a cancellation API.
+`AgentRuntime.submit_input(..., trigger=False)` places a `UserMessage` in the
+Runtime mailbox without starting a turn or creating a rollout file; it commits
+on the next turn or sampling boundary.
 `state_snapshot()` excludes completed history and describes queued turns,
 active commands and model/effort separately. `RuntimeUpdatedEvent` signals plan,
 queue and resource changes; `CommandStartedEvent` identifies an executing
@@ -957,18 +963,16 @@ loading. The recovery page shows that customizations are disabled and links
 back to the customized interface. Authentication applies to recovery pages
 and custom resources just as it does to the rest of the workspace.
 
-The gear button in `workspace.html` opens Settings, with icon rows and short descriptions
-for Customize Agent and Share. Customize Agent assembles the `Customize interface` title and introductory
-prompt, then passes both to the ordinary session creation API. Both settings
-entries and the management navigation are hidden for workspace visitors.
-The prompt and its development guidance belong to the editable frontend;
-the Python customization module only loads templates and serves their resources.
-The button uses the page's path metadata and `navigator.languages`
-in preference order. It directs the Agent to the installed `WORKSPACE_API.md` for
-the host, HTTP and WebSocket contracts, and to the feature catalog and contribution guide.
+**Settings → Customize Agent** creates an idle `Customize interface` session
+and opens the packaged optional feature catalog in the workspace Markdown viewer.
+Opening the catalog and following its documentation links use the file-view API.
+The first model turn starts when the user sends a request in chat.
+Settings and the management navigation are hidden for workspace visitors.
+The editable frontend builds the initial `<frontend_customization>` prompt from the page's path metadata
+and `navigator.languages`. It directs the Agent to the installed `WORKSPACE_API.md`
+for the host, HTTP and WebSocket contracts, and to the feature catalog and contribution guide.
 The reference ships in both wheel and sdist. Feature code is adapted into the user's frontend.
-The packaged `optional_features/README.md` is a Markdown feature catalog opened in the
-existing view area; users choose features by name or ID in ordinary chat text.
+Users choose features by name or ID in ordinary chat text.
 Agent status is built into the context ring popover; clicking a root or child
 Agent opens its live transcript tab. The catalog documents these entry points
 alongside the optional features.
@@ -984,17 +988,12 @@ The supplied feature panels occupy no space during initial loading, without a
 selected session or when their filtered content is empty; polling continues and
 reveals them when data arrives. Reasoning examples omit records without readable
 text. Request failures remain visible until a successful refresh.
-The Agent is instructed to explain the available changes
-and wait for the user's request before editing. Replies, including the
-introduction, follow explicit user language preferences first, then the user's
-own conversation language, then the browser's language preferences. Time zone,
-server locale and the generated English setup text are not used to infer
-the user's language.
-The prompt uses a `<frontend_customization>` envelope, shown as an
-expandable context block in chat and preserved in history. Shared scope,
-refresh instructions and a recovery link remain visible outside the block.
-Creating this session does not create customization files. Normal session
-persistence, tools, drafts and history apply. Each browser tab remembers its
+The Agent makes edits on request. Replies follow explicit user language
+preferences first, then the conversation language, then the browser's
+language preferences. The `<frontend_customization>` instructions are submitted
+with `trigger: false`, buffered in the Runtime mailbox without creating a rollout
+file, and committed with the first user request as an expandable context block in chat.
+Normal session persistence, tools, drafts and history apply. Each browser tab remembers its
 active session per workspace in `sessionStorage`, including across refresh
 and recovery navigation. Initial polling requests that session directly; a 404
 for the saved session during startup selects the default, while other failures
@@ -1011,9 +1010,9 @@ Closed sessions release their cached state when the session list is refreshed.
 Pending Mermaid rendering can complete in detached entries without scrolling
 the active conversation. Refreshing the page discards the rendered caches.
 
-The prompt directs the Agent to read existing customizations, use event
-delegation and idempotent setup for asynchronously rendered content, and
-verify the affected interactions. Substantial changes need recoverable copies
+The Agent reads existing customizations and verifies the affected desktop and mobile
+interactions. Use event delegation and idempotent setup for asynchronously
+rendered content. Substantial changes need recoverable copies
 outside the served directory. A first full HTML override also preserves the
 original template for comparison with future upgrades.
 

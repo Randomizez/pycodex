@@ -234,11 +234,11 @@ export function createSessionsUI({
     renderTabs();
   }
 
-  async function createSession(title = "", initialPrompt = "", profile = null) {
+  async function createSession(options = {}) {
     const response = await fetch(relativeUrl("api/sessions"), {
       method: "POST",
       headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({title, prompt: initialPrompt, profile}),
+      body: JSON.stringify(options),
     });
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
@@ -257,6 +257,7 @@ export function createSessionsUI({
     updateSessions(payload.sessions || []);
     renderSnapshot(payload.snapshot);
     dismissSessionsDrawer();
+    return payload.session_id;
   }
 
   async function closeSession(sessionId) {

@@ -1,16 +1,7 @@
 # Optional frontend features
 
-Browse this catalog in the workspace view area, then tell the customization
-Agent which features to apply by name or ID. For example: "Show me the available
-features" or "Apply the exec status feature using my current layout."
-The Agent reads the selected source and adapts it into your frontend.
-
-Agent status is built into the context ring popover. Click a root or child Agent
-in that popover to open its live transcript in the workspace view area.
-
-The supplied panels stay hidden until they have matching content, and hide again
-when that content disappears. Unselected sessions and initial loading occupy no
-space. Request failures remain visible; reasoning records need readable text.
+Open a feature to read its details. To start the Agent, send a feature name or ID
+in chat (for example, “Apply exec-status”) or describe your own interface change.
 
 | ID | Feature | Summary | Validation |
 | --- | --- | --- | --- |
@@ -24,6 +15,16 @@ space. Request failures remain visible; reasoning records need readable text.
 | tool-calls | [Tool calls](tool-calls/README.md) | Recent function/custom calls with paired inputs and results. | Chromium fixtures, lifecycle, desktop/mobile; live tools not tested |
 | voice-input | [Step Plan voice input](voice-input/README.md) | Record speech in-browser, tidy it with Step Plan, and insert it into the current draft. | Chromium simulated microphone, mocked ASR/cleanup, key flow, undo/context, cancellation, mobile focus/layout and cleanup |
 | xiaoai-notifications | [XiaoAI speaker notifications](xiaoai-notifications/README.md) | Speak a short final result on one selected Xiaomi speaker and retain its delivery record in chat; explicit backend adaptation required. | Isolated device/queue tests, real Runtime completion/steer/restart checks and Chromium synthetic desktop/mobile records |
+
+Changes apply to every workspace for this server user. Refresh to apply them.
+Open the workspace with `?builtin=1` to recover the built-in interface.
+
+Agent status is built into the context ring popover. Click a root or child Agent
+in that popover to open its live transcript in the workspace view area.
+
+The supplied panels stay hidden until they have matching content, and hide again
+when that content disappears. Unselected sessions and initial loading occupy no
+space. Request failures remain visible; reasoning records need readable text.
 
 Each published row links its feature name to `<feature-id>/README.md`.
 Only list features whose source and documentation are present in this library;

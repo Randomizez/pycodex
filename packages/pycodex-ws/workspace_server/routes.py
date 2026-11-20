@@ -397,6 +397,13 @@ def _user_message_name(payload):
     return name
 
 
+def _trigger_flag(payload):
+    trigger = payload.get("trigger", True)
+    if not isinstance(trigger, bool):
+        raise HTTPException(status_code=422, detail="trigger must be a boolean")
+    return trigger
+
+
 async def _new_session_response(
     manager: "WorkspaceSessionManager", request: Request,
 ) -> JSONResponse:
@@ -405,6 +412,7 @@ async def _new_session_response(
     prompt = payload.get("prompt", "")
     profile = payload.get("profile")
     name = _user_message_name(payload)
+    trigger = _trigger_flag(payload)
     if not isinstance(title, str) or not isinstance(prompt, str):
         raise HTTPException(status_code=422, detail="title and prompt must be strings")
     if profile is not None and not isinstance(profile, str):
@@ -414,7 +422,7 @@ async def _new_session_response(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     result = (
-        await manager.get(session_id).submit(prompt, sender="web", name=name)
+        await manager.get(session_id).submit(prompt, sender="web", name=name, trigger=trigger)
         if prompt else {"ok": True}
     )
     return JSONResponse(
@@ -480,10 +488,12 @@ async def _message_response(
     if "request_id" in payload:
         result = await link.answer_input(payload["request_id"], payload.get("answer"))
     else:
+        trigger = _trigger_flag(payload)
         result = await link.submit(
             str(payload.get("prompt") or ""),
             sender=str(payload.get("sender") or "web"),
             name=name,
+            trigger=trigger,
         )
     if isinstance(result, dict):
         result.setdefault("sessions", manager.list_sessions())
@@ -551,6 +561,7 @@ async def _websocket_session_handler(
                 else:
                     try:
                         name = _user_message_name(payload)
+                        trigger = _trigger_flag(payload)
                     except HTTPException as error:
                         await websocket.send_json({
                             "type": "send_result", "result": {"ok": False, "error": error.detail},
@@ -560,6 +571,7 @@ async def _websocket_session_handler(
                         str(payload.get("prompt") or ""),
                         sender=str(payload.get("sender") or "web"),
                         name=name,
+                        trigger=trigger,
                     )
                 await websocket.send_json({"type": "send_result", "result": result})
             elif action == "ping":

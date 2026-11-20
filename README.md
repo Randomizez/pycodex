@@ -147,8 +147,10 @@ in a steer batch. Recorded messages keep that metadata when the session resumes.
 Restoring a tab reads the rollout tail needed for its latest 80 display rows;
 Agent resume still restores the complete active context after the last checkpoint.
 
-The settings menu provides interface customization, password-protected
-workspace sharing, and [One-line Agent](packages/pycodex-ws/README.md#one-line-agent):
+**Settings → Customize Agent** opens the optional feature catalog. Browse the
+descriptions and send a feature name, ID or custom request in chat to start the Agent.
+Settings also provides password-protected workspace sharing and
+[One-line Agent](packages/pycodex-ws/README.md#one-line-agent):
 an Agent that runs directly in most shells without installation, for bootstrapping
 an Agent environment or simple debugging. See the [workspace guide](packages/pycodex-ws/README.md) for
 session controls, storage and Feishu setup. A separate

@@ -5,16 +5,18 @@ const path = require("node:path");
 const {chromium} = require("playwright");
 
 const directory = path.join(__dirname, "../workspace_server");
+const packageDirectory = "/test/Package #1%";
+const catalogPath = packageDirectory + "/optional_features/README.md";
 const source = fs.readFileSync(path.join(directory, "workspace.template.html"), "utf8");
 const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
   WORKSPACE_TITLE: "Session cache test", ENABLE_BOARD: "true",
-  ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test",
+  ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test", PACKAGE_DIRECTORY: packageDirectory,
 }[name] || "")).replace("</body>", `<script type="module">
   window.fixtureReady = true;
 </script></body>`);
 const entry = fs.readFileSync(path.join(directory, "workspace.mjs"), "utf8") + `
   window.fixture = {
-    switchSession, createSession, closeSession, pollSession, restoreSessionScroll,
+    switchSession, closeSession, pollSession, restoreSessionScroll,
     renderSnapshot, updateSessions, sessionState: sessionUI.sessionState, composer, renderMermaidInto: markdown.renderMermaidInto, setSessionsOpen,
     active: () => sessionUI.activeId,
     stop: () => {clearInterval(pollTimer); clearInterval(boardPollTimer); stopContentViews();},
@@ -28,7 +30,7 @@ function turn(id, text) {
 }
 
 (async () => {
-  const browser = await chromium.launch({headless: true});
+  const browser = await chromium.launch({headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE});
   try {
     const errors = [];
     const page = await browser.newPage({viewport: {width: 1100, height: 850}});
@@ -84,6 +86,15 @@ function turn(id, text) {
         });
       }
       if (url.pathname === "/api/views") return route.fulfill({json: {views: []}});
+      if (url.pathname === "/api/views/open") {
+        const {href, session_id} = route.request().postDataJSON();
+        assert.equal(href, "/test/Package%20%231%25/optional_features/README.md");
+        assert.equal(session_id, "c");
+        const text = fs.readFileSync(path.join(directory, "optional_features/README.md"), "utf8");
+        const view = {id: "catalog", kind: "file", title: catalogPath, revision: 1,
+          documents: [{label: catalogPath, text}]};
+        return route.fulfill({json: {view, views: [view]}});
+      }
       if (url.pathname === "/api/board") return route.fulfill({json: {exists: false}});
       if (url.pathname === "/api/session") {
         const id = url.searchParams.get("session_id") || tabs[0];
@@ -256,11 +267,21 @@ function turn(id, text) {
     await page.evaluate("fixture.switchSession('a')");
 
     const releaseCreate = block("create");
-    await page.evaluate(() => {window.creation = fixture.createSession();});
+    await page.locator(".customize-frontend:visible").first().click();
+    const [creation] = await Promise.all([
+      page.waitForRequest(request => new URL(request.url()).pathname === "/api/sessions"),
+      page.locator("#frontendCustomization").click(),
+    ]);
+    const fields = creation.postDataJSON();
+    assert.equal(fields.title, "Customize interface");
+    assert.equal(fields.trigger, false);
+    assert.ok(fields.prompt.startsWith("<frontend_customization>\n"));
+    assert.ok(fields.prompt.includes(catalogPath));
     snapshots.get("a").turns.push(turn("a80", "Arrived during creation"));
     await page.evaluate("fixture.pollSession()");
     releaseCreate();
-    await page.evaluate("window.creation");
+    await page.locator("#contentView .snapshot-markdown").waitFor({state: "visible"});
+    assert.match(await page.locator("#contentView").textContent(), /Optional frontend features/);
     await page.evaluate("fixture.switchSession('a')");
     assert.equal(await page.locator(".response").last().textContent(), "Arrived during creation");
     await page.evaluate("fixture.closeSession('b')");

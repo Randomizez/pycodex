@@ -195,17 +195,17 @@ export function setupContextDetails({getActiveSessionId, frontendEvents, openTra
   document.getElementById("newTab").addEventListener("click", close);
 }
 
-function frontendCustomizationPrompt() {
+function frontendCustomizationPrompt(catalogPath) {
   const {frontendDirectory, packageDirectory} = document.body.dataset;
   return [
     "<frontend_customization>",
-    "Introduce interface customization, optional features, contributing a feature PR and recovery. Wait for my specific request before editing.",
+    "Help me customize the workspace interface. Make changes only when I request them.",
     "Use my preferred language, then the language of my messages, then my browser languages: " +
       (navigator.languages.join(", ") || "not supplied"),
     `User customization directory: ${frontendDirectory}`,
     `Packaged page and native modules: ${packageDirectory}/workspace.html and workspace.mjs`,
     `Read the host, HTTP and WebSocket contracts in ${packageDirectory}/WORKSPACE_API.md before changing behavior.`,
-    `Offer the feature catalog as a clickable absolute Markdown link: ${packageDirectory}/optional_features/README.md`,
+    `Use the optional feature catalog at ${catalogPath} to resolve requested feature names and IDs.`,
     `For a requested feature PR, follow ${packageDirectory}/optional_features/CONTRIBUTING.md in a separate checkout.`,
     "Read existing custom files first. Prefer small custom.css and custom.js overrides, using mount(host) and workspace-relative URLs.",
     "Integrate chosen features into the existing customization. Preserve unrelated edits, DOM contracts, template placeholders and Settings.",
@@ -213,14 +213,13 @@ function frontendCustomizationPrompt() {
     "These files apply to every workspace of this OS user. Back up substantial edits outside the served directory, including the original template for comparison.",
     "Verify affected desktop and mobile interactions and asynchronous updates. Refresh to apply; use ?builtin=1 for recovery and rename the customization directory to undo.",
     "</frontend_customization>",
-  ].join("\\n");
+  ].join("\n");
 }
 
 export function installDialogs({
-  getActiveSessionId, getSessions, createSession, selectSession, updateSessions, renderSnapshot, showToast,
+  getActiveSessionId, getSessions, createSession, selectSession, updateSessions, renderSnapshot, openView, showToast,
 }) {
   const newTabButton = document.getElementById("newTab");
-  const workspace = document.querySelector(".workspace");
   const newSessionDialog = document.getElementById("newSessionDialog");
   const sessionProfile = document.getElementById("sessionProfile");
   const newSessionError = document.getElementById("newSessionError");
@@ -265,7 +264,7 @@ export function installDialogs({
     createSessionButton.disabled = true;
     newSessionError.textContent = "";
     try {
-      await createSession("", "", JSON.parse(sessionProfile.value));
+      await createSession({profile: JSON.parse(sessionProfile.value)});
       newSessionDialog.close();
     } catch (error) {
       newSessionError.textContent = error.message;
@@ -312,11 +311,18 @@ export function installDialogs({
     if (!isAdministrator) return;
     settingsDialog.close();
     customizeButtons.forEach(control => { control.disabled = true; });
+    const catalogPath = document.body.dataset.packageDirectory + "/optional_features/README.md";
+    let sessionId;
     try {
-      workspace.dataset.mobilePane = "chat";
-      await createSession("Customize interface", frontendCustomizationPrompt());
+      sessionId = await createSession({
+        title: "Customize interface",
+        prompt: frontendCustomizationPrompt(catalogPath),
+        trigger: false,
+      });
+      const href = catalogPath.split("/").map(encodeURIComponent).join("/");
+      await openView(href, null, sessionId);
     } catch (error) {
-      showToast("Unable to start customization: " + error.message);
+      showToast((sessionId ? "Unable to open the feature catalog: " : "Unable to start customization: ") + error.message);
     } finally {
       customizeButtons.forEach(control => { control.disabled = false; });
     }

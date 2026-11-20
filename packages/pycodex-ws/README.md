@@ -79,8 +79,10 @@ distributed separately as a VSIX.
 
 ## Customize the interface
 
-Click the gear button and choose **Frontend customization** to start a
-customization conversation with the Agent.
+Choose **Settings → Customize Agent** to open a conversation and the
+[optional feature catalog](workspace_server/optional_features/README.md).
+Browse the feature descriptions, then send a feature name, ID or your own
+interface request in chat. The Agent starts with that message.
 Custom files live in the server user's `~/.pycodex/frontend/`:
 
 - `custom.css` and `custom.js`: optional styles and an ES module, loaded automatically.
@@ -104,9 +106,8 @@ the [runtime guide](../../docs/RUNTIME.md#workspace-session-api).
 File/Git source resolution and view storage retain their existing public classes;
 see [content views](../../docs/RUNTIME.md#workspace-content-views).
 
-Ask the Agent to show the [feature catalog](workspace_server/optional_features/README.md)
-in the view area, then choose features by name or ID in chat. The Agent adapts
-their source into your frontend. To share a local change, ask it to publish a
+The Agent adapts the selected feature's source into your frontend.
+To share a local change, ask it to publish a
 feature PR on GitHub; the [contribution guide](workspace_server/optional_features/CONTRIBUTING.md)
 specifies the source, documentation, validation and PR format.
 

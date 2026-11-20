@@ -162,10 +162,12 @@ class WorkspaceInteractiveSession:
         self.view.close()
 
     async def submit(
-        self, prompt: str, sender: str = "web", name: str = "user",
+        self, prompt: str, sender: str = "web", name: str = "user", trigger: bool = True,
     ) -> "typing.Dict[str, object]":
         try:
-            receipt = await self.runtime.submit_input(prompt, sender, name=name)
+            receipt = await self.runtime.submit_input(
+                prompt, sender, name=name, trigger=trigger,
+            )
         except (ValueError, RuntimeError) as exc:
             return {"ok": False, "error": str(exc), "snapshot": self.snapshot()}
         self.submissions.track(receipt, self.runtime, self.view)
@@ -388,9 +390,11 @@ class ThreadedWorkspaceInteractiveSession:
         )
 
     async def submit(
-        self, prompt: str, sender: str = "web", name: str = "user",
+        self, prompt: str, sender: str = "web", name: str = "user", trigger: bool = True,
     ) -> "typing.Dict[str, object]":
-        return await self._call(self._session.submit(prompt, sender, name=name))
+        return await self._call(
+            self._session.submit(prompt, sender, name=name, trigger=trigger)
+        )
 
     async def answer_input(self, request_id, answer):
         return await self._call(self._session.answer_input(request_id, answer))

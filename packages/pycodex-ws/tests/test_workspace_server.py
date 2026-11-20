@@ -155,12 +155,102 @@ def test_new_session_accepts_title_and_initial_prompt(tmp_path, multi, fields):
         assert browser.get(prefix + "/api/session?session_id=" + original).json()["snapshot"]["turns"] == []
 
 
+@pytest.mark.parametrize("threaded", [False, True])
+def test_untriggered_messages_wait_in_mailbox_without_rollout_until_turn(tmp_path, threaded):
+    model = ScriptedModelClient(
+        response_factory=lambda prompt, count: ModelResponse([AssistantMessage("done")])
+    )
+
+    def factory():
+        if threaded:
+            return ThreadedWorkspaceInteractiveSession(
+                lambda: make_session(model, cwd=tmp_path), asyncio.get_running_loop(),
+            )
+        return make_session(model, cwd=tmp_path)
+
+    context = "Use this workspace's optional feature catalog."
+    state_path = tmp_path / "state"
+    with TestClient(create_app(factory, state_path)) as browser:
+        created = browser.post("/api/sessions", json={
+            "title": "Customize interface", "prompt": context, "name": "setup", "trigger": False,
+        })
+        assert created.status_code == 200
+        payload = created.json()
+        assert payload["snapshot"]["running"] is False
+        assert payload["snapshot"]["spinner"] == ""
+        assert payload["snapshot"]["recorded_rollout_path"] is None
+        assert payload["snapshot"]["turns"] == []
+        submission = browser.get(
+            f"/api/sessions/{payload['session_id']}/submissions/{payload['submission_id']}"
+        )
+        assert submission.status_code == 200
+        assert submission.json()["submission"]["kind"] == "message"
+        assert model.call_count == 0
+        ordinary, custom = browser.get("/api/sessions").json()["sessions"]
+        assert custom["running"] is False
+        assert custom["unread"] is False
+
+        injected = browser.post("/api/session/message", json={
+            "session_id": ordinary["id"], "prompt": "ordinary note", "name": "note", "trigger": False,
+        })
+        assert injected.status_code == 200
+        with browser.websocket_connect("/ws/session?session_id=" + ordinary["id"]) as ws:
+            ws.receive_json()
+            ws.send_json({"type": "send", "prompt": "bad", "trigger": 1})
+            while True:
+                msg = ws.receive_json()
+                if msg.get("type") == "send_result":
+                    assert msg["result"] == {"ok": False, "error": "trigger must be a boolean"}
+                    break
+            ws.send_json({"type": "send", "prompt": "ws note", "name": "ws", "trigger": False})
+            while True:
+                msg = ws.receive_json()
+                if msg.get("type") == "send_result":
+                    assert msg["result"]["ok"] is True
+                    break
+        assert model.call_count == 0
+
+        task = "Apply exec-status"
+        for tab, expected in [
+            (custom, [("setup", context), ("user", task)]),
+            (ordinary, [("note", "ordinary note"), ("ws", "ws note"), ("user", task)]),
+        ]:
+            path = "/api/session?session_id=" + tab["id"]
+            assert browser.get(path).json()["snapshot"]["turns"] == []
+            response = browser.post("/api/session/message", json={
+                "session_id": tab["id"], "prompt": task,
+            })
+            assert response.status_code == 200
+            snapshot = wait_snapshot(
+                browser, lambda state: state["turns"] and state["turns"][-1]["response"] == "done", path,
+            )
+            assert snapshot["recorded_rollout_path"] is not None
+            assert [(m["name"], m["text"]) for m in snapshot["turns"][0]["messages"]] == expected
+            inputs = model.prompts[-1].input
+            assert [(item.name, item.text) for item in inputs if isinstance(item, UserMessage)] == expected
+        assert model.call_count == 2
+
+    with TestClient(create_app(factory, state_path)) as browser:
+        ordinary, custom = browser.get("/api/sessions").json()["sessions"]
+        restored = browser.get("/api/session?session_id=" + custom["id"]).json()["snapshot"]
+        assert [m["text"] for m in restored["turns"][0]["messages"]] == [context, task]
+
+
 @pytest.mark.parametrize("field", ["title", "prompt"])
 @pytest.mark.parametrize("value", [None, 7, ["text"]])
 def test_new_session_rejects_non_string_fields(field, value):
     with TestClient(create_app(make_session, None)) as browser:
         before = browser.get("/api/sessions").json()["sessions"]
         assert browser.post("/api/sessions", json={field: value}).status_code == 422
+        assert browser.get("/api/sessions").json()["sessions"] == before
+
+
+@pytest.mark.parametrize("value", [None, 1, "false", []])
+def test_session_endpoints_reject_non_boolean_trigger(value):
+    with TestClient(create_app(make_session, None)) as browser:
+        before = browser.get("/api/sessions").json()["sessions"]
+        assert browser.post("/api/sessions", json={"prompt": "hi", "trigger": value}).status_code == 422
+        assert browser.post("/api/session/message", json={"prompt": "hi", "trigger": value}).status_code == 422
         assert browser.get("/api/sessions").json()["sessions"] == before
 
 

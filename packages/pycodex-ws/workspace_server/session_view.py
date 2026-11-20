@@ -474,6 +474,7 @@ class WebSessionView:
         if turn_id:
             if not turn["turn_id"]:
                 # Queue admission stays hidden until the turn actually starts.
+                turn["messages"] = ()
                 self._turns.append(turn)
             turn["turn_id"] = turn_id
             self._turns_by_turn_id[turn_id] = turn

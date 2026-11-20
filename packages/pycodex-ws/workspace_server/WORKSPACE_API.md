@@ -134,13 +134,15 @@ take effect without restarting the server. Responses use `Cache-Control: no-stor
 or duplicate names return HTTP 400 rather than a stale catalog.
 Each session list entry includes its effective `profile` name or `null`.
 
-`POST api/sessions` accepts `{title?, prompt?, profile?, name?}`. Title and prompt are
-strings and default to empty. Profile is a string name; omission or `null` uses
+`POST api/sessions` accepts `{title?, prompt?, profile?, name?, trigger?}`. Title and
+prompt are strings and default to empty. Profile is a string name; omission or `null` uses
 the current server default. An unknown or removed name returns HTTP 400; an invalid field type
 returns HTTP 422. An empty body still creates a default session.
 The selected profile configures both the model and Agent instructions; CLI
 overrides still apply. A nonempty prompt is submitted through Runtime.
-`name` labels that initial user message using the metadata contract below.
+`name` and `trigger` (boolean, default `true`) follow the message contract below:
+`trigger: false` places the user message in the Runtime mailbox without starting
+a turn or creating a rollout file, leaving the new session idle until a real turn runs.
 The response contains `ok`, `session_id`, `sessions`, and `snapshot`, plus the
 submission receipt when a prompt was supplied.
 
@@ -276,19 +278,24 @@ Plain text uses steer; `/queue <message>` schedules an independent follow-up tur
 The same behavior applies through the router. These requests reuse the frontend
 input contract, so plain text answers a pending input request when one exists.
 
-`POST api/session/message` accepts an optional `name` alongside `session_id`,
-`prompt` and `sender`, for example:
+`POST api/session/message` accepts optional `name` and `trigger` fields alongside
+`session_id`, `prompt` and `sender`, for example:
 
 ```json
-{"session_id":"<target>","prompt":"Review this change","name":"reviewer"}
+{"session_id":"<target>","prompt":"Review this change","name":"reviewer","trigger":false}
 ```
 
 `name` is a string and defaults to `"user"` when omitted. Strings are preserved
 as supplied, including empty strings. `null` and other non-string values return
-HTTP 422.
-WebSocket `send` accepts the same field; an invalid name returns a failed
-`send_result` without closing the connection. Names apply to user messages from
-ordinary input and `/queue`, including each message in a merged steer batch.
+HTTP 422. `trigger` is a boolean and defaults to `true`; non-boolean values return
+HTTP 422. When `trigger` is `false`, a nonempty `prompt` is delivered literally as
+a `UserMessage` (bypassing slash-command parsing and pending input requests) to
+the Runtime mailbox with `kind: "message"`, without starting or interrupting a
+turn and without creating a rollout file while idle; it is committed with the
+next turn or sampling boundary.
+WebSocket `send` accepts the same `name` and `trigger` fields; invalid types return
+a failed `send_result` without closing the connection. Names apply to user messages
+from ordinary input, `trigger: false` delivery and `/queue`, including merged batches.
 They do not apply to slash-command results, empty input or input-request answers.
 
 This is local metadata, separate from transport `sender` and the `user` role.

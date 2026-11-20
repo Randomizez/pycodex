@@ -111,6 +111,12 @@ class _InputRequest:
         return complete, {"answers": self.answers} if complete else None
 
 
+def _completed_submission(kind):
+    future = asyncio.get_running_loop().create_future()
+    future.set_result(None)
+    return SubmittedInput(uuid7_string(), kind, future)
+
+
 def _parse_input(text):
     """Recognize slash commands, preserving ASCII-space escapes and paths."""
     escaped = text.startswith(" ")
@@ -384,20 +390,25 @@ class AgentRuntime:
         self.publish_state("admission")
         self._wake_worker()
 
-    async def submit_input(self, text, sender="user", wait_for_command=True, name="user"):
+    async def submit_input(
+        self, text, sender="user", wait_for_command=True, name="user", trigger=True,
+    ):
         """Route frontend text to a pending answer, slash command or steer input."""
+        if not isinstance(trigger, bool):
+            raise ValueError("trigger must be a boolean")
         if not self.agent.accepts_input:
             raise RuntimeError("agent is shutting down")
+        if not trigger:
+            text = text.strip()
+            if text:
+                self.message(UserMessage(text, name=name))
+            return _completed_submission("message" if text else "empty")
         text, command, argument = _parse_input(text)
         if self._input_request is not None and command is None:
             self._answer_input(text)
-            future = asyncio.get_running_loop().create_future()
-            future.set_result(None)
-            return SubmittedInput(uuid7_string(), "answer", future)
+            return _completed_submission("answer")
         if not text:
-            future = asyncio.get_running_loop().create_future()
-            future.set_result(None)
-            return SubmittedInput(uuid7_string(), "empty", future)
+            return _completed_submission("empty")
         if command is None:
             return self._submit_turn(text, "steer", sender, name)
         if command == "/queue":

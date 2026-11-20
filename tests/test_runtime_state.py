@@ -705,3 +705,58 @@ async def test_terminal_observer_can_trigger_a_followup_turn():
         assert model.call_count == 2
     finally:
         await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_input_without_trigger_buffers_until_turn(tmp_path):
+    started = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+
+    async def respond(prompt, count):
+        started[count - 1].set()
+        await release[count - 1].wait()
+        return ModelResponse([AssistantMessage("reply " + str(count))])
+
+    model = ScriptedModelClient(response_factory=respond)
+    rollout = tmp_path / "session.jsonl"
+    runtime = make_runtime(make_agent(
+        model, ToolRegistry(), ContextConfig(cwd=tmp_path), session_file_path=rollout,
+    ))
+    await runtime.start()
+    try:
+        with pytest.raises(ValueError, match="trigger must be a boolean"):
+            await runtime.submit_input("bad", trigger="no")
+        empty = await runtime.submit_input("   ", trigger=False)
+        assert empty.kind == "empty"
+        assert await empty.future is None
+
+        setup = await runtime.submit_input("  /model literal context  ", name="setup", trigger=False)
+        assert setup.kind == "message"
+        assert await setup.future is None
+        assert model.call_count == 0
+        assert not runtime.is_busy
+        assert runtime.agent.recorded_session_file_path is None
+        assert not rollout.exists()
+        assert runtime.agent.history == ()
+
+        turn = await runtime.submit_input("run task", name="owner")
+        await asyncio.wait_for(started[0].wait(), 1)
+        followup = await runtime.submit_input("mid-turn context", name="helper", trigger=False)
+        assert followup.kind == "message"
+        assert await followup.future is None
+        release[0].set()
+        await asyncio.wait_for(started[1].wait(), 1)
+        release[1].set()
+        result = await asyncio.wait_for(turn.future, 1)
+        assert result.output_text == "reply 2"
+        assert runtime.agent.recorded_session_file_path == rollout
+        assert [(item.text, item.name) for item in runtime.agent.history if isinstance(item, UserMessage)] == [
+            ("/model literal context", "setup"), ("run task", "owner"), ("mid-turn context", "helper"),
+        ]
+        assert [item.text for item in model.prompts[1].input if isinstance(item, UserMessage)] == [
+            "/model literal context", "run task", "mid-turn context",
+        ]
+    finally:
+        for event in release:
+            event.set()
+        await runtime.close()

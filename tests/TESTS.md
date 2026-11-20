@@ -153,7 +153,7 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 覆盖首次直接加载、已删除的保存会话、服务错误、切换即时复用节点、
 刷新加载提示、失败重试、后台轮询不闪动、切走后的请求不清除当前提示、
 手机提示可见性和减弱动画偏好、
-内容更新、展开状态、草稿、手机滚动、新建/关闭会话及切走后的 Mermaid
+内容更新、展开状态、草稿、手机滚动、Customize Agent 打开目录后等待输入、新建/关闭会话及切走后的 Mermaid
 异步完成，以及逐条消息的稳定 DOM 身份、作者/时间更新、未知时间和手机布局。
 流式更新还检查历史消息不产生多余 DOM mutation，元数据实际变化仍及时更新。
 所有请求使用离线 fixture，不访问真实会话或 CDN。
