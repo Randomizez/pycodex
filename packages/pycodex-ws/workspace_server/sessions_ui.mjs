@@ -2,38 +2,10 @@ import {messageSignature} from "./conversation.mjs";
 import {PromptHistory} from "./content_views.mjs";
 import {isNearBottom, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
 
-function replyTimingFromSnapshot(snapshot) {
-  let hasReply = false;
-  let lastMessageAt = 0;
-  for (const turn of snapshot?.turns || []) {
-    if (turn.kind === "control" || turn.kind === "compaction") continue;
-    const timestamps = [
-      turn.prompt_at,
-      turn.response_at,
-      ...(turn.messages || []).map(message => message.created_at),
-    ];
-    for (const timestamp of timestamps) {
-      const milliseconds = Date.parse(timestamp);
-      if (Number.isFinite(milliseconds)) {
-        lastMessageAt = Math.max(lastMessageAt, milliseconds / 1000);
-      }
-    }
-    if (String(turn.response || "").trim()) {
-      hasReply = true;
-    }
-  }
-  return {has_reply: hasReply, last_message_at: lastMessageAt};
-}
-
 export function formatReplyAge(session, now = Date.now()) {
-  if (typeof session?.last_message_at !== "number" && typeof session?.has_reply !== "boolean") {
-    return "Loading…";
-  }
-  const milliseconds = typeof session.last_message_at === "number" && session.last_message_at > 0
-    ? session.last_message_at * 1000
-    : session.reply_at ? Date.parse(session.reply_at) : NaN;
-  if (!Number.isFinite(milliseconds)) return session.has_reply ? "Unknown time" : "No activity";
-  const minutes = Math.max(0, Math.floor((now - milliseconds) / 60000));
+  if (!Number.isFinite(session?.last_message_at)) return "";
+  if (session.last_message_at <= 0) return "No activity";
+  const minutes = Math.max(0, Math.floor((now - session.last_message_at * 1000) / 60000));
   if (minutes < 1) return "<1m ago";
   if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
@@ -61,14 +33,13 @@ export function createSessionsUI({
   syncSessionBanners = () => {}, clearSessionBanners = () => {},
   updateSpinnerNotifyUi, notifySessionDone, setSpinner,
   renderQueueHint, markVisibleFinalRead,
-  renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen,
+  renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt,
 }) {
   const workspaceTitle = document.title;
   let activeSessionId = window.sessionStorage.getItem(activeSessionKey) || "";
   let sessions = [];
   const sessionState = new Map();
   let sessionPoll = null;
-  let legacyReplyRequests = 0;
   let sessionNeedsRefresh = true;
   let restoreScrollTop = null;
   let suppressScrollSave = false;
@@ -118,35 +89,6 @@ export function createSessionsUI({
     }
     state.draft = composer.read();
     state.entries = Array.from(log.children);
-  }
-
-  function sessionReplyTiming(session) {
-    if (typeof session.last_message_at === "number") return session;
-    if (session.turn_count === 0) return {has_reply: false, last_message_at: 0};
-    const state = stateForSession(session.id);
-    const key = JSON.stringify([session.turn_count, session.last_final_id, session.running]);
-    const previous = state.legacyReplyTiming;
-    if (isSidebarOpen() && legacyReplyRequests < 3 && !previous?.pending
-        && !(previous?.retryAfter > Date.now()) && previous?.key !== key) {
-      const entry = state.legacyReplyTiming = {pending: true, timing: previous?.timing};
-      legacyReplyRequests++;
-      fetch(relativeUrl(`api/session?session_id=${encodeURIComponent(session.id)}`))
-        .then(response => {
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          return response.json();
-        })
-        .then(payload => {
-          entry.timing = replyTimingFromSnapshot(payload.snapshot);
-          entry.key = key;
-        })
-        .catch(() => { entry.retryAfter = Date.now() + 10000; })
-        .finally(() => {
-          entry.pending = false;
-          legacyReplyRequests--;
-          if (isSidebarOpen()) renderTabs();
-        });
-    }
-    return previous?.timing ?? (typeof session.has_reply === "boolean" ? session : undefined);
   }
 
   function updateSessions(nextSessions) {
@@ -237,10 +179,6 @@ export function createSessionsUI({
         activeSessionId = payload.session_id;
       }
       stateForSession(activeSessionId).externalCall = payload.external_call || null;
-      const active = payload.sessions?.find(session => session.id === activeSessionId);
-      if (active && typeof active.last_message_at !== "number") {
-        Object.assign(active, replyTimingFromSnapshot(payload.snapshot));
-      }
       updateSessions(payload.sessions || []);
       renderSnapshot(payload.snapshot);
     } catch (error) {
@@ -401,6 +339,6 @@ export function createSessionsUI({
     get sessions() { return sessions; },
     sessionState, sessionById, stateForSession,
     restoreSessionScroll, saveActiveSessionUiState, saveScroll, updateSessions, renderSnapshot, pollSession,
-    createSession, closeSession, switchSession, sessionReplyTiming,
+    createSession, closeSession, switchSession,
   };
 }

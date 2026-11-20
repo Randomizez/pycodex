@@ -47,7 +47,6 @@ globalThis.requestAnimationFrame = () => {};
 const markVisibleFinalRead = () => {};
 const activeSessionKey = "test-workspace";
 let confirmClose = false;
-let sidebarOpen = false;
 const confirmations = [];
 globalThis.window = {
   sessionStorage: {getItem: () => null}, location: {href: "http://workspace.test/"},
@@ -73,16 +72,13 @@ const ui = createSessionsUI({
   clearSessionBanners(id) { clearedBannerSessions.push(id); },
   updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock() {}, resizePrompt,
-  isSidebarOpen: () => sidebarOpen,
 });
 const {sessionState, stateForSession, updateSessions, renderSnapshot, pollSession,
   restoreSessionScroll, saveActiveSessionUiState, switchSession, closeSession} = ui;
 const tabs = [{id: "a", cwd: "/a"}, {id: "b", cwd: "/b", title: "Second session"}];
 let serverTabs = tabs.slice();
 const deletions = [];
-const timingRequests = [];
-const replyAt = "2026-11-18T11:57:00+08:00";
-const promptAt = "2026-11-18T11:54:00+08:00";
+const polls = [];
 function snapshot(id) {
   return {cwd: "/" + id, turns: [{prompt: `prompt ${id}`, response: `answer ${id}`}],
           spinner: "", queued_inputs: []};
@@ -100,13 +96,7 @@ globalThis.fetch = async (path, options = {}) => {
     serverTabs = [tabs[0]];
     return {ok: true, json: async () => ({ok: true, sessions: serverTabs.slice()})};
   }
-  if (!options.signal) {
-    timingRequests.push(new URL(path).searchParams.get("session_id"));
-    return {ok: true, json: async () => ({snapshot: {turns: [
-      {prompt_at: promptAt, response: "reply", response_at: replyAt},
-      {kind: "control", response: "not a reply", response_at: "2026-11-18T12:00:00+08:00"},
-    ]}})};
-  }
+  polls.push(path);
   assert.equal(new URL(path).searchParams.get("recent"), null);
   assert.equal(options.signal.aborted, false);
   const id = path.endsWith("=b") ? "b" : "a";
@@ -230,24 +220,26 @@ async function checkSessionOrder() {
   updateSessions([...recent, {id: "a"}]);
   assert.deepEqual(ui.sessions.map(session => session.id), [...recent.map(session => session.id), "a"]);
   const now = Date.parse("2026-11-18T12:00:00+08:00");
-  const modern = {has_reply: true, last_message_at: Date.parse(replyAt) / 1000};
-  const legacy = {id: "legacy", turn_count: 1};
-  assert.equal(ui.sessionReplyTiming(modern), modern);
-  assert.equal(formatReplyAge({has_reply: false, last_message_at: 0}, now), "No activity");
+  assert.equal(formatReplyAge({id: "legacy", turn_count: 1}, now), "");
+  assert.equal(formatReplyAge({last_message_at: 0}, now), "No activity");
   assert.equal(formatReplyAge({last_message_at: (now - 20_000) / 1000}, now), "<1m ago");
+  assert.equal(formatReplyAge({last_message_at: (now - 3 * 60_000) / 1000}, now), "3m ago");
   assert.equal(formatReplyAge({last_message_at: (now - 72 * 60_000) / 1000}, now), "1h 12m ago");
   assert.equal(formatReplyAge({last_message_at: (now - 60 * 60_000) / 1000}, now), "1h ago");
   assert.equal(formatReplyAge({last_message_at: (now - 27 * 3600_000) / 1000}, now), "1d 3h ago");
-  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy)), "Loading…");
-  assert.deepEqual(timingRequests, []);
-  sidebarOpen = true;
-  ui.sessionReplyTiming(legacy);
-  ui.sessionReplyTiming(legacy);
-  for (const id of ["second", "third", "fourth"]) ui.sessionReplyTiming({id, turn_count: 1});
-  assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy), now), "3m ago");
-  assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
+  serverTabs = [
+    {id: "a", cwd: "/a", last_message_at: (now - 15_000) / 1000},
+    {id: "b", cwd: "/b", last_message_at: (now - 3 * 60_000) / 1000},
+  ];
+  polls.length = 0;
+  await pollSession();
+  assert.equal(formatReplyAge(ui.sessionById("a"), now), "<1m ago");
+  assert.equal(formatReplyAge(ui.sessionById("b"), now), "3m ago");
+  await switchSession("b");
+  assert.equal(ui.activeId, "b");
+  assert.equal(formatReplyAge(ui.sessionById("a"), now), "<1m ago");
+  assert.equal(formatReplyAge(ui.sessionById("b"), now), "3m ago");
+  assert.equal(polls.length, 2);
   globalThis.AbortController = NativeAbortController;
   await import("../workspace_server/optional_features/session-time-sort/source/verify.mjs");
 }

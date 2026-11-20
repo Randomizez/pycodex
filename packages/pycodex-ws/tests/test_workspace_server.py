@@ -1674,8 +1674,6 @@ def test_recent_session_poll_limits_summaries_without_losing_old_sessions(tmp_pa
         assert recent["session_id"] == first
         assert recent["sessions"] == expected[:20]
         assert recent["workspace_running"] is False
-        assert recent["sessions"][0]["has_reply"] is True
-        assert recent["sessions"][0]["reply_at"] == snapshot["turns"][-1]["response_at"]
         assert 0 < recent["sessions"][0]["last_user_at"] <= recent["sessions"][0]["last_message_at"]
         selected = browser.get(path, params={"recent": "true", "session_id": old}).json()
         assert selected["sessions"][:19] == expected[:19]

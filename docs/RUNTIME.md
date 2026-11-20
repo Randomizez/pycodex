@@ -331,8 +331,6 @@ Each entry shows the minute-level elapsed time since its latest user message or
 assistant reply (`last_message_at`, such as `<1m ago` or `1h 12m ago`);
 empty sessions show `No activity`. The two-second poll uses cached
 timing in session summaries, without requesting other sessions' snapshots.
-If the running backend predates these fields, the expanded sidebar fetches
-and caches missing times for the visible sessions, up to three requests at once.
 On compact phone controls, tapping any part of a dot switches sessions.
 Unchanged text and attributes are not rewritten, and DOM entries move only when
 their position changes.

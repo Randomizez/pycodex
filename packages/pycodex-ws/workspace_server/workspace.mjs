@@ -82,7 +82,7 @@ const sessionUI = createSessionsUI({
   updateSpinnerNotifyUi, notifySessionDone, setSpinner,
   renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry,
-  dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen: () => sessionsOpen,
+  dismissSessionsDrawer, closeContextBlock, resizePrompt,
 });
 const {
   sessionById, stateForSession, restoreSessionScroll,
@@ -386,8 +386,8 @@ function renderSessionList(container, mobile) {
     tab.classList.toggle("completed", Boolean(session.last_final_id));
     const title = session.title || `Session ${index + 1}`;
     const status = session.running ? "Running" : session.last_final_id ? "Finished" : "Idle";
-    const replyAge = formatReplyAge(sessionUI.sessionReplyTiming(session));
-    const description = `${title} · ${status} · ${replyAge}${session.unread ? " · Unread reply" : ""}`;
+    const replyAge = formatReplyAge(session);
+    const description = `${title} · ${status}${replyAge ? ` · ${replyAge}` : ""}${session.unread ? " · Unread reply" : ""}`;
     const nextTitle = mobile ? description : title;
     if (tab.title !== nextTitle) tab.title = nextTitle;
     const selectedAttr = mobile ? "aria-pressed" : "aria-selected";

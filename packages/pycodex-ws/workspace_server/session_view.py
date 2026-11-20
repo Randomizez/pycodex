@@ -561,9 +561,6 @@ def _session_timestamp(value):
 def session_timing(turns):
     last_user_at = 0
     last_response_at = 0
-    first_prompt_at = None
-    reply_at = None
-    has_reply = False
     for turn in turns:
         if turn.get("kind") in ("control", "compaction"):
             continue
@@ -571,20 +568,12 @@ def session_timing(turns):
             message.get("created_at") if isinstance(message, dict) else message.created_at
             for message in turn.get("messages", ())
         ]
-        prompt_at = turn.get("prompt_at") or (message_times[0] if message_times else None)
-        first_prompt_at = first_prompt_at or prompt_at
-        response_at = turn.get("response_at")
-        if str(turn.get("response") or "").strip():
-            reply_at = response_at
-            has_reply = True
-        for value in (*message_times, prompt_at):
+        for value in (*message_times, turn.get("prompt_at")):
             last_user_at = max(last_user_at, _session_timestamp(value))
-        last_response_at = max(last_response_at, _session_timestamp(response_at))
+        last_response_at = max(last_response_at, _session_timestamp(turn.get("response_at")))
     return {
         "last_user_at": last_user_at,
         "last_message_at": max(last_user_at, last_response_at),
-        "reply_at": reply_at if has_reply else first_prompt_at,
-        "has_reply": has_reply,
     }
 
 

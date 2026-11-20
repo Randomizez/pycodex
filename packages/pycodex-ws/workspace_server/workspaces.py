@@ -303,8 +303,6 @@ class WorkspaceSessionManager:
                     "last_assistant": summary.get("last_assistant") or "",
                     "last_message_at": summary.get("last_message_at", 0),
                     "last_user_at": summary.get("last_user_at", 0),
-                    "reply_at": summary.get("reply_at"),
-                    "has_reply": bool(summary.get("has_reply")),
                     "context_remaining_percent": summary.get(
                         "context_remaining_percent"
                     ),
