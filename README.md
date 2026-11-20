@@ -141,9 +141,7 @@ When opening or switching conversations, a loading indicator above the input
 stays visible until the latest session snapshot arrives, including when cached
 messages are shown immediately.
 Click the × beside a session and confirm to remove it from the workspace.
-Each entry shows how long it has been since the session last replied.
-The list loads up to 20 recent sessions by latest user message. The current session
-stays visible, and older sessions are not closed or deleted.
+Each entry shows the time since the session's last activity.
 Click file links to inspect code, then select text and use **Insert into chat**
 to include it in your next message.
 Local HTML links such as `report.html#results` open the preview at the named section.

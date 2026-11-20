@@ -322,22 +322,18 @@ the fullscreen button in the board toolbar. Floating session controls stay below
 the headers and contain only the session-list button and status dots.
 
 In the two-pane layout, the session sidebar starts collapsed on every page load.
-Session entries provide selection, title editing and status indicators.
+Session entries provide selection, title editing and status indicators,
+preserving workspace tab order by default (sorting by latest user message is an
+optional frontend feature).
 In the expanded sidebar, the × button asks for confirmation before closing
 a session. The last session cannot be closed.
-Each entry shows the time since its latest visible assistant reply, including
-commentary. Before the first reply, it counts from the first recorded input;
-empty sessions show that no reply has arrived. The two-second poll uses cached
+Each entry shows the minute-level elapsed time since its latest user message or
+assistant reply (`last_message_at`, such as `<1m ago` or `1h 12m ago`);
+empty sessions show `No activity`. The two-second poll uses cached
 timing in session summaries, without requesting other sessions' snapshots.
 If the running backend predates these fields, the expanded sidebar fetches
 and caches missing times for the visible sessions, up to three requests at once.
-Before those times arrive it uses time-ordered final reply IDs when available.
-It returns at most 20 tabs, sorted by latest user message, with newer tab IDs
-first on ties. Assistant replies update the elapsed-time label without
-reordering the list. The compact phone controls keep existing dots in place as
-the list reorders; tapping any part of a dot switches sessions. If the
-selected tab lies outside the limit, it takes the last slot. Hiding tabs does
-not close or delete sessions.
+On compact phone controls, tapping any part of a dot switches sessions.
 Unchanged text and attributes are not rewritten, and DOM entries move only when
 their position changes.
 Hovering for 100 ms previews it; leaving schedules dismissal after 150 ms,
@@ -773,10 +769,11 @@ valid adjacent `*.config.toml` files and embedded `[profiles.NAME]` tables.
 Adding, editing or deleting profiles does not require a server restart. Duplicate
 names across the two formats are errors. Provider and context settings share the
 [profile loader](CONTEXT.md#配置读取与-profile).
-The browser polls `GET api/session?recent=true` for one conversation snapshot
-and up to 20 recent summaries. Without `session_id`, this opt-in mode selects
-the most recent session; `workspace_running` still reflects all sessions.
-Unfiltered requests and the full session catalog remain available.
+The built-in page polls `GET api/session` for one conversation snapshot and
+the workspace's session summaries in tab order. Opt-in `GET api/session?recent=true`
+returns up to 20 summaries sorted by latest user message (`last_user_at`, then tab ID),
+keeping the selected session in the last slot when needed and reporting overall
+`workspace_running`; without `session_id`, it selects the most recent session.
 `POST api/sessions` creates a session with optional string fields `title` and
 `prompt`, optional `profile` and `name`, and optional boolean `trigger`
 (default `true`). Title and prompt default to an empty
@@ -986,8 +983,7 @@ remaining text at every character. Refreshing live text does not rewrite
 unchanged historical authors, timestamps or reply attributes, or move their
 timestamp nodes. This avoids mutation notifications for unchanged ordinary messages.
 Closed sessions release their cached state when explicitly closed in the page
-or when it receives a full session list. A recent-only refresh does not discard
-a hidden session's draft or cached view.
+or when the session list refreshes.
 Pending Mermaid rendering can complete in detached entries without scrolling
 the active conversation. Refreshing the page discards the rendered caches.
 

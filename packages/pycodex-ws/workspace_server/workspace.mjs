@@ -2,7 +2,7 @@ import {Composer, mountContentViews} from "./content_views.mjs";
 import {encodeViewPath, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
-import {createSessionsUI, formatReplyAge, keepMobileSessionOrder} from "./sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
 import {fillRuntimeInfo, installDialogs, setupContextDetails} from "./dialogs.mjs";
 import {mountCustomFrontend} from "./custom_frontend.mjs";
 import {createSessionBanners, loadEmbeddedBanners} from "./banners.mjs";
@@ -139,9 +139,8 @@ function setSessionsOpen(open, restoreFocus = false, pinned = true) {
     const button = mobileSessionsMedia.matches ? mobileSessionsToggle : sessionsClose;
     button.focus({preventScroll: true});
   }
+  if (open) renderTabs();
   requestAnimationFrame(() => {
-    if (open) renderTabs();
-    resizePrompt();
     restoreSessionScroll();
     if (!open) markVisibleFinalRead();
   });
@@ -347,11 +346,7 @@ async function toggleSpinnerNotification() {
 }
 
 function resizePrompt() {
-  prompt.style.height = "auto";
-  const borderHeight = prompt.offsetHeight - prompt.clientHeight;
-  const maxHeight = Math.round(window.innerHeight * 0.35);
-  const nextHeight = Math.min(prompt.scrollHeight + borderHeight, maxHeight);
-  prompt.style.height = `${nextHeight}px`;
+  if (prompt.style.height) prompt.style.height = "";
 }
 
 function renderTabs() {
@@ -367,22 +362,20 @@ function renderTabs() {
   activeSessionTitle.title = activeSessionTitle.textContent;
   activeSessionStatus.hidden = !active?.running;
   updateSessionControls();
-  const visible = sessionUI.orderVisibleSessions();
-  renderSessionList(tabsEl, false, visible);
-  const dotIds = Array.from(mobileSessionDots.children, dot => dot.dataset.sessionId);
-  renderSessionList(mobileSessionDots, true, keepMobileSessionOrder(visible, dotIds));
+  renderSessionList(tabsEl, false);
+  renderSessionList(mobileSessionDots, true);
   if (mobileSessionDots.dataset.activeSessionId !== sessionUI.activeId && mobileSessionDots.clientWidth) {
     mobileSessionDots.querySelector(".active")?.scrollIntoView({block: "nearest", inline: "nearest"});
   }
   mobileSessionDots.dataset.activeSessionId = sessionUI.activeId;
 }
 
-function renderSessionList(container, mobile, visibleSessions) {
+function renderSessionList(container, mobile) {
   const template = document.getElementById(mobile ? "mobileSessionDot" : "sessionTab");
   const existing = new Map(
     Array.from(container.children, tab => [tab.dataset.sessionId, tab])
   );
-  visibleSessions.forEach((session, index) => {
+  sessionUI.sessions.forEach((session, index) => {
     const sessionId = session.id || "";
     const tab = existing.get(sessionId) || template.content.firstElementChild.cloneNode(true);
     existing.delete(sessionId);
@@ -395,24 +388,32 @@ function renderSessionList(container, mobile, visibleSessions) {
     const status = session.running ? "Running" : session.last_final_id ? "Finished" : "Idle";
     const replyAge = formatReplyAge(sessionUI.sessionReplyTiming(session));
     const description = `${title} · ${status} · ${replyAge}${session.unread ? " · Unread reply" : ""}`;
-    tab.title = mobile ? description : title;
-    tab.setAttribute(mobile ? "aria-pressed" : "aria-selected", String(active));
+    const nextTitle = mobile ? description : title;
+    if (tab.title !== nextTitle) tab.title = nextTitle;
+    const selectedAttr = mobile ? "aria-pressed" : "aria-selected";
+    const selectedVal = String(active);
+    if (tab.getAttribute(selectedAttr) !== selectedVal) tab.setAttribute(selectedAttr, selectedVal);
     tab.querySelector(".unread-dot").hidden = !session.unread;
     if (mobile) {
-      tab.setAttribute("aria-label", description);
+      if (tab.getAttribute("aria-label") !== description) tab.setAttribute("aria-label", description);
     } else {
-      tab.setAttribute("aria-busy", String(Boolean(session.running)));
+      const busyVal = String(Boolean(session.running));
+      if (tab.getAttribute("aria-busy") !== busyVal) tab.setAttribute("aria-busy", busyVal);
       const statusButton = tab.querySelector(".tab-status");
-      statusButton.title = description;
-      statusButton.setAttribute("aria-label", description);
+      if (statusButton.title !== description) statusButton.title = description;
+      if (statusButton.getAttribute("aria-label") !== description) {
+        statusButton.setAttribute("aria-label", description);
+      }
       const label = tab.querySelector(".tab-label");
       const labelText = label.querySelector(".tab-label-text");
       if (labelText.textContent !== title) labelText.textContent = title;
-      label.title = active ? "Click to rename session" : title;
+      const labelTitle = active ? "Click to rename session" : title;
+      if (label.title !== labelTitle) label.title = labelTitle;
       const age = tab.querySelector(".session-reply-age");
       if (age.textContent !== replyAge) age.textContent = replyAge;
       const close = tab.querySelector(".tab-close");
-      close.setAttribute("aria-label", `Close session: ${title}`);
+      const closeLabel = `Close session: ${title}`;
+      if (close.getAttribute("aria-label") !== closeLabel) close.setAttribute("aria-label", closeLabel);
       close.disabled = sessionUI.sessions.length <= 1;
     }
     if (container.children[index] !== tab) container.insertBefore(tab, container.children[index] || null);
@@ -495,6 +496,7 @@ function updatePromptPlaceholder(snapshot = null) {
     "点击文件链接，可在旁边预览。",
     "在设置中添加：后台命令状态。",
     "用 /compact 压缩上下文。",
+    "在设置中添加：会话按时间排序。",
     "在设置中添加：会话私有便笺。",
     "在设置中添加：定时唤醒时间分隔线。",
     "按 ↑ / ↓ 找回之前的输入。",
@@ -946,7 +948,6 @@ setupContextDetails({
   }),
 });
 resizePrompt();
-new ResizeObserver(resizePrompt).observe(document.querySelector(".chat"));
 startPolling();
 startBoardPolling();
 document.querySelectorAll(".content-tabs").forEach(tabs => {

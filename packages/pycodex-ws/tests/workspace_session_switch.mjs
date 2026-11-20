@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import {createSessionsUI, formatReplyAge, keepMobileSessionOrder} from "../workspace_server/sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge} from "../workspace_server/sessions_ui.mjs";
 
+const NativeAbortController = globalThis.AbortController;
 // Record cancellation even when the simulated transport delivers a late response.
 globalThis.AbortController = class {
   constructor() { this.signal = {aborted: false}; }
@@ -106,7 +107,7 @@ globalThis.fetch = async (path, options = {}) => {
       {kind: "control", response: "not a reply", response_at: "2026-11-18T12:00:00+08:00"},
     ]}})};
   }
-  assert.equal(new URL(path).searchParams.get("recent"), "true");
+  assert.equal(new URL(path).searchParams.get("recent"), null);
   assert.equal(options.signal.aborted, false);
   const id = path.endsWith("=b") ? "b" : "a";
   const reply = response(id);
@@ -222,17 +223,22 @@ async function checkClosingActiveSession() {
 }
 
 async function checkSessionOrder() {
-  updateSessions([{id: "a"}], false);
+  updateSessions([{id: "a"}]);
   const recent = Array.from({length: 25}, (_, index) => ({
     id: String(index), last_user_at: index,
   }));
-  updateSessions([...recent, {id: "a"}], false);
-  assert.deepEqual(ui.sessions.slice(0, 19), recent.slice(6).reverse());
-  assert.equal(ui.sessions[19].id, "a");
-  const modern = {has_reply: true, reply_at: replyAt, last_user_at: Date.parse(promptAt) / 1000};
+  updateSessions([...recent, {id: "a"}]);
+  assert.deepEqual(ui.sessions.map(session => session.id), [...recent.map(session => session.id), "a"]);
+  const now = Date.parse("2026-11-18T12:00:00+08:00");
+  const modern = {has_reply: true, last_message_at: Date.parse(replyAt) / 1000};
   const legacy = {id: "legacy", turn_count: 1};
   assert.equal(ui.sessionReplyTiming(modern), modern);
-  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy)), "读取回复时间…");
+  assert.equal(formatReplyAge({has_reply: false, last_message_at: 0}, now), "No activity");
+  assert.equal(formatReplyAge({last_message_at: (now - 20_000) / 1000}, now), "<1m ago");
+  assert.equal(formatReplyAge({last_message_at: (now - 72 * 60_000) / 1000}, now), "1h 12m ago");
+  assert.equal(formatReplyAge({last_message_at: (now - 60 * 60_000) / 1000}, now), "1h ago");
+  assert.equal(formatReplyAge({last_message_at: (now - 27 * 3600_000) / 1000}, now), "1d 3h ago");
+  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy)), "Loading…");
   assert.deepEqual(timingRequests, []);
   sidebarOpen = true;
   ui.sessionReplyTiming(legacy);
@@ -240,24 +246,10 @@ async function checkSessionOrder() {
   for (const id of ["second", "third", "fourth"]) ui.sessionReplyTiming({id, turn_count: 1});
   assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
   await new Promise(resolve => setImmediate(resolve));
-  const now = Date.parse("2026-11-18T12:00:00+08:00");
-  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy), now), "3 分钟未回复");
-  assert.equal(ui.sessionReplyTiming(legacy).last_user_at, modern.last_user_at);
+  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy), now), "3m ago");
   assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
-  const earlierReply = {...legacy, last_final_id: "019ac000-0000-7000-8000-000000000001"};
-  const laterReply = {id: "other", last_final_id: "019ac000-1000-7000-8000-000000000001"};
-  updateSessions([earlierReply, laterReply], false);
-  assert.deepEqual(ui.sessions, [earlierReply, laterReply], "legacy snapshots use user input time");
-  updateSessions([
-    {...earlierReply, last_user_at: 1, last_message_at: 10},
-    {...laterReply, last_user_at: 2, last_message_at: 2},
-  ], false);
-  assert.deepEqual(ui.orderVisibleSessions().map(session => session.id), ["other", "legacy"],
-                   "assistant replies do not influence order");
-  assert.deepEqual(
-    keepMobileSessionOrder(recent.slice(0, 3).reverse(), ["0", "gone", "2"]),
-    recent.slice(0, 3), "phone dots retain their slots when the list is reordered",
-  );
+  globalThis.AbortController = NativeAbortController;
+  await import("../workspace_server/optional_features/session-time-sort/source/verify.mjs");
 }
 
 const run = process.argv[2] === "ordering" ? checkSessionOrder : checkClosingActiveSession;

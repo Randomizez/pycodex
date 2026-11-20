@@ -2,77 +2,48 @@ import {messageSignature} from "./conversation.mjs";
 import {PromptHistory} from "./content_views.mjs";
 import {isNearBottom, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
 
-function sessionActivity(session, stateById) {
-  const lastUserAt = session.last_user_at ??
-    stateById.get(session.id)?.legacyReplyTiming?.timing?.last_user_at;
-  if (lastUserAt != null) return lastUserAt;
-  const match = /^([0-9a-f]{8})-([0-9a-f]{4})-7/i.exec(session.last_final_id || "");
-  return match ? Number.parseInt(match[1] + match[2], 16) / 1000 : 0;
-}
-
-function orderBySessionActivity(items, stateById) {
-  const times = new Map(items.map(session => [session.id, sessionActivity(session, stateById)]));
-  return [...items].sort((left, right) =>
-    times.get(right.id) - times.get(left.id) ||
-    String(right.id).localeCompare(String(left.id))
-  );
-}
-
-function recentSessions(items, activeId, stateById) {
-  const ordered = orderBySessionActivity(items, stateById);
-  const visible = ordered.slice(0, 20);
-  const active = ordered.find(session => session.id === activeId);
-  if (active && !visible.includes(active)) visible[visible.length - 1] = active;
-  return visible;
-}
-
-export function keepMobileSessionOrder(items, previousIds) {
-  const remaining = new Map(items.map(session => [session.id, session]));
-  const slots = previousIds.map(id => {
-    const session = remaining.get(id);
-    remaining.delete(id);
-    return session;
-  });
-  const additions = remaining.values();
-  return slots.map(session => session ?? additions.next().value)
-    .concat(Array.from(additions)).filter(Boolean);
-}
-
 function replyTimingFromSnapshot(snapshot) {
-  let firstPromptAt = null;
-  let replyAt = null;
   let hasReply = false;
-  let lastUserAt = 0;
+  let lastMessageAt = 0;
   for (const turn of snapshot?.turns || []) {
     if (turn.kind === "control" || turn.kind === "compaction") continue;
-    firstPromptAt ||= turn.prompt_at;
-    const timestamps = [turn.prompt_at,
-      ...(turn.messages || []).map(message => message.created_at)];
+    const timestamps = [
+      turn.prompt_at,
+      turn.response_at,
+      ...(turn.messages || []).map(message => message.created_at),
+    ];
     for (const timestamp of timestamps) {
       const milliseconds = Date.parse(timestamp);
-      if (Number.isFinite(milliseconds)) lastUserAt = Math.max(lastUserAt, milliseconds / 1000);
+      if (Number.isFinite(milliseconds)) {
+        lastMessageAt = Math.max(lastMessageAt, milliseconds / 1000);
+      }
     }
     if (String(turn.response || "").trim()) {
-      replyAt = turn.response_at;
       hasReply = true;
     }
   }
-  return {has_reply: hasReply, reply_at: hasReply ? replyAt : firstPromptAt, last_user_at: lastUserAt};
+  return {has_reply: hasReply, last_message_at: lastMessageAt};
 }
 
 export function formatReplyAge(session, now = Date.now()) {
-  if (typeof session?.has_reply !== "boolean") return "读取回复时间…";
-  if (!session.reply_at) return session.has_reply ? "回复时间未知" : "尚未回复";
-  const timestamp = Date.parse(session.reply_at);
-  if (!Number.isFinite(timestamp)) return "回复时间未知";
-  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (seconds < 5 && session.has_reply) return "刚刚回复";
-  if (seconds < 60) return `${seconds} 秒未回复`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟未回复`;
+  if (typeof session?.last_message_at !== "number" && typeof session?.has_reply !== "boolean") {
+    return "Loading…";
+  }
+  const milliseconds = typeof session.last_message_at === "number" && session.last_message_at > 0
+    ? session.last_message_at * 1000
+    : session.reply_at ? Date.parse(session.reply_at) : NaN;
+  if (!Number.isFinite(milliseconds)) return session.has_reply ? "Unknown time" : "No activity";
+  const minutes = Math.max(0, Math.floor((now - milliseconds) / 60000));
+  if (minutes < 1) return "<1m ago";
+  if (minutes < 60) return `${minutes}m ago`;
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分钟未回复`;
-  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时未回复`;
+  if (hours < 24) {
+    const remMinutes = minutes % 60;
+    return remMinutes ? `${hours}h ${remMinutes}m ago` : `${hours}h ago`;
+  }
+  const days = Math.floor(hours / 24);
+  const remHours = hours % 24;
+  return remHours ? `${days}d ${remHours}h ago` : `${days}d ago`;
 }
 
 function hasFrontendCustomizationTurn(turns) {
@@ -150,8 +121,8 @@ export function createSessionsUI({
   }
 
   function sessionReplyTiming(session) {
-    if (session.last_user_at != null) return session;
-    if (session.turn_count === 0) return {has_reply: false};
+    if (typeof session.last_message_at === "number") return session;
+    if (session.turn_count === 0) return {has_reply: false, last_message_at: 0};
     const state = stateForSession(session.id);
     const key = JSON.stringify([session.turn_count, session.last_final_id, session.running]);
     const previous = state.legacyReplyTiming;
@@ -175,18 +146,12 @@ export function createSessionsUI({
           if (isSidebarOpen()) renderTabs();
         });
     }
-    return previous?.timing ?? session;
+    return previous?.timing ?? (typeof session.has_reply === "boolean" ? session : undefined);
   }
 
-  function orderVisibleSessions() {
-    if (sessions.every(session => session.last_user_at != null)) return sessions;
-    return orderBySessionActivity(sessions, sessionState);
-  }
-
-  function updateSessions(nextSessions, workspaceRunning) {
+  function updateSessions(nextSessions) {
     const incomingSessions = Array.isArray(nextSessions) ? nextSessions : sessions;
-    const ordered = recentSessions(incomingSessions, activeSessionId, sessionState);
-    ordered.forEach((session) => {
+    incomingSessions.forEach((session) => {
       const sessionId = session.id || "";
       if (!sessionId) return;
       const state = stateForSession(sessionId);
@@ -199,10 +164,10 @@ export function createSessionsUI({
       }
       state.wasRunning = isRunning;
     });
-    sessions = ordered;
+    sessions = incomingSessions;
     let fullSessionIds = null;
-    if (Array.isArray(nextSessions) && workspaceRunning === undefined) {
-      fullSessionIds = new Set(incomingSessions.map(session => session.id));
+    if (Array.isArray(nextSessions)) {
+      fullSessionIds = new Set(sessions.map(session => session.id));
       for (const id of sessionState.keys()) {
         if (id !== activeSessionId && !fullSessionIds.has(id)) {
           sessionState.delete(id);
@@ -210,8 +175,7 @@ export function createSessionsUI({
         }
       }
     }
-    const running = workspaceRunning ?? incomingSessions.some(session => session.running);
-    document.title = (running ? "● " : "") + workspaceTitle;
+    document.title = (sessions.some(session => session.running) ? "● " : "") + workspaceTitle;
     if (!activeSessionId && sessions.length) {
       activeSessionId = sessions[0].id || "";
     }
@@ -256,13 +220,13 @@ export function createSessionsUI({
     if (sessionNeedsRefresh) setSessionRefresh("loading");
     try {
       const path = requestedSessionId
-        ? `api/session?recent=true&session_id=${encodeURIComponent(requestedSessionId)}`
-        : "api/session?recent=true";
+        ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
+        : "api/session";
       let response = await fetch(relativeUrl(path), {signal: request.controller.signal});
       if (sessionPoll !== request || requestedSessionId !== activeSessionId) return;
       // A saved session may have been closed since this page was last open.
       if (response.status === 404 && requestedSessionId && !sessions.length) {
-        response = await fetch(relativeUrl("api/session?recent=true"), {signal: request.controller.signal});
+        response = await fetch(relativeUrl("api/session"), {signal: request.controller.signal});
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
@@ -274,10 +238,10 @@ export function createSessionsUI({
       }
       stateForSession(activeSessionId).externalCall = payload.external_call || null;
       const active = payload.sessions?.find(session => session.id === activeSessionId);
-      if (active && active.last_user_at == null) {
+      if (active && typeof active.last_message_at !== "number") {
         Object.assign(active, replyTimingFromSnapshot(payload.snapshot));
       }
-      updateSessions(payload.sessions || [], payload.workspace_running);
+      updateSessions(payload.sessions || []);
       renderSnapshot(payload.snapshot);
     } catch (error) {
       if (sessionPoll === request && requestedSessionId === activeSessionId) {
@@ -437,6 +401,6 @@ export function createSessionsUI({
     get sessions() { return sessions; },
     sessionState, sessionById, stateForSession,
     restoreSessionScroll, saveActiveSessionUiState, saveScroll, updateSessions, renderSnapshot, pollSession,
-    createSession, closeSession, switchSession, sessionReplyTiming, orderVisibleSessions,
+    createSession, closeSession, switchSession, sessionReplyTiming,
   };
 }

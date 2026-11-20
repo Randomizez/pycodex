@@ -310,7 +310,7 @@ function turn(id, text) {
     await page.evaluate("fixture.pollSession()");
     releaseCreate();
     await page.locator("#contentView .snapshot-markdown").waitFor({state: "visible"});
-    assert.match(await page.locator("#contentView").textContent(), /Optional frontend features/);
+    assert.match(await page.locator("#contentView").textContent(), /可选前端功能/);
     assert.equal(await page.locator('#sessionBanners [data-banner-id="customize-agent"]').count(), 1);
     await page.evaluate("fixture.switchSession('a')");
     assert.equal(await page.locator("#sessionBanners").getAttribute("hidden"), "");

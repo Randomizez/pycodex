@@ -1,0 +1,17 @@
+.tabs > [data-session-time-hidden],
+.mobile-session-dots > [data-session-time-hidden] {
+  display: none;
+}
+
+.session-time-sort-error {
+  margin: 4px 10px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--danger, #b42318);
+  background: rgba(180, 35, 24, 0.08);
+}
+
+.session-time-sort-error[hidden] {
+  display: none;
+}
