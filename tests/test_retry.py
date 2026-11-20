@@ -9,7 +9,7 @@ import requests
 
 from pycodex import BaseTool, ContextConfig, ResponsesModelClient, ResponsesProviderConfig, ToolRegistry
 from pycodex.model import ResponsesApiError, ResponsesRetryableError
-from pycodex.protocol import AssistantMessage, Prompt, ToolCall, ToolResult, UserMessage
+from pycodex.protocol import AssistantMessage, Prompt, ToolCall, ToolResult, ToolSpec, UserMessage
 from pycodex.runtime import SubmissionInterrupted
 from responses_server import CompatServerConfig, ManagedResponseServer
 from tests.fakes import make_agent, make_runtime, wait_for_runtime_idle
@@ -35,40 +35,34 @@ def answer():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [502, 503])
-async def test_retry_matches_gemini_http_status_carried_inside_response_failed(monkeypatch, status):
+@pytest.mark.parametrize("failure, retry_code", [
+    (502, 502), (503, 502), ("truncated", 502), ("truncated", None),
+])
+async def test_retry_gemini_response_failed(monkeypatch, failure, retry_code):
     attempts = []
 
-    class GeminiResponse:
-        status = 200
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def __iter__(self):
-            payload = {
-                "candidates": [{
-                    "content": {"role": "model", "parts": [{"text": "done"}]},
-                    "finishReason": "STOP",
-                }],
-                "usageMetadata": {
-                    "promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11,
-                },
-            }
-            yield ("data: " + json.dumps(payload) + "\n").encode()
-            yield b"\n"
-
     def open_response(request, **kwargs):
-        attempts.append(request)
+        attempts.append(request.data)
         if len(attempts) <= 2:
-            raise urllib.error.HTTPError(
-                request.full_url, status, "Bad Gateway", {},
-                io.BytesIO(b"write: connection reset by peer"),
-            )
-        return GeminiResponse()
+            if isinstance(failure, int):
+                raise urllib.error.HTTPError(
+                    request.full_url, failure, "Upstream error", {},
+                    io.BytesIO(b"write: connection reset by peer"),
+                )
+            candidate = {"content": {"role": "model", "parts": [
+                {"text": "partial"}, {"functionCall": {"name": "count", "args": {}}},
+            ]}}
+        else:
+            candidate = {
+                "content": {"role": "model", "parts": [{"text": "done"}]}, "finishReason": "STOP",
+            }
+        payload = {
+            "candidates": [candidate],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 1, "totalTokenCount": 11},
+        }
+        response = io.BytesIO(("data: " + json.dumps(payload) + "\n\n").encode())
+        response.status = 200
+        return response
 
     monkeypatch.setattr("responses_server.transport.urllib.request.urlopen", open_response)
     server = ManagedResponseServer(CompatServerConfig(
@@ -78,26 +72,35 @@ async def test_retry_matches_gemini_http_status_carried_inside_response_failed(m
     try:
         model = ResponsesModelClient(ResponsesProviderConfig(
             model="gemini-test", provider_name="gemini_pool", base_url=server.base_url,
-            api_key_env=None, stream_max_retries=0,
+            api_key_env=None, stream_max_retries=2 if retry_code is None else 0,
         ))
         monkeypatch.setattr(model, "_retry_delay_seconds", lambda *args: 0)
-        model.set_retry_error_code(502)
-        prompt = Prompt(input=[UserMessage("hello")], tools=[])
+        model.set_retry_error_code(retry_code)
+        prompt = Prompt(
+            input=[UserMessage("hello")], tools=[ToolSpec("count", "Count once.", {"type": "object"})],
+        )
         events = []
-        if status == 502:
-            result = await model.complete(prompt, events.append)
-            assert [item.text for item in result.items if isinstance(item, AssistantMessage)] == ["done"]
-            assert len(attempts) == 3
-            retries = [event for event in events if event.kind == "stream_error"]
-            assert [event.message for event in retries] == ["Reconnecting... 1/∞", "Reconnecting... 2/∞"]
-            assert all("response.failed" in event.error for event in retries)
-        else:
+        if failure == 503:
             with pytest.raises(ResponsesRetryableError) as failed:
                 await model.complete(prompt, events.append)
             assert failed.value.http_status == 503
             assert model.last_error is failed.value
             assert len(attempts) == 1
             assert not any(event.kind == "stream_error" for event in events)
+            return
+        result = await model.complete(prompt, events.append)
+        assert [item.text for item in result.items if isinstance(item, AssistantMessage)] == ["done"]
+        assert not any(isinstance(item, ToolCall) for item in result.items)
+        assert attempts == [attempts[0]] * 3
+        retries = [event for event in events if event.kind == "stream_error"]
+        limit = "2" if retry_code is None else "∞"
+        assert [event.message for event in retries] == [
+            "Reconnecting... 1/" + limit, "Reconnecting... 2/" + limit,
+        ]
+        assert all("response.failed" in event.error for event in retries)
+        if failure == "truncated":
+            assert all("ended before `finishReason`" in event.error for event in retries)
+            assert all("status=200" in event.error for event in retries)
     finally:
         server.stop()
 
@@ -142,10 +145,59 @@ async def test_selected_code_retries_beyond_budget_on_the_same_model(monkeypatch
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["/retry 123|345", "/retry *"])
+async def test_retry_command_matches_consecutive_model_errors(monkeypatch, command):
+    model = make_model(monkeypatch, fallback_models=("backup",))
+    runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
+    responses = [
+        Response(events=[{"type": "response.failed", "response": {"error": {"code": 123}}}]),
+        Response(events=[{"type": "response.failed", "response": {"error": {"code": "345"}}}]),
+    ]
+    if command == "/retry *":
+        responses.extend([
+            Response(400),
+            requests.ConnectionError("offline"),
+            Response(events=[{"type": "response.failed", "response": {"error": {"code": "invalid_prompt"}}}]),
+            Response(events=[{"type": "response.incomplete"}]),
+            Response(events=[{"type": "response.output_item.done", "item": {
+                "type": "function_call", "name": "count", "call_id": "invalid", "arguments": "{",
+            }}]),
+        ])
+    failures = len(responses)
+    responses.append(answer())
+    bodies = []
+    events = []
+
+    def send(self, request, **kwargs):
+        bodies.append(request.body)
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+    monkeypatch.setattr(requests.Session, "send", send)
+    runtime.event_handler = events.append
+    await runtime.start()
+    try:
+        receipt = await runtime.submit_input(command)
+        await receipt.future
+        result = await asyncio.wait_for(runtime.submit_user_turn("hello"), 3)
+        assert result.output_text == "done"
+        assert len(bodies) == failures + 1
+        assert all(body == bodies[0] for body in bodies)
+        assert [event.message for event in events if event.kind == "stream_error"] == [
+            "Reconnecting... {0}/∞".format(attempt) for attempt in range(1, failures + 1)
+        ]
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [400, 503, "transport", "symbolic"])
-async def test_other_errors_raise_without_retry_or_fallback(monkeypatch, failure):
+@pytest.mark.parametrize("codes", [429, frozenset((429, 502))])
+async def test_other_errors_raise_without_retry_or_fallback(monkeypatch, failure, codes):
     model = make_model(monkeypatch, retries=5, fallback_models=("backup",))
-    model.set_retry_error_code(429)
+    model.set_retry_error_code(codes)
     attempts = []
 
     def send(self, request, **kwargs):
@@ -168,7 +220,9 @@ async def test_other_errors_raise_without_retry_or_fallback(monkeypatch, failure
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("command,status", [("/retry", 400), ("/retry 429", 429)])
+@pytest.mark.parametrize("command,status", [
+    ("/retry", 400), ("/retry 429", 429), ("/retry 502|429", 429), ("/retry *", 400),
+])
 async def test_retry_command_continues_failed_sample_without_replaying_tools(monkeypatch, command, status):
     model = make_model(monkeypatch)
     executions = []
@@ -224,7 +278,7 @@ async def test_retry_command_continues_failed_sample_without_replaying_tools(mon
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("value", ["None", "off", "anything", "429x", "²"])
+@pytest.mark.parametrize("value", ["None", "off", "anything", "429x", "²", "429|", "429|bad", "*|429"])
 async def test_nonnumeric_command_wakes_infinite_backoff_and_returns_last_error(monkeypatch, value):
     model = make_model(monkeypatch, retries=5, delay=3600)
     runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
@@ -242,7 +296,7 @@ async def test_nonnumeric_command_wakes_infinite_backoff_and_returns_last_error(
     monkeypatch.setattr(requests.Session, "send", send)
     runtime.event_handler = observe
     await runtime.start()
-    await runtime.submit_input("/retry 429")
+    await runtime.submit_input("/retry *")
     first = await runtime.submit_input("hello")
     try:
         await asyncio.wait_for(retrying.wait(), 2)
@@ -304,7 +358,7 @@ async def test_stop_close_and_steer_end_backoff_cooperatively(monkeypatch, actio
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["off", "stop", "close"])
+@pytest.mark.parametrize("action", ["off", "stop", "close", "match", "miss"])
 async def test_retry_control_waits_for_an_inflight_http_request(monkeypatch, action):
     model = make_model(monkeypatch, retries=5)
     runtime = make_runtime(make_agent(model, ToolRegistry(), ContextConfig()))
@@ -319,7 +373,7 @@ async def test_retry_control_waits_for_an_inflight_http_request(monkeypatch, act
         loop.call_soon_threadsafe(started.set)
         assert release.wait(5)
         finished.set()
-        return Response(429)
+        return Response(429) if len(attempts) == 1 else answer()
 
     monkeypatch.setattr(requests.Session, "send", send)
     await runtime.start()
@@ -330,6 +384,10 @@ async def test_retry_control_waits_for_an_inflight_http_request(monkeypatch, act
         await asyncio.wait_for(started.wait(), 2)
         if action == "off":
             await runtime.submit_input("/retry None")
+        elif action == "match":
+            await runtime.submit_input("/retry 429|502")
+        elif action == "miss":
+            await runtime.submit_input("/retry 503|504")
         elif action == "stop":
             runtime.stop_asap()
         else:
@@ -339,13 +397,16 @@ async def test_retry_control_waits_for_an_inflight_http_request(monkeypatch, act
         assert not first.future.done()
         assert not finished.is_set()
         release.set()
-        expected = ResponsesRetryableError if action == "off" else SubmissionInterrupted
-        with pytest.raises(expected):
-            await asyncio.wait_for(first.future, 2)
+        if action == "match":
+            assert (await asyncio.wait_for(first.future, 2)).output_text == "done"
+        else:
+            expected = ResponsesRetryableError if action in ("off", "miss") else SubmissionInterrupted
+            with pytest.raises(expected):
+                await asyncio.wait_for(first.future, 2)
         if closing is not None:
             await asyncio.wait_for(closing, 2)
         assert finished.is_set()
-        assert len(attempts) == 1
+        assert len(attempts) == (2 if action == "match" else 1)
     finally:
         release.set()
         if closing is not None:

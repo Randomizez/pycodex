@@ -486,7 +486,6 @@ def test_invalid_partial_argument_fails_explicitly(partial):
 
 
 @pytest.mark.parametrize("chunks,error", [
-    ([_response([{"text": "partial"}], finish=None)], "before `finishReason`"),
     ([_response([], finish="MAX_TOKENS")], "MAX_TOKENS"),
     ([_response([], finish="SAFETY")], "SAFETY"),
     ([_response([], finish="MALFORMED_FUNCTION_CALL")], "MALFORMED_FUNCTION_CALL"),
@@ -496,12 +495,14 @@ def test_invalid_partial_argument_fails_explicitly(partial):
     ([_response([{"functionCall": {"name": "run", "args": []}}])], "invalid Gemini function call"),
     ([[]], "must be an object"),
 ])
-def test_failed_or_truncated_stream_never_completes(chunks, error):
+def test_failed_stream_never_completes(chunks, error):
     with _bridge([chunks]) as (client, captures):
         events = _post(client, {"model": "argon", "input": [], "tools": [_tool()]})
     assert events[-1]["type"] == "response.failed"
-    assert error in events[-1]["response"]["error"]["message"]
-    assert "phase=" in events[-1]["response"]["error"]["message"]
+    failure = events[-1]["response"]["error"]
+    assert failure.get("code") != "502"
+    assert error in failure["message"]
+    assert "phase=" in failure["message"]
     assert not any(event["type"] == "response.completed" for event in events)
     assert not any(event.get("item", {}).get("type") == "function_call" for event in events)
 

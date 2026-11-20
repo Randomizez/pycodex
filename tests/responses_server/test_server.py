@@ -2997,6 +2997,37 @@ def test_responses_server_includes_stream_failure_timing(
         assert "first_chunk=not_received, chunks=0" in response.text
 
 
+@pytest.mark.parametrize("outcomming_api, terminal, chunk", [
+    ("chat_completions", "[DONE]", {"choices": [{"delta": {"content": "partial"}}]}),
+    ("messages", "`message_stop`", {
+        "type": "content_block_delta", "delta": {"type": "text_delta", "text": "partial"},
+    }),
+    ("gemini", "`finishReason`", {"candidates": [{"content": {"parts": [{"text": "partial"}]}}]}),
+])
+def test_missing_stream_terminator_reports_bad_gateway(monkeypatch, outcomming_api, terminal, chunk):
+    stream = io.BytesIO(("data: " + json.dumps(chunk) + "\n\n").encode())
+    stream.status = 200
+    monkeypatch.setattr(
+        "responses_server.transport.urllib.request.urlopen", lambda *args, **kwargs: stream,
+    )
+    app = ManagedResponseServer.build_app(CompatServerConfig(
+        outcomming_base_url="https://example.invalid/v1", outcomming_api=outcomming_api,
+    ))
+    with TestClient(app) as client:
+        response = client.post("/v1/responses", json={"model": "test", "input": [], "stream": True})
+
+    assert response.status_code == 200
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    assert events[-1]["type"] == "response.failed"
+    assert not any(event["type"] == "response.completed" for event in events)
+    error = events[-1]["response"]["error"]
+    assert error["code"] == "502"
+    assert "http_status" not in error
+    assert "ended before " + terminal in error["message"]
+    assert "status=200" in error["message"]
+    assert "chunks=1" in error["message"]
+
+
 @pytest.mark.parametrize("outcomming_api", ["chat_completions", "messages", "gemini"])
 @pytest.mark.parametrize("status", [502, 504])
 def test_responses_server_includes_downstream_http_error_status(monkeypatch, outcomming_api, status) -> "None":

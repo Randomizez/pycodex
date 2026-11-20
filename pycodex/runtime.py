@@ -29,7 +29,7 @@ from .events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
-from .model import ModelControl
+from .model import ModelControl, RetryCodes, matches_retry_codes
 from .protocol import AgentMessage, AssistantMessage, ToolResult, TurnResult, UserMessage
 from .tools.runtime_services import close_resources
 from .utils import uuid7_string
@@ -120,6 +120,20 @@ def _parse_input(text):
     if escaped or not command.startswith("/") or "/" in command[1:] or len(command) < 2:
         command = None
     return text, command, parts[1] if len(parts) == 2 else ""
+
+
+def _parse_retry_argument(argument: "str") -> "typing.Tuple[typing.Optional[RetryCodes], str]":
+    if argument == "*":
+        return "*", "Retrying all model request errors indefinitely."
+    try:
+        codes = frozenset(int(part) for part in argument.split("|"))
+    except ValueError:
+        return None, "Infinite retry disabled."
+    if len(codes) == 1:
+        code = next(iter(codes))
+        return code, "Retrying error code {0} indefinitely.".format(code)
+    label = "|".join(str(code) for code in sorted(codes))
+    return codes, "Retrying error codes {0} indefinitely.".format(label)
 
 
 class AgentRuntime:
@@ -494,20 +508,14 @@ class AgentRuntime:
                     "kind": "retry", "submission_id": submission_id,
                     "lines": ["Retrying the failed model request."],
                 }
-            try:
-                code = int(argument)
-            except ValueError:
-                code = None
-            client.set_retry_error_code(code)
-            lines = [
-                "Infinite retry disabled." if code is None
-                else "Retrying error code {0} indefinitely.".format(code)
-            ]
+            codes, status = _parse_retry_argument(argument)
+            client.set_retry_error_code(codes)
+            lines = [status]
             result = {"kind": "retry", "lines": lines}
             if (
-                code is not None and not self.is_busy
+                codes is not None and not self.is_busy
                 and client.last_error is not None
-                and client.last_error.matches_code(code)
+                and matches_retry_codes(client.last_error, codes)
             ):
                 await self.start()
                 result["submission_id"], _future = self.trigger()

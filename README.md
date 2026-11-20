@@ -94,8 +94,12 @@ The agent can edit files and run commands with your user account's permissions.
 | `/cd <directory>` | Change directory while idle |
 | `/title`, `/history` | Manage the title and inspect conversation history |
 | `/resume` | List or resume saved sessions |
+| `/retry` | Retry the last failed model request |
 | `/compact` | Summarize history to free context |
 | `/queue <message>` | Submit a task after the current one finishes |
+
+Use `/retry 429|502` to retry either error code indefinitely, or `/retry *` to
+retry every model request error, including disconnects. `/retry off` disables infinite retries.
 
 Compaction preserves the tool declarations, instruction prefix and ordinary
 tool choice, and asks the model to produce a summary.

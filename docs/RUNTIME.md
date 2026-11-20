@@ -1917,8 +1917,8 @@ Only the Responses provider classifies external error text:
   use `ResponsesRetryableError`.
 - Context overflow uses `ContextLengthExceeded`, with optional usage and limit
   parsed from the provider's error details.
-- A genuine terminal incomplete response uses `ResponsesIncompleteError` and
-  does not trigger provider retries.
+- A terminal incomplete response uses `ResponsesIncompleteError`. The default
+  retry policy propagates it to the caller.
 
 Custom clients must raise the corresponding exception rather than rely on
 arbitrary `RuntimeError` text being reinterpreted by the Agent or compactor.
@@ -2042,9 +2042,9 @@ does not justify inventing usage. If compact itself overflows, repeatedly remove
 the oldest `ToolResult` and its paired `ToolCall` from the local compact input
 before retrying.
 
-`response.incomplete` is terminal, not a disconnected stream to retry five times.
-Ordinary turns report it; for `reason="max_output_tokens"`, completed
-assistant/reasoning items remain available for continuation as described above.
+Under the default retry policy, ordinary turns report `response.incomplete`.
+For `reason="max_output_tokens"`, completed assistant/reasoning items remain
+available for continuation as described above.
 A compact request can use an already received partial assistant summary for
 that same reason instead of repeatedly restarting compaction.
 
@@ -2091,6 +2091,16 @@ Rate-limit messages containing `try again in` or `retry after` supply the retry
 delay. CLI and workspace retry notices include the underlying error details;
 workspace notices survive browser refresh and active-turn reattachment, and
 remain separate from the assistant reply. They are not persisted in rollouts.
+
+`/retry 429|502` retries the current request on the same model indefinitely
+when its HTTP status or numeric SSE error code matches a listed value. A single
+code works the same way. Other errors propagate immediately. `/retry *` selects
+every model request error, including disconnects, refusals and incomplete responses.
+Changing the selection wakes the retry delay and applies to the next failure of
+an in-flight request. `/retry off` ends infinite retries and restores the normal
+policy for later requests. Stop, steer and shutdown still wait for issued work.
+While idle, `/retry` resumes the last failed model request. Setting a selection
+that matches the last failure also resumes it.
 
 Providers may configure a positive `stream_first_data_timeout_ms` to bound
 the initial wait for response body data, including waiting for headers. After

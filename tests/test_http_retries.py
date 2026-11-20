@@ -9,7 +9,7 @@ from pycodex import Prompt, ResponsesModelClient, ResponsesProviderConfig
 class Response:
     def __init__(self, status):
         self.status_code = status
-        self.text = '{"error":{"message":"Please retry after 8 seconds."}}'
+        self.text = '{"error":{"message":"Please retry after 50ms."}}'
 
     def __enter__(self):
         return self
@@ -26,23 +26,20 @@ class Response:
 @pytest.mark.asyncio
 async def test_http_errors_use_retry_budget(monkeypatch, status):
     attempts = []
-    delays = []
 
     def send(*args, **kwargs):
         attempts.append(status)
         return Response(status if len(attempts) == 1 else 200)
 
-    async def sleep(seconds):
-        delays.append(seconds)
-
     monkeypatch.setattr(requests.Session, "send", send)
-    monkeypatch.setattr("pycodex.model.asyncio.sleep", sleep)
     client = ResponsesModelClient(ResponsesProviderConfig(
         "demo", "test", "https://example.com/v1", None, stream_max_retries=1,
     ))
-    await client.complete(Prompt(input=[], tools=[]))
+    events = []
+    await client.complete(Prompt(input=[], tools=[]), events.append)
     assert len(attempts) == 2
-    assert delays == ([8.0] if status == 429 else [0.2])
+    delays = [event.delay_seconds for event in events if event.kind == "stream_error"]
+    assert delays == ([0.05] if status == 429 else [0.2])
 
 
 @pytest.mark.parametrize("text,seconds", [

@@ -26,10 +26,12 @@ class OutcommingChatError(RuntimeError):
         message: "str",
         error_type: "typing.Union[str, None]" = None,
         http_status: "typing.Union[int, None]" = None,
+        error_code: "typing.Union[str, None]" = None,
     ) -> "None":
         super().__init__(message)
         self.error_type = error_type
         self.http_status = http_status
+        self.error_code = error_code
 
 
 class OutcommingTransport:
@@ -122,7 +124,7 @@ class OutcommingTransport:
                         yield payload
                     if not saw_done:
                         raise OutcommingChatError(
-                            "outcomming chat stream ended before [DONE]"
+                            "outcomming chat stream ended before [DONE]", error_code="502",
                         )
                 except (
                     ConnectionError,
@@ -222,7 +224,7 @@ class OutcommingTransport:
                     if not finished:
                         terminal = "finishReason" if api == "gemini" else "message_stop"
                         raise OutcommingChatError(
-                            f"outcomming {api} stream ended before `{terminal}`"
+                            f"outcomming {api} stream ended before `{terminal}`", error_code="502",
                         )
                     if api == "gemini":
                         yield gemini_continuation_chunk(stream_state)

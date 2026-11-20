@@ -59,6 +59,8 @@ def _stream_events(
         error_type = getattr(exc, "error_type", None)
         if error_type:
             error["type"] = error_type
+        if exc.error_code is not None:
+            error["code"] = exc.error_code
         if exc.http_status is not None:
             error["http_status"] = exc.http_status
         yield _format_sse_event(

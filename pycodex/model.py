@@ -15,7 +15,7 @@ from typing import Callable
 import requests
 from urllib3.exceptions import ReadTimeoutError
 
-from .utils.compat import Protocol
+from .utils.compat import Literal, Protocol
 from .utils.codex_config import DEFAULT_CODEX_CONFIG_PATH, read_codex_config
 from .utils.http_headers import build_http_headers
 
@@ -44,6 +44,7 @@ from .utils import build_user_agent, uuid7_string
 DEFAULT_ORIGINATOR = "pycodex"
 RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
 ModelStreamEventHandler = Callable[[ModelEvent], None]
+RetryCodes = typing.Union[int, typing.FrozenSet[int], Literal["*"]]
 NOOP_MODEL_STREAM_EVENT_HANDLER: "ModelStreamEventHandler" = lambda _event: None
 DEFAULT_STREAM_MAX_RETRIES = 5
 DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
@@ -86,11 +87,11 @@ class ModelClient(Protocol):
 
 
 class ModelControl(ModelClient, Protocol):
-    retry_error_code: "typing.Union[int, None]"
-    last_error: "typing.Union[ResponsesApiError, None]"
+    retry_error_code: "typing.Optional[RetryCodes]"
+    last_error: "typing.Optional[Exception]"
 
-    def set_retry_error_code(self, code: "typing.Union[int, None]") -> "None":
-        """Select a numeric error code to retry indefinitely, or disable it."""
+    def set_retry_error_code(self, code: "typing.Optional[RetryCodes]") -> "None":
+        """Select error codes or '*' for infinite retries. None restores normal retries."""
 
     @property
     def endpoint(self) -> "str":
@@ -404,6 +405,15 @@ class ResponsesApiError(RuntimeError):
         return self.http_status == code or str(self.error_code) == str(code)
 
 
+def matches_retry_codes(error: "Exception", codes: "RetryCodes") -> "bool":
+    if codes == "*":
+        return True
+    selected = (codes,) if isinstance(codes, int) else codes
+    return isinstance(error, ResponsesApiError) and any(
+        error.matches_code(code) for code in selected
+    )
+
+
 class ModelRequestInterrupted(RuntimeError):
     """A cooperative stop ended retries after an issued request finished."""
 
@@ -510,12 +520,12 @@ class ResponsesModelClient:
         self._user_agent = user_agent or build_user_agent(originator)
         self._openai_subagent = openai_subagent
         self._model_cooldowns: "typing.Dict[str, float]" = {}
-        self.retry_error_code: "typing.Union[int, None]" = None
-        self.last_error: "typing.Union[ResponsesApiError, None]" = None
+        self.retry_error_code: "typing.Optional[RetryCodes]" = None
+        self.last_error: "typing.Optional[Exception]" = None
         self._retry_wakeup: "typing.Union[asyncio.Event, None]" = None
         self._retry_stopped = False
 
-    def set_retry_error_code(self, code: "typing.Union[int, None]") -> "None":
+    def set_retry_error_code(self, code: "typing.Optional[RetryCodes]") -> "None":
         if code != self.retry_error_code:
             self.retry_error_code = code
             if self._retry_wakeup is not None:
@@ -662,21 +672,20 @@ class ResponsesModelClient:
             while True:
                 if self._retry_stopped:
                     raise ModelRequestInterrupted()
-                retry_code = self.retry_error_code
+                was_infinite = self.retry_error_code is not None
                 try:
                     response = await asyncio.to_thread(request_client._complete_sync, prompt, receive)
-                    self._model_cooldowns.pop(request_client.model, None)
-                    self.last_error = None
-                    return response
-                except ResponsesApiError as exc:
+                except (asyncio.CancelledError, ModelRequestInterrupted):
+                    raise
+                except Exception as exc:
                     self.last_error = exc
                     if self._retry_stopped:
                         raise ModelRequestInterrupted() from exc
-                    if retry_code is not None and self.retry_error_code != retry_code:
-                        raise
                     infinite = self.retry_error_code is not None
+                    if was_infinite and not infinite:
+                        raise
                     if infinite:
-                        if not exc.matches_code(self.retry_error_code):
+                        if not matches_retry_codes(exc, self.retry_error_code):
                             raise
                     elif not isinstance(exc, (ResponsesRetryableError, ResponsesModelUnavailableError)):
                         raise
@@ -740,9 +749,13 @@ class ResponsesModelClient:
                         raise
                     if (
                         self.retry_error_code is not None
-                        and not exc.matches_code(self.retry_error_code)
+                        and not matches_retry_codes(exc, self.retry_error_code)
                     ):
                         raise
+                else:
+                    self._model_cooldowns.pop(request_client.model, None)
+                    self.last_error = None
+                    return response
         finally:
             self._retry_wakeup = None
             with callback_lock:

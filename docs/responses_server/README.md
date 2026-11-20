@@ -331,7 +331,7 @@ follow-up、provider payload post-process 仍然复用同一套主逻辑。
 
 Messages 的 `stop_reason=refusal` 返回终止错误
 `response.failed(type=invalid_prompt)`，保留上游提供的拒绝原因。
-即使上游没有返回正文，也不会被当成空的成功回复，客户端不会自动重试拒绝请求。
+即使上游没有返回正文，客户端也会收到拒绝原因。默认重试策略会将拒绝直接返回给调用方。
 
 当前 messages 边界还会补一个兼容性细节：下游如果像 vLLM `0.19.0` 一样要求
 `max_tokens`，则优先透传上游请求里的 `max_output_tokens` / `max_tokens`；
@@ -341,6 +341,12 @@ Messages 的 `stop_reason=refusal` 返回终止错误
 表示尚未收到响应头，`waiting_first_chunk` 表示响应头已到但尚无完整 chunk，
 `reading_stream` 表示流已开始；`elapsed` 是本次请求耗时，`idle` 是距离
 最近一个完整 chunk 的时间。SSE 心跳不计入 chunk 数。
+
+如果下游 SSE 流读到 EOF 时仍缺少协议的结束标记（Gemini 的 `finishReason`、
+Messages 的 `message_stop` 或 Chat Completions 的 `[DONE]`），适配层会发送
+`response.failed`，并将 `response.error.code` 设为 `"502"`（Bad Gateway）。
+诊断中的 `status` 保留实际收到的下游 HTTP 状态，例如 `200`。普通重试使用
+`stream_max_retries`，开启 `/retry 502` 后会持续重试同一个请求。
 
 ## 验证
 
