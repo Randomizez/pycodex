@@ -5,8 +5,8 @@ optional Feishu integration for
 [`python-codex`](https://pypi.org/project/python-codex/).
 Requires Python 3.7+ and installs the matching core version.
 
-See the [0.6.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.6.0/docs/RELEASE_0.6.0.md) for changes and
-integration migration from 0.5.0.
+For changes since 0.6.0 and Python integration updates, see the
+[0.7.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.0/docs/RELEASE_0.7.0.md).
 
 ## Quick start
 

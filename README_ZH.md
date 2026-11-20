@@ -1,6 +1,6 @@
 # pycodex
 
-[English](README.md)
+[English](README.md) · [0.7.0 发布说明（英文）](https://github.com/Randomizez/pycodex/blob/v0.7.0/docs/RELEASE_0.7.0.md)
 
 pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 编程 Agent，
 可在终端、浏览器或自己的 Python 程序中使用，支持文件编辑、命令执行、

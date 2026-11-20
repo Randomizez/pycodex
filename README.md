@@ -1,6 +1,6 @@
 # pycodex
 
-[中文](README_ZH.md)
+[中文](README_ZH.md) · [0.7.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.0/docs/RELEASE_0.7.0.md)
 
 pycodex is a Python implementation of the [Codex](https://github.com/openai/codex)
 coding agent. Use it in a terminal, in a browser, or from your own Python code.
