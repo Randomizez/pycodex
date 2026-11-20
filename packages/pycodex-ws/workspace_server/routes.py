@@ -28,8 +28,8 @@ from pycodex_ws.server_support import (
     json_object_body as _json_object_body,
 )
 
-from .one_line_agent import one_line_agent_routes
 from .customization import frontend_asset_response, frontend_directory, load_workspace_template
+from . import external_call
 from .runtime_info import runtime_info_prompt
 from .session_api import session_api_routes
 from .workspace_views import WorkspaceViewOpener
@@ -52,6 +52,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         "workspace_dom.mjs": "text/javascript", "sessions_ui.mjs": "text/javascript",
         "conversation.mjs": "text/javascript", "markdown.mjs": "text/javascript",
         "dialogs.mjs": "text/javascript", "custom_frontend.mjs": "text/javascript",
+        "banners.mjs": "text/javascript",
         "content_views.mjs": "text/javascript", "content_views.css": "text/css",
         "content_views.LICENSE.txt": "text/plain", "editor.mjs": "text/javascript",
         "editor.css": "text/css",
@@ -165,7 +166,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
 
     return session_api_routes(
         lambda request: workspace(request).manager, _json_object_body, prefix,
-    ) + one_line_agent_routes(
+    ) + external_call.external_call_routes(
         workspace, prefix,
     ) + list(leading_routes) + [
         route("/", index, ["GET"]),
@@ -476,6 +477,13 @@ def _session_response(
         payload["sessions"] = sessions[:20]
         if not any(item["id"] == resolved_id for item in payload["sessions"]):
             payload["sessions"][-1] = next(item for item in sessions if item["id"] == resolved_id)
+    if (
+        request.scope.get("pycodex.access_role") == "admin"
+        and not request.scope.get("pycodex.agent_access")
+    ):
+        binding = external_call.external_call_binding(request, manager, resolved_id)
+        if binding is not None:
+            payload["external_call"] = binding
     if request.query_params.get("runtime_info") == "true":
         state = request.app.state
         payload["runtime_info"] = runtime_info_prompt(

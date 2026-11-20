@@ -9,6 +9,10 @@ export function frontendUrl(builtin) {
   return url.toString();
 }
 
+export function encodeViewPath(path) {
+  return String(path).split("/").map(encodeURIComponent).join("/");
+}
+
 export function element(tag, className = "", text = "") {
   const node = document.createElement(tag);
   node.className = className;

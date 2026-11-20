@@ -860,85 +860,37 @@ Existing full-ID alias files are not rewritten. If a previous short-identity
 version saved 16-character alias keys, registration restores the matching full
 key while preserving the alias and its position.
 
-### One-line Agent sessions
+### External Call
 
-Workspace **Settings → One-line Agent** enables a reusable, profile-selected API in
-`workspace_server.one_line_agent`. Each new key suffix creates its own
-`AgentsManager`, Runtime, history and session, using the existing `tools_factory`
-and ordinary threaded Session adapter. Enabling the API alone creates no session.
-`WorkspaceSessionManager.attach_session` registers each frontend-owned temporary
-session. Core, normal `create_session`
-and zero-argument profile factories retain their existing interfaces. The model
-and instructions come directly from the profile, without workspace CLI overrides.
-Only the remote `exec_command(cmd)` is registered; commands run noninteractively
-to completion in the terminal's current directory. No client cwd is collected,
-reported or automatically selected. There are no PTYs or `write_stdin`.
-The prompt explicitly warns that synchronous execution can block the Agent
-indefinitely, with no automatic execution timeout or follow-up interrupt tool.
-It calls for finite operations, command-level time limits where appropriate,
-and detached background processes whose standard streams do not hold the call open.
-On turn completion, the adapter wraps the final response in a quoted `echo`
-command for terminal display, without requiring a model tool call.
+**Settings → External Call** creates a temporary workspace tab
+with the selected profile, using `WorkspaceSessionManager.attach_session`. The
+ordinary and external sessions share model and Runtime construction. In addition
+to the profile's instructions, host environment and workspace contextual messages,
+external sessions append `<external_call_context>` in `extra_contextual_user_messages`
+(inherited by child Agents) to distinguish the host workspace machine from the
+connected client machine. The tool registry retains the workspace's selected host
+tools and adds `client_exec_command` in the root and each child. Ordinary workspace
+sessions keep their usual registry.
 
-ASGI app state holds one service and token (12 URL-safe characters,
-72 random bits) per workspace manager. `T` contains this token followed by a
-nonempty session suffix. The one-liners hardcode suffix `1`; independent sessions or parallel
-clients must choose another suffix. Both clients send raw UTF-8 to `POST /b`,
-under the workspace's existing URL prefix. There is no platform parameter.
-The full loop is inline in the local command, with no downloaded startup script.
-The first request for a suffix creates its session immediately and submits only
-the task. Later requests with the same complete key return combined output
-followed by `LF + [exit N]`. Successful responses contain only the raw command
-text, including generated final-display commands. When no command is available,
-the request remains pending across completed, failed and interrupted turns.
-There is no empty completion response. Web follow-ups, queueing and steer use the existing Runtime;
-issued synchronous commands finish before a steer can take effect.
-Rerunning the one-liner can submit a new task when the Runtime is idle and has no
-pending command result. The adapter queries that state on the worker loop, keeps
-the Runtime/history, and replaces the old reply queue before submission. An old
-waiting request receives HTTP 409 instead of consuming the new caller's command.
-There is no handshake, step counter, polling, response replay or
-automatic retry. Each invocation owns its reply queue and pending tool result;
-requests wait until the Agent supplies a command. Network and HTTP
-failures end the client loop. HTTP handlers and connection state run on the server
-loop; tools and observations cross to it from the session worker. Input enters
-through Runtime and tool results resolve the pending await. Only session/admission
-closure or idle connection replacement releases the old waiting channel with an
-HTTP error. Model failures are shown
-by the ordinary Web session without closing the terminal connection.
-Final text is quoted as literal data, including ASCII and typographic apostrophes,
-so shell substitutions in the answer do not execute in Bash or PowerShell.
-The adapter tracks the command actually sent to the terminal: a display result,
-even with a nonzero exit code, is consumed without entering model history or
-starting another turn. It cannot resolve a later tool's pending result.
-Commentary remains in the workspace history. The local loops execute responses in a local Bash or
-PowerShell process, print each command with its completed output/exit code, and
-return the result in the next request. The short one-liners contain the initial task
-directly. Closing one tab or its Runtime closes only
-that conversation; the next request with the same key creates a fresh Runtime,
-session and history. The settings count includes only open session tabs.
-Task completion also leaves
-the service available. Stop revokes the shared token and closes all
-invocations, including sessions still starting. An admission-close observation
-releases the disconnected tool await before Runtime drains; no turn is cancelled
-and no remote process is killed. The local loop has no task-completion exit
-condition; leave it running for further input from the Web session.
+The server issues a random lowercase unambiguous connection code (`b/<code>`) for
+each new session and surfaces its copy/detail banner in `#sessionBanners` (`banners.mjs`)
+(`GET api/session` includes `external_call` only for browser administrators); the
+Bash and PowerShell one-liners are built-in examples over that endpoint, and any
+executable or script can connect using the same `GET`/`POST` interface. Web
+submissions enter the normal Runtime. Final replies stay in the Web
+conversation.
 
-Existing context options omit host AGENTS, skills and permission instructions.
-One-line Agent also disables `include_environment_context`, omitting the host
-environment block, the cwd in user-instruction headings, and workspace/Git/sandbox
-request metadata. Profile instructions and conversation history remain intact.
-Client OS, shell and directory are not supplied;
-the Agent adapts commands from the task and tool results.
-Temporary session tabs are excluded from automatic restoration, while
-rollouts retain the ordinary recording lifecycle. Tokens and connections are
-never restored. Initial installation requires updated code and a restart on the
-workspace server and its Router for their authentication exceptions. Workspace
-Reload does not update a separate Router or replace an already-created
-authentication middleware closure.
+The server loop owns the exchange. Calls from the session workers are serialized
+per session: bare `GET /b/<code>` waits for the next command (replacing any
+disconnected waiter and redelivering an unacknowledged call), while `POST /b/<code>`
+or parameterized `GET /b/<code>?o=...&e=...` resolves the in-flight call with `204`.
+Admission closure releases pending calls before Runtime drains and invalidates the
+session code. Closing one tab leaves the others usable. Recordings use the normal
+rollout lifecycle. Temporary tabs and their connection codes are not restored
+after a restart.
 
-See the [One-line Agent protocol](../packages/pycodex-ws/workspace_server/WORKSPACE_API.md#one-line-agent)
-and [usage](../packages/pycodex-ws/README.md#one-line-agent).
+See the [External Call protocol](../packages/pycodex-ws/workspace_server/WORKSPACE_API.md#external-call)
+and [user guide](../packages/pycodex-ws/README.md#external-call).
 
 ## Frontend customization
 
@@ -958,8 +910,11 @@ editor styles are inserted before `custom.css`, preserving that order when a
 code view first opens; normal CSS specificity still applies. The script is an
 ES module; page module variables remain private.
 An optional `mount(host)` export receives the built-in page's versioned
-session/draft/view interface. Side-effect-only scripts still load; full template
-replacements own their initialization. See the
+session/draft/banner/view interface (`host.setBanner(id, banner)` attaches
+session-scoped or workspace-wide banners in `#sessionBanners`, and server
+wrappers can also inject `<script type="application/json" data-pycodex-banner>`
+elements). Side-effect-only scripts still load; full template replacements own
+their initialization. See the
 [host contract](../packages/pycodex-ws/workspace_server/WORKSPACE_API.md#built-in-page-extension-host).
 
 Custom templates retain closing `head`/`body` tags and the placeholders
@@ -982,8 +937,10 @@ loading. The recovery page shows that customizations are disabled and links
 back to the customized interface. Authentication applies to recovery pages
 and custom resources just as it does to the rest of the workspace.
 
-**Settings → Customize Agent** creates an idle `Customize interface` session
-and opens the packaged optional feature catalog in the workspace Markdown viewer.
+**Settings → Customize Agent** creates an idle `Customize interface` session,
+pins the built-in `Customize Agent` banner (feature catalog, `?builtin=1`
+recovery link, frontend directory and `WORKSPACE_API.md` details), and opens
+the packaged optional feature catalog in the workspace Markdown viewer.
 Opening the catalog and following its documentation links use the file-view API.
 The first model turn starts when the user sends a request in chat.
 Settings and the management navigation are hidden for workspace visitors.

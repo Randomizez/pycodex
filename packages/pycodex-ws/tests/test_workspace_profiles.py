@@ -25,6 +25,7 @@ from workspace_server import (
     create_multi_workspace_app,
 )
 from workspace_server import app as app_module
+from workspace_server import sessions as session_module
 from test_workspace_server import make_session, wait_snapshot
 
 
@@ -218,14 +219,14 @@ def test_new_sessions_reload_dotenv_for_gemini(tmp_path, monkeypatch, profile):
 
     monkeypatch.setattr(Path, "read_text", track_read)
     bootstraps = []
-    build_model = app_module.build_model
+    build_model = session_module.build_model
 
     def capture_bootstrap(provider, **kwargs):
         bootstrap = build_model(provider, **kwargs)
         bootstraps.append(bootstrap)
         return bootstrap
 
-    monkeypatch.setattr(app_module, "build_model", capture_bootstrap)
+    monkeypatch.setattr(session_module, "build_model", capture_bootstrap)
     downstream.start()
     try:
         entry = app_module._build_workspace_entry(

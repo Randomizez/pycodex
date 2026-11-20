@@ -81,7 +81,9 @@ distributed separately as a VSIX.
 ## Customize the interface
 
 Choose **Settings → Customize Agent** to open a conversation and the
-[optional feature catalog](workspace_server/optional_features/README.md).
+[optional feature catalog](workspace_server/optional_features/README.md), with
+a **Customize Agent** banner at the top of the chat for reopening the catalog,
+switching to `?builtin=1`, copying the frontend directory or opening `WORKSPACE_API.md`.
 Browse the feature descriptions, then send a feature name, ID or your own
 interface request in chat. The Agent starts with that message.
 Custom files live in the server user's `~/.pycodex/frontend/`:
@@ -100,7 +102,8 @@ See the [customization contract](../../docs/RUNTIME.md#frontend-customization).
 For custom interfaces, the [resource API](../../docs/WORKSPACE_API.md) exposes
 state, model catalogs, asynchronous command results, paginated history, event
 replay and sub-agent/background-work inventories. A `mount(host)` export in
-`custom.js` can access the built-in page's session, draft and view controls.
+`custom.js` can access the built-in page's session, draft, banner (`host.setBanner`)
+and view controls, and host wrappers can embed `<script type="application/json" data-pycodex-banner>` banners.
 
 Backend module ownership and the preserved session interfaces are documented in
 the [runtime guide](../../docs/RUNTIME.md#workspace-session-api).
@@ -134,24 +137,27 @@ permissions. An unprotected server must configure its administrator password
 before enabling sharing. Router authentication is unchanged: a link through a
 router still requires its normal login.
 
-## One-line Agent
+## External Call
 
-An Agent that runs directly in most shells without installation, for bootstrapping
-an Agent environment or simple debugging.
+Open **Settings → External Call**, pick a profile and click
+**Create session**. The workspace selects the new conversation and pins an
+**External Call** banner at the top of the chat with **Copy Bash**,
+**Copy PowerShell** and expandable **Details** for the full commands and
+endpoint URL. Copy the command for your client machine and run it in a terminal.
 
-Open **Settings → One-line Agent**, choose a profile and click **Enable One-line Agent**.
-Copy the Bash or PowerShell command, replace the example task `看一下这台机器`,
-and run it in the target terminal. Commands execute on that machine; the terminal
-shows their results and the Agent's final replies.
+Send the task from the Web conversation. External Call sessions inject
+contextual guidance distinguishing the host workspace machine (`exec_command`
+and other standard tools, `<environment_context>`, `AGENTS.md`, skills) from the
+connected client machine (`client_exec_command`). The terminal prints each
+command and its output, and returns the output and exit status to the
+conversation. The Bash and PowerShell commands are client examples over the
+session's `b/<code>` HTTP endpoint; custom scripts or executables (such as Python
+or `cmd`) can pull commands with `GET` and return results with `POST` or `GET`.
 
-Leave the terminal running to continue the conversation from its workspace
-session. When idle, you can also edit the task and rerun the command with the same
-key to keep the existing history. For another terminal or an independent session,
-change the key's final session suffix from `1` to `2`, `3`, etc.
-
-Use **Stop** to end the service and its sessions. Closing a session and reusing
-its key starts a fresh conversation. After a server restart, enable the service
-again and copy a new command; recorded history is kept.
+Each new session gets its own connection code. Closing its tab invalidates that
+code, releases pending requests and stops the terminal loop. After a server
+restart, create a new session to reconnect a terminal. Previous conversations
+retain their recorded history.
 
 ## Storage
 

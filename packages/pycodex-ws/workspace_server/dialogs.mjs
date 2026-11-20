@@ -1,5 +1,5 @@
 import {Composer} from "./content_views.mjs";
-import {element, relativeUrl} from "./workspace_dom.mjs";
+import {encodeViewPath, relativeUrl} from "./workspace_dom.mjs";
 
 export async function fillRuntimeInfo({
   getActiveSessionId, stateForSession, closeContextBlock, composer, showToast,
@@ -217,7 +217,8 @@ function frontendCustomizationPrompt(catalogPath) {
 }
 
 export function installDialogs({
-  getActiveSessionId, getSessions, createSession, selectSession, updateSessions, renderSnapshot, openView, showToast,
+  getActiveSessionId, getSessions, stateForSession, createSession, selectSession,
+  updateSessions, renderSnapshot, openView, showToast, markCustomizeSession = () => {},
 }) {
   const newTabButton = document.getElementById("newTab");
   const newSessionDialog = document.getElementById("newSessionDialog");
@@ -287,7 +288,7 @@ export function installDialogs({
   const defaultReloadHint = reloadHint.textContent;
   let reloadAborter = null;
   const isAdministrator = document.body.dataset.accessRole === "admin";
-  for (const dialog of [settingsDialog, shareDialog, newSessionDialog, document.getElementById("oneLineAgentDialog")]) {
+  for (const dialog of [settingsDialog, shareDialog, newSessionDialog, document.getElementById("externalCallDialog")]) {
     dialog.querySelector("[data-close-dialog]").addEventListener("click", () => dialog.close());
     dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
   }
@@ -319,8 +320,8 @@ export function installDialogs({
         prompt: frontendCustomizationPrompt(catalogPath),
         trigger: false,
       });
-      const href = catalogPath.split("/").map(encodeURIComponent).join("/");
-      await openView(href, null, sessionId);
+      markCustomizeSession(sessionId);
+      await openView(encodeViewPath(catalogPath), null, sessionId);
     } catch (error) {
       showToast((sessionId ? "Unable to open the feature catalog: " : "Unable to start customization: ") + error.message);
     } finally {
@@ -368,83 +369,73 @@ export function installDialogs({
     updateSharing("PUT");
   });
   shareDisable.addEventListener("click", () => updateSharing("DELETE"));
-  function installOneLineAgentSettings() {
-    const dialog = document.getElementById("oneLineAgentDialog");
-    const profile = document.getElementById("oneLineAgentProfile");
-    const create = document.getElementById("oneLineAgentCreate");
-    const stop = document.getElementById("oneLineAgentStop");
-    const open = document.getElementById("oneLineAgentSession");
-    const status = document.getElementById("oneLineAgentStatus");
-    const error = document.getElementById("oneLineAgentError");
-    const commands = document.getElementById("oneLineAgentCommands");
-    let binding = null;
+  function installExternalCallSettings() {
+    const dialog = document.getElementById("externalCallDialog");
+    const profile = document.getElementById("externalCallProfile");
+    const create = document.getElementById("externalCallCreate");
+    const error = document.getElementById("externalCallError");
+    let revision = 0;
 
-    async function update(method = "GET") {
+    async function loadProfiles() {
+      const current = ++revision;
       error.textContent = "";
-      create.disabled = stop.disabled = true;
+      create.disabled = true;
       try {
-        const options = {method};
-        if (method === "POST") {
-          options.headers = {"Content-Type": "application/json"};
-          options.body = JSON.stringify({profile: JSON.parse(profile.value)});
-        }
-        const response = await fetch(relativeUrl("api/one-line-agent"), options);
+        const response = await fetch(relativeUrl("api/external-call-sessions"));
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
-        binding = payload.binding;
-        const defaultLabel = payload.default_profile === null ? "Default" : `Default (${payload.default_profile})`;
-        profile.replaceChildren(new Option(defaultLabel, "null"));
+        if (current !== revision) return;
+        const label = payload.default_profile === null ? "Default" : `Default (${payload.default_profile})`;
+        profile.replaceChildren(new Option(label, "null"));
         for (const name of payload.profiles) profile.add(new Option(name, JSON.stringify(name)));
-        if (binding) profile.value = JSON.stringify(binding.profile);
-        const enabled = !!binding?.enabled;
-        profile.disabled = enabled;
-        create.disabled = enabled;
-        stop.disabled = !enabled;
-        open.hidden = !binding?.session_id;
-        commands.hidden = !enabled;
-        status.textContent = !enabled ? "One-line Agent is off." :
-          `Enabled · ${binding.session_count} session${binding.session_count === 1 ? "" : "s"} open.`;
-        document.getElementById("oneLineAgentLinux").value = binding?.one_liners?.linux || "";
-        document.getElementById("oneLineAgentWindows").value = binding?.one_liners?.windows || "";
       } catch (failure) {
-        error.textContent = failure.message;
-        create.disabled = !!binding?.enabled;
-        stop.disabled = !binding?.enabled;
+        if (current === revision) error.textContent = failure.message;
+      } finally {
+        if (current === revision) create.disabled = !profile.options.length;
       }
     }
 
-    document.getElementById("oneLineAgentSettings").addEventListener("click", () => {
+    async function createExternalSession() {
+      const current = ++revision;
+      error.textContent = "";
+      create.disabled = true;
+      try {
+        const response = await fetch(relativeUrl("api/external-call-sessions"), {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({profile: JSON.parse(profile.value)}),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+        if (current !== revision) return;
+        const binding = payload.binding;
+        stateForSession(binding.session_id).externalCall = binding;
+        dialog.close();
+        await selectSession(binding.session_id);
+      } catch (failure) {
+        if (current === revision) error.textContent = failure.message;
+      } finally {
+        if (current === revision) create.disabled = !profile.options.length;
+      }
+    }
+
+    dialog.addEventListener("close", () => {
+      revision++;
+      error.textContent = "";
+    });
+    document.getElementById("externalCallSettings").addEventListener("click", () => {
       if (!isAdministrator) return;
       settingsDialog.close();
-      status.textContent = "Loading…";
-      commands.hidden = true;
+      profile.replaceChildren();
       dialog.showModal();
-      update();
+      loadProfiles();
     });
-    document.getElementById("oneLineAgentForm").addEventListener("submit", event => {
+    document.getElementById("externalCallForm").addEventListener("submit", event => {
       event.preventDefault();
-      update("POST");
+      if (!create.disabled) createExternalSession();
     });
-    stop.addEventListener("click", () => update("DELETE"));
-    open.addEventListener("click", () => {
-      dialog.close();
-      selectSession(binding.session_id);
-    });
-    for (const button of dialog.querySelectorAll("[data-copy-one-line-agent]")) {
-      button.addEventListener("click", async () => {
-        const field = document.getElementById(button.dataset.copyOneLineAgent);
-        try {
-          await navigator.clipboard.writeText(field.value);
-          showToast("Terminal command copied");
-        } catch (failure) {
-          field.focus();
-          field.select();
-          error.textContent = "Select and copy the terminal command.";
-        }
-      });
-    }
   }
-  installOneLineAgentSettings();
+  installExternalCallSettings();
   reloadButton.addEventListener("click", async () => {
     if (!isAdministrator) return;
     settingsError.textContent = "";

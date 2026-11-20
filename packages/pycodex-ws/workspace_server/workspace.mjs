@@ -1,10 +1,11 @@
 import {Composer, mountContentViews} from "./content_views.mjs";
-import {element, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
+import {encodeViewPath, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
 import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
 import {fillRuntimeInfo, installDialogs, setupContextDetails} from "./dialogs.mjs";
 import {mountCustomFrontend} from "./custom_frontend.mjs";
+import {createSessionBanners, loadEmbeddedBanners} from "./banners.mjs";
 
 const log = document.getElementById("log");
 const spinner = document.getElementById("spinner");
@@ -37,9 +38,12 @@ let sessionsPinned = false;
 let sessionsHoverTimer = null;
 const contextMeter = document.getElementById("contextMeter");
 const contextMeterValue = document.getElementById("contextMeterValue");
-const newTabButton = document.getElementById("newTab");
 const activeSessionKey = "pycodex.workspace.activeSession:" + window.location.pathname;
+const customizeSessionsKey = "pycodex.workspace.customizeSessions:" + window.location.pathname;
 const builtinFrontend = new URLSearchParams(window.location.search).get("builtin") === "1";
+const customizeSessions = new Set(
+  JSON.parse(window.sessionStorage.getItem(customizeSessionsKey) || "[]")
+);
 let pollTimer = null;
 let boardPollTimer = null;
 let boardPollInFlight = false;
@@ -64,9 +68,19 @@ const {renderMarkdownInto} = markdown;
 const {renderConversation, addEntry} = createConversationRenderer({
   log, renderMarkdownInto, builtinFrontend,
 });
+const banners = createSessionBanners({
+  container: document.getElementById("sessionBanners"),
+  log,
+  getActiveSessionId: () => sessionUI.activeId,
+  isAdmin: () => document.body.dataset.accessRole === "admin",
+  openView: (...args) => contentTabs.open(...args),
+  showToast,
+});
 const sessionUI = createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
-  updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
+  syncSessionBanners, clearSessionBanners,
+  updateSpinnerNotifyUi, notifySessionDone, setSpinner,
+  renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry,
   dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen: () => sessionsOpen,
 });
@@ -526,6 +540,94 @@ function updateContextMeter(snapshot = null) {
   document.getElementById("contextCompact").textContent = compact == null ? "Off" : formatTokens(compact);
 }
 
+function saveCustomizeSessions() {
+  window.sessionStorage.setItem(customizeSessionsKey, JSON.stringify(Array.from(customizeSessions)));
+}
+
+function markCustomizeSession(sessionId) {
+  if (!sessionId) return;
+  stateForSession(sessionId).customizeAgent = true;
+  if (!customizeSessions.has(sessionId)) {
+    customizeSessions.add(sessionId);
+    saveCustomizeSessions();
+  }
+  syncSessionBanners();
+}
+
+function clearSessionBanners(sessionId) {
+  if (customizeSessions.delete(sessionId)) saveCustomizeSessions();
+  banners.clearSession(sessionId);
+}
+
+function syncSessionBanners({collapse = false, fullSessionIds = null} = {}) {
+  if (fullSessionIds) {
+    let pruned = false;
+    for (const id of customizeSessions) {
+      if (id !== sessionUI.activeId && !fullSessionIds.has(id)) {
+        customizeSessions.delete(id);
+        pruned = true;
+      }
+    }
+    if (pruned) saveCustomizeSessions();
+  }
+  const sessionId = sessionUI.activeId;
+  const state = sessionId ? stateForSession(sessionId) : null;
+  if (state && !state.customizeAgent && customizeSessions.has(sessionId)) {
+    state.customizeAgent = true;
+  } else if (state?.customizeAgent && !customizeSessions.has(sessionId)) {
+    customizeSessions.add(sessionId);
+    saveCustomizeSessions();
+  }
+  const binding = state ? state.externalCall : null;
+  banners.setBuiltin("external-call", binding ? {
+    icon: "terminal",
+    label: "External Call",
+    sessionId,
+    adminOnly: true,
+    actions: [
+      {label: "Copy Bash", copyText: binding.one_liners?.linux || "", copyLabel: "Terminal command"},
+      {label: "Copy PowerShell", copyText: binding.one_liners?.windows || "", copyLabel: "Terminal command"},
+    ],
+    details: [
+      {label: "Bash", value: binding.one_liners?.linux || "", copyable: true, copyLabel: "Terminal command"},
+      {label: "PowerShell", value: binding.one_liners?.windows || "", copyable: true, copyLabel: "Terminal command"},
+      {label: "Endpoint", value: binding.url || "", copyable: true, copyLabel: "Endpoint URL"},
+    ],
+  } : null);
+  const {frontendDirectory, packageDirectory} = document.body.dataset;
+  banners.setBuiltin("customize-agent", state?.customizeAgent ? {
+    icon: "customize",
+    label: "Customize Agent",
+    text: "Edits apply to all workspaces; refresh to load.",
+    sessionId,
+    adminOnly: true,
+    actions: [
+      ...(packageDirectory ? [{
+        label: "Feature catalog",
+        viewHref: encodeViewPath(packageDirectory + "/optional_features/README.md"),
+      }] : []),
+      {
+        label: builtinFrontend ? "Re-enable custom" : "Built-in page",
+        href: frontendUrl(!builtinFrontend),
+      },
+    ],
+    details: [
+      ...(frontendDirectory ? [{
+        label: "Frontend dir",
+        value: frontendDirectory,
+        copyable: true,
+        copyLabel: "Frontend directory",
+      }] : []),
+      ...(packageDirectory ? [{
+        label: "Host API",
+        value: packageDirectory + "/WORKSPACE_API.md",
+        viewHref: encodeViewPath(packageDirectory + "/WORKSPACE_API.md"),
+      }] : []),
+    ],
+  } : null);
+  banners.render({collapse});
+}
+
 function startPolling() {
   if (pollTimer) return;
   pollSession();
@@ -696,8 +798,8 @@ document.getElementById("contextBlockRemove").addEventListener("click", () => {
 log.addEventListener("scroll", sessionUI.saveScroll);
 installDialogs({
   getActiveSessionId: () => sessionUI.activeId, getSessions: () => sessionUI.sessions,
-  createSession, selectSession, updateSessions, renderSnapshot,
-  openView: (...args) => contentTabs.open(...args), showToast,
+  stateForSession, createSession, selectSession, updateSessions, renderSnapshot,
+  openView: (...args) => contentTabs.open(...args), showToast, markCustomizeSession,
 });
 splitter.addEventListener("pointerdown", startResize);
 splitter.addEventListener("pointermove", updateResize);
@@ -900,9 +1002,15 @@ function stopContentViews() {
 }
 
 startContentViews();
+try {
+  loadEmbeddedBanners(document, banners);
+} catch (error) {
+  showToast("Unable to load banner: " + error.message);
+}
 mountCustomFrontend({
   getActiveSessionId: () => sessionUI.activeId, sessionById, selectSession, frontendEvents,
   composer, stateForSession, resizePrompt, contentTabs,
+  setBanner: (id, banner) => banners.set(id, banner),
 }).catch(error => showToast("Unable to initialize custom frontend: " + error.message));
 window.addEventListener("pagehide", clearSessionsHover);
 window.addEventListener("pagehide", stopContentViews);

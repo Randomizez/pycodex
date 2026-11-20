@@ -34,6 +34,7 @@ artifacts = [
     "workspace_server/sessions_ui.mjs",
     "workspace_server/dialogs.mjs",
     "workspace_server/custom_frontend.mjs",
+    "workspace_server/banners.mjs",
     "workspace_server/workspaces.html",
     "workspace_server/content_views.mjs",
     "workspace_server/content_views.css",

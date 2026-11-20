@@ -153,10 +153,9 @@ Agent resume still restores the complete active context after the last checkpoin
 
 **Settings → Customize Agent** opens the optional feature catalog. Browse the
 descriptions and send a feature name, ID or custom request in chat to start the Agent.
-Settings also provides password-protected workspace sharing and
-[One-line Agent](packages/pycodex-ws/README.md#one-line-agent):
-an Agent that runs directly in most shells without installation, for bootstrapping
-an Agent environment or simple debugging. See the [workspace guide](packages/pycodex-ws/README.md) for
+Settings also provides password-protected sharing
+and [External Call](packages/pycodex-ws/README.md#external-call)
+sessions that connect an external client to a Web conversation. See the [workspace guide](packages/pycodex-ws/README.md) for
 session controls, storage and Feishu setup. A separate
 [VS Code extension](packages/pycodex-ws/extensions/vscode/README.md) connects to
 the same backend, including over Remote SSH.

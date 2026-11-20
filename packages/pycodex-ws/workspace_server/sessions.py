@@ -1,12 +1,16 @@
 """Workspace Runtime adapters, receipt observation and worker-thread dispatch."""
 
 import asyncio
+import atexit
 import threading
 import typing
 from collections import deque
+from dataclasses import replace
 
 from starlette.concurrency import run_in_threadpool
 
+from pycodex.bootstrap import build_model
+from pycodex.config import CodexConfig
 from pycodex.events import (
     CommandCompletedEvent,
     CommandFailedEvent,
@@ -15,13 +19,39 @@ from pycodex.events import (
     SessionStateEvent,
     TurnStartedEvent,
 )
+from pycodex.multi_agents import AgentsManager
+from pycodex.tools import get_tools
 from pycodex.utils.event_helpers import shorten_title
+from pycodex_ws import register_feishu_commands
 
 from .session_api import history_page
 from .session_view import SPINNER_STATUS_PREVIEW_LIMIT, WebSessionView, _json_safe
 
 SessionFactory = typing.Callable[[], object]
 ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
+
+
+def build_workspace_session(
+    config_path, profile, cwd, toolset, workspace_context=None, system_prompt=None,
+    tools_factory=get_tools, **model_options
+):
+    config = CodexConfig.from_env(config_path, profile, use_default_profile=False)
+    bootstrap = build_model(config.provider, **model_options)
+    if bootstrap.owned_server is not None:
+        atexit.register(bootstrap.owned_server.stop)
+    if isinstance(workspace_context, str):
+        contextual_messages = (workspace_context,) if workspace_context else ()
+    elif workspace_context:
+        contextual_messages = tuple(workspace_context)
+    else:
+        contextual_messages = ()
+    context = replace(
+        config.context, cwd=cwd, base_instructions_override=system_prompt,
+        extra_contextual_user_messages=contextual_messages,
+    )
+    runtime = AgentsManager(bootstrap.client, context, toolset, tools_factory).create_root_runtime()
+    register_feishu_commands(runtime)
+    return WorkspaceInteractiveSession(runtime, config_path)
 
 
 class _SubmissionStore:

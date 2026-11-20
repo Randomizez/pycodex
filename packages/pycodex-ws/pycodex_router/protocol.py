@@ -59,11 +59,12 @@ def agent_api_request(scope):
     )
 
 
-def one_line_agent_request(scope):
+def external_call_request(scope):
     """Only the terminal exchange endpoint; its workspace validates the temporary token."""
     return (
-        scope["type"] == "http" and scope["method"] == "POST"
-        and re.fullmatch(r"(?:/w/[A-Za-z0-9_-]+)?/b", route_path(scope))
+        scope["type"] == "http"
+        and scope["method"] in {"GET", "POST"}
+        and re.fullmatch(r"(?:/w/[A-Za-z0-9_-]+)?/b/[^/]+", route_path(scope))
         is not None
     )
 

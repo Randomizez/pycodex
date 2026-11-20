@@ -35,91 +35,55 @@ Custom frontends can use `__ACCESS_ROLE__` to hide management controls; authoriz
 is enforced on the server regardless of UI visibility. Sharing does not reduce
 Agent execution permissions, and does not replace Router authentication.
 
-## One-line Agent
+## External Call
 
-`GET/POST/DELETE api/one-line-agent` require workspace administrator authentication.
-POST requires `{"profile": "<name>"}`; `null` selects the current default.
-It enables the workspace's single reusable One-line Agent service without creating a
-session. An existing enabled service returns 409; DELETE revokes it and closes all
-its runs. GET and successful mutations return `{binding, profiles, default_profile}`
-with `Cache-Control: no-store`.
-`binding` is null when no service is registered; otherwise it contains `session_id`
-(latest session whose tab is still open, or null), `session_count` (open session
-tabs, including completed conversations), `profile`,
-`enabled` and
-`one_liners: {linux, windows}` (null after revocation). One-liners contain the
-temporary credential; these responses are administrator-only and not persisted.
-The selected profile is loaded directly; ordinary workspace session factories are
-unchanged. Recorded history is retained, but temporary tabs are not restored after
-a server restart.
+Administrators create a temporary conversation with `POST api/external-call-sessions`
+and an object containing an optional `profile`. Omission or `null` uses the workspace
+default. Each successful POST creates a new tab and returns `{binding, profiles,
+default_profile}` with `Cache-Control: no-store`. The binding contains `session_id`,
+`url` (the session's `b/<code>` endpoint URL for the current request) and
+`one_liners: {linux, windows}` for that session. `GET api/external-call-sessions?session_id=<id>`
+returns the same binding for an open external session in this workspace. With an
+ordinary, missing or closed session it returns `binding: null`. Browser administrator
+`GET api/session` responses also include `external_call: binding` when the selected
+session is an open external session; ordinary sessions, visitors and
+`pycodex.agent_access` requests omit `external_call` and cannot read or create bindings.
 
-`POST b` uses `T`, independently of workspace and Router
-cookies. The short path is relative to the workspace URL, retaining any
-Router/node/workspace prefix. This is the only POST endpoint reachable with
-the token. The first 12 characters of `T` must match the workspace's token
-(72 random bits, URL-safe); the remaining nonempty suffix identifies a session.
-The token and every derived key remain valid until explicit revocation or
-server restart. The supplied one-liners hardcode suffix `1`; use a different suffix for
-an independent session or concurrent client. Suffixes are opaque strings, not counters
-allocated or advanced by the server.
+Send tasks through the normal Web message or WebSocket interface. `exec_command`
+and the other configured host tools operate in the workspace. `client_exec_command`
+accepts `{"cmd": "<shell command>"}`, executes it noninteractively in the connected
+terminal, and returns `{output, exit_code, wall_time_seconds}`. Parent and
+child calls share the terminal in sequence. External Call sessions append
+`<external_call_context>` to `extra_contextual_user_messages` (preserving existing
+workspace contextual messages such as Canvas, inherited by child Agents and
+retained across compaction without writing connection credentials to prompts or
+rollouts) so the model distinguishes the host workspace machine from the connected
+client machine. Assistant replies are displayed in the conversation.
 
-The first request for a suffix immediately creates a session and submits its body
-as the task. Its initial tab title is `OneLineAgent-<suffix>`. Subsequent requests
-with the same complete key return command results to that session and wait for
-the next command. Task completion returns a quoted `echo` command containing the
-final response; after its result is acknowledged, the channel waits for more
-commands. Interruption and model failure leave the waiting request pending.
-Further prompts and steer use the ordinary Web session input
-(`POST api/session/message` or its WebSocket equivalent), retaining the Runtime
-and history. Steer waits for issued synchronous commands to return before
-starting the revised turn.
-If the existing Runtime is idle and no command result is pending, a new request
-with the same key treats its body as a new task and reuses that Runtime/history.
-The adapter replaces the old reply channel before admitting the task; any previous
-waiting request ends with HTTP 409 (`terminal connection was replaced`), so it
-cannot consume the new caller's command. Idle status is queried on the session's
-worker loop. During model execution or startup, a request with no pending command
-result is rejected with 409.
-There is no handshake, step counter, replay cache or
-automatic retry. Closing a session ends that Runtime; the next request with its
-key creates a fresh session and treats the body as its first task. It does not
-restore the closed session's history. Service revocation still
-invalidates every derived key and releases waiting requests with HTTP errors.
-A missing suffix or invalid task returns 422.
-Use one terminal loop per key.
+Each session exposes workspace-relative `b/<code>`, where `<code>` is a random
+10-character lowercase unambiguous credential (`[a-hjkmnp-z2-9]`). The credential
+is independent of browser cookies and the tab ID, grants access only to this
+command exchange, and is invalidated when the session closes. Any executable or
+runtime can drive the endpoint; the supplied Bash and PowerShell one-liners are
+built-in client examples.
 
-Every client sends raw UTF-8 text. The initial body is only the prompt, with no cwd
-or other client metadata. Command-result bodies contain combined stdout/stderr followed
-by `LF + [exit N]`, where `N` is the integer process exit code. Invalid UTF-8 or
-result format returns 422. Requests are limited to 1 MiB on the wire (413).
-Successful responses are `text/plain; charset=utf-8`: the next tool `cmd` or a
-server-generated `echo` command displaying the final response.
-Idle requests remain pending; there is no polling or empty completion response.
-No session ID, message type or platform-specific encoding is returned.
-Final text is quoted literally
-for Bash and PowerShell, including ASCII and typographic apostrophes. Its display
-command uses the same raw command/result protocol. The server consumes that
-result regardless of exit code, without adding a tool result or user message to
-model history. It tracks the command actually sent, so the display acknowledgement
-cannot resolve a queued tool's result. All assistant messages retain their normal
-workspace history; commentary is not sent to the terminal.
-Model failures remain visible in the
-Web session while the execution channel waits for commands from later turns.
+- `GET b/<code>` (with neither `o` nor `e` query parameters) waits for and
+  returns the next raw `cmd` as `200 text/plain; charset=utf-8`. Reconnecting
+  replaces any previous waiting `GET` with HTTP 409 and redelivers an
+  unacknowledged in-flight command. Idle requests remain pending; there is no
+  empty completion response and no model turn is started by `b/<code>`.
+- `POST b/<code>` (with optional integer query `e=<exit_code>`) or `GET b/<code>`
+  supplying `o` and/or `e` query parameters submits the result of the in-flight
+  `client_exec_command` and returns `204 No Content`. `POST` reads UTF-8 output
+  from the request body (falling back to `o` when the body is empty); `GET`
+  reads `o` (default `""`). `e` defaults to `0`.
 
-The client executes each response locally, displays the command and completed
-result, and returns that result. The one-liner contains an
-editable example task and starts without an input prompt. Bash uses curl's
-`--data-raw`; PowerShell uses `irm` with a UTF-8 byte body. `exec_command` accepts only `cmd`;
-each command inherits the terminal's current directory without automatic `cd`.
-The complete client loop remains inline in the one-liner; no startup script is fetched.
-
-Requests wait for the next command regardless of task boundaries. Clients execute a response
-only after the HTTP request succeeds, and stop on any network or HTTP error. The server
-session can still be inspected or closed from the workspace after a client exits.
-The local loop has no task-completion exit condition and stays connected for Web
-follow-ups. An idle session can also be continued by rerunning the one-liner with
-the same key and a new task. This does not replay disconnected command execution or restore sessions
-after server restart.
+Reporting a result when no command is waiting returns 409, invalid UTF-8 or a
+non-integer `e` returns 422, and output is limited to 1 MiB (413; `GET` URLs are
+also bounded by HTTP server/proxy request-line limits). Closing the tab releases
+waiting calls and HTTP requests (410 for active waiters, 401 thereafter). The
+ordinary rollout is retained. Tabs, credentials and pending calls are scoped to
+the lifetime of the server.
 
 ## Creating sessions
 
@@ -437,8 +401,20 @@ The frozen host has `apiVersion: 1`:
 | `getDraft()` | Structured composer draft, including context parts |
 | `replaceDraftText(start, end, text)` | Undoable text replacement using draft offsets; context parts count as one position |
 | `setDraft(draft)` | Replace current draft; `draft.parts` must be an array |
+| `setBanner(id, banner)` | Set or update a top-of-chat banner (`null` removes it); returns an unsubscribe/remove function |
 | `openView(href, srcPath)` | Open a file/Git/workspace link for the current session |
 | `request(path, options)` | Fetch workspace-relative JSON; HTTP failures reject |
+
+`setBanner(id, banner)` accepts a non-empty string `id` and an object with at
+least `label` or `text`, plus optional `icon` (`"terminal"`, `"customize"`, or
+`"info"`), `sessionId` (scoped to one tab when set, or shown across the
+workspace when omitted), `adminOnly` (boolean, hidden from share visitors),
+`actions` (`{label, href?, target?, copyText?, copyLabel?, viewHref?, srcPath?, onClick?}[]`),
+and `details` (a plain-text note string or `{label, value?, copyable?, copyLabel?, actionLabel?, href?, target?, viewHref?, srcPath?, onClick?}[]` rows).
+`href` values are restricted to `http:`, `https:`, and `mailto:` URLs. Server
+wrappers rendering `workspace.html` (including with `?builtin=1`) can also
+embed declarative JSON banners via `<script type="application/json" data-pycodex-banner="id">{...}</script>`,
+using the same non-callback fields.
 
 Tab-change callbacks run after the synchronous draft/view switch. Check the
 current session when applying asynchronous results. Host state is browser-local;

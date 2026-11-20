@@ -1,9 +1,7 @@
 import argparse
-import atexit
 import asyncio
 import secrets
 import sys
-from dataclasses import replace
 from functools import partial
 
 from contextlib import asynccontextmanager
@@ -20,14 +18,12 @@ from starlette.responses import (
 )
 from starlette.routing import Route
 
-from pycodex.bootstrap import build_model, configure_loguru
-from pycodex.config import CodexConfig, DEFAULT_CODEX_CONFIG_PATH
+from pycodex.bootstrap import configure_loguru
+from pycodex.config import DEFAULT_CODEX_CONFIG_PATH
 from pycodex.events import IDLE_SLEEPING_STATUS
-from pycodex.multi_agents import AgentsManager
 from pycodex.utils import uuid7_string
 from pycodex.utils.get_env import get_package_version
 from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
-from pycodex_ws import register_feishu_commands
 from pycodex_ws.server_support import (
     AUTH_COOKIE_NAME,
     auth_cookie_matches as _auth_cookie_matches,
@@ -57,6 +53,7 @@ from .sessions import (
     ThreadedSessionFactory,
     ThreadedWorkspaceInteractiveSession,
     WorkspaceInteractiveSession,
+    build_workspace_session,
 )
 from .sharing import WorkspaceSharing
 from .workspaces import (
@@ -486,39 +483,14 @@ def _build_workspace_entry(
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
 ) -> "WorkspaceEntry":
-    def build_session(profile) -> "WorkspaceInteractiveSession":
-        config = CodexConfig.from_env(
-            args.config, profile, use_default_profile=False,
-        )
-        bootstrap = build_model(
-            config.provider,
-            timeout_seconds=args.timeout_seconds,
-            vllm_endpoint=args.vllm_endpoint,
-        )
-        if bootstrap.owned_server is not None:
-            atexit.register(bootstrap.owned_server.stop)
-        context_config = replace(
-            config.context,
-            base_instructions_override=args.system_prompt,
-            extra_contextual_user_messages=(
-                (_workspace_context_text(definition.board_path),)
-                if definition.board_path is not None
-                else ()
-            ),
-            cwd=definition.work_dir,
-        )
-        runtime = AgentsManager(
-            bootstrap.client, context_config, args.toolset,
-        ).create_root_runtime()
-        register_feishu_commands(runtime)
-        return WorkspaceInteractiveSession(
-            runtime,
-            config_path=args.config,
-        )
-
     def session_factory(profile) -> "ThreadedWorkspaceInteractiveSession":
         return ThreadedWorkspaceInteractiveSession(
-            partial(build_session, profile), asyncio.get_running_loop()
+            partial(
+                build_workspace_session, args.config, profile, definition.work_dir, args.toolset,
+                workspace_context=_workspace_context_text(definition.board_path) if definition.board_path else None,
+                system_prompt=args.system_prompt,
+                timeout_seconds=args.timeout_seconds, vllm_endpoint=args.vllm_endpoint,
+            ), asyncio.get_running_loop(),
         )
 
     def load_profiles():

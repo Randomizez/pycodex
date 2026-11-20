@@ -64,8 +64,12 @@ let spinnerText = "";
 const setSpinner = text => { spinnerText = text; };
 const addEntry = (_role, text) => { log.textContent += text; };
 const renderConversation = (_sessionId, turns) => { log.textContent = turns.map(turn => turn.response).join(""); };
+let bannerSyncCount = 0;
+const clearedBannerSessions = [];
 const ui = createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
+  syncSessionBanners() { bannerSyncCount += 1; },
+  clearSessionBanners(id) { clearedBannerSessions.push(id); },
   updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock() {}, resizePrompt,
   isSidebarOpen: () => sidebarOpen,
@@ -183,6 +187,7 @@ globalThis.fetch = async (path, options = {}) => {
   assert.deepEqual(composer.read(), draftA);
   assert.equal(log.scrollTop, 123);
   assert.equal(sessionState.has("b"), false);
+  assert.deepEqual(clearedBannerSessions, ["b"]);
   await closeSession("a");
   assert.equal(confirmations.length, 2);
   assert.equal(document.title, "Workspace");
@@ -197,6 +202,18 @@ globalThis.fetch = async (path, options = {}) => {
   assert.equal(log.textContent, "answer a");
   await pollSession();
   assert.equal(log.textContent, "answer a");
+  assert.equal(stateForSession("a").customizeAgent, false);
+  const syncBeforeSetup = bannerSyncCount;
+  renderSnapshot({
+    cwd: "/a", spinner: "", queued_inputs: [],
+    turns: [{
+      turn_id: "setup",
+      messages: [{message_id: "m1", name: "user", text: "<frontend_customization>\ncustom\n</frontend_customization>"}],
+      response: "Ready.",
+    }],
+  });
+  assert.equal(stateForSession("a").customizeAgent, true);
+  assert.equal(bannerSyncCount, syncBeforeSetup + 1);
   updateSessions([{id: "a", running: true}]);
   assert.equal(document.title, "● Workspace");
   updateSessions([]);

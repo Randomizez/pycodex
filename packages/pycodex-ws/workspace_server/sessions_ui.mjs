@@ -60,9 +60,21 @@ export function formatReplyAge(session, now = Date.now()) {
   return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时未回复`;
 }
 
+function hasFrontendCustomizationTurn(turns) {
+  return Array.isArray(turns) && turns.some(turn =>
+    Array.isArray(turn.messages) && turn.messages.some(message =>
+      typeof message.text === "string" &&
+      message.text.startsWith("<frontend_customization>\n") &&
+      message.text.endsWith("\n</frontend_customization>")
+    )
+  );
+}
+
 export function createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
-  updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
+  syncSessionBanners = () => {}, clearSessionBanners = () => {},
+  updateSpinnerNotifyUi, notifySessionDone, setSpinner,
+  renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen,
 }) {
   const workspaceTitle = document.title;
@@ -105,6 +117,8 @@ export function createSessionsUI({
         hintStartedAt: null,
         hintStartIndex: 0,
         readingFinalId: "",
+        externalCall: null,
+        customizeAgent: false,
       });
     }
     return sessionState.get(key);
@@ -172,10 +186,14 @@ export function createSessionsUI({
       state.wasRunning = isRunning;
     });
     sessions = ordered;
+    let fullSessionIds = null;
     if (Array.isArray(nextSessions) && workspaceRunning === undefined) {
-      const sessionIds = new Set(incomingSessions.map(session => session.id));
+      fullSessionIds = new Set(incomingSessions.map(session => session.id));
       for (const id of sessionState.keys()) {
-        if (id !== activeSessionId && !sessionIds.has(id)) sessionState.delete(id);
+        if (id !== activeSessionId && !fullSessionIds.has(id)) {
+          sessionState.delete(id);
+          clearSessionBanners(id);
+        }
       }
     }
     const running = workspaceRunning ?? incomingSessions.some(session => session.running);
@@ -184,6 +202,7 @@ export function createSessionsUI({
       activeSessionId = sessions[0].id || "";
     }
     renderTabs();
+    syncSessionBanners({fullSessionIds});
     updatePromptPlaceholder();
     updateSessionDirectory();
     updateContextMeter();
@@ -239,6 +258,7 @@ export function createSessionsUI({
       if (payload.session_id && payload.session_id !== activeSessionId) {
         activeSessionId = payload.session_id;
       }
+      stateForSession(activeSessionId).externalCall = payload.external_call || null;
       const active = payload.sessions?.find(session => session.id === activeSessionId);
       if (active && typeof active.has_reply !== "boolean") {
         Object.assign(active, replyTimingFromSnapshot(payload.snapshot));
@@ -264,6 +284,10 @@ export function createSessionsUI({
     state.inputRequest = snapshot.input_request || null;
     state.queuedInputs = snapshot.queued_inputs;
     state.promptHistory.update(snapshot.turns);
+    if (!state.customizeAgent && hasFrontendCustomizationTurn(snapshot.turns)) {
+      state.customizeAgent = true;
+      syncSessionBanners();
+    }
     renderQueueHint(snapshot.queued_inputs);
     requestAnimationFrame(markVisibleFinalRead);
     const signature = messageSignature(snapshot);
@@ -322,6 +346,7 @@ export function createSessionsUI({
     updateSessionDirectory();
     updateContextMeter();
     const state = stateForSession(sessionId);
+    syncSessionBanners({collapse: true});
     closeContextBlock();
     composer.set(state.draft);
     resizePrompt();
@@ -352,6 +377,8 @@ export function createSessionsUI({
     state.draft = {parts: []};
     state.scrollTop = null;
     state.lastRenderedSignature = "";
+    state.externalCall = null;
+    syncSessionBanners({collapse: true});
     closeContextBlock();
     composer.set(state.draft);
     resizePrompt();
@@ -379,6 +406,7 @@ export function createSessionsUI({
       await switchSession(sessions[0].id);
     }
     sessionState.delete(sessionId);
+    clearSessionBanners(sessionId);
   }
 
   function saveScroll() {

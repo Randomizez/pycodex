@@ -132,7 +132,7 @@ def test_custom_assets_are_confined_and_refreshed(workspace_setup, tmp_path):
         for asset in (
             "workspace.css", "workspace.mjs", "workspace_dom.mjs", "markdown.mjs",
             "conversation.mjs", "sessions_ui.mjs", "dialogs.mjs", "custom_frontend.mjs",
-            "content_views.mjs", "content_views.css", "editor.mjs", "editor.css",
+            "banners.mjs", "content_views.mjs", "content_views.css", "editor.mjs", "editor.css",
         ):
             response = client.get(prefix + "/assets/" + asset)
             assert response.status_code == 200, asset

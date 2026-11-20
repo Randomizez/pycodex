@@ -3,7 +3,7 @@ import {relativeUrl} from "./workspace_dom.mjs";
 
 export async function mountCustomFrontend({
   getActiveSessionId, sessionById, selectSession, frontendEvents,
-  composer, stateForSession, resizePrompt, contentTabs,
+  composer, stateForSession, resizePrompt, contentTabs, setBanner = () => () => {},
 }) {
   const script = document.querySelector("script[data-pycodex-custom-script]");
   if (!script) return;
@@ -35,6 +35,7 @@ export async function mountCustomFrontend({
       stateForSession(getActiveSessionId()).draft = composer.read();
       resizePrompt();
     },
+    setBanner: (id, banner) => setBanner(id, banner),
     openView: (href, srcPath) => contentTabs.open(href, srcPath, getActiveSessionId()),
     request: async (path, options = {}) => {
       const response = await fetch(relativeUrl(path), options);

@@ -75,6 +75,7 @@
           </button>
         </div>
       </div>
+      <div id="sessionBanners" class="session-banners" role="region" aria-label="Session banners" hidden></div>
       <div id="log" class="log" aria-label="Conversation"></div>
       <form id="composer" class="composer">
         <div id="sessionRefresh" class="session-refresh" data-state="loading"
@@ -222,13 +223,13 @@
         </span>
         <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
       </button>
-      <button id="oneLineAgentSettings" type="button" class="settings-option" aria-labelledby="oneLineAgentLabel" aria-describedby="oneLineAgentHint" aria-haspopup="dialog" aria-controls="oneLineAgentDialog">
+      <button id="externalCallSettings" type="button" class="settings-option" aria-labelledby="externalCallLabel" aria-describedby="externalCallHint" aria-haspopup="dialog" aria-controls="externalCallDialog">
         <span class="settings-option-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3m6 0h4"/></svg>
         </span>
         <span class="settings-option-copy">
-          <span id="oneLineAgentLabel" class="settings-option-title">One-line Agent</span>
-          <span id="oneLineAgentHint" class="settings-option-description">An Agent in your shell, no installation needed.</span>
+          <span id="externalCallLabel" class="settings-option-title">External Call</span>
+          <span id="externalCallHint" class="settings-option-description">Connect an external client to a workspace conversation.</span>
         </span>
         <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
       </button>
@@ -282,34 +283,22 @@
     <p class="settings-note">Sharing ends when this server restarts.</p>
     <p id="shareError" role="alert"></p>
   </dialog>
-  <dialog id="oneLineAgentDialog" class="workspace-settings" aria-labelledby="oneLineAgentTitle">
+  <dialog id="externalCallDialog" class="workspace-settings" aria-labelledby="externalCallTitle">
     <header>
-      <h2 id="oneLineAgentTitle">One-line Agent</h2>
+      <h2 id="externalCallTitle">External Call</h2>
       <button type="button" class="settings-close" data-close-dialog aria-label="Close">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
       </button>
     </header>
-    <p>An Agent that runs directly in most shells without installation, for bootstrapping an Agent environment or simple debugging.</p>
-    <form id="oneLineAgentForm">
-      <label for="oneLineAgentProfile">Profile</label>
-      <select id="oneLineAgentProfile"></select>
+    <form id="externalCallForm">
+      <label for="externalCallProfile">Profile</label>
+      <select id="externalCallProfile"></select>
+      <p>Creates a session with a banner to connect an external terminal.</p>
       <div class="settings-actions">
-        <button id="oneLineAgentCreate" class="settings-primary" type="submit">Enable One-line Agent</button>
-        <button id="oneLineAgentStop" class="settings-danger" type="button" disabled>Stop</button>
-        <button id="oneLineAgentSession" type="button" hidden>Open latest session</button>
+        <button id="externalCallCreate" class="settings-primary" type="submit">Create session</button>
       </div>
     </form>
-    <p id="oneLineAgentStatus" role="status"></p>
-    <div id="oneLineAgentCommands" hidden>
-      <label for="oneLineAgentLinux">Bash</label>
-      <textarea id="oneLineAgentLinux" rows="4" spellcheck="false"></textarea>
-      <button type="button" data-copy-one-line-agent="oneLineAgentLinux">Copy Bash command</button>
-      <label for="oneLineAgentWindows">PowerShell</label>
-      <textarea id="oneLineAgentWindows" rows="5" spellcheck="false"></textarea>
-      <button type="button" data-copy-one-line-agent="oneLineAgentWindows">Copy PowerShell command</button>
-      <p class="settings-note">Edit the example task, then copy and run the command in your terminal.</p>
-    </div>
-    <p id="oneLineAgentError" role="alert"></p>
+    <p id="externalCallError" role="alert"></p>
   </dialog>
   <template id="emptyChat">
     <div class="empty-chat">

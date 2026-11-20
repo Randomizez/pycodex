@@ -27,10 +27,10 @@ from pycodex_ws.workspace_config import normalize_workspace_id
 
 from .browser import BrowserAccess, require_login
 from .protocol import (
-    one_line_agent_request,
     decode,
     device_id,
     encode,
+    external_call_request,
     normalize_api_url,
     request_scope,
     response_headers,
@@ -432,7 +432,7 @@ class Router:
         agent_access = trusted_agent_request(scope)
         if blocked or not (
             agent_access
-            or one_line_agent_request(scope)
+            or external_call_request(scope)
             or auth_cookie_matches(
                 self.browser_token, connection.cookies.get("pycodex_router_auth")
             )

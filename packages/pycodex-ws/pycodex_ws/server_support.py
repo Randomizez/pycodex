@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
-from pycodex_router.protocol import one_line_agent_request, route_path, trusted_agent_request
+from pycodex_router.protocol import external_call_request, route_path, trusted_agent_request
 
 AUTH_COOKIE_NAME = "pycodex_ws_auth"
 
@@ -33,14 +33,7 @@ def parse_listen(target: str) -> "typing.Tuple[str, int]":
     return host, port
 
 
-async def json_object_body(
-    request: Request, max_bytes: "typing.Union[int, None]" = None,
-) -> "typing.Dict[str, object]":
-    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-    if media_type != "application/json" and not (
-        media_type.startswith("application/") and media_type.endswith("+json")
-    ):
-        raise HTTPException(status_code=422, detail="request body must be JSON")
+async def read_body(request: Request, max_bytes: "typing.Union[int, None]") -> bytearray:
     body = bytearray()
     async for chunk in request.stream():
         if max_bytes is not None and len(body) + len(chunk) > max_bytes:
@@ -50,6 +43,18 @@ async def json_object_body(
                 headers={"Connection": "close"},
             )
         body.extend(chunk)
+    return body
+
+
+async def json_object_body(
+    request: Request, max_bytes: "typing.Union[int, None]" = None,
+) -> "typing.Dict[str, object]":
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    if media_type != "application/json" and not (
+        media_type.startswith("application/") and media_type.endswith("+json")
+    ):
+        raise HTTPException(status_code=422, detail="request body must be JSON")
+    body = await read_body(request, max_bytes)
     try:
         payload = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
@@ -199,8 +204,8 @@ def install_auth(
         root = request.scope.get("root_path", "")
         if sharing is not None:
             target = sharing.workspace(path)
-            if one_line_agent_request(request.scope):
-                # This endpoint validates its own workspace-scoped temporary token.
+            if external_call_request(request.scope):
+                # The terminal exchange authenticates its own session connection.
                 return await call_next(request)
             cookie = request.cookies.get(cookie_name)
             if path in {"/favicon.ico", "/login"}:
@@ -210,7 +215,7 @@ def install_auth(
                 return await call_next(request)
             grant = None if target is None else sharing.grant(target[0], cookie)
             if grant is not None:
-                if target[1].rstrip("/") in {"/api/share", "/api/reload", "/api/one-line-agent"}:
+                if target[1].rstrip("/") in {"/api/share", "/api/reload", "/api/external-call-sessions"}:
                     return JSONResponse({"error": "administrator access required"}, 403)
                 request.scope["pycodex.access_role"] = "visitor"
                 return await call_next(request)

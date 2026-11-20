@@ -6,11 +6,13 @@ const {chromium} = require("playwright");
 
 const directory = path.join(__dirname, "../workspace_server");
 const packageDirectory = "/test/Package #1%";
+const frontendDirectory = "/test/.pycodex/frontend";
 const catalogPath = packageDirectory + "/optional_features/README.md";
 const source = fs.readFileSync(path.join(directory, "workspace.template.html"), "utf8");
 const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
   WORKSPACE_TITLE: "Session cache test", ENABLE_BOARD: "true",
-  ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test", PACKAGE_DIRECTORY: packageDirectory,
+  ACCESS_ROLE: "admin", BOARD_URL: "about:blank", CWD_LABEL: "/test",
+  FRONTEND_DIRECTORY: frontendDirectory, PACKAGE_DIRECTORY: packageDirectory,
 }[name] || "")).replace("</body>", `<script type="module">
   window.fixtureReady = true;
 </script></body>`);
@@ -35,6 +37,7 @@ function turn(id, text) {
     const errors = [];
     const page = await browser.newPage({viewport: {width: 1100, height: 850}});
     page.on("pageerror", error => errors.push(error.message));
+    page.on("dialog", dialog => dialog.accept());
     let tabs = ["a", "b"];
     let savedSession = "";
     const snapshots = new Map([
@@ -46,6 +49,8 @@ function turn(id, text) {
     const requests = [];
     const failures = new Set(["failed"]);
     const blocked = new Map();
+    const externalCalls = new Map();
+    let embeddedBanner = null;
     const list = () => tabs.map(id => ({id, title: id, cwd: "/" + id, running: false}));
     function block(key) {
       let release;
@@ -72,12 +77,18 @@ function turn(id, text) {
         return route.fulfill({body: "", contentType:
           url.pathname.endsWith(".css") ? "text/css" : "text/javascript"});
       }
-      if (url.pathname === "/") return route.fulfill({
-        body: html.replace("<head>", `<head><script>
+      if (url.pathname === "/") {
+        let pageHtml = html.replace("<head>", `<head><script>
           sessionStorage.setItem("pycodex.workspace.activeSession:/", ${JSON.stringify(savedSession)});
-        </script>`),
-        contentType: "text/html",
-      });
+        </script>`);
+        if (embeddedBanner) {
+          pageHtml = pageHtml.replace(
+            "</body>",
+            `<script type="application/json" data-pycodex-banner="expflow">${JSON.stringify(embeddedBanner)}</script></body>`
+          );
+        }
+        return route.fulfill({body: pageHtml, contentType: "text/html"});
+      }
       if (url.pathname.startsWith("/assets/")) {
         const name = url.pathname.slice("/assets/".length);
         return route.fulfill({
@@ -102,7 +113,25 @@ function turn(id, text) {
         if (blocked.has(id)) await blocked.get(id);
         if (failures.has(id)) return route.fulfill({status: 503, json: {}});
         if (!tabs.includes(id)) return route.fulfill({status: 404, json: {}});
-        return route.fulfill({json: {session_id: id, sessions: list(), snapshot: snapshots.get(id)}});
+        const payload = {session_id: id, sessions: list(), snapshot: snapshots.get(id)};
+        if (externalCalls.has(id)) payload.external_call = externalCalls.get(id);
+        return route.fulfill({json: payload});
+      }
+      if (url.pathname === "/api/external-call-sessions") {
+        if (route.request().method() === "GET") {
+          return route.fulfill({json: {binding: null, profiles: ["remote"], default_profile: null}});
+        }
+        const {profile} = route.request().postDataJSON();
+        assert.equal(profile, "remote");
+        const binding = {
+          session_id: "ext",
+          url: "http://workspace.test/b/abcdefghjk",
+          one_liners: {linux: "bash-example /b/abcdefghjk", windows: "pwsh-example /b/abcdefghjk"},
+        };
+        tabs.push("ext");
+        snapshots.set("ext", {cwd: "/ext", turns: [turn("e0", "Connected.")], spinner: "", queued_inputs: []});
+        externalCalls.set("ext", binding);
+        return route.fulfill({json: {binding, profiles: ["remote"], default_profile: null}});
       }
       if (url.pathname === "/api/sessions" && route.request().method() === "POST") {
         if (blocked.has("create")) await blocked.get("create");
@@ -282,7 +311,9 @@ function turn(id, text) {
     releaseCreate();
     await page.locator("#contentView .snapshot-markdown").waitFor({state: "visible"});
     assert.match(await page.locator("#contentView").textContent(), /Optional frontend features/);
+    assert.equal(await page.locator('#sessionBanners [data-banner-id="customize-agent"]').count(), 1);
     await page.evaluate("fixture.switchSession('a')");
+    assert.equal(await page.locator("#sessionBanners").getAttribute("hidden"), "");
     assert.equal(await page.locator(".response").last().textContent(), "Arrived during creation");
     await page.evaluate("fixture.closeSession('b')");
     assert.equal(await page.evaluate("fixture.sessionState.has('b')"), false);
@@ -369,6 +400,70 @@ function turn(id, text) {
       assert.equal(await page.evaluate(() =>
         document.querySelector(".entry.response") === temporaryReply), true);
     }
+
+    assert.equal(await page.locator('[data-banner-id="customize-agent"]').isVisible(), true);
+    assert.equal(await page.locator('[data-banner-id="customize-agent"] .session-banner-details').isVisible(), false);
+    await page.locator('[data-banner-id="customize-agent"] .session-banner-toggle').click();
+    assert.equal(await page.locator('[data-banner-id="customize-agent"] .session-banner-details').isVisible(), true);
+    assert.deepEqual(
+      await page.locator('[data-banner-id="customize-agent"] .session-banner-row input').evaluateAll(inputs => inputs.map(i => i.value)),
+      [frontendDirectory, packageDirectory + "/WORKSPACE_API.md"]
+    );
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(await page.locator('[data-banner-id="external-call"]').count(), 0);
+    await page.locator(".customize-frontend:visible").first().click();
+    await page.locator("#externalCallSettings").click();
+    await page.waitForFunction(() => document.getElementById("externalCallProfile").options.length === 2);
+    await page.locator("#externalCallProfile").selectOption('"remote"');
+    await page.locator("#externalCallCreate").click();
+    await page.waitForFunction(() => fixture.active() === "ext" && !document.getElementById("externalCallDialog").open);
+    await page.evaluate("fixture.stop()");
+    const extBanner = page.locator('[data-banner-id="external-call"]');
+    assert.equal(await extBanner.isVisible(), true);
+    assert.equal(await page.locator('[data-banner-id="customize-agent"]').count(), 0);
+    assert.equal(await extBanner.locator(".session-banner-details").isVisible(), false);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    assert.equal(await page.evaluate(() => {
+      const banner = document.getElementById("sessionBanners").getBoundingClientRect();
+      const log = document.getElementById("log").getBoundingClientRect();
+      const composer = document.getElementById("composer").getBoundingClientRect();
+      return banner.bottom <= log.top + 1 && log.bottom <= composer.top + 1 && log.height > 100;
+    }), true, "External Call banner keeps conversation log bounded above composer");
+    await page.evaluate(() => {
+      window.copiedTexts = [];
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: {writeText: async text => { window.copiedTexts.push(text); }},
+      });
+    });
+    await extBanner.locator(".session-banner-bar .session-banner-btn", {hasText: "Copy Bash"}).click();
+    await extBanner.locator(".session-banner-toggle").click();
+    assert.equal(await extBanner.locator(".session-banner-details").isVisible(), true);
+    const endpointRow = extBanner.locator(".session-banner-row").nth(2);
+    assert.equal(await endpointRow.locator("input").inputValue(), "http://workspace.test/b/abcdefghjk");
+    await endpointRow.locator(".session-banner-btn").click();
+    assert.deepEqual(await page.evaluate("window.copiedTexts"), [
+      "bash-example /b/abcdefghjk", "http://workspace.test/b/abcdefghjk",
+    ]);
+    await page.evaluate("fixture.switchSession('c')");
+    assert.equal(await page.locator('[data-banner-id="external-call"]').count(), 0);
+    assert.equal(await page.locator('[data-banner-id="customize-agent"]').isVisible(), true);
+    await open("ext", "ext");
+    assert.deepEqual(requests, ["ext"], "External Call banner restores from /api/session without extra requests");
+    assert.equal(await extBanner.isVisible(), true);
+    assert.equal(await extBanner.locator(".session-banner-details").isVisible(), false);
+
+    embeddedBanner = {icon: "info", label: "ExpFlow", text: "Experiment exp-042", details: "Read-only run metadata"};
+    await open("ext", "ext");
+    assert.deepEqual(
+      await page.locator("#sessionBanners .session-banner").evaluateAll(nodes => nodes.map(n => n.dataset.bannerId)),
+      ["expflow", "external-call"]
+    );
+    await page.evaluate("fixture.switchSession('c')");
+    assert.deepEqual(
+      await page.locator("#sessionBanners .session-banner").evaluateAll(nodes => nodes.map(n => n.dataset.bannerId)),
+      ["expflow", "customize-agent"]
+    );
     assert.deepEqual(errors, []);
     console.log("Session cache, message metadata, temporary reply animation and mobile layout passed.");
   } finally {
