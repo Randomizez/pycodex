@@ -315,10 +315,10 @@ or `null` when unknown. Reply times include elapsed time from the first input.
 Compaction adds a divider to the existing conversation list. Display restoration
 reuses the rollout parser; model context still resumes from the latest checkpoint.
 
-In the workspace's single-pane phone layout, the conversation header retains
-the active session title and running status. Board/chat switches occupy the
-same top-right position in their respective headers; the board switch follows
-the fullscreen button in the board toolbar. Floating session controls stay below
+In the workspace's single-pane phone layout, the conversation header contains
+the active session title, running status and the only Settings button. The pane
+switch occupies the same top-right position in both headers. In the board
+toolbar it follows the fullscreen button. Floating session controls stay below
 the headers and contain only the session-list button and status dots.
 
 In the two-pane layout, the session sidebar starts collapsed on every page load.

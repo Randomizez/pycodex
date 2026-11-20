@@ -261,7 +261,10 @@ function turn(id, text) {
       document.getElementById("log").scrollTop = 123;
     });
     await page.evaluate("fixture.switchSession('b')");
+    const settings = page.getByRole("button", {name: "Settings", exact: true});
+    assert.equal(await settings.isVisible(), true);
     await page.evaluate(() => {document.querySelector(".workspace").dataset.mobilePane = "board";});
+    assert.equal(await settings.isVisible(), false);
     const releaseMobile = block("a");
     await page.evaluate(() => {window.mobileSelection = fixture.switchSession("a");});
     await page.evaluate(() => {

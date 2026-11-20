@@ -85,7 +85,8 @@ distributed separately as a VSIX.
 
 ## Customize the interface
 
-Choose **Settings → Customize Agent** to open a conversation and the
+Choose **Settings → Customize Agent** from the conversation header to open a
+conversation and the
 [optional feature catalog](workspace_server/optional_features/README.md), with
 a **Customize Agent** banner at the top of the chat for reopening the catalog,
 switching to `?builtin=1`, copying the frontend directory or opening `WORKSPACE_API.md`.

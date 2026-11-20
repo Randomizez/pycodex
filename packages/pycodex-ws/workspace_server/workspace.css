@@ -45,7 +45,6 @@ body {
 }
 button, textarea { font: inherit; }
 .pane-toggle { display: none; }
-.boardbar .customize-frontend { display: none; }
 .workspace,
 .board-pane,
 .chat,
@@ -1491,7 +1490,6 @@ code {
   .sessions-collapsed .session-sidebar .tab { height: 32px; }
 }
 @media (max-width: 760px) {
-  .boardbar .customize-frontend { display: grid; }
   .pane-toggle {
     display: inline-grid;
     place-items: center;
