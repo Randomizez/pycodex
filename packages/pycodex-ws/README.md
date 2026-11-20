@@ -62,6 +62,11 @@ In a code or diff view, select text and choose **Insert into chat** to add edita
 Click a context block to edit or remove it before sending.
 See [view links and supported formats](../../docs/RUNTIME.md#workspace-content-views).
 
+With embedded VS Code enabled, clicking a file or diff link opens it in the
+current browser tab's workbench. You can open the same folder in several tabs
+and use each editor independently. Git comparisons display symbolic links as
+their target paths. VS Code handles large files using its own editor limits.
+
 When using a router, its directory groups workspaces by device and lists unread
 workspaces at the top. Device handles reorder the list; pencil buttons edit
 device names.

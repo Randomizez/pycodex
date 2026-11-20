@@ -1,5 +1,7 @@
 import assert from "assert";
-import {ContentTabs, SnapshotDisplay, isWorkspaceLink} from "../workspace_server/frontend/content_views.mjs";
+import {
+  ContentTabs, SnapshotDisplay, isWorkspaceLink, mountContentViews,
+} from "../workspace_server/frontend/content_views.mjs";
 import {editorContext} from "../workspace_server/frontend/editor_context.mjs";
 
 // The browser supplies this API; provide it explicitly in the Node harness.
@@ -15,7 +17,7 @@ function deferred() {
   return {promise, resolve, reject};
 }
 
-function fixture(selected = null, enableBoard = true) {
+function fixture(selected = null, enableBoard = true, enableVscode = false) {
   let serverViews = [];
   const pending = new Map();
   const signals = new Map();
@@ -26,6 +28,7 @@ function fixture(selected = null, enableBoard = true) {
   const tabs = new ContentTabs({
     selected,
     enableBoard,
+    vscodeWindow: enableVscode ? {id: "test-window", url: "https://workspace.test/vscode/"} : null,
     onSelect: id => selections.push(id),
     onChange: state => changes.push({
       id: state.activeId, snapshot: state.snapshot, selection: state.selection,
@@ -44,6 +47,9 @@ function fixture(selected = null, enableBoard = true) {
         const view = serverViews.find(view => view.id === id);
         return {views: serverViews.slice(),
           view: {...view, documents: [{text: id + ":" + view.revision}]}};
+      }
+      if (path === "api/vscode/open") {
+        return {ok: true, target: JSON.parse(options.body)};
       }
       const id = path.split("/").pop();
       if (method === "DELETE") {
@@ -543,7 +549,17 @@ class Node {
       add: name => { this.className = (this.className + " " + name).trim(); },
       remove: name => { this.className = this.className.split(" ").filter(item => item !== name).join(" "); },
     };
+    this.listeners = new Map();
+    this.dataset = {};
+    this.hidden = false;
   }
+
+  set src(value) {
+    this.srcValue = value;
+    this.attributes.set("src", value);
+  }
+
+  get src() { return this.srcValue || ""; }
 
   appendChild(node) {
     if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node);
@@ -551,6 +567,36 @@ class Node {
     this.children.push(node);
     return node;
   }
+
+  insertBefore(node, reference) {
+    if (node.parent) node.parent.children = node.parent.children.filter(child => child !== node);
+    node.parent = this;
+    const index = reference ? this.children.indexOf(reference) : -1;
+    if (index < 0) this.children.push(node);
+    else this.children.splice(index, 0, node);
+    return node;
+  }
+
+  remove() {
+    if (this.parent) {
+      this.parent.children = this.parent.children.filter(child => child !== this);
+      this.parent = null;
+    }
+  }
+
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, []);
+    this.listeners.get(type).push(handler);
+  }
+
+  dispatch(type, event = {}) {
+    for (const handler of this.listeners.get(type) || []) handler({target: this, ...event});
+  }
+
+  focus() {}
+  scrollIntoView() {}
+  closest() { return {dataset: {}}; }
+  removeAttribute(name) { this.attributes.delete(name); }
 
   setAttribute(name, value) { this.attributes.set(name, value); }
   getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
@@ -1101,6 +1147,227 @@ async function onlyTheCurrentEditorCanInsertContext() {
   assert.deepEqual(inserted, [{text: "from a"}, {text: "from b"}]);
 }
 
+async function vscodeModeRoutesNewLinksWhileKeepingExistingViews() {
+  const disabled = fixture("board", true, false);
+  assert.equal(await disabled.tabs.setVscodeMode(true), false);
+  await disabled.tabs.select("vscode");
+  assert.equal(disabled.tabs.activeId, "board");
+
+  const state = fixture("board", true, true);
+  state.setViews(["a", "b"]);
+  await state.tabs.poll();
+  assert.equal(await state.tabs.setVscodeMode(true), true);
+  assert.equal(state.tabs.vscodeMode, true);
+  assert.equal(state.tabs.activeId, "vscode");
+  assert.equal(state.tabs.snapshot, null);
+  assert.equal(state.tabs.loading, false);
+  assert.equal(state.requests.includes("GET api/views/vscode"), false);
+
+  await state.tabs.poll();
+  assert.equal(state.tabs.activeId, "vscode");
+  assert.deepEqual(state.tabs.views.map(view => view.id), ["a", "b"]);
+
+  await state.tabs.open("workspace://canvas");
+  assert.equal(state.tabs.activeId, "board");
+  assert.equal(state.tabs.vscodeMode, true);
+
+  await state.tabs.select("a");
+  assert.equal(state.tabs.activeId, "a");
+  assert.equal(state.tabs.vscodeMode, true);
+
+  const failed = deferred();
+  state.pending.set("POST api/vscode/open", failed);
+  const failingOpen = state.tabs.open("missing.py");
+  failed.reject(new Error("File does not exist: missing.py"));
+  await assert.rejects(failingOpen, /File does not exist/);
+  state.pending.delete("POST api/vscode/open");
+  assert.equal(state.tabs.activeId, "a");
+  assert.ok(state.tabs.error.includes("Unable to open in VS Code:"));
+
+  await state.tabs.open("src/main.py#L12", "/docs/guide.md", "session-1");
+  assert.equal(state.tabs.activeId, "vscode");
+  assert.equal(state.requests.includes("POST api/views/open"), false);
+  assert.deepEqual(state.bodies.slice(-1), [
+    {href: "src/main.py#L12", src_path: "/docs/guide.md", session_id: "session-1", window_id: "test-window"},
+  ]);
+  assert.deepEqual(state.tabs.views.map(view => view.id), ["a", "b"]);
+
+  await state.tabs.select("a");
+  await state.tabs.close("a");
+  assert.equal(state.tabs.activeId, "vscode");
+  assert.deepEqual(state.tabs.views.map(view => view.id), ["b"]);
+
+  await state.tabs.close("vscode");
+  assert.equal(state.tabs.vscodeMode, true);
+  assert.equal(state.tabs.activeId, "vscode");
+
+  assert.equal(await state.tabs.setVscodeMode(false), false);
+  assert.equal(state.tabs.vscodeMode, false);
+  assert.equal(state.tabs.activeId, "board");
+  assert.equal(state.requests.includes("DELETE api/views/vscode"), false);
+
+  await state.tabs.open("b");
+  assert.equal(state.tabs.activeId, "b");
+  assert.equal(state.requests.includes("POST api/views/open"), true);
+}
+
+async function mountedVscodeTabStaysRightOfCanvasAndLazyLoadsFrame() {
+  const document = {
+    createElement: tag => new Node(document, tag),
+    getElementById(id) {
+      const search = root => {
+        if (root.id === id) return root;
+        for (const child of root.children) {
+          const found = search(child);
+          if (found) return found;
+        }
+        return null;
+      };
+      return search(tabs);
+    },
+  };
+  const tabs = document.createElement("div");
+  tabs.dataset.boardTitle = "Canvas title";
+  const area = document.createElement("div");
+  const frame = document.createElement("iframe");
+  frame.id = "boardFrame";
+  const vscodeFrame = document.createElement("iframe");
+  vscodeFrame.id = "vscodeFrame";
+  vscodeFrame.hidden = true;
+  const content = document.createElement("div");
+  content.id = "contentView";
+  content.hidden = true;
+  area.appendChild(frame);
+  area.appendChild(vscodeFrame);
+  area.appendChild(content);
+  const status = document.createElement("span");
+  const modeChanges = [];
+  const stateChanges = [];
+  let pendingVscodeOpen = null;
+  let srcAssignments = 0;
+  Object.defineProperty(vscodeFrame, "src", {
+    get() { return this.attributes.get("src") || ""; },
+    set(value) {
+      srcAssignments += 1;
+      this.attributes.set("src", value);
+    },
+  });
+  const views = [
+    {id: "a", kind: "file", title: "a.md", revision: 1, live: true, created_at: 0},
+    {id: "b", kind: "file", title: "b.md", revision: 1, live: true, created_at: 0},
+  ];
+  const mounted = mountContentViews({
+    tabs, frame, vscodeFrame, content, status,
+    renderMarkdown: (parent, text) => { parent.textContent = text; },
+    enableBoard: true,
+    vscodeWindow: {id: "test-window", url: "https://workspace.test/vscode/?folder=%2Frepo"},
+    onVscodeModeChange: active => modeChanges.push(active),
+    onVscodeStateChange: info => stateChanges.push(info),
+    request: async path => {
+      if (path === "api/views") return {views};
+      if (path === "api/vscode/open") {
+        if (pendingVscodeOpen) return pendingVscodeOpen.promise;
+        return {ok: true};
+      }
+      const id = path.split("/").pop();
+      return {id, kind: "file", revision: 1, documents: [{label: id + ".md", text: "#" + id}]};
+    },
+  });
+  const overlay = area.querySelector(".vscode-overlay");
+  assert.ok(overlay);
+  assert.equal(overlay.hidden, true);
+  vscodeFrame.dispatch("load");
+  assert.equal(overlay.hidden, true);
+
+  await mounted.poll();
+  assert.equal(vscodeFrame.getAttribute("src"), null);
+  assert.equal(vscodeFrame.hidden, true);
+  assert.deepEqual(tabs.children.map(tab => tab.dataset.viewId), ["board", "a", "b"]);
+
+  await mounted.toggleVscodeMode();
+  assert.equal(mounted.isVscodeMode(), true);
+  assert.deepEqual(modeChanges, [true]);
+  assert.deepEqual(stateChanges.slice(-1), [{active: true, loading: true, error: ""}]);
+  assert.equal(vscodeFrame.src, "https://workspace.test/vscode/?folder=%2Frepo");
+  assert.equal(srcAssignments, 1);
+  assert.equal(vscodeFrame.hidden, false);
+  assert.equal(overlay.hidden, false);
+  assert.equal(overlay.dataset.state, "loading");
+  assert.equal(overlay.querySelector(".vscode-overlay-title").textContent, "Loading VS Code…");
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").textContent, "Loading…");
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").hidden, false);
+  assert.equal(frame.hidden, true);
+  assert.equal(content.hidden, true);
+  assert.deepEqual(tabs.children.map(tab => tab.dataset.viewId), ["board", "vscode", "a", "b"]);
+  assert.equal(tabs.children[1].getAttribute("aria-controls"), "vscodeFrame");
+  assert.equal(tabs.children[1].querySelector(".content-tab-close"), null);
+  assert.ok(tabs.children[2].querySelector(".content-tab-close"));
+
+  tabs.children[2].dispatch("click");
+  await flush();
+  assert.equal(vscodeFrame.hidden, true);
+  assert.equal(overlay.hidden, true);
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").textContent, "Loading…");
+  assert.equal(content.hidden, false);
+  assert.equal(mounted.isVscodeMode(), true);
+
+  // Simulate a 503 JSON error page on initial load, then retry cleanly.
+  vscodeFrame.contentDocument = {
+    contentType: "application/json",
+    body: {textContent: JSON.stringify({detail: "code-server not installed"})},
+  };
+  vscodeFrame.dispatch("load");
+  tabs.children[1].dispatch("click");
+  await flush();
+  assert.equal(overlay.hidden, false);
+  assert.equal(overlay.dataset.state, "error");
+  assert.equal(overlay.querySelector(".vscode-overlay-detail").textContent, "code-server not installed");
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").textContent, "Error");
+
+  vscodeFrame.contentDocument = {contentType: "text/html"};
+  overlay.querySelector(".vscode-retry").dispatch("click");
+  assert.equal(srcAssignments, 2);
+  assert.equal(overlay.dataset.state, "loading");
+  vscodeFrame.dispatch("load");
+  assert.equal(overlay.hidden, true);
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").textContent, "");
+  assert.equal(tabs.children[1].querySelector(".content-tab-description").hidden, true);
+  assert.deepEqual(stateChanges.slice(-1), [{active: true, loading: false, error: ""}]);
+
+  pendingVscodeOpen = deferred();
+  const openingPromise = mounted.open("new.py");
+  assert.equal(status.textContent, "Opening in VS Code…");
+  assert.equal(status.dataset.tone, "info");
+  pendingVscodeOpen.resolve({ok: true});
+  pendingVscodeOpen = null;
+  await openingPromise;
+  assert.equal(status.hidden, true);
+  assert.equal(vscodeFrame.hidden, false);
+  assert.equal(content.hidden, true);
+  assert.equal(srcAssignments, 2);
+  assert.deepEqual(tabs.children.map(tab => tab.dataset.viewId), ["board", "vscode", "a", "b"]);
+
+  tabs.children[1].dispatch("keydown", {
+    key: "Delete", target: tabs.children[1], preventDefault() {},
+  });
+  await flush();
+  assert.equal(mounted.isVscodeMode(), true);
+
+  await mounted.toggleVscodeMode();
+  assert.equal(mounted.isVscodeMode(), false);
+  assert.deepEqual(modeChanges, [true, false]);
+  assert.equal(frame.hidden, false);
+  assert.equal(vscodeFrame.hidden, true);
+  assert.deepEqual(tabs.children.map(tab => tab.dataset.viewId), ["board", "a", "b"]);
+
+  mounted.notify("Start the workspace server with --password to enable VS Code.", 0);
+  assert.equal(status.textContent, "Start the workspace server with --password to enable VS Code.");
+  assert.equal(status.dataset.tone, "info");
+  assert.equal(status.hidden, false);
+  await mounted.poll();
+  assert.equal(status.textContent, "Start the workspace server with --password to enable VS Code.");
+}
+
 async function main() {
   contextCapturesSelectionAndCursorWithoutChangingSource();
   contextPreservesGitRevisionAndDiffSide();
@@ -1109,6 +1376,8 @@ async function main() {
   fileAndUriLinksPreserveBrowserDestinations();
   await newTabsAndRestore();
   await disabledCanvasKeepsFileViewsAndAnEmptyState();
+  await vscodeModeRoutesNewLinksWhileKeepingExistingViews();
+  await mountedVscodeTabStaysRightOfCanvasAndLazyLoadsFrame();
   await pollingNeverFollowsOtherClients();
   await revealingDuringRefreshKeepsVisibleContent();
   await clickedLinesDoNotReplayOnPollOrManualSelection();

@@ -20,7 +20,12 @@ const contextBlockDetail = document.getElementById("contextBlockDetail");
 const contextBlockLabel = document.getElementById("contextBlockLabel");
 const contextBlockEditor = document.getElementById("contextBlockEditor");
 const boardFrame = document.getElementById("boardFrame");
+const vscodeFrame = document.getElementById("vscodeFrame");
+const vscodeToggle = document.getElementById("vscodeToggle");
 const enableBoard = document.body.dataset.enableBoard === "true";
+const isAdmin = document.body.dataset.accessRole === "admin";
+const enableVscode = isAdmin && document.body.dataset.enableVscode === "true";
+const VSCODE_PASSWORD_HINT = "Start the workspace server with --password to enable VS Code.";
 const workspace = document.querySelector(".workspace");
 const splitter = document.getElementById("splitter");
 const tabsEl = document.getElementById("tabs");
@@ -960,14 +965,43 @@ document.querySelectorAll(".content-tabs").forEach(tabs => {
   }, {passive: false});
 });
 
+function createVscodeWindow() {
+  const id = crypto.getRandomValues(new Uint32Array(4)).join("-");
+  const url = new URL("vscode/", window.location.href);
+  const cwd = document.body.dataset.cwd || "";
+  if (cwd) url.searchParams.set("folder", cwd);
+  url.searchParams.set("payload", JSON.stringify([
+    ["extensionEnvironment", JSON.stringify({PYCODEX_VSCODE_WINDOW_ID: id})],
+  ]));
+  return {id, url: url.toString()};
+}
+
+function updateVscodeToggle({active = false, loading = false, error = ""} = {}) {
+  if (!vscodeToggle) return;
+  vscodeToggle.hidden = !isAdmin;
+  if (enableVscode) vscodeToggle.removeAttribute("aria-disabled");
+  else vscodeToggle.setAttribute("aria-disabled", "true");
+  vscodeToggle.setAttribute("aria-pressed", String(Boolean(enableVscode && active)));
+  if (enableVscode && active && loading) vscodeToggle.dataset.loading = "true";
+  else delete vscodeToggle.dataset.loading;
+  vscodeToggle.title = !enableVscode ? VSCODE_PASSWORD_HINT :
+    !active ? "Open VS Code" :
+    loading ? "Loading VS Code… (click to hide)" :
+    error ? "VS Code failed to load (click to hide)" : "Hide VS Code";
+  vscodeToggle.setAttribute("aria-label", vscodeToggle.title);
+}
+
 const contentTabs = mountContentViews({
   tabs: document.getElementById("contentTabs"),
   frame: document.getElementById("boardFrame"),
+  vscodeFrame,
   content: document.getElementById("contentView"),
   status: document.getElementById("viewStatus"),
   renderMarkdown: renderMarkdownInto,
   onInsertContext: insertEditorContext,
   enableBoard,
+  vscodeWindow: enableVscode ? createVscodeWindow() : null,
+  onVscodeStateChange: updateVscodeToggle,
   request: async (path, options = {}) => {
     const response = await fetch(new URL(path, window.location.href), options);
     const payload = await response.json();
@@ -979,6 +1013,17 @@ const contentTabs = mountContentViews({
     return payload;
   },
 });
+if (vscodeToggle) {
+  updateVscodeToggle();
+  vscodeToggle.addEventListener("click", () => {
+    if (!enableVscode) {
+      contentTabs.notify(VSCODE_PASSWORD_HINT);
+      showToast(VSCODE_PASSWORD_HINT);
+      return;
+    }
+    contentTabs.toggleVscodeMode();
+  });
+}
 const {followMarkdownLink, followCanvasLink} = createViewLinkHandlers({
   getActiveSessionId: () => sessionUI.activeId, openView: (...args) => contentTabs.open(...args), showToast,
 });

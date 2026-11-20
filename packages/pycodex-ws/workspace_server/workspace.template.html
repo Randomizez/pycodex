@@ -10,6 +10,8 @@
   <link rel="stylesheet" href="assets/workspace.css">
 </head>
 <body data-enable-board="__ENABLE_BOARD__" data-access-role="__ACCESS_ROLE__"
+      data-enable-vscode="__ENABLE_VSCODE__"
+      data-cwd="__CWD_LABEL__"
       data-frontend-directory="__FRONTEND_DIRECTORY__"
       data-package-directory="__PACKAGE_DIRECTORY__"
       data-package-version="__PACKAGE_VERSION__">
@@ -34,6 +36,13 @@
             <circle cx="12" cy="12" r="3"/>
           </svg>
         </button>
+        <button id="vscodeToggle" class="vscode-toggle" type="button"
+                title="Open VS Code" aria-label="Open VS Code" aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M17 3l3.5 1.8v14.4L17 21 3.5 8.8 6 6.5 17 16.5V3ZM17 7.5L6 17.5 3.5 15.2 9.2 10"/>
+          </svg>
+        </button>
         <button class="fullscreen-toggle" type="button" title="Enter fullscreen" aria-label="Enter fullscreen" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -49,6 +58,7 @@
       </div>
       <div class="content-area">
         <iframe id="boardFrame" class="board" src="__BOARD_URL__" title="Canvas"></iframe>
+        <iframe id="vscodeFrame" class="board vscode-frame" title="VS Code" hidden></iframe>
         <div id="contentView" class="content-view" role="tabpanel" hidden></div>
       </div>
     </section>

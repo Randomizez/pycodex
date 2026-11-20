@@ -56,6 +56,7 @@ from .sessions import (
     build_workspace_session,
 )
 from .sharing import WorkspaceSharing
+from .vscode_server import VsCodeRuntime
 from .workspaces import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -147,8 +148,17 @@ def create_app(
     )
     board_path = workspace_file_path(state_path, ".html") if enable_board else None
     resolved_work_dir = Path(work_dir or Path.cwd()).resolve()
-    app = _create_lifespan_app(manager.start, manager.close)
+    vscode = VsCodeRuntime()
+
+    async def close() -> None:
+        try:
+            await manager.close()
+        finally:
+            await vscode.close()
+
+    app = _create_lifespan_app(manager.start, close)
     sharing = WorkspaceSharing(password, multi=False)
+    sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
     _install_sharing_routes(app, sharing)
     _install_reload_routes(
@@ -158,6 +168,7 @@ def create_app(
         lambda _connection: WorkspaceRouteContext(manager, board_path, resolved_work_dir),
         "",
         (),
+        vscode=vscode,
     )
     return app
 
@@ -166,8 +177,17 @@ def create_multi_workspace_app(
     registry: "WorkspaceRegistry",
     password: "typing.Union[str, None]" = None,
 ) -> Starlette:
-    app = _create_lifespan_app(registry.start, registry.close)
+    vscode = VsCodeRuntime()
+
+    async def close() -> None:
+        try:
+            await registry.close()
+        finally:
+            await vscode.close()
+
+    app = _create_lifespan_app(registry.start, close)
     sharing = WorkspaceSharing(password, multi=True)
+    sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
 
     async def index(request: Request) -> Response:
@@ -239,6 +259,7 @@ def create_multi_workspace_app(
         resolve_workspace,
         "/w/{workspace_id}",
         leading_routes,
+        vscode=vscode,
     )
     return app
 
@@ -286,6 +307,7 @@ def _install_reload_routes(
     resolve_workspace,
     prefix,
     leading_routes,
+    vscode=None,
 ):
     reloading = False
 
@@ -395,7 +417,7 @@ def _install_reload_routes(
 
         app.routes[:] = fixed_routes + list(
             routes_module.workspace_routes(
-                resolve_workspace, sharing, prefix, leading_routes
+                resolve_workspace, sharing, prefix, leading_routes, vscode=vscode
             )
         )
 

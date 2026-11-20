@@ -25,6 +25,7 @@ class WorkspaceSharing:
         self.multi = multi
         self.admin_token = ""
         self.grants = {}
+        self.vscode = None
 
     def workspace(self, path):
         if not self.multi:

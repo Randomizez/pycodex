@@ -17,13 +17,20 @@ from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
-from starlette.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from starlette.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.utils.compat import importlib_metadata
 from pycodex.utils.skill_catalog import list_skills
 from pycodex_ws.server_support import (
+    AUTH_COOKIE_NAME,
     html_response as _html_response,
     json_object_body as _json_object_body,
 )
@@ -32,6 +39,7 @@ from .customization import frontend_asset_response, frontend_directory, load_wor
 from . import external_call
 from .runtime_info import runtime_info_prompt
 from .session_api import session_api_routes
+from .vscode_server import VsCodeRuntime, resolve_vscode_link, websocket_origin_allowed
 from .workspace_views import WorkspaceViewOpener
 from .workspaces import WorkspaceSessionManager, session_snapshot
 
@@ -45,7 +53,12 @@ class WorkspaceRouteContext:
     workspace_id: "typing.Optional[str]" = None
 
 
-def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
+def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), vscode=None):
+    if vscode is None and sharing.password:
+        vscode = getattr(sharing, "vscode", None)
+        if vscode is None:
+            vscode = VsCodeRuntime()
+            sharing.vscode = vscode
     view_asset_cache = {}
     asset_types = {
         "workspace.mjs": "text/javascript", "workspace.css": "text/css",
@@ -57,6 +70,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         "content_views.LICENSE.txt": "text/plain", "editor.mjs": "text/javascript",
         "editor.css": "text/css",
     }
+    vscode_methods = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
 
     def workspace(request):
         try:
@@ -64,12 +78,34 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         except (KeyError, ValueError):
             raise HTTPException(status_code=404, detail="workspace not found")
 
+    def vscode_enabled(request: Request) -> bool:
+        return (
+            vscode is not None
+            and bool(sharing.password)
+            and request.scope.get("pycodex.access_role") == "admin"
+            and not request.scope.get("pycodex.agent_access")
+        )
+
+    def require_vscode_http(request: Request) -> WorkspaceRouteContext:
+        context = workspace(request)
+        if vscode is None or not sharing.password:
+            raise HTTPException(
+                status_code=403, detail="VS Code requires a password-protected workspace"
+            )
+        if request.scope.get("pycodex.access_role") != "admin" or request.scope.get("pycodex.agent_access"):
+            raise HTTPException(status_code=403, detail="administrator access required")
+        return context
+
+    def actual_workspace_prefix(context: WorkspaceRouteContext) -> str:
+        return "/w/{0}".format(context.workspace_id) if prefix and context.workspace_id else ""
+
     async def index(request: Request) -> HTMLResponse:
         context = workspace(request)
         return _html_response(_render_workspace_shell(
             context.board_path, title=context.title, work_dir=context.work_dir,
             builtin=request.query_params.get("builtin") == "1",
             access_role=request.scope["pycodex.access_role"],
+            enable_vscode=vscode_enabled(request),
         ))
 
     async def favicon(request: Request) -> Response:
@@ -99,6 +135,68 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
 
     def close_view(request: Request) -> JSONResponse:
         return _close_view_response(workspace(request).manager, request.path_params["view_id"])
+
+    async def open_vscode_link(request: Request) -> JSONResponse:
+        context = require_vscode_http(request)
+        assert vscode is not None
+        payload = await _json_object_body(request)
+        window_id = payload.get("window_id")
+        if not isinstance(window_id, str) or not window_id:
+            raise HTTPException(status_code=400, detail="window_id must be a nonempty string")
+        link_cwd = context.work_dir
+        session_id = payload.get("session_id")
+        if session_id is not None:
+            if not isinstance(session_id, str) or not session_id:
+                raise HTTPException(status_code=400, detail="session_id must be a nonempty string")
+            try:
+                link_cwd = Path(context.manager.get(session_id).summary()["cwd"])
+            except KeyError:
+                raise HTTPException(status_code=404, detail="session not found")
+        try:
+            spec = await run_in_threadpool(
+                resolve_vscode_link, link_cwd, payload.get("href"), payload.get("src_path")
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        try:
+            await vscode.open_link(window_id, spec)
+        except (FileNotFoundError, RuntimeError, OSError, subprocess.TimeoutExpired) as error:
+            raise HTTPException(status_code=503, detail=str(error))
+        return JSONResponse({"ok": True, "target": spec}, headers={"Cache-Control": "no-store"})
+
+    async def vscode_root(request: Request) -> Response:
+        context = require_vscode_http(request)
+        assert vscode is not None
+        actual_prefix = actual_workspace_prefix(context)
+        if request.method in ("GET", "HEAD"):
+            query = ("?" + request.url.query) if request.url.query else ""
+            return RedirectResponse(
+                url=request.scope.get("root_path", "") + actual_prefix + "/vscode/" + query,
+                status_code=307,
+            )
+        return await vscode.proxy_http(request, actual_prefix)
+
+    async def vscode_proxy(request: Request) -> Response:
+        context = require_vscode_http(request)
+        assert vscode is not None
+        return await vscode.proxy_http(request, actual_workspace_prefix(context))
+
+    async def websocket_vscode(websocket: WebSocket) -> None:
+        try:
+            context = resolve_workspace(websocket)
+        except (KeyError, ValueError):
+            await websocket.close(code=1008)
+            return
+        if (
+            vscode is None
+            or not sharing.password
+            or websocket.scope.get("pycodex.agent_access")
+            or not sharing.is_admin(websocket.cookies.get(AUTH_COOKIE_NAME))
+            or not websocket_origin_allowed(websocket)
+        ):
+            await websocket.close(code=1008)
+            return
+        await vscode.proxy_websocket(websocket, actual_workspace_prefix(context))
 
     def view_asset(request: Request) -> Response:
         workspace(request)
@@ -178,6 +276,17 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=()):
         route("/api/views/{view_id}", view, ["GET"]),
         route("/api/views/{view_id}/pdf", view_pdf, ["GET", "HEAD"]),
         route("/api/views/{view_id}", close_view, ["DELETE"]),
+        route("/api/vscode/open", open_vscode_link, ["POST"]),
+        route("/vscode", vscode_root, vscode_methods),
+        route("/vscode/{vscode_path:path}", vscode_proxy, vscode_methods),
+        WebSocketRoute(
+            prefix + "/vscode", websocket_vscode,
+            name=("workspace_" if prefix else "") + "websocket_vscode_root",
+        ),
+        WebSocketRoute(
+            prefix + "/vscode/{vscode_path:path}", websocket_vscode,
+            name=("workspace_" if prefix else "") + "websocket_vscode",
+        ),
         *[
             route("/assets/" + asset, view_asset, ["GET", "HEAD"])
             for asset in asset_types
@@ -664,6 +773,7 @@ def _render_workspace_shell(
     work_dir: "typing.Union[Path, None]" = None,
     builtin: bool = False,
     access_role: str = "admin",
+    enable_vscode: bool = False,
 ) -> str:
     board_label = str(board_path) if board_path is not None else "No board"
     cwd_label = str(work_dir or Path.cwd())
@@ -675,6 +785,7 @@ def _render_workspace_shell(
         .replace("__BOARD_LABEL__", html.escape(board_label))
         .replace("__CWD_LABEL__", html.escape(cwd_label))
         .replace("__ENABLE_BOARD__", "true" if board_path is not None else "false")
+        .replace("__ENABLE_VSCODE__", "true" if enable_vscode else "false")
         .replace("__BOARD_URL__", "board" if board_path is not None else "about:blank")
         .replace("__FRONTEND_DIRECTORY__", html.escape(str(frontend_directory())))
         .replace("__PACKAGE_DIRECTORY__", html.escape(str(Path(__file__).resolve().parent)))

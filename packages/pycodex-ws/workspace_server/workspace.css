@@ -88,6 +88,7 @@ button, textarea { font: inherit; }
 .workspace-back { text-decoration: none; }
 body[data-access-role="visitor"] .workspace-back,
 body[data-access-role="visitor"] .customize-frontend,
+body[data-access-role="visitor"] .vscode-toggle,
 body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { display: none !important; }
 .workspace-settings {
   width: min(440px, calc(100vw - 32px));
@@ -165,6 +166,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .workspace.resizing .splitter::after { background: var(--accent); }
 .workspace.resizing,
 .workspace.resizing * { cursor: col-resize; user-select: none; }
+.workspace.resizing iframe { pointer-events: none; }
 .chat {
   position: relative;
   overflow: hidden;
@@ -346,6 +348,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .pane-toggle:focus-visible,
 .tab-new:focus-visible,
 .tab-profile:focus-visible,
+.vscode-toggle:focus-visible,
 .fullscreen-toggle:focus-visible,
 .workspace-back:focus-visible,
 .spinner:focus-visible {
@@ -859,6 +862,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 }
 .tab-close,
 .tab-new,
+.vscode-toggle,
 .fullscreen-toggle,
 .workspace-back {
   display: grid;
@@ -885,6 +889,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   height: 12px;
 }
 .tab-new,
+.vscode-toggle,
 .fullscreen-toggle,
 .workspace-back {
   width: 30px;
@@ -892,12 +897,14 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   background: var(--panel-deep);
 }
 .tab-new svg,
+.vscode-toggle svg,
 .fullscreen-toggle svg,
 .workspace-back svg {
   display: block;
   width: 18px;
   height: 18px;
 }
+.vscode-toggle[hidden],
 .fullscreen-toggle[hidden] { display: none; }
 .tab.active .tab-close {
   opacity: 0.85;
@@ -907,8 +914,19 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .tab.active .tab-close:disabled { opacity: 0.22; cursor: default; }
 .tab-close:hover,
 .tab-new:hover,
+.vscode-toggle:hover,
 .fullscreen-toggle:hover,
 .workspace-back:hover { color: var(--ink); background: var(--panel-hover); }
+.vscode-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+.vscode-toggle[aria-pressed="true"]:hover { color: var(--accent); background: var(--panel-hover); }
+.vscode-toggle[aria-disabled="true"] { opacity: 0.55; }
+.vscode-toggle[aria-disabled="true"]:hover { opacity: 0.8; }
+.vscode-toggle[data-loading="true"] { cursor: progress; }
+.vscode-toggle[data-loading="true"] svg { animation: vscode-toggle-pulse 1.2s ease-in-out infinite; }
+@keyframes vscode-toggle-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) {
+  .vscode-toggle[data-loading="true"] svg { animation: none; }
+}
 .log {
   flex: 1;
   min-height: 0;

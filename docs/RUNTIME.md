@@ -1431,6 +1431,44 @@ directory with `npm --prefix packages/pycodex-ws/workspace_server/frontend run b
 The wheel ships the built page, its editable template and page modules, and
 the compiled viewer assets. The viewer sources and build toolchain ship in the sdist.
 
+Browser administrator sessions expose an embedded VS Code Web toggle (`#vscodeToggle`)
+to the left of the board fullscreen button; when the workspace server is started without
+`--password`, the button stays visible in a disabled hint state (`aria-disabled="true"`)
+and prompts that `--password` is required, while share visitors hide it and workspaces
+without a password, share visitors, and `pycodex.agent_access` requests keep
+`data-enable-vscode="false"` and receive HTTP 403 / WebSocket 1008 on `vscode/` and
+`POST api/vscode/open`. On password-protected workspaces, clicking the button mounts an
+unclosable `VS Code` tab immediately to the right of `Canvas` (before read-only file/diff
+tabs), lazily loads `vscode/?folder=<work_dir>` on first open while showing a loading
+overlay and tab indicator until the workbench finishes loading (with inline retry on startup errors),
+and enters VS Code link mode. On the first VS Code request, `VsCodeRuntime` locates the
+host VS Code Web Server
+(`PYCODEX_VSCODE_WEB_SERVER`, `~/.vscode-server/cli/serve-web/*/bin/code-server`, or `PATH`),
+idempotently installs the lightweight `pycodex.vscode-bridge` extension into
+`~/.vscode-server/extensions`, and runs a single shared `code-server` over a temporary
+Unix socket (forwarding `X-Forwarded-Prefix` and `X-Forwarded-Proto` while stripping
+`pycodex_ws_auth`, and streaming negotiated `gzip` compression for static workbench
+assets with representation-aware `ETag`/`304` handling while leaving event streams
+unbuffered), cleaning up the process group and socket directory on app shutdown.
+The proxy accepts a browser WebSocket after the upstream handshake succeeds.
+Server startup and upstream handshake failures explicitly reject the upgrade.
+Each workspace page generates a fresh `window_id`. The workbench URL carries it
+in the `extensionEnvironment` payload, and the extension host registers that
+ID on its authenticated bridge connection. In VS Code mode, new file, Git,
+and diff link clicks send `window_id` with `POST api/vscode/open` to open
+local files, read-only `pycodex-git:` revisions, and `vscode.diff` editors (including
+`#L` / `#R` line selections) inside VS Code while leaving existing `manager.views` tabs
+untouched; `workspace://canvas` still switches to `Canvas`, and clicking `#vscodeToggle`
+again hides the `VS Code` tab and exits VS Code mode. Each click is delivered to
+the initiating page's workbench, including when several pages share a folder.
+Embedded VS Code uses its own large-file handling and can prompt to open a
+large local file. For links with line numbers, pycodex streams local files and
+Git blobs to validate the selection. The workbench applies the requested line
+directly. VS Code's text content provider receives the complete text of a
+requested Git revision.
+In a Git working-tree comparison, a symbolic link appears as a read-only
+snapshot of its target path. Reopening the comparison reads the current target.
+
 ## Observation
 
 Runtime events are frozen dataclasses defined together in `pycodex/events.py`,

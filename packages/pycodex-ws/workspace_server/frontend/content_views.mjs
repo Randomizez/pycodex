@@ -36,11 +36,15 @@ function htmlSectionLink(href) {
 }
 
 export class ContentTabs {
-  constructor({request, onChange, onSelect, selected = null, enableBoard = true}) {
+  constructor({
+    request, onChange, onSelect, selected = null, enableBoard = true, vscodeWindow = null,
+  }) {
     this.request = request;
     this.onChange = onChange;
     this.onSelect = onSelect;
     this.enableBoard = enableBoard;
+    this.vscodeWindow = vscodeWindow;
+    this.vscodeMode = false;
     this.views = [];
     this.transcripts = new Map();
     this.activeId = enableBoard ? "board" : null;
@@ -58,6 +62,11 @@ export class ContentTabs {
     this.contentRequest = null;
     this.openRequest = null;
     this.timer = null;
+  }
+
+  isBuiltin(id) {
+    return (id === "board" && this.enableBoard) ||
+      (id === "vscode" && this.vscodeMode);
   }
 
   start() {
@@ -93,12 +102,11 @@ export class ContentTabs {
         next = this.initialSelection || this.defaultId();
         this.initialized = true;
       }
-      if ((next === "board" && !this.enableBoard) ||
-          (next !== null && next !== "board" && !remaining.has(next))) next = this.defaultId();
-      if (next !== this.activeId || (next !== null && next !== "board" && !this.snapshot && !this.loading)) {
+      if (next !== null && !this.isBuiltin(next) && !remaining.has(next)) next = this.defaultId();
+      if (next !== this.activeId || (next !== null && !this.isBuiltin(next) && !this.snapshot && !this.loading)) {
         this.select(next, null, null, false);
       } else {
-        if (next !== null && next !== "board" && !this.cache.has(next) && !this.contentRequest) this.load(next);
+        if (next !== null && !this.isBuiltin(next) && !this.cache.has(next) && !this.contentRequest) this.load(next);
         this.onChange(this);
       }
     } catch (error) {
@@ -113,6 +121,27 @@ export class ContentTabs {
 
   defaultId() {
     return this.enableBoard ? "board" : this.views.length ? this.views[0].id : null;
+  }
+
+  async setVscodeMode(enabled) {
+    if (!this.vscodeWindow) return false;
+    const next = Boolean(enabled);
+    if (this.vscodeMode === next) {
+      if (next && this.activeId !== "vscode") await this.select("vscode");
+      return this.vscodeMode;
+    }
+    this.cancelOpen();
+    this.mutation += 1;
+    this.vscodeMode = next;
+    if (next) {
+      this.initialized = true;
+      await this.select("vscode");
+    } else if (this.activeId === "vscode") {
+      await this.select(this.defaultId());
+    } else {
+      this.onChange(this);
+    }
+    return this.vscodeMode;
   }
 
   updateViews(views) {
@@ -149,6 +178,35 @@ export class ContentTabs {
       if (!this.enableBoard) throw new Error("Canvas is disabled for this workspace.");
       await this.select("board");
       return;
+    }
+    if (this.vscodeMode) {
+      const request = new AbortController();
+      this.openRequest = request;
+      this.mutation += 1;
+      this.error = "";
+      this.onChange(this);
+      try {
+        await this.request("api/vscode/open", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({href, src_path: srcPath, session_id: sessionId, window_id: this.vscodeWindow.id}),
+          signal: request.signal,
+        });
+        if (this.openRequest !== request) return;
+        this.mutation += 1;
+        this.initialized = true;
+        this.openRequest = null;
+        return this.select("vscode");
+      } catch (error) {
+        if (this.openRequest !== request || error.name === "AbortError") return;
+        this.error = "Unable to open in VS Code: " + error.message;
+        throw error;
+      } finally {
+        if (this.openRequest === request) {
+          this.openRequest = null;
+          this.onChange(this);
+        }
+      }
     }
     const request = new AbortController();
     this.openRequest = request;
@@ -188,26 +246,28 @@ export class ContentTabs {
 
   async select(id, selection = null, displayMode = null, reveal = true) {
     if (id === "board" && !this.enableBoard) return;
-    if (id !== null && id !== "board" && !this.views.some(view => view.id === id)) return;
+    if (id === "vscode" && !this.vscodeMode) return;
+    const builtin = this.isBuiltin(id);
+    if (id !== null && !builtin && !this.views.some(view => view.id === id)) return;
     this.cancelOpen();
-    const current = id === this.activeId ? this.snapshot : null;
+    const current = !builtin && id === this.activeId ? this.snapshot : null;
     if (this.contentRequest) this.contentRequest.abort();
     this.contentRequest = null;
     this.activeId = id;
     this.selection = selection;
     this.displayMode = displayMode;
     if (!this.initialized) this.initialSelection = id;
-    this.snapshot = this.cache.get(id) || current;
-    this.loading = id !== null && id !== "board" && !this.snapshot;
+    this.snapshot = builtin ? null : (this.cache.get(id) || current);
+    this.loading = id !== null && !builtin && !this.snapshot;
     this.error = "";
     this.onChange(this);
     if (reveal) this.onSelect(id);
-    if (id === null || id === "board" || this.cache.has(id)) return;
+    if (id === null || builtin || this.cache.has(id)) return;
     await this.load(id);
   }
 
   setDisplayMode(displayMode) {
-    if (!this.snapshot || this.activeId === null || this.activeId === "board" ||
+    if (!this.snapshot || this.activeId === null || this.isBuiltin(this.activeId) ||
         !["source", "preview"].includes(displayMode)) return;
     this.cancelOpen();
     this.selection = null;
@@ -241,7 +301,7 @@ export class ContentTabs {
   }
 
   async close(id) {
-    if (id === null || id === "board" || this.closing.has(id)) return;
+    if (id === null || id === "board" || id === "vscode" || this.closing.has(id)) return;
     this.cancelOpen();
     this.closing.add(id);
     this.mutation += 1;
@@ -254,7 +314,9 @@ export class ContentTabs {
       this.views = this.views.filter(view => view.id !== id);
       this.cache.delete(id);
       if (this.activeId === id) {
-        await this.select(index > 0 ? this.views[index - 1].id : this.defaultId());
+        await this.select(
+          index > 0 ? this.views[index - 1].id : (this.vscodeMode ? "vscode" : this.defaultId())
+        );
       }
     } catch (error) {
       this.error = "Unable to close tab: " + error.message;
@@ -640,9 +702,28 @@ export class SnapshotDisplay {
   }
 }
 
+function readVscodeFrameError(targetFrame) {
+  try {
+    const doc = targetFrame.contentDocument;
+    if (!doc || doc.contentType !== "application/json") return "";
+    const raw = (doc.body ? doc.body.textContent : doc.textContent || "").trim();
+    if (!raw) return "VS Code server returned an empty error response.";
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.detail === "string" && parsed.detail) {
+        return parsed.detail;
+      }
+    } catch (_err) {}
+    return raw.slice(0, 300);
+  } catch (_err) {
+    return "";
+  }
+}
+
 export function mountContentViews({
-  tabs, frame, content, status, request, renderMarkdown, onInsertContext,
-  enableBoard = true,
+  tabs, frame, vscodeFrame = null, content, status, request, renderMarkdown, onInsertContext,
+  enableBoard = true, vscodeWindow = null, onVscodeModeChange = null,
+  onVscodeStateChange = null,
 }) {
   const document = tabs.ownerDocument;
   const display = new SnapshotDisplay({
@@ -654,7 +735,76 @@ export function mountContentViews({
   let displayedLoading = false;
   let displayedSelection = null;
   let displayedMode = null;
+  let vscodeSrcAssigned = false;
+  let vscodeLoading = false;
+  let vscodeLoadError = "";
+  let lastVscodeMode = false;
+  let lastVscodeLoading = false;
+  let lastVscodeError = "";
+  let noticeMessage = "";
+  let noticeTimer = null;
   let controller;
+  let vscodeOverlay = null;
+  let vscodeSpinner = null;
+  let vscodeOverlayTitle = null;
+  let vscodeOverlayDetail = null;
+  let vscodeRetry = null;
+
+  function notify(message, durationMs = 4000) {
+    if (noticeTimer) clearTimeout(noticeTimer);
+    noticeMessage = String(message || "");
+    noticeTimer = noticeMessage && durationMs > 0 ? setTimeout(() => {
+      noticeTimer = null;
+      noticeMessage = "";
+      render(controller);
+    }, durationMs) : null;
+    render(controller);
+  }
+
+  function loadVscodeFrame() {
+    if (!vscodeFrame || !vscodeWindow) return;
+    vscodeSrcAssigned = true;
+    vscodeLoading = true;
+    vscodeLoadError = "";
+    vscodeFrame.src = vscodeWindow.url;
+  }
+
+  if (vscodeFrame) {
+    vscodeOverlay = element(document, "div", "vscode-overlay");
+    vscodeOverlay.hidden = true;
+    vscodeOverlay.setAttribute("role", "status");
+    vscodeOverlay.setAttribute("aria-live", "polite");
+    vscodeSpinner = element(document, "span", "vscode-spinner");
+    vscodeSpinner.setAttribute("aria-hidden", "true");
+    vscodeOverlayTitle = element(document, "div", "vscode-overlay-title");
+    vscodeOverlayDetail = element(document, "div", "vscode-overlay-detail");
+    vscodeRetry = element(document, "button", "vscode-retry", "Retry");
+    vscodeRetry.type = "button";
+    vscodeRetry.hidden = true;
+    vscodeRetry.addEventListener("click", () => {
+      loadVscodeFrame();
+      render(controller);
+    });
+    vscodeOverlay.appendChild(vscodeSpinner);
+    vscodeOverlay.appendChild(vscodeOverlayTitle);
+    vscodeOverlay.appendChild(vscodeOverlayDetail);
+    vscodeOverlay.appendChild(vscodeRetry);
+    const vscodeHost = vscodeFrame.parentNode || vscodeFrame.parent;
+    if (vscodeHost) vscodeHost.appendChild(vscodeOverlay);
+
+    vscodeFrame.addEventListener("load", () => {
+      if (!vscodeSrcAssigned) return;
+      vscodeLoading = false;
+      vscodeLoadError = readVscodeFrameError(vscodeFrame);
+      render(controller);
+    });
+    vscodeFrame.addEventListener("error", () => {
+      if (!vscodeSrcAssigned) return;
+      vscodeLoading = false;
+      vscodeLoadError = "Network error while loading VS Code.";
+      render(controller);
+    });
+  }
 
   function focusTab(id) {
     const tab = document.getElementById("content-tab-" + id);
@@ -665,13 +815,48 @@ export function mountContentViews({
   }
 
   function render(state) {
+    const modeChanged = lastVscodeMode !== state.vscodeMode;
+    if (
+      state.vscodeMode &&
+      vscodeFrame &&
+      vscodeWindow &&
+      (!vscodeSrcAssigned || (modeChanged && vscodeLoadError))
+    ) {
+      loadVscodeFrame();
+    }
+    if (modeChanged) {
+      lastVscodeMode = state.vscodeMode;
+      if (onVscodeModeChange) onVscodeModeChange(state.vscodeMode);
+    }
+    if (
+      onVscodeStateChange &&
+      (modeChanged || lastVscodeLoading !== vscodeLoading || lastVscodeError !== vscodeLoadError)
+    ) {
+      lastVscodeLoading = vscodeLoading;
+      lastVscodeError = vscodeLoadError;
+      onVscodeStateChange({
+        active: state.vscodeMode,
+        loading: state.vscodeMode && vscodeLoading,
+        error: state.vscodeMode ? vscodeLoadError : "",
+      });
+    } else {
+      lastVscodeLoading = vscodeLoading;
+      lastVscodeError = vscodeLoadError;
+    }
     const errors = state.snapshot ? state.snapshot.documents.map(source => source.error) : [];
-    status.textContent = [state.error, ...errors].filter(Boolean).join("; ") ||
-      (state.openRequest ? "Opening view…" : "");
+    const errorMessage = [state.error, ...errors].filter(Boolean).join("; ");
+    const openingMessage = state.openRequest
+      ? (state.vscodeMode ? "Opening in VS Code…" : "Opening view…")
+      : "";
+    const infoMessage = openingMessage || noticeMessage;
+    status.textContent = errorMessage || infoMessage;
+    status.dataset.tone = errorMessage ? "error" : (infoMessage ? "info" : "");
     status.title = status.textContent;
     status.hidden = !status.textContent;
     const existing = new Map(Array.from(tabs.children, tab => [tab.dataset.viewId, tab]));
-    const descriptors = (enableBoard ? [{id: "board", title: "Canvas", kind: "board"}] : []).concat(state.views);
+    const descriptors = (enableBoard ? [{id: "board", title: "Canvas", kind: "board"}] : [])
+      .concat(state.vscodeMode ? [{id: "vscode", title: "VS Code", kind: "vscode"}] : [])
+      .concat(state.views);
     const labels = tabLabels(state.views.filter(view => view.kind !== "transcript"));
     for (const view of state.views) {
       if (view.kind === "transcript") {
@@ -679,6 +864,10 @@ export function mountContentViews({
       }
     }
     labels.set("board", {name: "Canvas", description: ""});
+    labels.set("vscode", {
+      name: "VS Code",
+      description: vscodeLoadError ? "Error" : (vscodeLoading ? "Loading…" : ""),
+    });
     descriptors.forEach((view, index) => {
       let tab = existing.get(view.id);
       if (!tab) {
@@ -686,7 +875,9 @@ export function mountContentViews({
         tab.dataset.viewId = view.id;
         tab.id = "content-tab-" + view.id;
         tab.setAttribute("role", "tab");
-        tab.setAttribute("aria-controls", view.id === "board" ? frame.id : content.id);
+        tab.setAttribute("aria-controls",
+          view.id === "board" ? frame.id :
+          view.id === "vscode" && vscodeFrame ? vscodeFrame.id : content.id);
         const label = element(document, "span", "tab-label content-tab-label");
         label.appendChild(element(document, "span", "content-tab-name"));
         label.appendChild(element(document, "span", "content-tab-description"));
@@ -694,7 +885,9 @@ export function mountContentViews({
         tab.addEventListener("click", () => controller.select(view.id));
         tab.addEventListener("keydown", event => {
           if (event.target !== tab) return;
-          const order = (enableBoard ? ["board"] : []).concat(controller.views.map(item => item.id));
+          const order = (enableBoard ? ["board"] : [])
+            .concat(controller.vscodeMode ? ["vscode"] : [])
+            .concat(controller.views.map(item => item.id));
           const current = order.indexOf(view.id);
           let target = null;
           if (event.key === "ArrowRight") target = order[(current + 1) % order.length];
@@ -702,7 +895,7 @@ export function mountContentViews({
           if (event.key === "Home") target = order[0];
           if (event.key === "End") target = order[order.length - 1];
           if (event.key === "Enter" || event.key === " ") target = view.id;
-          if (event.key === "Delete" && view.id !== "board") {
+          if (event.key === "Delete" && view.id !== "board" && view.id !== "vscode") {
             event.preventDefault();
             controller.close(view.id);
           }
@@ -712,7 +905,7 @@ export function mountContentViews({
             document.getElementById("content-tab-" + target).focus();
           }
         });
-        if (view.id !== "board") {
+        if (view.id !== "board" && view.id !== "vscode") {
           const close = element(document, "button", "tab-close content-tab-close");
           close.type = "button";
           close.title = "Close tab";
@@ -736,6 +929,10 @@ export function mountContentViews({
       tab.className = "tab content-tab" + (view.id === state.activeId ? " active" : "");
       tab.tabIndex = view.id === state.activeId ? 0 : -1;
       tab.title = view.id === "board" ? tabs.dataset.boardTitle :
+        view.id === "vscode" ? (
+          vscodeLoadError ? "VS Code · " + vscodeLoadError :
+          vscodeLoading ? "VS Code · Loading workbench…" : "VS Code"
+        ) :
         view.kind === "transcript" ? `${view.title}\nAgent transcript` :
         view.title + (view.live ? "\nRead only · follows file changes · " : "\nRead-only snapshot · ") +
         new Date(view.created_at).toLocaleString();
@@ -751,14 +948,31 @@ export function mountContentViews({
     existing.forEach(tab => tab.remove());
     display.retain(state.views.map(view => view.id));
     const isBoard = state.activeId === "board";
+    const isVscode = state.activeId === "vscode";
+    const isBuiltin = isBoard || isVscode;
     const switched = displayedId !== state.activeId;
     const changed = switched || displayedSnapshot !== state.snapshot ||
       displayedLoading !== state.loading || displayedSelection !== state.selection ||
       displayedMode !== state.displayMode;
     // Hidden elements report zero scroll offsets, so capture before hiding.
-    if (isBoard && changed) display.clear();
+    if (isBuiltin && changed) display.clear();
     frame.hidden = !isBoard;
-    content.hidden = isBoard;
+    if (vscodeFrame) vscodeFrame.hidden = !isVscode;
+    if (vscodeOverlay) {
+      const showOverlay = isVscode && (vscodeLoading || Boolean(vscodeLoadError));
+      vscodeOverlay.hidden = !showOverlay;
+      if (showOverlay) {
+        const hasError = Boolean(vscodeLoadError);
+        vscodeOverlay.dataset.state = hasError ? "error" : "loading";
+        vscodeSpinner.hidden = hasError;
+        vscodeOverlayTitle.textContent = hasError ? "Unable to load VS Code" : "Loading VS Code…";
+        vscodeOverlayDetail.textContent = hasError
+          ? vscodeLoadError
+          : "Starting host server and loading workbench…";
+        vscodeRetry.hidden = !hasError;
+      }
+    }
+    content.hidden = isBuiltin;
     if (!changed) return;
     displayedId = state.activeId;
     displayedSnapshot = state.snapshot;
@@ -768,7 +982,7 @@ export function mountContentViews({
     if (state.activeId) content.setAttribute("aria-labelledby", "content-tab-" + state.activeId);
     else content.removeAttribute("aria-labelledby");
     content.setAttribute("aria-busy", String(state.loading));
-    if (isBoard) return;
+    if (isBuiltin) return;
     if (state.snapshot) {
       const id = state.activeId;
       const snapshot = state.snapshot;
@@ -777,6 +991,7 @@ export function mountContentViews({
         displayedSnapshot = null;
         state.error = "Unable to update view: " + error.message;
         status.textContent = status.title = state.error;
+        status.dataset.tone = "error";
         status.hidden = false;
       });
     } else {
@@ -788,6 +1003,7 @@ export function mountContentViews({
   controller = new ContentTabs({
     request,
     enableBoard,
+    vscodeWindow,
     onChange: render,
     onSelect: id => {
       content.closest(".workspace").dataset.mobilePane = "board";
@@ -801,6 +1017,9 @@ export function mountContentViews({
       render(controller);
     },
     stop() {
+      if (noticeTimer) clearTimeout(noticeTimer);
+      noticeTimer = null;
+      noticeMessage = "";
       controller.stop();
       display.clear();
       displayedId = null;
@@ -810,5 +1029,9 @@ export function mountContentViews({
     openTranscript(sessionId, agentId, agentPath) {
       return controller.openTranscript(sessionId, agentId, agentPath);
     },
+    setVscodeMode(enabled) { return controller.setVscodeMode(enabled); },
+    toggleVscodeMode() { return controller.setVscodeMode(!controller.vscodeMode); },
+    isVscodeMode() { return controller.vscodeMode; },
+    notify(message, durationMs) { notify(message, durationMs); },
   };
 }
