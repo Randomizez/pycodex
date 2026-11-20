@@ -12,11 +12,27 @@ export function isWorkspaceLink(href, filePaths = true) {
   if (!filePaths || /^(?:https?|ftps?|mailto|tel|sms|javascript|vbscript|data|blob|about|file):/i.test(href)) {
     return false;
   }
-  const parts = href.split("#");
-  if (parts.length > 2 || (parts.length === 2 && !/^L-?\d+$/i.test(parts[1]))) return false;
-  const path = parts[0].replace(/:-?\d+$/, "");
+  const hash = href.indexOf("#");
+  const destination = hash < 0 ? href : href.slice(0, hash);
+  if (hash >= 0 && !/\.html?$/i.test(destination) && !/^L-?\d+$/i.test(href.slice(hash + 1))) return false;
+  const path = destination.replace(/:-?\d+$/, "");
   return !!path && !path.startsWith("//") && !path.includes("?") &&
     (!/^[a-z][a-z\d+.-]*:/i.test(path) || /^[a-z]:(?:[/\\]|%2f|%5c)/i.test(path));
+}
+
+function htmlSectionLink(href) {
+  const match = /^([^#]*\.html?)#(.*)$/is.exec(href);
+  if (!match || /^diff:/i.test(href) || /^L-?\d+$/i.test(match[2]) || !isWorkspaceLink(href)) {
+    return null;
+  }
+  if (Array.from(href).length > 8192) {
+    throw new Error("Workspace links can contain at most 8192 characters.");
+  }
+  const anchor = decodeURIComponent(match[2]);
+  if (/[\x00-\x1f\x7f]/.test(anchor)) {
+    throw new Error("Control characters are not allowed in workspace links.");
+  }
+  return {href: match[1], anchor};
 }
 
 export class ContentTabs {
@@ -140,10 +156,11 @@ export class ContentTabs {
     this.error = "";
     this.onChange(this);
     try {
+      const section = htmlSectionLink(href);
       const payload = await this.request("api/views/open", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({href, src_path: srcPath, session_id: sessionId}),
+        body: JSON.stringify({href: section ? section.href : href, src_path: srcPath, session_id: sessionId}),
         signal: request.signal,
       });
       if (this.openRequest !== request) return;
@@ -153,9 +170,10 @@ export class ContentTabs {
       this.cache.set(view.id, view);
       this.initialized = true;
       this.openRequest = null;
-      return this.select(view.id, view.selection ? {
-        ...view.selection, revision: view.reveal_revision, contentRevision: view.revision,
-      } : null, view.selection ? "source" : "preview");
+      const selection = section ? {anchor: section.anchor} : view.selection;
+      return this.select(view.id, selection ? {
+        ...selection, revision: view.reveal_revision, contentRevision: view.revision,
+      } : null, selection?.line ? "source" : "preview");
     } catch (error) {
       if (this.openRequest !== request || error.name === "AbortError") return;
       this.error = "Unable to open view: " + error.message;
@@ -260,6 +278,7 @@ class HtmlPreview {
     this.window = this.document.defaultView;
     this.position = position;
     this.generation = 0;
+    this.ready = false;
     this.frame = element(this.document, "iframe", "snapshot-html");
     this.frame.title = "HTML preview";
     this.receive = event => {
@@ -267,10 +286,8 @@ class HtmlPreview {
       const message = event.data;
       if (!message || message.generation !== this.generation) return;
       if (message.type === "workspace-preview-ready") {
-        this.frame.contentWindow.postMessage({
-          type: "workspace-preview-restore", generation: this.generation,
-          position: this.position,
-        }, "*");
+        this.ready = true;
+        this.restorePosition();
       } else if (message.type === "workspace-preview-scroll" &&
           Array.isArray(message.position) && message.position.length === 2 &&
           message.position.every(Number.isFinite)) {
@@ -281,8 +298,25 @@ class HtmlPreview {
     parent.appendChild(this.frame);
   }
 
-  update(source) {
-    if (source === this.source) return;
+  restorePosition() {
+    this.frame.contentWindow.postMessage({
+      type: "workspace-preview-restore", generation: this.generation, position: this.position,
+      anchor: this.anchor,
+    }, "*");
+    this.anchor = undefined;
+  }
+
+  update(source, selection) {
+    const reveal = selection && selection.revision !== this.selectionRevision;
+    if (reveal) {
+      this.selectionRevision = selection.revision;
+      this.anchor = selection.anchor;
+    }
+    if (source === this.source) {
+      if (reveal && this.ready) this.restorePosition();
+      return;
+    }
+    this.ready = false;
     const page = new this.window.DOMParser().parseFromString(source, "text/html");
     const generation = this.generation + 1;
     const script = page.createElement("script");
@@ -300,6 +334,12 @@ class HtmlPreview {
         if (event.source !== parent || !message ||
             message.type !== "workspace-preview-restore" || message.generation !== generation) return;
         scrollTo(message.position[0], message.position[1]);
+        if (message.anchor !== undefined) {
+          const target = document.getElementById(message.anchor) ||
+            Array.from(document.getElementsByName(message.anchor)).find(node => node.localName === "a");
+          if (target) target.scrollIntoView();
+          else if (!message.anchor || message.anchor.toLowerCase() === "top") scrollTo(0, 0);
+        }
         restored = true;
         report();
       });
@@ -459,8 +499,8 @@ export class SnapshotDisplay {
     }
     if (selection && snapshot.revision < selection.contentRevision) selection = null;
     this.pendingSelection = selection;
-    if (displayMode === "preview") this.sourceViews.delete(id);
-    else if (selection || displayMode === "source") this.sourceViews.add(id);
+    if (displayMode === "preview" || selection?.anchor !== undefined) this.sourceViews.delete(id);
+    else if (selection?.line || displayMode === "source") this.sourceViews.add(id);
     const source = snapshot.documents[0];
     const markup = snapshot.kind === "file" && !this.sourceViews.has(id);
     const markdown = markup && /\.(md|markdown)$/i.test(source.label) && this.renderMarkdown;
@@ -478,7 +518,7 @@ export class SnapshotDisplay {
       return;
     }
     if (this.activeId === id && this.htmlPreview && html) {
-      return this.htmlPreview.update(source.text);
+      return this.htmlPreview.update(source.text, selection);
     }
     if (this.activeId === id && this.editor && !markdown && !html && !pdf) {
       const generation = this.generation;
@@ -554,7 +594,7 @@ export class SnapshotDisplay {
       this.htmlPreview = this.createHtmlPreview(
         this.content, this.scrollPositions.get(id)
       );
-      return this.htmlPreview.update(source.text);
+      return this.htmlPreview.update(source.text, selection);
     }
     if (!this.previews.has(id)) {
       const root = element(this.document, "div", "snapshot");

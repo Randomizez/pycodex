@@ -1154,6 +1154,7 @@ Use Git-style expressions for comparisons:
 | `[source](src/app.py)` | Working file |
 | `[line](src/app.py:42)` or `[line](/data/project/app.py#L42)` | File, line 42 |
 | `[document](README.md)` or `[page](report.html)` | Markdown or HTML preview |
+| `[section](report.html#results)` | HTML preview at the element with that ID or a named anchor |
 | `[report](report.pdf)` | Local PDF in the browser's built-in reader |
 | `[source](README.md:1)` or `[source](report.html#L1)` | Markdown or HTML source, line 1 |
 | `[version](git:HEAD:src/app.py#L42)` | Git file at a fixed revision, line 42 |
@@ -1339,7 +1340,7 @@ Git documents through `WorkspaceViewStore`'s bounded read/decode interface.
 Both classes remain importable from `workspace_server.workspace_views`.
 That module's `WorkspaceViewStore` owns view identity, live-file refresh and
 persistence. It saves open views, explicit file/Git sources, the latest contents, optional
-line targets and the monotonic reveal counter
+line or HTML section targets and the monotonic reveal counter
 atomically in `<state_path>.pycodex-views.json`, separately from
 conversation state. Sources are checked again after a server restart.
 Earlier saved snapshots without source information remain fixed; reopening
@@ -1367,7 +1368,8 @@ across directory changes.
 Single-workspace `create_app(..., work_dir=...)` defaults
 to the process's working directory. The other routes use view IDs:
 `GET api/views` lists metadata, including content/reveal revisions, a live/fixed
-flag and optional `selection` (`document`: zero-based side, `line`: one-based line);
+flag and optional `selection` with `document` and `line` for source locations
+or `anchor` for a decoded HTML fragment.
 `GET api/views/<id>` returns the current contents and
 `DELETE api/views/<id>` closes the view. These routes use the existing
 workspace authentication and namespace in both single- and multi-workspace
@@ -1378,9 +1380,11 @@ replacements; unchanged files are not reread. No recursive scan or additional
 watcher process is needed. Content/error changes advance the view revision and
 invalidate browser caches. Stale poll/content responses cannot replace a
 newer revision or a different selected view.
-Each successful click advances the target's `reveal_revision`. Only the initiating
-page uses that open response to select a tab and apply its optional line target;
-polling never follows another page's reveal. Newer clicks, manual selection,
+Each successful click advances the target's `reveal_revision`. When a browser opens
+`report.html#results`, it sends `report.html` in the open request and uses the returned
+revision to scroll its preview to `results`. Direct API callers can include the
+fragment in `href` to store it in `selection.anchor`. Only the initiating page
+selects the tab and applies its line or section target. Newer clicks, manual selection,
 closing a tab or stopping the page invalidate an outstanding open request.
 Late success/failure responses and polls cannot override the user's latest choice.
 Reveals keep the current editor when possible and do not reorder tabs. The

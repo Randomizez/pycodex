@@ -146,6 +146,7 @@ The list loads up to 20 recent sessions by latest message. The current session
 stays visible, and older sessions are not closed or deleted.
 Click file links to inspect code, then select text and use **Insert into chat**
 to include it in your next message.
+Local HTML links such as `report.html#results` open the preview at the named section.
 Each input displays its author and creation time, including separate messages
 in a steer batch. Recorded messages keep that metadata when the session resumes.
 Restoring a tab reads the rollout tail needed for its latest 80 display rows;

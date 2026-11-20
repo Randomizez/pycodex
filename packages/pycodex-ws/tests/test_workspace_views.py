@@ -258,6 +258,19 @@ def test_file_line_selection_reuses_tabs_and_reads_current_contents(tmp_path):
     assert [view["id"] for view in restored.list_views()] == [opened["id"]]
 
 
+def test_html_section_and_source_line_open_the_same_file(tmp_path):
+    report = tmp_path / "Report.HTM"
+    report.write_text('<section id="leo-benchmarks">Leo</section>\n', encoding="utf-8")
+    views = WorkspaceViewStore()
+    opener = WorkspaceViewOpener(views, tmp_path)
+    opened = opener.open(str(report) + "#leo-benchmarks")
+    assert opened["selection"] == {"anchor": "leo-benchmarks"}
+    selected = opener.open("Report.HTM#" + quote("图表#1"), str(tmp_path / "notes.md"))
+    assert selected["selection"] == {"anchor": "图表#1"}
+    assert opener.open("Report.HTM#L1")["selection"] == {"document": 0, "line": 1}
+    assert [view["id"] for view in views.list_views()] == [opened["id"]]
+
+
 def test_diff_line_selection_targets_either_side_without_changing_identity(tmp_path):
     for name in ("A.py", "B.py"):
         (tmp_path / name).write_text("first\nsecond\nthird", encoding="utf-8")

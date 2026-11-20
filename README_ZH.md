@@ -134,6 +134,7 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 列表按最新消息排序，最多加载 20 个会话；当前会话保留在列表中，旧会话不会被关闭或删除。
 点击文件链接查看代码，选中文字后
 用 **Insert into chat** 加入下一条消息。
+`report.html#results` 这样的本地 HTML 链接会在预览中直接定位到对应章节。
 
 设置菜单支持界面定制和带密码的工作区分享。会话操作、存储和飞书配置见
 [工作区指南](packages/pycodex-ws/README.md)。

@@ -19,12 +19,13 @@ const {chromium} = require("playwright");
       const opened = [];
       const {followMarkdownLink} = createViewLinkHandlers({
         getActiveSessionId: () => "session-a",
-        openView: async (href, srcPath, sessionId) => opened.push({href, srcPath, sessionId}),
+        openView: async (...args) => window.linkFixture.openView(...args),
         showToast(message) {throw new Error(message);},
       });
       document.addEventListener("click", followMarkdownLink);
       window.linkFixture = {
         opened,
+        openView: async (href, srcPath, sessionId) => opened.push({href, srcPath, sessionId}),
         protectMath,
         render(text, srcPath) {
           opened.length = 0;
@@ -54,6 +55,7 @@ const {chromium} = require("playwright");
     assert.equal(formulas.source, "Before \uE000math0\uE001 then \uE000math1\uE001 and \uE000math2\uE001 plus \uE000math3\uE001 after.");
     const workspaceLinks = [
       "TODO.md", "./TODO.md", "/data/project/TODO.md", "TODO.md#L2", "TODO.md:2",
+      "/data/project/index.html#leo-benchmarks", "report.htm#results",
       "git:HEAD:TODO.md", "diff:HEAD:TODO.md",
       "diff:/data/project/old.py../data/project/new.py#R2",
     ];
@@ -63,6 +65,7 @@ const {chromium} = require("playwright");
       ["file:///data/pycodex/pycodex/agent.py#L411-L416", "/data/pycodex/pycodex/agent.py#L411"],
       ["file:///data/a%20%23b.py#L2", "/data/a%20%23b.py#L2"],
       ["file:///C:/project/file.py", "C:/project/file.py"],
+      ["file:///data/report.html#leo-benchmarks", "/data/report.html#leo-benchmarks"],
     ]) {
       await render(`[TODO](${destination})`);
       assert.equal(await anchor.count(), 1, destination);
@@ -87,6 +90,7 @@ const {chromium} = require("playwright");
     }
     for (const [text, href] of [
       ["https://example.com", "https://example.com"],
+      ["[report](https://example.com/report.html#section)", "https://example.com/report.html#section"],
       ["[website](http://TODO.md)", "http://TODO.md"],
       ["user@example.com", "mailto:user@example.com"],
     ]) {
@@ -108,6 +112,54 @@ const {chromium} = require("playwright");
     assert.equal(await anchor.count(), 0);
     await render("![image](file:///data/image.png)");
     assert.equal(await page.locator("#content img[src], #content a").count(), 0);
+
+    const report = "/data/project/index.html";
+    await page.evaluate(async report => {
+      const {ContentTabs, SnapshotDisplay} = await import("/assets/content_views.mjs");
+      const parent = document.body.appendChild(document.createElement("div"));
+      const display = new SnapshotDisplay({content: parent});
+      const snapshot = {id: "report", kind: "file", revision: 1, selection: null, documents: [{label: "index.html", text:
+        '<div style="height:1500px"></div><section id="leo-benchmarks">Leo</section><div style="height:800px"></div>',
+      }]};
+      let revision = 0;
+      const tabs = new ContentTabs({
+        async request(path, options) {
+          if (path === "api/views") return {views: [snapshot]};
+          const body = JSON.parse(options.body);
+          linkFixture.opened.push(body);
+          if (path !== "api/views/open" || options.method !== "POST" || body.href !== report) {
+            throw new Error("Expected a request to open the report file");
+          }
+          return {view: {...snapshot, reveal_revision: ++revision}, views: [snapshot]};
+        },
+        onChange(state) {
+          if (state.snapshot) display.show(state.activeId, state.snapshot, state.selection, state.displayMode);
+        },
+        onSelect() {},
+      });
+      linkFixture.openView = (...args) => tabs.open(...args);
+      linkFixture.refreshReport = () => tabs.poll();
+    }, report);
+    await page.evaluate(report =>
+      linkFixture.render(`[Leo](${report}#leo-benchmarks)`, "/notes/index.md"), report);
+    await anchor.click();
+    const sectionAtTop = () => {
+      const frame = document.querySelector(".snapshot-html");
+      const target = frame?.contentDocument?.getElementById("leo-benchmarks");
+      return target && Math.abs(target.getBoundingClientRect().top) < 2;
+    };
+    await page.waitForFunction(sectionAtTop);
+    const body = {href: report, src_path: "/notes/index.md", session_id: "session-a"};
+    assert.deepEqual(await page.evaluate(() => linkFixture.opened), [body]);
+    await page.evaluate(async () => {
+      document.querySelector(".snapshot-html").contentWindow.scrollTo(0, 100);
+      await linkFixture.refreshReport();
+    });
+    assert.equal(await page.locator(".snapshot-html").evaluate(frame => frame.contentWindow.scrollY), 100);
+    await anchor.click();
+    await page.waitForFunction(sectionAtTop);
+    assert.deepEqual(await page.evaluate(() => linkFixture.opened), [body, body]);
+    assert.equal(page.context().pages().length, 1);
     assert.deepEqual(errors, []);
     console.log("Workspace Markdown math, file links, clicks and explicit URLs passed");
   } finally {

@@ -50,13 +50,11 @@ class WorkspaceViewOpener:
                     source["path"], working_tree=True,
                 )
             references = [left, right]
-        selection = None if line is None else {
-            "document": 0 if kind == "file" or side == "left" else 1,
-            "line": line,
-        }
+        selection = None
         allow_missing = action == "git-diff"
         selected_document = None
-        if selection is not None:
+        if line is not None:
+            selection = {"document": 0 if kind == "file" or side == "left" else 1, "line": line}
             selected_document = self._read_reference(
                 references[selection["document"]], kind == "file", allow_missing
             )
@@ -65,13 +63,15 @@ class WorkspaceViewOpener:
             text = selected_document["text"].replace("\r\n", "\n").replace("\r", "\n")
             if selection["line"] > text.count("\n") + 1:
                 raise ValueError("line {0} is outside the file".format(selection["line"]))
+        elif "anchor" in options:
+            selection = {"anchor": options["anchor"]}
         existing = self._views.select(
             {"kind": kind, "documents": references}, selection
         )
         if existing is not None:
             return self._views.get(existing["id"])
         documents = [
-            selected_document if selection is not None and selection["document"] == index
+            selected_document if selected_document is not None and selection["document"] == index
             else self._read_reference(reference, kind == "file", allow_missing)
             for index, reference in enumerate(references)
         ]
@@ -95,13 +95,16 @@ class WorkspaceViewOpener:
         action, options = self._parse_destination(destination)
         if separator:
             pattern = r"[LR]-?[0-9]+" if action in ("diff", "git-diff") else r"L-?[0-9]+"
-            if not re.fullmatch(pattern, fragment, re.IGNORECASE):
-                raise ValueError("expected #L<number> or, for a diff's right side, #R<number>")
             if "line" in options:
                 raise ValueError("specify the line only once")
-            options["line"] = fragment[1:]
-            if action in ("diff", "git-diff"):
-                options["side"] = "left" if fragment[0].upper() == "L" else "right"
+            if re.fullmatch(pattern, fragment, re.IGNORECASE):
+                options["line"] = fragment[1:]
+                if action in ("diff", "git-diff"):
+                    options["side"] = "left" if fragment[0].upper() == "L" else "right"
+            elif action in ("file", "git-file") and destination.lower().endswith((".htm", ".html")):
+                options["anchor"] = fragment
+            else:
+                raise ValueError("expected a line number fragment or an HTML section anchor")
         options = {
             key: unquote(value, encoding="utf-8", errors="strict")
             for key, value in options.items()

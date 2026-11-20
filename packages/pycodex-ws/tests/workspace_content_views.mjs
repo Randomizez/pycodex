@@ -245,6 +245,34 @@ async function clickedLinesDoNotReplayOnPollOrManualSelection() {
   await state.tabs.open("a");
   assert.equal(state.tabs.selection, null);
   assert.equal(state.tabs.displayMode, "preview");
+  state.reveal("a", 5, {anchor: "leo-benchmarks"});
+  await state.tabs.open("a");
+  assert.deepEqual(state.tabs.selection, {anchor: "leo-benchmarks", revision: 5, contentRevision: 2});
+  assert.equal(state.tabs.displayMode, "preview");
+}
+
+async function htmlSectionClicksOpenTheFileAndSelectTheDecodedAnchor() {
+  const state = fixture();
+  const file = "docs/a%23b.HTML";
+  const git = "git:HEAD:docs/a.htm";
+  const line = file + "#L42";
+  const diff = "diff:HEAD:docs/a.htm#R42";
+  state.setViews([file, git, line, diff]);
+  state.reveal(file, 3);
+  await state.tabs.open(file + "#%E5%9B%BE%2520%231", "/notes/index.md", "session-a");
+  assert.deepEqual(state.bodies, [{href: file, src_path: "/notes/index.md", session_id: "session-a"}]);
+  assert.deepEqual(state.tabs.selection, {anchor: "图%20#1", revision: 3, contentRevision: 1});
+  assert.equal(state.tabs.displayMode, "preview");
+  await state.tabs.open(git + "#");
+  assert.equal(state.tabs.selection.anchor, "");
+  await state.tabs.open(line);
+  await state.tabs.open(diff);
+  await assert.rejects(state.tabs.open(file + "#%FF"), URIError);
+  await assert.rejects(state.tabs.open(file + "#%"), URIError);
+  await assert.rejects(state.tabs.open(file + "#%00"), /control characters/i);
+  await assert.rejects(state.tabs.open(file + "#" + "x".repeat(8192)), /8192/);
+  assert.deepEqual(state.bodies.slice(1), [{href: git}, {href: line}, {href: diff}]);
+  assert.equal(state.tabs.activeId, diff);
 }
 
 async function modeToggleClearsLineTargetsAndOverridesPendingOpens() {
@@ -311,13 +339,14 @@ async function failedOpensPreserveTheActiveView() {
   const snapshot = state.tabs.snapshot;
   const failure = deferred();
   state.pending.set("POST api/views/open", failure);
-  const opening = state.tabs.open("missing");
+  const opening = state.tabs.open("missing.html#section");
   failure.reject(new Error("File not found"));
   await assert.rejects(opening, /File not found/);
   assert.equal(state.tabs.activeId, "a");
   assert.equal(state.tabs.snapshot, snapshot);
   assert.ok(state.tabs.error.includes("File not found"));
   assert.equal(state.tabs.openRequest, null);
+  assert.deepEqual(state.bodies, [{href: "missing.html"}]);
   state.pending.delete("POST api/views/open");
   await state.tabs.open("a");
   assert.equal(state.tabs.error, "");
@@ -618,7 +647,7 @@ async function htmlPreviewKeepsNativeResourcesAndReadingState() {
   send(preview.frame.contentWindow, 1, "workspace-preview-scroll", [0, 0]);
   send(preview.frame.contentWindow, 2, "workspace-preview-ready");
   assert.deepEqual(messages, [{
-    type: "workspace-preview-restore", generation: 2, position: [10, 320],
+    type: "workspace-preview-restore", generation: 2, position: [10, 320], anchor: undefined,
   }]);
   display.clear();
   assert.equal(listeners.size, 0);
@@ -1083,6 +1112,7 @@ async function main() {
   await pollingNeverFollowsOtherClients();
   await revealingDuringRefreshKeepsVisibleContent();
   await clickedLinesDoNotReplayOnPollOrManualSelection();
+  await htmlSectionClicksOpenTheFileAndSelectTheDecodedAnchor();
   await modeToggleClearsLineTargetsAndOverridesPendingOpens();
   for (const action of ["open", "select", "canvas", "close", "stop"]) {
     await oldOpensCannotOverrideTheLatestIntent(action, false);
