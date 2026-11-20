@@ -5,6 +5,7 @@ import json
 import threading
 import typing
 from dataclasses import asdict, fields, is_dataclass
+from datetime import datetime, timezone
 
 from pycodex.events import (
     IDLE_SLEEPING_STATUS,
@@ -59,6 +60,8 @@ SPINNER_STATUS_PREVIEW_LIMIT = 180
 
 
 class WebSessionView:
+    _session_timing = None
+
     def __init__(self) -> None:
         self._subscribers: "typing.Set[asyncio.Queue]" = set()
         self._events: "typing.List[typing.Dict[str, object]]" = []
@@ -147,6 +150,7 @@ class WebSessionView:
         with self._lock:
             self._set_title(title)
             self._turns = []
+            self._session_timing = None
             self._turns_by_submission_id = {}
             self._turns_by_turn_id = {}
             self._events = []
@@ -224,6 +228,9 @@ class WebSessionView:
 
     def summary(self) -> "typing.Dict[str, object]":
         with self._lock:
+            cached = self._session_timing
+            if cached is None or cached[0] is not self._turns:
+                cached = self._session_timing = (self._turns, session_timing(self._turns[-80:]))
             return {
                 "model": self._model,
                 "cwd": self._cwd,
@@ -233,6 +240,7 @@ class WebSessionView:
                 "title": self._title,
                 "turn_count": len(self._turns),
                 "last_assistant": _last_assistant_text(self._turns),
+                **cached[1],
                 **self._context_usage(),
             }
 
@@ -476,11 +484,13 @@ class WebSessionView:
                 # Queue admission stays hidden until the turn actually starts.
                 turn["messages"] = ()
                 self._turns.append(turn)
+                self._session_timing = None
             turn["turn_id"] = turn_id
             self._turns_by_turn_id[turn_id] = turn
         return turn
 
     def _append_messages(self, messages, turn_id, submission_id):
+        self._session_timing = None
         previous = self._turns_by_turn_id.get(turn_id)
         for values in conversation_history_to_turns(messages, (previous,) if previous else ()):
             turn = self._ensure_turn(submission_id or values["turn_id"], values["turn_id"])
@@ -534,6 +544,41 @@ class WebSessionView:
                 queue.put_nowait(event)
 
         loop.call_soon_threadsafe(publish)
+
+
+def session_timing(turns):
+    last_message_at = 0
+    first_prompt_at = None
+    reply_at = None
+    has_reply = False
+    for turn in turns:
+        if turn.get("kind") in ("control", "compaction"):
+            continue
+        message_times = [
+            message.get("created_at") if isinstance(message, dict) else message.created_at
+            for message in turn.get("messages", ())
+        ]
+        prompt_at = turn.get("prompt_at") or (message_times[0] if message_times else None)
+        first_prompt_at = first_prompt_at or prompt_at
+        response_at = turn.get("response_at")
+        if str(turn.get("response") or "").strip():
+            reply_at = response_at
+            has_reply = True
+        for value in (*message_times, prompt_at, response_at):
+            if not isinstance(value, str):
+                continue
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            last_message_at = max(last_message_at, parsed.timestamp())
+    return {
+        "last_message_at": last_message_at,
+        "reply_at": reply_at if has_reply else first_prompt_at,
+        "has_reply": has_reply,
+    }
 
 
 def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> str:

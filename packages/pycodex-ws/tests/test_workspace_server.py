@@ -1638,6 +1638,46 @@ async def test_manual_compact_keeps_existing_web_conversation():
         await session.close()
 
 
+@pytest.mark.parametrize("multi", [False, True])
+def test_recent_session_poll_limits_summaries_without_losing_old_sessions(tmp_path, multi):
+    manager = WorkspaceSessionManager(lambda: make_session(cwd=tmp_path))
+    if multi:
+        app = create_multi_workspace_app(WorkspaceRegistry([WorkspaceEntry(
+            WorkspaceDefinition("test", tmp_path / "state", tmp_path, False), manager,
+        )]))
+    else:
+        app = create_app(manager, None, work_dir=tmp_path, enable_board=False)
+    prefix = "/w/test" if multi else ""
+    path = prefix + "/api/session"
+    with TestClient(app) as browser:
+        first = browser.get(path).json()["session_id"]
+        old = browser.post(prefix + "/api/sessions").json()["session_id"]
+        for index in range(22):
+            browser.post(prefix + "/api/sessions", json={"title": "New " + str(index)})
+        assert browser.post(path + "/message", json={
+            "session_id": first, "prompt": "Recent activity in an old tab",
+        }).status_code == 200
+        snapshot = wait_snapshot(
+            browser, lambda state: state["turns"] and state["turns"][-1]["status"] == "completed",
+            path + "?session_id=" + first,
+        )
+        full = browser.get(prefix + "/api/sessions").json()["sessions"]
+        assert len(full) == 24
+        assert len(browser.get(path).json()["sessions"]) == 24
+        expected = sorted(full, key=lambda row: (row["last_message_at"], row["id"]), reverse=True)
+        recent = browser.get(path, params={"recent": "true"}).json()
+        assert recent["session_id"] == first
+        assert recent["sessions"] == expected[:20]
+        assert recent["workspace_running"] is False
+        assert recent["sessions"][0]["has_reply"] is True
+        assert recent["sessions"][0]["reply_at"] == snapshot["turns"][-1]["response_at"]
+        selected = browser.get(path, params={"recent": "true", "session_id": old}).json()
+        assert selected["sessions"][:19] == expected[:19]
+        assert selected["sessions"][19]["id"] == selected["session_id"] == old
+        assert selected["snapshot"]["turns"] == []
+        assert len(browser.get(prefix + "/api/sessions").json()["sessions"]) == 24
+
+
 def test_session_list_uses_lightweight_summary(monkeypatch):
     def build():
         session = make_session()

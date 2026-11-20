@@ -454,16 +454,28 @@ def _session_response(
     request: Request,
     workspace_id: "typing.Union[str, None]" = None,
 ) -> JSONResponse:
+    recent_only = request.query_params.get("recent") == "true"
+    session_id = request.query_params.get("session_id")
+    sessions = manager.list_sessions()
+    if recent_only:
+        sessions.sort(key=lambda item: (item["last_message_at"], item["id"]), reverse=True)
+        if not session_id and sessions:
+            session_id = sessions[0]["id"]
     try:
-        resolved_id = manager.resolve_session_id(request.query_params.get("session_id"))
+        resolved_id = manager.resolve_session_id(session_id)
         link = manager.get(resolved_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="session not found")
     payload = {
         "session_id": resolved_id,
-        "sessions": manager.list_sessions(),
+        "sessions": sessions,
         "snapshot": session_snapshot(link),
     }
+    if recent_only:
+        payload["workspace_running"] = any(item["running"] for item in sessions)
+        payload["sessions"] = sessions[:20]
+        if not any(item["id"] == resolved_id for item in payload["sessions"]):
+            payload["sessions"][-1] = next(item for item in sessions if item["id"] == resolved_id)
     if request.query_params.get("runtime_info") == "true":
         state = request.app.state
         payload["runtime_info"] = runtime_info_prompt(

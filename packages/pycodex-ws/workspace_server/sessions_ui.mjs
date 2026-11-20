@@ -2,16 +2,75 @@ import {messageSignature} from "./conversation.mjs";
 import {PromptHistory} from "./content_views.mjs";
 import {isNearBottom, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
 
+function sessionActivity(session) {
+  if (session.last_message_at != null) return session.last_message_at;
+  const match = /^([0-9a-f]{8})-([0-9a-f]{4})-7/i.exec(session.last_final_id || "");
+  return match ? Number.parseInt(match[1] + match[2], 16) / 1000 : 0;
+}
+
+function orderBySessionActivity(items, activityFor) {
+  return [...items].sort((left, right) =>
+    activityFor(right) - activityFor(left) ||
+    String(right.id).localeCompare(String(left.id))
+  );
+}
+
+function recentSessions(items, activeId) {
+  const ordered = orderBySessionActivity(items, sessionActivity);
+  const visible = ordered.slice(0, 20);
+  const active = ordered.find(session => session.id === activeId);
+  if (active && !visible.includes(active)) visible[visible.length - 1] = active;
+  return visible;
+}
+
+function replyTimingFromSnapshot(snapshot) {
+  let firstPromptAt = null;
+  let replyAt = null;
+  let hasReply = false;
+  let lastMessageAt = 0;
+  for (const turn of snapshot?.turns || []) {
+    if (turn.kind === "control" || turn.kind === "compaction") continue;
+    firstPromptAt ||= turn.prompt_at;
+    const timestamps = [turn.prompt_at, turn.response_at,
+      ...(turn.messages || []).map(message => message.created_at)];
+    for (const timestamp of timestamps) {
+      const milliseconds = Date.parse(timestamp);
+      if (Number.isFinite(milliseconds)) lastMessageAt = Math.max(lastMessageAt, milliseconds / 1000);
+    }
+    if (String(turn.response || "").trim()) {
+      replyAt = turn.response_at;
+      hasReply = true;
+    }
+  }
+  return {has_reply: hasReply, reply_at: hasReply ? replyAt : firstPromptAt, last_message_at: lastMessageAt};
+}
+
+export function formatReplyAge(session, now = Date.now()) {
+  if (typeof session?.has_reply !== "boolean") return "读取回复时间…";
+  if (!session.reply_at) return session.has_reply ? "回复时间未知" : "尚未回复";
+  const timestamp = Date.parse(session.reply_at);
+  if (!Number.isFinite(timestamp)) return "回复时间未知";
+  const seconds = Math.max(0, Math.floor((now - timestamp) / 1000));
+  if (seconds < 5 && session.has_reply) return "刚刚回复";
+  if (seconds < 60) return `${seconds} 秒未回复`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} 分钟未回复`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} 小时 ${minutes % 60} 分钟未回复`;
+  return `${Math.floor(hours / 24)} 天 ${hours % 24} 小时未回复`;
+}
+
 export function createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
   updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
-  renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt,
+  renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen,
 }) {
   const workspaceTitle = document.title;
   let activeSessionId = window.sessionStorage.getItem(activeSessionKey) || "";
   let sessions = [];
   const sessionState = new Map();
   let sessionPoll = null;
+  let legacyReplyRequests = 0;
   let sessionNeedsRefresh = true;
   let restoreScrollTop = null;
   let suppressScrollSave = false;
@@ -61,9 +120,45 @@ export function createSessionsUI({
     state.entries = Array.from(log.children);
   }
 
-  function updateSessions(nextSessions) {
+  function sessionReplyTiming(session) {
+    if (typeof session.has_reply === "boolean") return session;
+    if (session.turn_count === 0) return {has_reply: false};
+    const state = stateForSession(session.id);
+    const key = JSON.stringify([session.turn_count, session.last_final_id, session.running]);
+    const previous = state.legacyReplyTiming;
+    if (isSidebarOpen() && legacyReplyRequests < 3 && !previous?.pending
+        && !(previous?.retryAfter > Date.now()) && previous?.key !== key) {
+      const entry = state.legacyReplyTiming = {pending: true, timing: previous?.timing};
+      legacyReplyRequests++;
+      fetch(relativeUrl(`api/session?session_id=${encodeURIComponent(session.id)}`))
+        .then(response => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.json();
+        })
+        .then(payload => {
+          entry.timing = replyTimingFromSnapshot(payload.snapshot);
+          entry.key = key;
+        })
+        .catch(() => { entry.retryAfter = Date.now() + 10000; })
+        .finally(() => {
+          entry.pending = false;
+          legacyReplyRequests--;
+          if (isSidebarOpen()) renderTabs();
+        });
+    }
+    return previous?.timing;
+  }
+
+  function orderVisibleSessions() {
+    if (sessions.every(session => session.last_message_at != null)) return sessions;
+    return orderBySessionActivity(sessions, session => session.last_message_at ??
+      sessionState.get(session.id)?.legacyReplyTiming?.timing?.last_message_at ?? sessionActivity(session));
+  }
+
+  function updateSessions(nextSessions, workspaceRunning) {
     const incomingSessions = Array.isArray(nextSessions) ? nextSessions : sessions;
-    incomingSessions.forEach((session) => {
+    const ordered = recentSessions(incomingSessions, activeSessionId);
+    ordered.forEach((session) => {
       const sessionId = session.id || "";
       if (!sessionId) return;
       const state = stateForSession(sessionId);
@@ -76,12 +171,15 @@ export function createSessionsUI({
       }
       state.wasRunning = isRunning;
     });
-    sessions = incomingSessions;
-    const sessionIds = new Set(sessions.map(session => session.id));
-    for (const id of sessionState.keys()) {
-      if (id !== activeSessionId && !sessionIds.has(id)) sessionState.delete(id);
+    sessions = ordered;
+    if (Array.isArray(nextSessions) && workspaceRunning === undefined) {
+      const sessionIds = new Set(incomingSessions.map(session => session.id));
+      for (const id of sessionState.keys()) {
+        if (id !== activeSessionId && !sessionIds.has(id)) sessionState.delete(id);
+      }
     }
-    document.title = (sessions.some(session => session.running) ? "● " : "") + workspaceTitle;
+    const running = workspaceRunning ?? incomingSessions.some(session => session.running);
+    document.title = (running ? "● " : "") + workspaceTitle;
     if (!activeSessionId && sessions.length) {
       activeSessionId = sessions[0].id || "";
     }
@@ -125,13 +223,13 @@ export function createSessionsUI({
     if (sessionNeedsRefresh) setSessionRefresh("loading");
     try {
       const path = requestedSessionId
-        ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
-        : "api/session";
+        ? `api/session?recent=true&session_id=${encodeURIComponent(requestedSessionId)}`
+        : "api/session?recent=true";
       let response = await fetch(relativeUrl(path), {signal: request.controller.signal});
       if (sessionPoll !== request || requestedSessionId !== activeSessionId) return;
       // A saved session may have been closed since this page was last open.
       if (response.status === 404 && requestedSessionId && !sessions.length) {
-        response = await fetch(relativeUrl("api/session"), {signal: request.controller.signal});
+        response = await fetch(relativeUrl("api/session?recent=true"), {signal: request.controller.signal});
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
@@ -141,7 +239,11 @@ export function createSessionsUI({
       if (payload.session_id && payload.session_id !== activeSessionId) {
         activeSessionId = payload.session_id;
       }
-      updateSessions(payload.sessions || []);
+      const active = payload.sessions?.find(session => session.id === activeSessionId);
+      if (active && typeof active.has_reply !== "boolean") {
+        Object.assign(active, replyTimingFromSnapshot(payload.snapshot));
+      }
+      updateSessions(payload.sessions || [], payload.workspace_running);
       renderSnapshot(payload.snapshot);
     } catch (error) {
       if (sessionPoll === request && requestedSessionId === activeSessionId) {
@@ -261,7 +363,9 @@ export function createSessionsUI({
   }
 
   async function closeSession(sessionId) {
-    if (!sessionId || sessions.length <= 1) return;
+    const session = sessionById(sessionId);
+    if (!session || sessions.length <= 1) return;
+    if (!window.confirm(`Close session “${session.title || "pycodex"}”? It will be removed from this workspace.`)) return;
     const response = await fetch(relativeUrl(`api/sessions/${encodeURIComponent(sessionId)}`), {
       method: "DELETE",
     });
@@ -290,6 +394,6 @@ export function createSessionsUI({
     get sessions() { return sessions; },
     sessionState, sessionById, stateForSession,
     restoreSessionScroll, saveActiveSessionUiState, saveScroll, updateSessions, renderSnapshot, pollSession,
-    createSession, closeSession, switchSession,
+    createSession, closeSession, switchSession, sessionReplyTiming, orderVisibleSessions,
   };
 }
