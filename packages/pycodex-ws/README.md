@@ -39,7 +39,8 @@ open, and click the toggle or empty space again to close it. Expansion narrows
 the conversation while keeping the board fixed. On phones, use the header
 buttons to switch between chat and board.
 
-Use the expanded sidebar to create, rename or close sessions. Status dots show
+Use the expanded sidebar to create, rename or close sessions. Click × and
+confirm to close a session; the last session stays open. Status dots show
 running sessions and unread replies. `/cd <directory>` changes the current
 session's working directory while idle; `/model`, `/resume`, `/compact` and
 other core session commands are also available.

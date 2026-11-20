@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import {createSessionsUI} from "../workspace_server/sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge} from "../workspace_server/sessions_ui.mjs";
 
 // Record cancellation even when the simulated transport delivers a late response.
 globalThis.AbortController = class {
@@ -45,7 +45,13 @@ globalThis.document = {
 globalThis.requestAnimationFrame = () => {};
 const markVisibleFinalRead = () => {};
 const activeSessionKey = "test-workspace";
-globalThis.window = {sessionStorage: {getItem: () => null}, location: {href: "http://workspace.test/"}};
+let confirmClose = false;
+let sidebarOpen = false;
+const confirmations = [];
+globalThis.window = {
+  sessionStorage: {getItem: () => null}, location: {href: "http://workspace.test/"},
+  confirm(message) { confirmations.push(message); return confirmClose; },
+};
 const resizePrompt = () => {};
 const dismissSessionsDrawer = () => {};
 const renderTabs = () => {};
@@ -62,11 +68,15 @@ const ui = createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
   updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock() {}, resizePrompt,
+  isSidebarOpen: () => sidebarOpen,
 });
 const {sessionState, stateForSession, updateSessions, renderSnapshot, pollSession,
   restoreSessionScroll, saveActiveSessionUiState, switchSession, closeSession} = ui;
-const tabs = [{id: "a", cwd: "/a"}, {id: "b", cwd: "/b"}];
+const tabs = [{id: "a", cwd: "/a"}, {id: "b", cwd: "/b", title: "Second session"}];
 let serverTabs = tabs.slice();
+const deletions = [];
+const timingRequests = [];
+const replyAt = "2026-11-18T11:57:00+08:00";
 function snapshot(id) {
   return {cwd: "/" + id, turns: [{prompt: `prompt ${id}`, response: `answer ${id}`}],
           spinner: "", queued_inputs: []};
@@ -80,9 +90,18 @@ let finishOldPoll;
 let delayedSignal;
 globalThis.fetch = async (path, options = {}) => {
   if (options.method === "DELETE") {
+    deletions.push(new URL(path).pathname);
     serverTabs = [tabs[0]];
     return {ok: true, json: async () => ({ok: true, sessions: serverTabs.slice()})};
   }
+  if (!options.signal) {
+    timingRequests.push(new URL(path).searchParams.get("session_id"));
+    return {ok: true, json: async () => ({snapshot: {turns: [
+      {response: "reply", response_at: replyAt},
+      {kind: "control", response: "not a reply", response_at: "2026-11-18T12:00:00+08:00"},
+    ]}})};
+  }
+  assert.equal(new URL(path).searchParams.get("recent"), "true");
   assert.equal(options.signal.aborted, false);
   const id = path.endsWith("=b") ? "b" : "a";
   const reply = response(id);
@@ -99,7 +118,7 @@ globalThis.fetch = async (path, options = {}) => {
   return reply;
 };
 (async () => {
-  updateSessions([{id: "a", running: false}, {id: "b", running: true}]);
+  updateSessions([{id: "a", running: false, last_message_at: 1}, {id: "b", running: true}]);
   assert.equal(ui.activeId, "a");
   assert.equal(document.title, "● Workspace");
   updateSessions([{id: "a", running: false}, {id: "b", running: true}]);
@@ -141,10 +160,17 @@ globalThis.fetch = async (path, options = {}) => {
   assert.equal(document.title, "Workspace");
   composer.set({parts: [{type: "text", text: "draft b"}]});
   log.scrollTop = 9;
+  await closeSession("b");
+  assert.ok(/Second session/.test(confirmations[0]));
+  assert.deepEqual(deletions, []);
+  assert.equal(ui.activeId, "b");
+  assert.deepEqual(composer.read(), {parts: [{type: "text", text: "draft b"}]});
+  confirmClose = true;
   delayOldPoll = process.argv[2] !== "none";
   const oldPoll = delayOldPoll ? pollSession() : null;
   logVisible = process.argv[3] === "chat";
   await closeSession("b");
+  assert.deepEqual(deletions, ["/api/sessions/b"]);
   if (!logVisible) {
     assert.equal(stateForSession("a").scrollTop, 123);
     logVisible = true;
@@ -157,6 +183,8 @@ globalThis.fetch = async (path, options = {}) => {
   assert.deepEqual(composer.read(), draftA);
   assert.equal(log.scrollTop, 123);
   assert.equal(sessionState.has("b"), false);
+  await closeSession("a");
+  assert.equal(confirmations.length, 2);
   assert.equal(document.title, "Workspace");
   if (oldPoll) {
     assert.equal(delayedSignal.aborted, true);
@@ -173,4 +201,29 @@ globalThis.fetch = async (path, options = {}) => {
   assert.equal(document.title, "● Workspace");
   updateSessions([]);
   assert.equal(document.title, "Workspace");
+  const recent = Array.from({length: 25}, (_, index) => ({
+    id: String(index), last_message_at: index,
+  }));
+  updateSessions([...recent, {id: "a"}], false);
+  assert.deepEqual(ui.sessions.slice(0, 19), recent.slice(6).reverse());
+  assert.equal(ui.sessions[19].id, "a");
+  const modern = {has_reply: true, reply_at: replyAt};
+  const legacy = {id: "legacy", turn_count: 1};
+  assert.equal(ui.sessionReplyTiming(modern), modern);
+  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy)), "读取回复时间…");
+  assert.deepEqual(timingRequests, []);
+  sidebarOpen = true;
+  ui.sessionReplyTiming(legacy);
+  ui.sessionReplyTiming(legacy);
+  for (const id of ["second", "third", "fourth"]) ui.sessionReplyTiming({id, turn_count: 1});
+  assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
+  await new Promise(resolve => setImmediate(resolve));
+  const now = Date.parse("2026-11-18T12:00:00+08:00");
+  assert.equal(formatReplyAge(ui.sessionReplyTiming(legacy), now), "3 分钟未回复");
+  assert.deepEqual(timingRequests, ["legacy", "second", "third"]);
+  const earlierReply = {...legacy, last_final_id: "019ac000-0000-7000-8000-000000000001"};
+  const laterReply = {id: "other", last_final_id: "019ac000-1000-7000-8000-000000000001"};
+  updateSessions([earlierReply, laterReply], false);
+  assert.deepEqual(ui.sessions, [laterReply, earlierReply]);
+  assert.deepEqual(ui.orderVisibleSessions(), [earlierReply, laterReply]);
 })().catch(error => { console.error(error); process.exitCode = 1; });

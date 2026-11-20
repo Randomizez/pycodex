@@ -17,6 +17,7 @@ from pycodex_ws.workspace_config import (
     workspace_file_path,
 )
 
+from .session_view import session_timing
 from .workspace_views import WorkspaceViewStore
 
 SessionFactory = typing.Callable[[], object]
@@ -300,6 +301,9 @@ class WorkspaceSessionManager:
                     "spinner": summary.get("spinner") or "",
                     "turn_count": summary.get("turn_count") or 0,
                     "last_assistant": summary.get("last_assistant") or "",
+                    "last_message_at": summary.get("last_message_at", 0),
+                    "reply_at": summary.get("reply_at"),
+                    "has_reply": bool(summary.get("has_reply")),
                     "context_remaining_percent": summary.get(
                         "context_remaining_percent"
                     ),
@@ -474,6 +478,7 @@ def session_summary(session) -> "typing.Dict[str, object]":
         "spinner": snapshot.get("spinner") or "",
         "turn_count": len(snapshot.get("turns") or []),
         "last_assistant": _last_assistant_text(snapshot.get("turns") or []),
+        **session_timing(snapshot.get("turns") or []),
         "context_remaining_percent": snapshot.get("context_remaining_percent"),
     }
 

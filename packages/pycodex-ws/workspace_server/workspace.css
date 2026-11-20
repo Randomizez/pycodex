@@ -370,7 +370,7 @@ body[data-access-role="visitor"] .customize-frontend { display: none !important;
   min-width: 0;
   max-width: none;
   min-height: 0;
-  height: 34px;
+  height: 58px;
   padding: 0 12px;
   gap: 8px;
   border-radius: 8px;
@@ -390,36 +390,52 @@ body[data-access-role="visitor"] .customize-frontend { display: none !important;
 .session-sidebar .tab-label {
   position: absolute;
   left: 12px;
+  top: 6px;
   width: 184px;
+  max-width: calc(100% - 88px);
   order: -1;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  white-space: normal;
-  overflow-wrap: anywhere;
   line-height: 16px;
   font-size: 13px;
 }
-.session-sidebar .tab-title-input { order: -1; margin-right: 60px; }
+.session-sidebar .tab-label-text {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  max-height: 2lh;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.session-sidebar .session-reply-age {
+  position: absolute;
+  left: 12px;
+  bottom: 6px;
+  max-width: calc(100% - 88px);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.sessions-collapsed .session-sidebar .session-reply-age { display: none; }
+.session-sidebar .tab-title-input { order: -1; margin-right: 68px; }
 .session-sidebar .tab-close {
   position: absolute;
-  right: 40px;
+  right: 38px;
   z-index: 2;
-  width: 24px;
-  height: 24px;
+  width: 32px;
+  height: 32px;
   margin: 0;
-  display: none;
   color: #84919a;
-}
-.session-sidebar .tab.active .tab-close,
-.session-sidebar .tab:hover .tab-close,
-.session-sidebar .tab:focus-within .tab-close {
   display: grid;
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
 }
 .sessions-collapsed .session-sidebar .tab .tab-close { display: none; }
+.session-sidebar .tab-close:disabled { opacity: .3; cursor: default; }
 .session-sidebar .tab-status {
   position: absolute;
   right: 5px;
@@ -1308,11 +1324,9 @@ code {
   }
   .session-sidebar-header { flex-basis: 52px; padding: 0 6px; }
   .session-sidebar .sessions-toggle { width: 44px; height: 44px; }
-  .session-sidebar .tab { height: 36px; }
+  .session-sidebar .tab { height: 60px; }
   .sessions-collapsed .session-sidebar .tab { height: 32px; }
-  .session-sidebar .tab-close { width: 32px; height: 30px; }
   .session-sidebar .tab-label { width: min(208px, calc(100vw - 142px)); }
-  .session-sidebar .tab:hover:not(.active):not(:focus-within) .tab-close { display: none; }
 }
 @media (max-width: 760px) {
   .boardbar .customize-frontend { display: grid; }

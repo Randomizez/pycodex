@@ -2,7 +2,7 @@ import {Composer, mountContentViews} from "./content_views.mjs";
 import {element, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
-import {createSessionsUI} from "./sessions_ui.mjs";
+import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
 import {fillRuntimeInfo, installDialogs, setupContextDetails} from "./dialogs.mjs";
 import {mountCustomFrontend} from "./custom_frontend.mjs";
 
@@ -68,7 +68,7 @@ const sessionUI = createSessionsUI({
   log, composer, activeSessionKey, renderTabs, updatePromptPlaceholder, updateContextMeter,
   updateSpinnerNotifyUi, notifySessionDone, setSpinner, renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry,
-  dismissSessionsDrawer, closeContextBlock, resizePrompt,
+  dismissSessionsDrawer, closeContextBlock, resizePrompt, isSidebarOpen: () => sessionsOpen,
 });
 const {
   sessionById, stateForSession, restoreSessionScroll,
@@ -126,6 +126,7 @@ function setSessionsOpen(open, restoreFocus = false, pinned = true) {
     button.focus({preventScroll: true});
   }
   requestAnimationFrame(() => {
+    if (open) renderTabs();
     resizePrompt();
     restoreSessionScroll();
     if (!open) markVisibleFinalRead();
@@ -352,20 +353,21 @@ function renderTabs() {
   activeSessionTitle.title = activeSessionTitle.textContent;
   activeSessionStatus.hidden = !active?.running;
   updateSessionControls();
-  renderSessionList(tabsEl, false);
-  renderSessionList(mobileSessionDots, true);
+  const visible = sessionUI.orderVisibleSessions();
+  renderSessionList(tabsEl, false, visible);
+  renderSessionList(mobileSessionDots, true, visible);
   if (mobileSessionDots.dataset.activeSessionId !== sessionUI.activeId && mobileSessionDots.clientWidth) {
     mobileSessionDots.querySelector(".active")?.scrollIntoView({block: "nearest", inline: "nearest"});
   }
   mobileSessionDots.dataset.activeSessionId = sessionUI.activeId;
 }
 
-function renderSessionList(container, mobile) {
+function renderSessionList(container, mobile, visibleSessions) {
   const template = document.getElementById(mobile ? "mobileSessionDot" : "sessionTab");
   const existing = new Map(
     Array.from(container.children, tab => [tab.dataset.sessionId, tab])
   );
-  sessionUI.sessions.forEach((session, index) => {
+  visibleSessions.forEach((session, index) => {
     const sessionId = session.id || "";
     const tab = existing.get(sessionId) || template.content.firstElementChild.cloneNode(true);
     existing.delete(sessionId);
@@ -376,7 +378,8 @@ function renderSessionList(container, mobile) {
     tab.classList.toggle("completed", Boolean(session.last_final_id));
     const title = session.title || `Session ${index + 1}`;
     const status = session.running ? "Running" : session.last_final_id ? "Finished" : "Idle";
-    const description = `${title} · ${status}${session.unread ? " · Unread reply" : ""}`;
+    const replyAge = formatReplyAge(sessionUI.sessionReplyTiming(session));
+    const description = `${title} · ${status} · ${replyAge}${session.unread ? " · Unread reply" : ""}`;
     tab.title = mobile ? description : title;
     tab.setAttribute(mobile ? "aria-pressed" : "aria-selected", String(active));
     tab.querySelector(".unread-dot").hidden = !session.unread;
@@ -388,9 +391,14 @@ function renderSessionList(container, mobile) {
       statusButton.title = description;
       statusButton.setAttribute("aria-label", description);
       const label = tab.querySelector(".tab-label");
-      label.textContent = title;
+      const labelText = label.querySelector(".tab-label-text");
+      if (labelText.textContent !== title) labelText.textContent = title;
       label.title = active ? "Click to rename session" : title;
-      tab.querySelector(".tab-close").disabled = sessionUI.sessions.length <= 1;
+      const age = tab.querySelector(".session-reply-age");
+      if (age.textContent !== replyAge) age.textContent = replyAge;
+      const close = tab.querySelector(".tab-close");
+      close.setAttribute("aria-label", `Close session: ${title}`);
+      close.disabled = sessionUI.sessions.length <= 1;
     }
     if (container.children[index] !== tab) container.insertBefore(tab, container.children[index] || null);
   });
@@ -702,8 +710,9 @@ for (const container of [tabsEl, mobileSessionDots]) {
     const tab = event.target.closest("[data-session-id]");
     if (!tab) return;
     const sessionId = tab.dataset.sessionId;
-    if (event.target.closest(".tab-close")) closeSession(sessionId);
-    else if (sessionId === sessionUI.activeId && event.target.closest(".tab-label")) {
+    if (event.target.closest(".tab-close")) {
+      closeSession(sessionId).catch(error => showToast("Unable to close session: " + error.message));
+    } else if (sessionId === sessionUI.activeId && event.target.closest(".tab-label")) {
       editSessionTitle(tab, sessionId);
     } else selectSession(sessionId);
   });
