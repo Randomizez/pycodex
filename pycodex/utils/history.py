@@ -30,11 +30,16 @@ def restore_message_metadata(item, payload, record_id, timestamp=None):
     )
 
 
+def compaction_prefix_id(turn):
+    first = turn["messages"][0].message_id if turn["messages"] else turn["response_id"]
+    return "part-" + first
+
+
 def conversation_history_to_turns(history, previous=()):
     """Convert a transcript or append committed items to existing display values.
 
     The caller owns the result; neither the previous values nor messages change.
-    Explicit turn IDs group new messages. Old records retain phase boundaries.
+    Explicit turn IDs group messages between compactions. Old records retain phase boundaries.
     """
     turns = [
         {key: turn[key] for key in (
@@ -43,7 +48,9 @@ def conversation_history_to_turns(history, previous=()):
         )}
         for turn in previous
     ]
-    by_id = {turn["turn_id"]: turn for turn in turns}
+    by_id = {turn["turn_id"]: index for index, turn in enumerate(turns)}
+    boundary = next((i + 1 for i in reversed(range(len(turns)))
+                     if turns[i]["kind"] == "compaction"), 0)
     current = turns[-1] if turns else None
     if current is not None and (
         current["kind"] == "compaction" or current["response_phase"] == "final"
@@ -55,6 +62,7 @@ def conversation_history_to_turns(history, previous=()):
         )
         if is_compaction:
             turn_id = item["id"] if item is not None else "compaction-{0}".format(len(turns))
+            boundary = len(turns)
             current = None
         elif isinstance(item, (UserMessage, AgentMessage, AssistantMessage)):
             is_input = isinstance(item, (UserMessage, AgentMessage))
@@ -68,15 +76,20 @@ def conversation_history_to_turns(history, previous=()):
             turn_id = item.turn_id or (current["turn_id"] if current is not None else item.message_id)
         else:
             continue
-        turn = by_id.get(turn_id)
-        if turn is None:
+        index = by_id.get(turn_id)
+        if index is None or index < boundary:
+            if index is not None:
+                earlier = turns[index]
+                earlier["turn_id"] = compaction_prefix_id(earlier)
             turn = {
                 "turn_id": turn_id, "messages": (), "response": "",
                 "response_id": None, "response_at": None, "response_phase": None,
                 "kind": "compaction" if is_compaction else "assistant",
             }
+            by_id[turn_id] = len(turns)
             turns.append(turn)
-            by_id[turn_id] = turn
+        else:
+            turn = turns[index]
         if is_compaction:
             continue
         if is_input:

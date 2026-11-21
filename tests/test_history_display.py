@@ -229,7 +229,7 @@ def test_display_limit_reads_only_complete_tail_turns(tmp_path, monkeypatch, lim
     assert sum(end - start for start, end in reads) < 64 * 1024
 
 
-def test_display_limit_keeps_steer_grouping_across_compaction(tmp_path):
+def test_compaction_splits_steered_turn_at_the_recorded_position(tmp_path):
     path = tmp_path / "steer.jsonl"
     recorder = SessionRolloutRecorder.create(tmp_path, "session", tmp_path, "test", None, "", path)
     recorder.append_history_items((
@@ -243,6 +243,13 @@ def test_display_limit_keeps_steer_grouping_across_compaction(tmp_path):
         AssistantMessage("answer", turn_id="active", phase="final"),
     ))
     expected = load_display_history(path, limit=None)
-    assert [message.text for message in expected[1]["messages"]] == ["first", "steer"]
-    for limit in (1, 2, 3):
+    before, marker, after = expected[1:]
+    assert before["messages"][0].turn_id == after["turn_id"] == "active"
+    assert [message.text for message in before["messages"]] == ["first"]
+    assert before["response"] == "working"
+    assert marker["kind"] == "compaction"
+    assert [message.text for message in after["messages"]] == ["steer"]
+    assert after["response"] == "answer"
+    assert before["turn_id"] != after["turn_id"]
+    for limit in (1, 2, 3, 4):
         assert load_display_history(path, limit=limit) == expected[-limit:]

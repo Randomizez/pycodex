@@ -217,11 +217,14 @@ import { Composer } from "../out/composer.mjs";
     const visible = new Set();
     let changed = false;
     const items = snapshot?.turns || [];
-    for (const turn of items) {
+    for (const [index, turn] of items.entries()) {
       const previous = turns.get(turn.submission_id);
       const rendered = renderTurn(turn, previous);
       if (rendered !== previous) changed = true;
-      if (!previous) turnsElement.append(rendered.element);
+      if (turnsElement.children[index] !== rendered.element) {
+        turnsElement.insertBefore(rendered.element, turnsElement.children[index] || null);
+        changed = true;
+      }
       turns.set(turn.submission_id, rendered);
       visible.add(turn.submission_id);
     }

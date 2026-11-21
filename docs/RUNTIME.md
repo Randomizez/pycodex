@@ -316,8 +316,11 @@ boundary. `response_at` comes from the committed assistant message; failures
 without a reply do not invent a response time. `load_display_history(path)`
 always returns the same metadata. Older records use their recorded timestamps,
 or `null` when unknown. Reply times include elapsed time from the first input.
-Compaction adds a divider to the existing conversation list. Display restoration
-reuses the rollout parser; model context still resumes from the latest checkpoint.
+Compaction adds a divider at the checkpoint's position in the conversation list.
+If execution continues in the same turn, the earlier display row is keyed by its
+first visible message and the continuation keeps the execution turn ID. Live
+updates and rollout restoration put committed messages on the same sides of the divider.
+Model context still resumes from the latest checkpoint.
 
 In the workspace's single-pane phone layout, the conversation header contains
 the active session title, running status and the only Settings button. The pane

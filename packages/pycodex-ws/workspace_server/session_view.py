@@ -39,11 +39,11 @@ from pycodex.events import (
     TurnInterruptedEvent,
     TurnStartedEvent,
 )
-from pycodex.protocol import UserMessage
+from pycodex.protocol import AgentMessage, UserMessage
 from pycodex.utils import uuid7_string
 from pycodex.utils.event_helpers import shorten_title
-from pycodex.utils.history import conversation_history_to_turns
-from pycodex.utils.session_persist import load_display_history
+from pycodex.utils.history import compaction_prefix_id, conversation_history_to_turns
+from pycodex.utils.session_persist import last_compaction_id, load_display_history
 from pycodex_ws import active_preview
 
 
@@ -230,7 +230,7 @@ class WebSessionView:
                 "accepts_input": self._accepts_input,
                 "title": self._title,
                 **self._context_usage(),
-                "turns": [_public_turn(turn, active) for turn in self._turns[-80:]],
+                "turns": _public_turns(self._turns[-80:], active),
             }
 
     def summary(self) -> "typing.Dict[str, object]":
@@ -274,8 +274,17 @@ class WebSessionView:
                     history = load_display_history(state["recorded_rollout_path"])
                 self.load_session_history(state["title"], history)
                 if active is not None:
+                    known = {message.message_id for row in history for message in row["messages"]}
+                    pending = tuple(
+                        message for message in active["messages"]
+                        if isinstance(message, (UserMessage, AgentMessage)) and message.message_id not in known
+                    )
+                    previous = self._turns_by_turn_id.get(active["turn_id"])
+                    if previous is not None and self._turns[-1]["kind"] == "compaction":
+                        self._continue_after_compaction(previous)
                     turn = self._ensure_turn(active["submission_id"], active["turn_id"])
-                    self._append_messages(active["messages"], active["turn_id"], active["submission_id"])
+                    turn["_committed_inputs"] = len(turn["messages"])
+                    self._append_messages(pending, active["turn_id"], active["submission_id"])
                     text = active["assistant_text"]
                     turn.update(
                         status="responding" if text else "running",
@@ -345,11 +354,14 @@ class WebSessionView:
 
         if isinstance(event, MessagesAddedEvent):
             self._append_messages(event.messages, turn_id, submission_id)
+            if turn is not None:
+                turn.pop("_committed_inputs", None)
             return
 
         if isinstance(event, TurnStartedEvent):
             self._set_spinner_status("understood")
             turn = self._ensure_turn(submission_id, turn_id)
+            turn["_committed_inputs"] = len(turn["messages"])
             self._append_messages(event.messages, turn_id, submission_id)
             turn["status"] = "running"
             turn["thinking"] = ""
@@ -532,14 +544,30 @@ class WebSessionView:
         return turn
 
     def _add_compaction_marker(self, event) -> None:
-        turn = self._new_control_turn()
-        turn["kind"] = "compaction"
-        turn["status"] = "completed"
+        marker_id = last_compaction_id(self._recorded_rollout_path) if self._recorded_rollout_path else None
+        key = marker_id or uuid7_string()
+        turn = self._ensure_turn(key, key)
+        turn.update(kind="compaction", queue="control", status="completed")
         active = self._turns_by_turn_id.get(event.turn_id)
-        if active is not None and event.phase == "pre_turn" and not active["response"]:
-            # A new turn commits its inputs after pre-turn compaction.
-            self._turns.remove(turn)
-            self._turns.insert(self._turns.index(active), turn)
+        if active is not None:
+            self._continue_after_compaction(active)
+
+    def _continue_after_compaction(self, active):
+        # Keep event routing on the active row. Seal only what was committed
+        # before the checkpoint; a native pre-turn compact precedes its inputs.
+        count = active.get("_committed_inputs", len(active["messages"]))
+        committed = active["messages"][:count]
+        index = self._turns.index(active)
+        self._turns.pop(index)
+        if committed or active["response_id"]:
+            prefix = dict(active, messages=committed, status="completed", thinking="", final_id="")
+            key = prefix["turn_id"] = prefix["submission_id"] = compaction_prefix_id(prefix)
+            self._turns.insert(index, prefix)
+            self._turns_by_turn_id[key] = prefix
+            active.update(messages=active["messages"][count:], _committed_inputs=0,
+                          response="", response_id=None, response_at=None, response_phase=None,
+                          model_errors=[], thinking="", _thinking_active=False)
+        self._turns.append(active)
 
     def _set_title(self, title: "typing.Union[str, None]") -> None:
         self._title = str(title or "").strip()
@@ -613,7 +641,19 @@ def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> 
     return ""
 
 
-def _public_turn(turn: "typing.Dict[str, object]", active) -> "typing.Dict[str, object]":
+def _public_turns(turns, active):
+    started = {}
+    rows = []
+    for turn in turns:
+        first = turn["messages"][0] if turn["messages"] else None
+        if first is not None:
+            started.setdefault(first.turn_id or turn["turn_id"], first.created_at)
+        started_at = started.get(turn["turn_id"], first.created_at if first is not None else None)
+        rows.append(_public_turn(turn, active, started_at))
+    return rows
+
+
+def _public_turn(turn, active, started_at):
     thinking = turn["thinking"]
     if active is not None and active["turn_id"] == turn["turn_id"]:
         thinking = active_preview(active)
@@ -625,7 +665,7 @@ def _public_turn(turn: "typing.Dict[str, object]", active) -> "typing.Dict[str, 
         "thinking": thinking,
         "model_errors": list(turn["model_errors"]),
         "prompt": "\n".join(message.text for message in turn["messages"]),
-        "prompt_at": turn["messages"][0].created_at if turn["messages"] else None,
+        "prompt_at": started_at,
         "messages": [
             {"message_id": message.message_id, "text": message.text,
              "name": message.name if isinstance(message, UserMessage) else message.author,

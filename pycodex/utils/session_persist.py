@@ -420,8 +420,7 @@ def load_display_history(
             items.append(item)
             if isinstance(item, dict):
                 remaining -= 1
-                if oldest_turn_id is not None:
-                    continue
+                oldest_turn_id = None
             elif not item.visible:
                 continue
             else:
@@ -566,6 +565,11 @@ def _find_last_compacted_offset(
         finally:
             mapped.close()
     return None
+
+
+def last_compaction_id(path):
+    offset = _find_last_compacted_offset(Path(path))
+    return "compaction-{0}".format(offset) if offset is not None else None
 
 
 def _iter_rollout_entries(

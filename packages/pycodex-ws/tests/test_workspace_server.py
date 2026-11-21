@@ -39,7 +39,7 @@ from pycodex.events import (
     TurnStartedEvent,
 )
 from pycodex.protocol import ToolResult
-from pycodex.model import ResponsesIncompleteError
+from pycodex.model import ContextLengthExceeded, ResponsesIncompleteError
 from pycodex.runtime import SubmissionInterrupted
 from pycodex.utils import uuid7_string
 from pycodex.utils.history import conversation_history_to_turns
@@ -61,6 +61,7 @@ from workspace_server import (
     parse_listen,
 )
 from workspace_server.app import _build_workspace_entry, _event_data
+from workspace_server.reloader import _reproject_view
 from workspace_server.workspaces import save_workspace_definitions
 
 
@@ -2209,6 +2210,58 @@ async def test_pre_turn_compaction_keeps_live_and_restored_message_order(tmp_pat
             assert [turn[key] for turn in session.snapshot()["turns"]] == [
                 turn[key] for turn in restored.snapshot()["turns"]
             ]
+    finally:
+        release.set()
+        await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("overflow", [False, True])
+async def test_workspace_compaction_divides_a_running_turn(tmp_path, overflow):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 1:
+            if overflow:
+                raise ContextLengthExceeded("input exceeds context window")
+            return ModelResponse([
+                AssistantMessage("working", phase="commentary"), ToolCall("call", "lookup", {}),
+            ], usage={"total_tokens": 100})
+        if count == 2:
+            return ModelResponse([AssistantMessage("summary")])
+        entered.set()
+        await release.wait()
+        return ModelResponse([AssistantMessage("answer", phase="final")])
+
+    runtime = make_runtime(make_agent(
+        ScriptedModelClient(response_factory=respond), ToolRegistry(),
+        ContextConfig(model_auto_compact_token_limit=50),
+        session_file_path=tmp_path / "compaction.jsonl",
+    ))
+    session = await WorkspaceInteractiveSession(runtime).start()
+    late = WebSessionView()
+    try:
+        receipt = await runtime.submit_input("question")
+        await asyncio.wait_for(entered.wait(), 3)
+        runtime.attach(late.handle_event)
+        release.set()
+        result = await receipt.future
+        restored = WebSessionView()
+        restored.handle_event(SessionStateEvent("attach", runtime.snapshot()))
+        for view in (session.view, late, restored):
+            before, marker, after = view.snapshot()["turns"]
+            assert (before["prompt"], before["response"]) == ("question", "" if overflow else "working")
+            assert marker["kind"] == "compaction"
+            assert (after["prompt"], after["response"]) == ("", "answer")
+            assert after["turn_id"] == result.turn_id
+            assert after["prompt_at"] == before["prompt_at"]
+            assert [row["turn_id"] for row in (before, marker, after)] == [
+                row["turn_id"] for row in session.snapshot()["turns"]
+            ]
+        live = session.snapshot()["turns"]
+        _reproject_view(runtime, session.view)
+        assert session.snapshot()["turns"] == live
     finally:
         release.set()
         await session.close()
