@@ -42,7 +42,6 @@ from pycodex.protocol import (
     UserMessage,
 )
 from pycodex.tools.base_tool import BaseTool
-from pycodex.tools.runtime_services import create_agent_runtime_environment
 from pycodex.utils.compactor import CompactResult
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 
@@ -71,6 +70,7 @@ from .task_manager import AgyTaskManager
 from .tools import (
     IMAGE_GENERATOR_SUBAGENT_TOOLS,
     RESEARCH_SUBAGENT_TOOLS,
+    AgyRuntimeEnvironment,
     SearchHandler,
     build_agy_tool_registry,
     load_official_declarations,
@@ -516,7 +516,7 @@ class AgySessionNode:
             clock=clock,
         )
 
-        runtime_env = create_agent_runtime_environment()
+        runtime_env = AgyRuntimeEnvironment(self.task_manager)
         self.subagent_work_tracker = AgySubagentWorkTracker(
             controller=self.controller,
             conversation_id_getter=lambda: self.conversation_id,
@@ -805,9 +805,9 @@ class AgySessionNode:
         sender: "str" = "system",
         priority: "str" = "MESSAGE_PRIORITY_HIGH",
         wake_if_idle: "bool" = True,
-    ) -> "None":
+    ) -> "bool":
         if self.state == "killed" or not self.runtime.accepts_input:
-            return
+            return False
         ts_utc = format_utc_iso(self._clock() if self._clock is not None else None)
         if self.parent_conversation_id is not None and sender == self.parent_conversation_id:
             self._parent_messages.append(
@@ -825,17 +825,18 @@ class AgySessionNode:
             priority=priority,
             timestamp_utc=ts_utc,
         )
-        was_idle = self.state == "idle"
-        if was_idle:
+        waking = self.state == "idle" and wake_if_idle
+        if waking:
             self.state = "running"
             self._reported_to_parent = False
         self.runtime.message(sys_msg)
         if wake_if_idle:
             self.runtime.trigger()
         self.task_manager.notify_incoming_message(sender)
-        if was_idle and self.parent_conversation_id is not None:
+        if waking and self.parent_conversation_id is not None:
             self.controller.notify_parent_subagent_work(self.parent_conversation_id)
         self._signal_activity()
+        return True
 
     async def start(self) -> "None":
         await self.runtime.start()

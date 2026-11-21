@@ -13,7 +13,7 @@ import typing
 
 import pytest
 
-from pycodex.protocol import ToolCall
+from pycodex.protocol import ToolCall, UserMessage
 from pycodex.tools.base_tool import ToolContext
 
 from pyagy import __version__
@@ -437,11 +437,11 @@ async def test_command_schedule_and_subagent_lifecycle(
             assert env.background_work_count(False) == 0
             assert env.background_work_snapshot() == []
 
-            # Daemon command appears in snapshot without pinning background_work_count > 0
+            # A daemon does not hold print mode open, but its exit can wake an idle agent.
             err, daemon_out = await _exec(
                 "run_command",
                 {
-                    "CommandLine": "sleep 10",
+                    "CommandLine": "read line",
                     "WaitMsBeforeAsync": 500,
                     "IsDaemon": True,
                     "toolSummary": "dev daemon",
@@ -450,12 +450,23 @@ async def test_command_schedule_and_subagent_lifecycle(
             )
             assert not err
             daemon_tid = daemon_out.splitlines()[0].split("task id: ", 1)[1].strip()
-            assert env.background_work_count(False) == 0
-            assert env.background_work_count(True) == 0
+            assert env.background_work_count(False) == 1
+            assert env.background_work_count(True) == 1
+            await session.root_node.wait_until_settled(timeout_seconds=1)
             daemon_snap = env.background_work_snapshot()
             assert len(daemon_snap) == 1 and daemon_snap[0]["is_daemon"] is True
-            err, _ = await _exec("manage_task", {"Action": "kill", "TaskId": daemon_tid}, "mt_kill_d")
-            assert not err and env.background_work_snapshot() == []
+            finished = asyncio.Event()
+            session.root_node.add_event_listener(
+                lambda event: finished.set() if event.kind == "turn_completed" else None
+            )
+            err, _ = await _exec("manage_task", {"Action": "send_input", "TaskId": daemon_tid, "Input": "exit\n"}, "mt_exit")
+            assert not err
+            await asyncio.wait_for(finished.wait(), 5)
+            assert any(
+                daemon_tid + '" finished' in msg.text
+                for msg in session.root_node.agent.history if isinstance(msg, UserMessage)
+            )
+            assert env.background_work_snapshot() == []
 
             # Schedule mutual exclusion & TimerCondition="any" early cancel on incoming message
             err, bad1 = await _exec(
@@ -484,7 +495,9 @@ async def test_command_schedule_and_subagent_lifecycle(
             assert "description" not in env.background_work_snapshot()[0]
             assert "log_path" not in env.background_work_snapshot()[0]
             session.root_node.deliver_system_message("peer ping", sender="peer-1", wake_if_idle=False)
-            assert session.root_node.task_manager._tasks[cond_tid].status == "CANCELLED"
+            timer = session.root_node.task_manager._tasks[cond_tid]
+            assert timer.status == "CANCELLED"
+            assert not timer.log_path.with_suffix(".schedule.json").exists()
             assert env.background_work_count(True) == 0
             assert env.background_work_snapshot() == []
 
@@ -599,6 +612,11 @@ async def test_command_schedule_and_subagent_lifecycle(
             branch_node.task_manager.kill(f"{branch_cid}/task-999")
             assert branch_node.runtime.can_close_for_capacity() is True
 
+            branch_node.deliver_system_message("status update", wake_if_idle=False)
+            assert branch_node.state == "idle"
+            assert not branch_node.runtime.is_busy
+            assert env.background_work_count(True) == 0
+
             err, sm_out = await _exec(
                 "send_message",
                 {"Recipient": branch_cid, "Message": "Follow-up task"},
@@ -626,6 +644,62 @@ async def test_command_schedule_and_subagent_lifecycle(
             assert not share_node.cwd.exists()
         finally:
             await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", ["conversation", "rollout"])
+async def test_schedule_wakes_after_resume(tmp_path, monkeypatch, resume):
+    from pyagy import task_manager
+
+    now = 1000.0
+    cron_times = iter([now, now + 120])
+    monkeypatch.setattr(task_manager, "time", lambda: now)
+    monkeypatch.setattr(task_manager, "_next_cron_deadline", lambda expr, exact: next(cron_times))
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+    with _LocalGeminiResponder(lambda path, body: (200, _sse_bytes([{"text": "ok"}]), False)) as srv:
+        options = dict(
+            config_path=_write_codex_gemini_config(tmp_path, srv.base_url), cwd=tmp_path,
+            app_data_dir=tmp_path / "appdata", enable_rollout_recording=(resume == "rollout"),
+        )
+        session = build_agy_session(**options)
+        root = session.root_node
+        try:
+            await root.run_user_prompt("start")
+            conversation_id = root.conversation_id
+            rollout = root.agent.recorded_session_file_path
+            fired = asyncio.Event()
+            root.add_event_listener(lambda event: fired.set() if event.kind == "turn_completed" else None)
+            await root.task_manager.schedule("tick", 100, cron_expression="* * * * *", is_daemon=True, max_iterations=2)
+            await asyncio.wait_for(fired.wait(), 5)
+            await root.task_manager.schedule("one-shot", 101, duration_seconds=60)
+            await root.task_manager.schedule("cancelled", 102, duration_seconds=60)
+            root.task_manager.kill(f"{conversation_id}/task-102")
+            assert root.runtime.state_snapshot()["background_work_count"] == 2
+        finally:
+            await session.close()
+
+        now += 300
+        if resume == "conversation":
+            options["resume_conversation_id"] = conversation_id
+        restored = build_agy_session(**options)
+        root = restored.root_node
+        try:
+            await root.start()
+            if resume == "rollout":
+                assert root.runtime.state_snapshot()["background_work_count"] == 0
+                root.runtime.resume(rollout)
+            assert not root.runtime.is_busy
+            assert {row["task_id"] for row in root.runtime.background_work_snapshot()} == {
+                f"{conversation_id}/task-100", f"{conversation_id}/task-101",
+            }
+            await root.wait_until_settled(timeout_seconds=5)
+            assert root.runtime.state_snapshot()["background_work_count"] == 0
+            messages = [msg.text for msg in root.agent.history if isinstance(msg, UserMessage)]
+            assert sum(" content=tick\n" in text for text in messages) == 2
+            assert sum(" content=one-shot\n" in text for text in messages) == 1
+            assert not list(root.task_manager.tasks_dir.glob("*.schedule.json"))
+        finally:
+            await restored.close()
 
 
 @pytest.mark.asyncio

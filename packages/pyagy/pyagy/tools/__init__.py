@@ -94,6 +94,18 @@ class AgyBaseTool(BaseTool):
         return args
 
 
+class AgyRuntimeEnvironment(AgentRuntimeEnvironment):
+    """Rearm saved schedules on the session worker's event loop."""
+
+    def __init__(self, task_manager: "AgyTaskManager") -> None:
+        super().__init__()
+        self.task_manager = task_manager
+
+    def start(self) -> None:
+        super().start()
+        self.task_manager.restore_schedules()
+
+
 class AgyToolRegistry(ToolRegistry):
     """ToolRegistry preserving exact AGY tool schemas, step indices, and error strings."""
 
@@ -252,7 +264,7 @@ def build_agy_tool_registry(
     official_order, by_name = load_official_declarations()
     registry = AgyToolRegistry(
         transcript_store=transcript_store,
-        runtime_environment=runtime_environment,
+        runtime_environment=runtime_environment or AgyRuntimeEnvironment(task_manager),
         clock=clock,
     )
     all_tools: "typing.Dict[str, AgyBaseTool]" = {

@@ -1,4 +1,3 @@
-import asyncio
 import json
 import os
 import threading
@@ -566,8 +565,8 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
                     "id": "call_sched_1",
                     "name": "schedule",
                     "args": {
-                        "DurationSeconds": 60,
-                        "TimerCondition": "any",
+                        "CronExpression": "0 0 1 1 *",
+                        "IsDaemon": True,
                         "Prompt": "timer wakeup",
                     },
                 },
@@ -728,7 +727,23 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
                 == "tool-done:Encountered error in tool execution: ask_question is disabled"
             )
 
-            # 4b. Background schedule surfaces idle: sleeping + background-work, and clears on silent cancel.
+            def run_slash(cmd_name, arg=""):
+                resp = browser.post(
+                    f"/w/on/api/sessions/{agy_sid}/commands",
+                    json={"command": cmd_name, "argument": arg},
+                )
+                assert resp.status_code == 202
+                sub_id = resp.json()["submission_id"]
+                for _ in range(200):
+                    sub = browser.get(
+                        f"/w/on/api/sessions/{agy_sid}/submissions/{sub_id}"
+                    ).json()["submission"]
+                    if sub["status"] in ("completed", "failed"):
+                        return sub
+                    time.sleep(0.01)
+                raise AssertionError(f"command {cmd_name} timed out")
+
+            # A daemon cron stays armed through /resume and subsequent user turns.
             assert browser.post("/w/on/api/session/message", json={
                 "session_id": agy_sid, "prompt": "BG_SCHEDULE_TEST",
             }).status_code == 200
@@ -741,32 +756,18 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
             assert sleeping_snap["running"] is True
             bg_state = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
             assert bg_state["background_work_count"] == 1
+            assert bg_state["busy"] is False
             bg_list = browser.get(f"/w/on/api/sessions/{agy_sid}/background-work").json()["background_work"]
             assert len(bg_list) == 1
             assert bg_list[0]["tool"] == "run_command"
             assert bg_list[0]["kind"] == "schedule"
+            assert bg_list[0]["is_daemon"] is True
             assert "description" not in bg_list[0]
             assert "log_path" not in bg_list[0]
             bg_task_id = bg_list[0]["task_id"]
-
-            # Cancel silently on the session worker loop (wake_if_idle=False -> no new turn)
-            agy_worker_loop = entry_on.manager.get(agy_sid)._worker_loop
-            fut_cancel = asyncio.run_coroutine_threadsafe(
-                asyncio.sleep(0), agy_worker_loop
-            )
-            fut_cancel.result(timeout=2)
-            agy_worker_loop.call_soon_threadsafe(
-                agy_agent.tool_registry._tools["manage_task"]._task_manager.kill,
-                bg_task_id,
-            )
-            cleared_snap = wait_snapshot(
-                browser,
-                lambda s: s["spinner"] == "" and s["running"] is False,
-                f"/w/on/api/session?session_id={agy_sid}",
-            )
-            assert cleared_snap["running"] is False
-            assert browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]["background_work_count"] == 0
-            assert browser.get(f"/w/on/api/sessions/{agy_sid}/background-work").json()["background_work"] == []
+            assert run_slash("resume", agy_agent.session_id)["status"] == "completed"
+            assert browser.get(f"/w/on/api/sessions/{agy_sid}/background-work").json()["background_work"] == bg_list
+            assert browser.get(f"/w/on/api/session?session_id={agy_sid}").json()["snapshot"]["spinner"] == "idle: sleeping"
 
             # 4c. Subagent spawned via invoke_subagent appears in Web Agent Tree (/agents).
             assert browser.post("/w/on/api/session/message", json={
@@ -790,28 +791,12 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
             time.sleep(0.05)
             for _ in range(200):
                 st = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
-                if not st["busy"] and st["background_work_count"] == 0:
+                if not st["busy"] and st["background_work_count"] == 1:
                     break
                 time.sleep(0.02)
-            assert st["background_work_count"] == 0
+            assert st["background_work_count"] == 1
 
             # 5. Slash commands: /effort, /cd, and manual /compact!
-            def run_slash(cmd_name, arg=""):
-                resp = browser.post(
-                    f"/w/on/api/sessions/{agy_sid}/commands",
-                    json={"command": cmd_name, "argument": arg},
-                )
-                assert resp.status_code == 202
-                sub_id = resp.json()["submission_id"]
-                for _ in range(200):
-                    sub = browser.get(
-                        f"/w/on/api/sessions/{agy_sid}/submissions/{sub_id}"
-                    ).json()["submission"]
-                    if sub["status"] in ("completed", "failed"):
-                        return sub
-                    time.sleep(0.01)
-                raise AssertionError(f"command {cmd_name} timed out")
-
             assert run_slash("effort", "low")["status"] == "completed"
             assert run_slash("cd", str(sub_dir))["status"] == "completed"
             sub_state = run_slash("compact")
@@ -852,5 +837,19 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
             assert restored_snap["cwd"] == str(sub_dir.resolve())
             assert any(t["kind"] == "compaction" for t in restored_snap["turns"])
             assert restored_snap["turns"][-1]["response"] == "agy-ok"
+            assert restored_snap["spinner"] == "idle: sleeping"
+            bg_url = f"/w/on/api/sessions/{restored_sid}/background-work"
+            assert browser2.get(bg_url).json()["background_work"] == bg_list
+
+            restored_session = entry_on_restarted.manager.get(restored_sid)
+            env = restored_session._session.runtime.agent.tool_registry.runtime_environment
+            restored_session._worker_loop.call_soon_threadsafe(env.task_manager.kill, bg_task_id)
+            cleared_snap = wait_snapshot(
+                browser2,
+                lambda s: s["spinner"] == "" and s["running"] is False,
+                f"/w/on/api/session?session_id={restored_sid}",
+            )
+            assert len(cleared_snap["turns"]) == len(restored_snap["turns"])
+            assert browser2.get(bg_url).json()["background_work"] == []
     finally:
         downstream.stop()

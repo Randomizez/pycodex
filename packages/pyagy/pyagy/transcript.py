@@ -372,8 +372,14 @@ class AgyTranscriptStore:
         session_state_path = system_dir / "pyagy_session.json"
         now_dt = clock() if clock is not None else None
         restart_ts = format_utc_iso(now_dt)
+        restart_notice = SERVER_RESTART_NOTICE_CONTENT
+        if any((system_dir / "tasks").glob("task-*.schedule.json")):
+            restart_notice = (
+                "[Notice] Your saved schedules will resume. Your subagents and shell commands "
+                "have been stopped due to server restart. Check their status and restart as needed."
+            )
         restart_msg = make_system_user_message(
-            content=SERVER_RESTART_NOTICE_CONTENT,
+            content=restart_notice,
             sender="system",
             priority="MESSAGE_PRIORITY_LOW",
             timestamp_utc=restart_ts,

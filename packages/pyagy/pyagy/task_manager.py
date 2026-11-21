@@ -1,7 +1,7 @@
 """Background command and schedule task manager matching agy 1.5.13."""
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 import errno
 import json
@@ -11,7 +11,9 @@ import pty
 import random
 import signal
 import subprocess
+import tempfile
 import threading
+from time import time
 import typing
 
 from .context import format_single_system_message, format_utc_iso
@@ -20,7 +22,7 @@ if typing.TYPE_CHECKING:
     from .transcript import AgyTranscriptStore
 
 
-NotifyCallback = typing.Callable[[str, str, str, bool], None]
+NotifyCallback = typing.Callable[[str, str, str, bool], typing.Optional[bool]]
 
 
 @dataclass(frozen=True)
@@ -309,7 +311,6 @@ class AgyTaskRecord:
     timer_condition: "typing.Optional[str]" = None
     command_handle: "typing.Optional[_CommandProcessHandle]" = None
     async_task: "typing.Optional[asyncio.Task[None]]" = None
-    early_cancel_event: "typing.Optional[asyncio.Event]" = None
 
     def to_list_item(self) -> "typing.Dict[str, str]":
         return {
@@ -320,6 +321,43 @@ class AgyTaskRecord:
             "startTime": self.start_time_utc,
             "logUri": f"file://{self.log_path}",
         }
+
+
+@dataclass
+class _Schedule:
+    step_index: int
+    prompt: str
+    start_time_utc: str
+    next_fire_at: float
+    duration_seconds: "typing.Optional[int]" = None
+    timer_condition: "typing.Optional[str]" = None
+    cron_expression: "typing.Optional[str]" = None
+    exact_timing: bool = False
+    is_daemon: bool = False
+    max_iterations: "typing.Optional[int]" = None
+    fired: int = 0
+
+    def save(self, path: Path) -> None:
+        file = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=str(path.parent), delete=False)
+        temporary = Path(file.name)
+        try:
+            with file:
+                json.dump(asdict(self), file, ensure_ascii=False)
+                file.flush()
+                os.fsync(file.fileno())
+            os.replace(str(temporary), str(path))
+        finally:
+            if temporary.exists():
+                temporary.unlink()
+
+
+def _next_cron_deadline(expression: str, exact_timing: bool) -> float:
+    now = datetime.now().astimezone()
+    target = next_cron_fire_time(parse_cron_expression(expression), now).timestamp()
+    delay = target - now.timestamp()
+    if not exact_timing and delay > 10:
+        target += random.uniform(0.0, min(5.0, delay * 0.05))
+    return target
 
 
 class AgyTaskManager:
@@ -338,7 +376,7 @@ class AgyTaskManager:
         self.tasks_dir = tasks_dir
         self._api_model_getter = api_model_getter
         self._notify_callback = notify_callback
-        self._transcript_store = transcript_store
+        self.transcript_store = transcript_store
         self._clock = clock
         self._tasks: "typing.Dict[str, AgyTaskRecord]" = {}
         self._state_change_event: "typing.Optional[asyncio.Event]" = None
@@ -370,8 +408,6 @@ class AgyTaskManager:
                 rec.status = "CANCELLED"
             if rec.command_handle is not None:
                 rec.command_handle.terminate_group()
-            if rec.early_cancel_event is not None:
-                rec.early_cancel_event.set()
             if rec.async_task is not None and not rec.async_task.done():
                 rec.async_task.cancel()
         self._tasks.clear()
@@ -383,11 +419,7 @@ class AgyTaskManager:
 
     def background_work_count(self, after_reply: "bool") -> "int":
         del after_reply
-        return sum(
-            1
-            for rec in self._tasks.values()
-            if rec.status == "RUNNING" and not rec.is_daemon
-        )
+        return sum(rec.status == "RUNNING" for rec in self._tasks.values())
 
     def background_work_snapshot(self) -> "typing.List[typing.Dict[str, object]]":
         items: "typing.List[typing.Dict[str, object]]" = []
@@ -445,12 +477,7 @@ class AgyTaskManager:
             if cond in ("", "never"):
                 continue
             if cond == "any" or cond == sender:
-                rec.status = "CANCELLED"
-                if rec.early_cancel_event is not None:
-                    rec.early_cancel_event.set()
-                if rec.async_task is not None and not rec.async_task.done():
-                    rec.async_task.cancel()
-                self._signal_state_change()
+                self.kill(rec.task_id)
 
     def _spawn_shell_process(
         self,
@@ -633,123 +660,87 @@ class AgyTaskManager:
                 raise ValueError("DurationSeconds must be a positive integer")
             secs = int(duration_seconds)
             cond = (timer_condition or "never").strip() or "never"
-            dur_label = format_schedule_duration_label(secs)
-            log_path.write_text(
-                f"Scheduled one-shot timer for {secs}s (condition={cond}).\n",
-                encoding="utf-8",
+            schedule = _Schedule(
+                step_index, prompt, format_utc_iso(self._now()), time() + secs,
+                duration_seconds=secs, timer_condition=cond,
             )
-            cancel_ev = asyncio.Event()
-            record = AgyTaskRecord(
-                task_id=task_id,
-                step_index=step_index,
-                tool_name="schedule",
-                tool_summary=f"{dur_label} timer",
-                description=f"Timer: {dur_label}, Prompt: {prompt}",
-                start_time_utc=format_utc_iso(self._now()),
-                log_path=log_path,
-                is_daemon=False,
-                status="RUNNING",
-                timer_condition=cond,
-                early_cancel_event=cancel_ev,
+            log_line = f"Scheduled one-shot timer for {secs}s (condition={cond})."
+        else:
+            assert cron_expression is not None
+            if timer_condition is not None and timer_condition.strip():
+                raise ValueError("TimerCondition cannot be used with CronExpression")
+            if max_iterations is not None:
+                max_iterations = int(max_iterations)
+                if max_iterations <= 0:
+                    raise ValueError("MaxIterations must be a positive integer")
+            schedule = _Schedule(
+                step_index, prompt, format_utc_iso(self._now()), _next_cron_deadline(cron_expression, exact_timing),
+                cron_expression=cron_expression.strip(), exact_timing=exact_timing,
+                is_daemon=is_daemon, max_iterations=max_iterations,
             )
+            log_line = f"Scheduled cron {cron_expression!r} (max_iterations={max_iterations}, daemon={is_daemon})."
 
-            async def _run_timer() -> "None":
-                try:
-                    try:
-                        await asyncio.wait_for(cancel_ev.wait(), timeout=float(secs))
-                        return
-                    except asyncio.TimeoutError:
-                        pass
-                    if self._closed or record.status != "RUNNING":
-                        return
-                    record.status = "DONE"
-                    with log_path.open("a", encoding="utf-8") as fh:
-                        fh.write(f"Fired at {format_utc_iso(self._now())}: {prompt}\n")
-                    self._notify_callback(
-                        prompt,
-                        task_id,
-                        "MESSAGE_PRIORITY_HIGH",
-                        True,
-                    )
-                except asyncio.CancelledError:
-                    return
-                finally:
-                    self._signal_state_change()
-
-            self._tasks[task_id] = record
-            record.async_task = asyncio.create_task(_run_timer())
-            self._signal_state_change()
-            return format_background_task_started(
-                task_id=task_id,
-                log_path=log_path,
-                api_model=self._api_model_getter(),
-            )
-
-        assert cron_expression is not None
-        if timer_condition is not None and timer_condition.strip():
-            raise ValueError("TimerCondition cannot be used with CronExpression")
-        parsed_cron = parse_cron_expression(cron_expression)
-        if max_iterations is not None and int(max_iterations) <= 0:
-            raise ValueError("MaxIterations must be a positive integer")
-        limit_iters = int(max_iterations) if max_iterations is not None else None
-        cleaned_cron = cron_expression.strip()
-        log_path.write_text(
-            f"Scheduled cron {cron_expression!r} (max_iterations={limit_iters}, daemon={bool(is_daemon)}).\n",
-            encoding="utf-8",
-        )
-        record = AgyTaskRecord(
-            task_id=task_id,
-            step_index=step_index,
-            tool_name="schedule",
-            tool_summary=format_cron_summary(cleaned_cron),
-            description=f"Cron: {cleaned_cron}, Prompt: {prompt}",
-            start_time_utc=format_utc_iso(self._now()),
-            log_path=log_path,
-            is_daemon=bool(is_daemon),
-            status="RUNNING",
-        )
-
-        async def _run_cron() -> "None":
-            fired = 0
-            try:
-                while not self._closed and record.status == "RUNNING":
-                    now_local = datetime.now().astimezone()
-                    target_dt = next_cron_fire_time(parsed_cron, now_local)
-                    delay = max(0.0, (target_dt - now_local).total_seconds())
-                    if not exact_timing and delay > 10.0:
-                        delay += random.uniform(0.0, min(5.0, delay * 0.05))
-                    await asyncio.sleep(delay)
-                    if self._closed or record.status != "RUNNING":
-                        break
-                    fired += 1
-                    if limit_iters is not None and fired >= limit_iters:
-                        record.status = "DONE"
-                    with log_path.open("a", encoding="utf-8") as fh:
-                        fh.write(
-                            f"Cron trigger #{fired} at {format_utc_iso(self._now())}: {prompt}\n"
-                        )
-                    self._notify_callback(
-                        prompt,
-                        task_id,
-                        "MESSAGE_PRIORITY_HIGH",
-                        True,
-                    )
-                    if record.status == "DONE":
-                        break
-                    self._signal_state_change()
-            except asyncio.CancelledError:
-                return
-            finally:
-                self._signal_state_change()
-
-        self._tasks[task_id] = record
-        record.async_task = asyncio.create_task(_run_cron())
+        log_path.write_text(log_line + "\n", encoding="utf-8")
+        schedule.save(log_path.with_suffix(".schedule.json"))
+        self._arm_schedule(schedule)
         self._signal_state_change()
-        return format_background_task_started(
-            task_id=task_id,
-            log_path=log_path,
-            api_model=self._api_model_getter(),
+        return format_background_task_started(task_id, log_path, self._api_model_getter())
+
+    def restore_schedules(self) -> None:
+        pending = []
+        for path in self.tasks_dir.glob("task-*.schedule.json"):
+            schedule = _Schedule(**json.loads(path.read_text(encoding="utf-8")))
+            if path.name != f"task-{schedule.step_index}.schedule.json" or type(schedule.step_index) is not int:
+                raise ValueError(f"invalid schedule ID in {path}")
+            task_id = f"{self.conversation_id}/task-{schedule.step_index}"
+            if task_id not in self._tasks:
+                pending.append(schedule)
+        for schedule in sorted(pending, key=lambda s: (s.next_fire_at, s.step_index)):
+            self._arm_schedule(schedule)
+            if self.transcript_store is not None:
+                self.transcript_store.set_step_index(schedule.step_index + 1)
+        if pending:
+            self._signal_state_change()
+
+    def _arm_schedule(self, schedule: _Schedule) -> None:
+        if schedule.duration_seconds is not None:
+            duration = format_schedule_duration_label(schedule.duration_seconds)
+            summary = f"{duration} timer"
+            description = f"Timer: {duration}, Prompt: {schedule.prompt}"
+        else:
+            summary = format_cron_summary(schedule.cron_expression)
+            description = f"Cron: {schedule.cron_expression}, Prompt: {schedule.prompt}"
+        task_id = f"{self.conversation_id}/task-{schedule.step_index}"
+        record = AgyTaskRecord(
+            task_id=task_id, step_index=schedule.step_index, tool_name="schedule",
+            tool_summary=summary, description=description, start_time_utc=schedule.start_time_utc,
+            log_path=self.tasks_dir / f"task-{schedule.step_index}.log",
+            is_daemon=schedule.is_daemon, timer_condition=schedule.timer_condition,
         )
+        self._tasks[task_id] = record
+        record.async_task = asyncio.create_task(self._run_schedule(record, schedule))
+
+    async def _run_schedule(self, record: AgyTaskRecord, schedule: _Schedule) -> None:
+        path = record.log_path.with_suffix(".schedule.json")
+        while not self._closed and record.status == "RUNNING":
+            await asyncio.sleep(max(0.0, schedule.next_fire_at - time()))
+            schedule.fired += 1
+            final = schedule.cron_expression is None or schedule.fired == schedule.max_iterations
+            if final:
+                # An expiring one-shot must not cancel itself on its own notification.
+                record.status = "DONE"
+            accepted = self._notify_callback(schedule.prompt, record.task_id, "MESSAGE_PRIORITY_HIGH", True)
+            if accepted is False:
+                return  # Admission closed. Leave the saved occurrence for resume.
+            if final:
+                path.unlink()
+            else:
+                schedule.next_fire_at = _next_cron_deadline(schedule.cron_expression, schedule.exact_timing)
+                schedule.save(path)
+            event = "Fired" if schedule.cron_expression is None else f"Cron trigger #{schedule.fired}"
+            with record.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(f"{event} at {format_utc_iso(self._now())}: {schedule.prompt}\n")
+            self._signal_state_change()
 
     def list_tasks(self) -> "str":
         running_records = sorted(
@@ -795,11 +786,14 @@ class AgyTaskManager:
             raise ValueError(f"task {task_id!r} not found")
         was_running = rec.status == "RUNNING"
         if was_running:
+            if rec.tool_name == "schedule":
+                try:
+                    rec.log_path.with_suffix(".schedule.json").unlink()
+                except FileNotFoundError:
+                    pass  # A timer created before schedule persistence has only a log.
             rec.status = "CANCELLED"
             if rec.command_handle is not None:
                 rec.command_handle.terminate_group()
-            if rec.early_cancel_event is not None:
-                rec.early_cancel_event.set()
             if rec.async_task is not None and not rec.async_task.done():
                 rec.async_task.cancel()
             self._signal_state_change()
@@ -827,8 +821,6 @@ class AgyTaskManager:
                 had_running = True
             if rec.command_handle is not None:
                 rec.command_handle.terminate_group()
-            if rec.early_cancel_event is not None:
-                rec.early_cancel_event.set()
             if rec.async_task is not None and not rec.async_task.done():
                 rec.async_task.cancel()
                 pending_tasks.append(rec.async_task)
