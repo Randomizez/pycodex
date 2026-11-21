@@ -400,8 +400,10 @@ is running, using the same session summaries as the tab activity dots. It return
 to the original workspace title when all sessions are idle.
 
 The workspace presents assistant replies as open text and user messages as
-right-aligned bubbles. Commands and thinking use quieter secondary styling;
-active thinking has a breathing left rule that respects reduced-motion settings.
+right-aligned bubbles. Each turn uses one Markdown block for its live preview
+and committed reply. While the turn runs, live text takes precedence over a
+committed non-final reply. Commands and temporary replies use quieter secondary
+styling. The temporary block's breathing left rule respects reduced-motion settings.
 The Web and VS Code inputs share the text/token composer in
 `packages/pycodex-ws/workspace_server/frontend/composer.mjs`. The Web controller
 bundles it; the extension's compile command copies it into `out/composer.mjs`.

@@ -979,7 +979,6 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 }
 .message-author { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
 .message-header > .message-time { flex-shrink: 0; margin-top: 0; }
-.entry.thinking,
 .entry.response[data-temporary="true"],
 .entry.control,
 .entry.setup {
@@ -994,7 +993,6 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .entry.setup .setup-source { margin-top: 8px; white-space: pre-wrap; }
 .frontend-notice { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .frontend-notice a { color: var(--accent); }
-.entry.thinking,
 .entry.response[data-temporary="true"] {
   border-left-color: var(--accent);
   animation: activity-breathe var(--breathing-duration) var(--breathing-ease) infinite;
@@ -1592,7 +1590,7 @@ code {
 }
 @media (prefers-reduced-motion: reduce) {
   .context-agent[data-status="running"] > .context-agent-row .context-agent-message,
-  .entry.thinking,
+  .entry.response[data-temporary="true"],
   .tab-status::before,
   .spinner:not(:empty)::before { animation: none; }
   .tab-status::before,

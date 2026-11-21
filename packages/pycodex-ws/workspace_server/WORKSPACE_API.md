@@ -298,8 +298,9 @@ derived by joining those texts, and `prompt_at` is the first input's creation
 time. `response_at` is the committed assistant message's creation time. These
 timestamps survive queueing, steer and resume; unknown legacy times stay `null`.
 `response_phase` carries the latest committed assistant message's phase. While
-the turn is running, non-final replies retain the temporary-reply animation,
-including after commentary is committed and tools are executing.
+the turn is running, the built-in page displays `thinking` or, when empty, the
+committed `response` in one animated Markdown block. A final-phase response
+takes precedence immediately and uses the same block.
 Temporary replies omit the displayed timestamp and duration; their stored
 creation time remains available in the snapshot and rollout.
 Local message IDs are distinct from provider response-item `id` values and are

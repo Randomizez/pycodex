@@ -385,17 +385,24 @@ function turn(id, text) {
         prompt_at: "2026-01-01T09:00:00Z", response_at: "2026-01-01T09:02:00Z",
       });
     });
-    for (const [phase, status, animation] of [
-      ["commentary", "tool", "activity-breathe"],
-      ["final", "tool", "none"],
-      ["commentary", "completed", "none"],
-      [null, "running", "activity-breathe"],
-      [null, "completed", "none"],
+    const reasoning = "**Checking**\n\nBoth inputs.";
+    const committed = "Both inputs retained.";
+    for (const [phase, status, thinking, expected, animation] of [
+      ["commentary", "tool", "", committed, "activity-breathe"],
+      ["commentary", "running", reasoning, reasoning, "activity-breathe"],
+      ["commentary", "responding", "Next reply", "Next reply", "activity-breathe"],
+      ["commentary", "tool", "", committed, "activity-breathe"],
+      ["final", "tool", reasoning, committed, "none"],
+      ["commentary", "completed", "", committed, "none"],
+      [null, "running", "", committed, "activity-breathe"],
+      [null, "completed", "", committed, "none"],
     ]) {
-      await page.evaluate(([phase, status]) => {
-        Object.assign(messageSnapshot.turns[0], {response_phase: phase, status});
+      await page.evaluate(([phase, status, thinking]) => {
+        Object.assign(messageSnapshot.turns[0], {response_phase: phase, status, thinking});
         fixture.renderSnapshot(messageSnapshot);
-      }, [phase, status]);
+      }, [phase, status, thinking]);
+      assert.deepEqual(await page.locator("#log > .entry:not(.user) > .text.markdown").allTextContents(), [expected]);
+      assert.equal(await page.locator("#log > .entry:not(.user)").count(), 1);
       assert.equal(await page.locator(".entry.response").evaluate(entry =>
         getComputedStyle(entry).animationName), animation);
       assert.equal(await page.locator(".entry.response .message-time").count(),

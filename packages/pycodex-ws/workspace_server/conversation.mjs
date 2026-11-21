@@ -191,15 +191,16 @@ function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
       body.replaceChildren(notice, details);
     }
   }
-  if (turn.response) {
+  const temporary = !isControl && turn.response_phase !== "final" &&
+    ["running", "responding", "tool"].includes(turn.status);
+  const text = (temporary && turn.thinking) || turn.response || (turn.error && turn.thinking);
+  if (text) {
     const response = renderEntry(
-      `${key}:response`, turn.response, isControl ? "control" : "response", !isControl
+      `${key}:response`, text, isControl ? "control" : "response", !isControl
     );
-    const finalId = isControl || turn.error ? "" : (turn.final_id || "");
+    const finalId = isControl || temporary || turn.error ? "" : (turn.final_id || "");
     if (response.dataset.finalId !== finalId) response.dataset.finalId = finalId;
     if (response.dataset.sessionId !== activeSessionId) response.dataset.sessionId = activeSessionId;
-    const temporary = !isControl && turn.response_phase !== "final" &&
-      ["running", "responding", "tool"].includes(turn.status);
     if (response.parentElement.dataset.temporary !== String(temporary)) {
       response.parentElement.dataset.temporary = String(temporary);
     }
@@ -209,7 +210,6 @@ function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
       setMessageTime(response, temporary ? null : turn.response_at, elapsed);
     }
   }
-  if (turn.thinking) renderEntry(`${key}:thinking`, turn.thinking, "thinking");
   if (Array.isArray(turn.model_errors)) {
     renderModelErrors(turn.model_errors, key, renderEntry);
   }
