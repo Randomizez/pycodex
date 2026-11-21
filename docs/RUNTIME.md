@@ -406,7 +406,8 @@ The workspace presents assistant replies as open text and user messages as
 right-aligned bubbles. Each turn uses one Markdown block for its live preview
 and committed reply. While the turn runs, live text takes precedence over a
 committed non-final reply. Commands and temporary replies use quieter secondary
-styling. The temporary block's breathing left rule respects reduced-motion settings.
+styling. A long preview scrolls within a four-line block.
+Its breathing left rule respects reduced-motion settings.
 The Web and VS Code inputs share the text/token composer in
 `packages/pycodex-ws/workspace_server/frontend/composer.mjs`. The Web controller
 bundles it; the extension's compile command copies it into `out/composer.mjs`.

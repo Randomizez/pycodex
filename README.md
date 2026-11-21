@@ -64,9 +64,10 @@ embedded `[profiles.NAME]` table. Use `--config PATH` for a different config fil
 and `pycodex doctor` to check configuration and connectivity.
 The browser workspace picks up profile changes for new sessions without a restart.
 With `harness = "pyagy"`, Web and Feishu preview the current reasoning text or
-summary until assistant text streams in and takes its place. The browser renders
-the preview and reply in the same Markdown block. Native pycodex exposes
-reasoning through its own event and uses assistant text for the preview.
+summary until assistant text streams in and takes its place. The browser limits
+the Markdown preview to four lines, lets you scroll longer text, and expands
+the same block for the final reply. Native pycodex exposes reasoning through
+its own event and uses assistant text for the preview.
 
 See [configuration](docs/CONTEXT.md#配置读取与-profile) and the
 [Gemini setup example](docs/responses_server/README.md#gemini-api).

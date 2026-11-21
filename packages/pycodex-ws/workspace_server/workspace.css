@@ -994,6 +994,8 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .frontend-notice { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .frontend-notice a { color: var(--accent); }
 .entry.response[data-temporary="true"] {
+  max-height: 4lh;
+  overflow: auto;
   border-left-color: var(--accent);
   animation: activity-breathe var(--breathing-duration) var(--breathing-ease) infinite;
 }
