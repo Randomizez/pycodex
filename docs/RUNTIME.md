@@ -8,12 +8,14 @@ wire parity.
 
 `python-codex` is the core distribution name; its package directory, imports
 and CLI remain `pycodex`, directly under the repository root (no `src/` layout).
-Keep two ordinary Python distributions: core and the exactly version-matched
-`pycodex-ws` extension. Do not add extras or plugin discovery, or install a
-module or command from both wheels. Publish core before workspace.
+Keep three ordinary, version-matched Python distributions: core (`python-codex`),
+`pyagy` (depending on exact core), and `pycodex-ws` (depending on exact core and
+`pyagy`). Do not add extras or plugin discovery, or install a module or command
+from multiple wheels. Publish `python-codex` first, then `pyagy`, then
+`pycodex-ws`.
 The VS Code extension remains a separate VSIX in
 `packages/pycodex-ws/extensions/vscode/`, sharing the workspace composer but
-excluded from both Python wheels and sdists.
+excluded from Python wheels and sdists.
 
 The top level of `pycodex/` contains eight core modules: `agent`, `runtime`,
 `model`, `context`, `protocol`, `events`, `bootstrap` and `cli`, plus
@@ -149,13 +151,15 @@ The same `AgentRuntime` can register
 application-specific async handlers with `register_command`.
 
 The `python-codex` distribution owns `pycodex`, `responses_server` and the
-`pycodex` CLI, including all portable functionality. `pycodex-ws` owns
+`pycodex` CLI, including all portable functionality. `pyagy` lives in
+`packages/pyagy/`, owns `pyagy` and the `pyagy` CLI, and depends on the exact
+matching core version. `pycodex-ws` owns
 `workspace_server`, `pycodex_ws`, `pycodex_router`, viewer resources and the
 `pycodex-ws` / `pycodex-router` commands.
 Its source lives in `packages/pycodex-ws/` and it depends on the exact matching
-core version. The Feishu SDK is installed manually with
+core and `pyagy` versions. The Feishu SDK is installed manually with
 `python -m pip install lark-oapi`; it is not a package dependency.
-The workspace package requires Python 3.7+; core keeps Python 3.6.2 support.
+`pyagy` and `pycodex-ws` require Python 3.7+; core keeps Python 3.6.2 support.
 
 Tests follow the same boundary: root `tests/` runs with the `test` dependency
 group and no workspace or SDK installation; `packages/pycodex-ws/tests/` runs

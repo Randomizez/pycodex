@@ -4,13 +4,15 @@
 
 - 尽量准确复现 [upstream Codex](https://github.com/openai/codex)；
   对齐以实际请求和行为为依据，保留下文及文档明确说明的本地差异。
-- 只维护两个普通 Python 包：`python-codex`（core，Python 3.6.2+）和
-  精确依赖同版本 core 的 `pycodex-ws`（Python 3.7+）。
+- 维护三个同版本发布的普通 Python 包：`python-codex`（core，Python 3.6.2+）、
+  只依赖同版本 core 的 `pyagy`（Python 3.7+），以及精确依赖同版本 core 与 `pyagy`
+  的 `pycodex-ws`（Python 3.7+）。
   core 的目录、导入及 CLI 名仍是 `pycodex`，直接位于仓库根目录。
-  Portable 和 `responses_server` 属于 core；Web、router、飞书适配属于 ws。
-- 飞书 SDK `lark-oapi` 为手动安装的可选依赖；core 不依赖前端或 SDK。
+  Portable 和 `responses_server` 属于 core；Antigravity CLI harness 属于 `pyagy`；
+  Web、router、飞书适配属于 ws。
+- 飞书 SDK `lark-oapi` 为手动安装的可选依赖；core 不依赖前端、`pyagy` 或 SDK。
   VS Code 扩展独立构建 VSIX，不进入 Python wheel/sdist。
-  双包发布必须先成功发布 core，再发布 ws。
+  三包发布必须按 `python-codex -> pyagy -> pycodex-ws` 顺序串行完成。
 
 ## 关键约束
 

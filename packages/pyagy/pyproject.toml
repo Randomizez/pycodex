@@ -4,19 +4,22 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyagy"
-version = "0.1.0"
-description = "Antigravity CLI (agy 1.5.13) wire-compatible harness built on pycodex"
+version = "0.7.0"
+description = "Antigravity CLI (agy 1.5.13) wire-compatible harness built on python-codex"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.7"
 dependencies = [
-    "python-codex",
+    "python-codex==0.7.0",
 ]
 
 [project.scripts]
 pyagy = "pyagy.cli:main"
 
+[tool.uv.sources]
+python-codex = { workspace = true }
+
 [tool.hatch.build.targets.wheel]
 packages = ["pyagy"]
 
-[tool.uv.sources]
-python-codex = { path = "../..", editable = true }
+[tool.hatch.build.targets.sdist]
+only-include = ["pyagy", "pyproject.toml", "README.md", "ALIGNMENT.md", "LICENSE"]

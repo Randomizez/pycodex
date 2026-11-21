@@ -24,7 +24,7 @@ def test_core_distribution_stays_independent() -> "None":
     core = _load_toml(ROOT / "pyproject.toml")
     assert not any(
         dependency.startswith((
-            "pycodex-ws", "lark-oapi", "ipython",
+            "pyagy", "pycodex-ws", "lark-oapi", "ipython",
             "pillow", "pycryptodomex", "fastapi", "pydantic",
         ))
         for dependency in core["project"]["dependencies"]

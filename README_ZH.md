@@ -11,7 +11,8 @@ pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 编程 Agent�
 | 包 | 内容 | Python |
 | --- | --- | --- |
 | `python-codex` | CLI 和 Python API | 3.6.2+ |
-| `pycodex-ws` | Core、浏览器工作区和可选飞书集成 | 3.7+ |
+| `pyagy` | Core 与 Antigravity CLI（`agy`）协议兼容 harness | 3.7+ |
+| `pycodex-ws` | Core、`pyagy`、浏览器工作区和可选飞书集成 | 3.7+ |
 
 使用 CLI 或 Python API：
 
@@ -19,7 +20,7 @@ pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 编程 Agent�
 python3 -m pip install --upgrade python-codex
 ```
 
-使用浏览器工作区则安装 `pycodex-ws`，它会同时安装匹配版本的 core：
+使用浏览器工作区则安装 `pycodex-ws`，它会同时安装匹配版本的 `python-codex` 和 `pyagy`：
 
 ```bash
 python3 -m pip install --upgrade pycodex-ws

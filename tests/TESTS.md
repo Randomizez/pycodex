@@ -99,16 +99,17 @@ turn after observing running/waiting. The syntax probe avoids the old pytest
   `pycodex.portable.server` 模块入口，以及 core 不安装 Crypto、Cryptodome、
   Pillow、FastAPI、Pydantic、pydantic-core 或 workspace 模块。必须离开源码目录执行：
   `python /path/to/pycodex/tests/smoke_core_wheel.py`。
-- `publish.yml` 构建 core 和 workspace 的普通 wheel/sdist。
-  安装 core 后再安装同批 workspace，检查两个 console script、
-  workspace 模块入口和依赖，卸载 workspace 后检查 core 仍可用；另从 sdist
-  重新构建并验证 portable。全部成功后才上传发布产物，发布顺序保持 core 在前。
-  PyPI 和 TestPyPI 均先上传 core，再上传 workspace；core 上传失败时
-  workspace 发布 job 不执行。workspace wheel smoke 还从源码目录外运行
+- `publish.yml` 构建 core、`pyagy` 和 workspace 的普通 wheel/sdist。
+  依次安装 core、`pyagy` 和同批 workspace，检查各 console script、
+  模块入口和依赖，反向卸载 workspace 和 `pyagy` 后检查 core 仍可用；另从 sdist
+  重新构建并验证 portable。全部成功后才上传发布产物，发布顺序保持
+  `python-codex -> pyagy -> pycodex-ws`。
+  PyPI 和 TestPyPI 均按此顺序串行上传；前序包上传失败时后续发布 job 不执行。
+  workspace wheel smoke 还从源码目录外运行
   `python -m pycodex_ws.feishu_oauth --help`，确认授权入口随包分发，
   并验证安装 workspace 不会带入 `lark_oapi`。
   core 的 `test_packaging.py` 覆盖模块入口的帮助、doctor 分发及参数错误退出码；
-  workspace 的同名测试检查双包版本、依赖、模块和命令的归属。
+  workspace 的同名测试检查三包版本、依赖、模块和命令的归属。
 
 ## 自动化测试
 

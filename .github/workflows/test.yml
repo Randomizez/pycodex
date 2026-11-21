@@ -37,7 +37,7 @@ jobs:
         run: |
           uv run --group test python - <<'PY'
           from importlib.util import find_spec
-          for name in ("workspace_server", "pycodex_ws", "lark_oapi", "IPython"):
+          for name in ("pyagy", "workspace_server", "pycodex_ws", "lark_oapi", "IPython"):
               assert find_spec(name) is None, name
           PY
 
@@ -94,7 +94,7 @@ jobs:
         run: |
           python - <<'PY'
           from importlib.util import find_spec
-          for name in ("workspace_server", "pycodex_ws", "lark_oapi", "IPython"):
+          for name in ("pyagy", "workspace_server", "pycodex_ws", "lark_oapi", "IPython"):
               assert find_spec(name) is None, name
           PY
 
@@ -126,5 +126,5 @@ jobs:
       - name: Sync dependencies
         run: uv sync --dev
 
-      - name: Run workspace and integration tests
-        run: uv run --dev pytest packages/pycodex-ws/tests
+      - name: Run pyagy and workspace tests
+        run: uv run --dev pytest packages/pyagy/tests packages/pycodex-ws/tests

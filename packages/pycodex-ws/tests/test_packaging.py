@@ -8,16 +8,32 @@ except ImportError:  # pragma: no cover - exercised on Python < 3.11
 
 def test_workspace_distribution_tracks_core_version():
     package_root = Path(__file__).resolve().parents[1]
-    with (package_root.parents[1] / "pyproject.toml").open("rb") as handle:
+    repo_root = package_root.parents[1]
+    with (repo_root / "pyproject.toml").open("rb") as handle:
         core = tomllib.load(handle)
+    with (repo_root / "packages" / "pyagy" / "pyproject.toml").open("rb") as handle:
+        pyagy_pkg = tomllib.load(handle)
     with (package_root / "pyproject.toml").open("rb") as handle:
         workspace = tomllib.load(handle)
     version = core["project"]["version"]
+
+    assert pyagy_pkg["project"]["version"] == version
+    assert pyagy_pkg["project"]["requires-python"] == ">=3.7"
+    assert pyagy_pkg["project"]["dependencies"] == [
+        "python-codex=={0}".format(version),
+    ]
+    assert pyagy_pkg["project"]["scripts"] == {
+        "pyagy": "pyagy.cli:main",
+    }
+    assert pyagy_pkg["tool"]["hatch"]["build"]["targets"]["wheel"]["packages"] == [
+        "pyagy",
+    ]
 
     assert workspace["project"]["version"] == version
     assert workspace["project"]["requires-python"] == ">=3.7"
     assert workspace["project"]["dependencies"] == [
         "python-codex=={0}".format(version),
+        "pyagy=={0}".format(version),
         "pillow>=9.0.0",
         "websockets>=11,<16",
     ]

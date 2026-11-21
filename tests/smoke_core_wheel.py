@@ -15,7 +15,7 @@ def main():
     root = Path(__file__).resolve().parents[1]
     assert Path(pycodex.__file__).resolve().parent != root / "pycodex"
     for name in (
-        "Cryptodome", "Crypto", "PIL", "workspace_server", "pycodex_ws",
+        "Cryptodome", "Crypto", "PIL", "pyagy", "workspace_server", "pycodex_ws",
         "fastapi", "pydantic", "pydantic_core",
     ):
         assert find_spec(name) is None, name

@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
     "python-codex==0.7.0",
+    "pyagy==0.7.0",
     "pillow>=9.0.0",
     "websockets>=11,<16",
 ]
@@ -20,6 +21,7 @@ pycodex-router = "pycodex_router.server:main"
 
 [tool.uv.sources]
 python-codex = { workspace = true }
+pyagy = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["workspace_server", "pycodex_ws", "pycodex_router"]

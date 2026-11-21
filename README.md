@@ -12,7 +12,8 @@ See [upstream alignment](docs/ALIGNMENT.md) for the supported scope and differen
 | Package | Includes | Python |
 | --- | --- | --- |
 | `python-codex` | CLI and Python API | 3.6.2+ |
-| `pycodex-ws` | Core plus browser workspace and optional Feishu integration | 3.7+ |
+| `pyagy` | Core plus Antigravity CLI (`agy`) wire-compatible harness | 3.7+ |
+| `pycodex-ws` | Core, `pyagy`, browser workspace and optional Feishu integration | 3.7+ |
 
 For the CLI and Python API:
 
@@ -20,7 +21,7 @@ For the CLI and Python API:
 python3 -m pip install --upgrade python-codex
 ```
 
-For the browser workspace, install `pycodex-ws`; it includes the matching core version:
+For the browser workspace, install `pycodex-ws`; it includes matching `python-codex` and `pyagy` versions:
 
 ```bash
 python3 -m pip install --upgrade pycodex-ws
