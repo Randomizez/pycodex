@@ -39,7 +39,15 @@ from .customization import frontend_asset_response, frontend_directory, load_wor
 from . import external_call
 from .runtime_info import runtime_info_prompt
 from .session_api import session_api_routes
-from .vscode_server import VsCodeRuntime, resolve_vscode_link, websocket_origin_allowed
+from .vscode_server import (
+    VsCodeRuntime,
+    extract_vscode_window_id,
+    forwarded_vscode_prefix,
+    inject_vscode_window_payload,
+    resolve_vscode_link,
+    strip_vscode_window_payload,
+    websocket_origin_allowed,
+)
 from .workspace_views import WorkspaceViewOpener
 from .workspaces import WorkspaceSessionManager, session_snapshot
 
@@ -164,6 +172,12 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
             raise HTTPException(status_code=503, detail=str(error))
         return JSONResponse({"ok": True, "target": spec}, headers={"Cache-Control": "no-store"})
 
+    def _require_vscode_window_id(request: Request) -> str:
+        window_id = request.path_params["window_id"]
+        if not window_id or any(ord(ch) < 32 or ord(ch) == 127 for ch in window_id):
+            raise HTTPException(status_code=400, detail="invalid VS Code window ID")
+        return window_id
+
     async def vscode_root(request: Request) -> Response:
         context = require_vscode_http(request)
         assert vscode is not None
@@ -171,10 +185,70 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         if request.method in ("GET", "HEAD"):
             query = ("?" + request.url.query) if request.url.query else ""
             return RedirectResponse(
-                url=request.scope.get("root_path", "") + actual_prefix + "/vscode/" + query,
+                url=forwarded_vscode_prefix(
+                    request.headers.get, request.scope.get("root_path", ""), actual_prefix
+                )
+                + "/"
+                + query,
                 status_code=307,
             )
         return await vscode.proxy_http(request, actual_prefix)
+
+    async def vscode_window_root(request: Request) -> Response:
+        context = require_vscode_http(request)
+        assert vscode is not None
+        window_id = _require_vscode_window_id(request)
+        actual_prefix = actual_workspace_prefix(context)
+        vscode_prefix = forwarded_vscode_prefix(
+            request.headers.get, request.scope.get("root_path", ""), actual_prefix
+        )
+        raw_query = request.scope.get("query_string", b"").decode("latin-1")
+        if request.method in ("GET", "HEAD"):
+            if request.headers.get("sec-fetch-dest", "").strip().lower() == "document":
+                clean_query = strip_vscode_window_payload(raw_query)
+                suffix = ("?" + clean_query) if clean_query else ""
+                return RedirectResponse(
+                    url=vscode_prefix + "/" + suffix,
+                    status_code=307,
+                    headers={"Cache-Control": "no-store"},
+                )
+            suffix = ("?" + raw_query) if raw_query else ""
+            return RedirectResponse(
+                url=vscode_prefix + "/window/" + quote(window_id, safe="") + "/" + suffix,
+                status_code=307,
+                headers={"Cache-Control": "no-store"},
+            )
+        return await vscode.proxy_http(request, actual_prefix, upstream_path="/")
+
+    async def vscode_window(request: Request) -> Response:
+        context = require_vscode_http(request)
+        assert vscode is not None
+        window_id = _require_vscode_window_id(request)
+        actual_prefix = actual_workspace_prefix(context)
+        vscode_prefix = forwarded_vscode_prefix(
+            request.headers.get, request.scope.get("root_path", ""), actual_prefix
+        )
+        raw_query = request.scope.get("query_string", b"").decode("latin-1")
+        if request.method in ("GET", "HEAD"):
+            dest = request.headers.get("sec-fetch-dest", "").strip().lower()
+            if dest == "document":
+                clean_query = strip_vscode_window_payload(raw_query)
+                suffix = ("?" + clean_query) if clean_query else ""
+                return RedirectResponse(
+                    url=vscode_prefix + "/" + suffix,
+                    status_code=307,
+                    headers={"Cache-Control": "no-store"},
+                )
+            if request.method == "GET" and dest in ("", "iframe"):
+                vscode.supersede_window(window_id)
+            if extract_vscode_window_id(raw_query) != window_id:
+                updated_query = inject_vscode_window_payload(raw_query, window_id)
+                return RedirectResponse(
+                    url=vscode_prefix + "/window/" + quote(window_id, safe="") + "/?" + updated_query,
+                    status_code=307,
+                    headers={"Cache-Control": "no-store"},
+                )
+        return await vscode.proxy_http(request, actual_prefix, upstream_path="/")
 
     async def vscode_proxy(request: Request) -> Response:
         context = require_vscode_http(request)
@@ -278,6 +352,8 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         route("/api/views/{view_id}", close_view, ["DELETE"]),
         route("/api/vscode/open", open_vscode_link, ["POST"]),
         route("/vscode", vscode_root, vscode_methods),
+        route("/vscode/window/{window_id}", vscode_window_root, vscode_methods),
+        route("/vscode/window/{window_id}/", vscode_window, vscode_methods),
         route("/vscode/{vscode_path:path}", vscode_proxy, vscode_methods),
         WebSocketRoute(
             prefix + "/vscode", websocket_vscode,

@@ -38,7 +38,7 @@ import struct
 import sys
 import zipfile
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 STATE_DIR = Path(os.environ["MOCK_VSCODE_STATE_DIR"])
 
@@ -100,7 +100,7 @@ async def run_server(http_sock):
     bridge_sock = os.environ["PYCODEX_VSCODE_BRIDGE_SOCK"]
     bridge_token = os.environ["PYCODEX_VSCODE_BRIDGE_TOKEN"]
 
-    async def bridge_loop(window_id):
+    async def bridge_loop(window_id, folder="", ignore_supersede=False):
         b_reader, b_writer = await asyncio.open_unix_connection(bridge_sock)
         hello = {"type": "hello", "token": bridge_token, "window_id": window_id}
         b_writer.write((json.dumps(hello) + "\\n").encode("utf-8"))
@@ -110,10 +110,19 @@ async def run_server(http_sock):
             if not line:
                 break
             msg = json.loads(line.decode("utf-8"))
+            if msg.get("type") == "supersede":
+                with (STATE_DIR / "superseded.jsonl").open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps({"window_id": window_id, "folder": folder}) + "\\n")
+                if not ignore_supersede:
+                    b_writer.close()
+                    break
+                continue
             if msg.get("type") == "open":
                 spec = msg["spec"]
                 with (STATE_DIR / "opened.jsonl").open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps({"window_id": window_id, "spec": spec}) + "\\n")
+                    fh.write(
+                        json.dumps({"window_id": window_id, "folder": folder, "spec": spec}) + "\\n"
+                    )
                 if "fail_bridge.py" in str(spec.get("title", "")):
                     ack = {"type": "ack", "id": msg["id"], "ok": False, "error": "bridge open rejected"}
                 else:
@@ -143,6 +152,25 @@ async def run_server(http_sock):
             body = await reader.readexactly(content_len) if content_len else b""
 
             parsed = urlsplit(target)
+            if method == "GET" and parsed.path == "/":
+                q = parse_qs(parsed.query, keep_blank_values=True)
+                raw_payloads = q.get("payload", [])
+                folder_val = (q.get("folder") or q.get("workspace") or [""])[0]
+                keep_zombie = (q.get("zombie") or [""])[0] == "1"
+                for raw_p in raw_payloads:
+                    try:
+                        entries = json.loads(raw_p)
+                    except ValueError:
+                        continue
+                    if isinstance(entries, list):
+                        for pair in entries:
+                            if isinstance(pair, list) and len(pair) == 2 and pair[0] == "extensionEnvironment":
+                                env_obj = json.loads(pair[1])
+                                dyn_wid = env_obj.get("PYCODEX_VSCODE_WINDOW_ID")
+                                if dyn_wid:
+                                    bridge_tasks.append(
+                                        asyncio.create_task(bridge_loop(dyn_wid, folder_val, keep_zombie))
+                                    )
 
             if headers.get("upgrade", "").lower() == "websocket":
                 if parsed.path == "/refuse-upgrade":
@@ -366,6 +394,8 @@ def test_vscode_disabled_without_workspace_password(
         assert 'data-enable-vscode="false"' in page.text
         assert browser.get(prefix + "/vscode", follow_redirects=False).status_code == 403
         assert browser.get(prefix + "/vscode/").status_code == 403
+        assert browser.get(prefix + "/vscode/window/win-1", follow_redirects=False).status_code == 403
+        assert browser.get(prefix + "/vscode/window/win-1/", follow_redirects=False).status_code == 403
         assert (
             browser.post(prefix + "/api/vscode/open", json={"href": "a.py"}).status_code
             == 403
@@ -393,6 +423,9 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
         unauth_get = browser.get(prefix + "/vscode/", follow_redirects=False)
         assert unauth_get.status_code == 303
         assert unauth_get.headers["location"].startswith("/login?")
+        unauth_win = browser.get(prefix + "/vscode/window/win-1/", follow_redirects=False)
+        assert unauth_win.status_code == 303
+        assert unauth_win.headers["location"].startswith("/login?")
         assert (
             browser.post(prefix + "/api/vscode/open", json={"href": "a.py"}).status_code
             == 401
@@ -429,7 +462,13 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
         assert visitor_page.status_code == 200
         assert 'data-access-role="visitor"' in visitor_page.text
         assert 'data-enable-vscode="false"' in visitor_page.text
-        for path in ("/vscode", "/vscode/", "/vscode/stable-mock"):
+        for path in (
+            "/vscode",
+            "/vscode/",
+            "/vscode/window/win-1",
+            "/vscode/window/win-1/",
+            "/vscode/stable-mock",
+        ):
             resp = browser.get(prefix + path, follow_redirects=False)
             assert resp.status_code == 403
         assert (
@@ -448,6 +487,12 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
         assert 'data-enable-vscode="false"' in agent_index.text
         assert (
             agent_client.get(prefix + "/vscode/", headers=agent_headers).status_code == 403
+        )
+        assert (
+            agent_client.get(
+                prefix + "/vscode/window/win-1/", headers=agent_headers, follow_redirects=False
+            ).status_code
+            == 403
         )
         assert (
             agent_client.post(
@@ -626,6 +671,12 @@ def test_vscode_mounted_under_root_path_forwards_combined_prefix(
         resp = browser.get("/n/node1" + prefix + "/vscode/check")
         assert resp.status_code == 200
         assert resp.json()["headers"]["x-forwarded-prefix"] == "/n/node1" + prefix + "/vscode"
+        win_redir = browser.get(
+            "/n/node1" + prefix + "/vscode/window/win-root/?folder=/tmp", follow_redirects=False
+        )
+        assert win_redir.status_code == 307
+        assert win_redir.headers["location"].startswith("/n/node1" + prefix + "/vscode/window/win-root/?")
+        assert browser.get(win_redir.headers["location"]).json()["headers"]["x-forwarded-prefix"] == "/n/node1" + prefix + "/vscode"
 
 
 def test_vscode_open_link_resolves_files_git_diffs_and_preserves_existing_views(
@@ -873,3 +924,113 @@ async def test_vscode_open_link_times_out_when_no_window_matches(tmp_path, mock_
             )
     finally:
         await runtime.close()
+
+
+@pytest.mark.parametrize("multi", [False, True], ids=["single", "multi"])
+def test_vscode_window_route_preserves_link_binding_across_folder_switches_and_reloads(
+    tmp_path, mock_code_server, multi
+):
+    app, prefix, work_dir, _manager = _build_app(tmp_path, multi, "admin-password")
+    other_folder = tmp_path / "other-project"
+    other_folder.mkdir()
+    (work_dir / "first.py").write_text("one\ntwo\n", encoding="utf-8")
+    (other_folder / "second.py").write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
+
+    with TestClient(app) as browser:
+        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
+
+        # Missing trailing slash redirects to /vscode/window/<id>/ keeping query parameters.
+        slash_redir = browser.get(
+            prefix + "/vscode/window/win-nav?folder=" + str(work_dir) + "&zombie=1",
+            follow_redirects=False,
+        )
+        assert slash_redir.status_code == 307
+        assert (
+            slash_redir.headers["location"]
+            == prefix + "/vscode/window/win-nav/?folder=" + str(work_dir) + "&zombie=1"
+        )
+
+        # Initial load carrying PYCODEX_VSCODE_WINDOW_ID (as createVscodeWindow builds) proxies directly with 0 redirects.
+        init_payload = json.dumps(
+            [["extensionEnvironment", json.dumps({"PYCODEX_VSCODE_WINDOW_ID": "win-nav"})]]
+        )
+        load_1 = browser.get(
+            prefix + "/vscode/window/win-nav/",
+            params={"folder": str(work_dir), "zombie": "1", "payload": init_payload},
+            follow_redirects=False,
+        )
+        assert load_1.status_code == 200
+        upstream_1 = load_1.json()
+        assert upstream_1["target"].startswith("/?folder=")
+        assert upstream_1["headers"]["x-forwarded-prefix"] == prefix + "/vscode"
+
+        open_1 = browser.post(
+            prefix + "/api/vscode/open",
+            json={"href": "first.py#L2", "window_id": "win-nav"},
+        )
+        assert open_1.status_code == 200
+
+        # Simulate VS Code File -> Open Folder... navigating to ?folder=<other_folder> (dropping
+        # extensionEnvironment while keeping non-env payload entries like openFile). Also keep the
+        # first extension host socket alive (zombie=1) to simulate VS Code's 5-minute grace period.
+        extra_payload = json.dumps([["openFile", "vscode-remote://localhost/init.py"]])
+        switch_redir = browser.get(
+            prefix + "/vscode/window/win-nav/",
+            params={"folder": str(other_folder), "payload": extra_payload},
+            follow_redirects=False,
+        )
+        assert switch_redir.status_code == 307
+        loc_2 = switch_redir.headers["location"]
+        assert "openFile" in loc_2
+        assert "PYCODEX_VSCODE_WINDOW_ID" in loc_2
+
+        load_2 = browser.get(loc_2, follow_redirects=False)
+        assert load_2.status_code == 200
+        assert load_2.json()["headers"]["x-forwarded-prefix"] == prefix + "/vscode"
+
+        # Clicking a chat link now opens in the NEW folder's bridge client despite the zombie socket!
+        open_2 = browser.post(
+            prefix + "/api/vscode/open",
+            json={"href": str(other_folder / "second.py") + "#L3", "window_id": "win-nav"},
+        )
+        assert open_2.status_code == 200
+
+        # Simulate Developer: Reload Window (re-requesting loc_2 with matching PYCODEX_VSCODE_WINDOW_ID):
+        # proxies directly with 0 redirects while superseding the previous bridge connection!
+        reload_resp = browser.get(loc_2 + "&reload=1", follow_redirects=False)
+        assert reload_resp.status_code == 200
+
+        # Simulate File -> Open Folder in New Window (_blank -> Sec-Fetch-Dest: document).
+        # Must strip PYCODEX_VSCODE_WINDOW_ID and redirect to /vscode/?... without stealing win-nav!
+        popup_redir = browser.get(
+            loc_2,
+            headers={"sec-fetch-dest": "document"},
+            follow_redirects=False,
+        )
+        assert popup_redir.status_code == 307
+        popup_loc = popup_redir.headers["location"]
+        assert popup_loc.startswith(prefix + "/vscode/?")
+        assert "PYCODEX_VSCODE_WINDOW_ID" not in popup_loc
+        assert "openFile" in popup_loc
+
+        open_3 = browser.post(
+            prefix + "/api/vscode/open",
+            json={"href": "first.py#L1", "window_id": "win-nav"},
+        )
+        assert open_3.status_code == 200
+
+        opened = [
+            json.loads(line)
+            for line in (mock_code_server / "opened.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert [item["folder"] for item in opened] == [
+            str(work_dir),
+            str(other_folder),
+            str(other_folder),
+        ]
+        assert [item["window_id"] for item in opened] == ["win-nav", "win-nav", "win-nav"]
+        superseded = [
+            json.loads(line)
+            for line in (mock_code_server / "superseded.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        assert len(superseded) >= 2

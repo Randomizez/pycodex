@@ -967,7 +967,7 @@ document.querySelectorAll(".content-tabs").forEach(tabs => {
 
 function createVscodeWindow() {
   const id = crypto.getRandomValues(new Uint32Array(4)).join("-");
-  const url = new URL("vscode/", window.location.href);
+  const url = new URL(`vscode/window/${encodeURIComponent(id)}/`, window.location.href);
   const cwd = document.body.dataset.cwd || "";
   if (cwd) url.searchParams.set("folder", cwd);
   url.searchParams.set("payload", JSON.stringify([

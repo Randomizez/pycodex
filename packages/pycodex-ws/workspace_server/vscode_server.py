@@ -18,6 +18,7 @@ from functools import partial
 from http.cookies import SimpleCookie
 from io import StringIO
 from pathlib import Path
+from urllib.parse import quote, unquote_plus
 
 import anyio
 from starlette.exceptions import HTTPException
@@ -229,6 +230,15 @@ function activate(context) {
           message = JSON.parse(line);
         } catch (_err) {
           continue;
+        }
+        if (message.type === "supersede") {
+          disposed = true;
+          if (reconnectTimer) {
+            clearTimeout(reconnectTimer);
+            reconnectTimer = null;
+          }
+          client.end();
+          return;
         }
         if (message.type === "open") {
           Promise.resolve()
@@ -672,6 +682,133 @@ def _ensure_vary_accept_encoding(
     return updated
 
 
+def _parse_payload_entries(
+    raw_value: str,
+) -> "typing.Optional[typing.List[typing.List[object]]]":
+    try:
+        parsed = json.loads(raw_value)
+    except ValueError:
+        return None
+    if not isinstance(parsed, list):
+        return None
+    entries = []  # type: typing.List[typing.List[object]]
+    for item in parsed:
+        if isinstance(item, list) and len(item) == 2 and isinstance(item[0], str):
+            entries.append([item[0], item[1]])
+    return entries
+
+
+def extract_vscode_window_id(raw_query: str) -> "typing.Optional[str]":
+    if not raw_query:
+        return None
+    window_id = None  # type: typing.Optional[str]
+    for segment in raw_query.split("&"):
+        if not segment:
+            continue
+        raw_key, sep, raw_val = segment.partition("=")
+        if not sep or unquote_plus(raw_key) != "payload":
+            continue
+        entries = _parse_payload_entries(unquote_plus(raw_val))
+        if entries is None:
+            continue
+        for key, val in entries:
+            if key == "extensionEnvironment" and isinstance(val, str):
+                try:
+                    env_map = json.loads(val)
+                except ValueError:
+                    continue
+                if isinstance(env_map, dict):
+                    candidate = env_map.get("PYCODEX_VSCODE_WINDOW_ID")
+                    if isinstance(candidate, str) and candidate:
+                        window_id = candidate
+                    else:
+                        window_id = None
+    return window_id
+
+
+def inject_vscode_window_payload(raw_query: str, window_id: str) -> str:
+    kept_segments = []  # type: typing.List[str]
+    payload_entries = []  # type: typing.List[typing.List[object]]
+    env_map = {}  # type: typing.Dict[str, object]
+    if raw_query:
+        for segment in raw_query.split("&"):
+            if not segment:
+                continue
+            raw_key, sep, raw_val = segment.partition("=")
+            if unquote_plus(raw_key) != "payload":
+                kept_segments.append(segment)
+                continue
+            if not sep:
+                continue
+            entries = _parse_payload_entries(unquote_plus(raw_val))
+            if entries is None:
+                continue
+            for key, val in entries:
+                if key == "extensionEnvironment":
+                    if isinstance(val, str):
+                        try:
+                            parsed_env = json.loads(val)
+                        except ValueError:
+                            parsed_env = None
+                        if isinstance(parsed_env, dict):
+                            env_map.update(parsed_env)
+                else:
+                    payload_entries.append([key, val])
+    env_map["PYCODEX_VSCODE_WINDOW_ID"] = window_id
+    payload_entries.append(
+        ["extensionEnvironment", json.dumps(env_map, separators=(",", ":"))]
+    )
+    encoded_payload = quote(
+        json.dumps(payload_entries, separators=(",", ":")), safe=""
+    )
+    kept_segments.append("payload=" + encoded_payload)
+    return "&".join(kept_segments)
+
+
+def strip_vscode_window_payload(raw_query: str) -> str:
+    if not raw_query:
+        return ""
+    kept_segments = []  # type: typing.List[str]
+    for segment in raw_query.split("&"):
+        if not segment:
+            continue
+        raw_key, sep, raw_val = segment.partition("=")
+        if unquote_plus(raw_key) != "payload":
+            kept_segments.append(segment)
+            continue
+        if not sep:
+            continue
+        entries = _parse_payload_entries(unquote_plus(raw_val))
+        if entries is None:
+            continue
+        cleaned_entries = []  # type: typing.List[typing.List[object]]
+        for key, val in entries:
+            if key != "extensionEnvironment":
+                cleaned_entries.append([key, val])
+                continue
+            if not isinstance(val, str):
+                continue
+            try:
+                parsed_env = json.loads(val)
+            except ValueError:
+                continue
+            if isinstance(parsed_env, dict):
+                parsed_env.pop("PYCODEX_VSCODE_WINDOW_ID", None)
+                if parsed_env:
+                    cleaned_entries.append(
+                        [
+                            "extensionEnvironment",
+                            json.dumps(parsed_env, separators=(",", ":")),
+                        ]
+                    )
+        if cleaned_entries:
+            kept_segments.append(
+                "payload="
+                + quote(json.dumps(cleaned_entries, separators=(",", ":")), safe="")
+            )
+    return "&".join(kept_segments)
+
+
 def _upstream_target(scope: dict, actual_prefix: str) -> str:
     raw_path = scope.get("raw_path") or scope["path"].encode("utf-8")
     if b"?" in raw_path:
@@ -704,7 +841,7 @@ def _upstream_target(scope: dict, actual_prefix: str) -> str:
     return suffix.decode("latin-1")
 
 
-def _forwarded_prefix(
+def forwarded_vscode_prefix(
     headers_get: "typing.Callable[[str, str], str]", root_path: str, actual_prefix: str
 ) -> str:
     base = (
@@ -796,6 +933,18 @@ class VsCodeRuntime:
             self._bridge_cond = asyncio.Condition()
         assert self._lock is not None and self._bridge_cond is not None
         return self._lock, self._bridge_cond
+
+    def _supersede_client(self, client: _BridgeClient) -> None:
+        client.window_id = None
+        try:
+            client.writer.write(b'{"type":"supersede"}\n')
+        except Exception:
+            pass
+
+    def supersede_window(self, window_id: str) -> None:
+        for client in list(self._clients):
+            if client.window_id == window_id:
+                self._supersede_client(client)
 
     async def ensure_started(self) -> Path:
         lock, _cond = self._sync_loop_primitives()
@@ -907,9 +1056,13 @@ class VsCodeRuntime:
         _lock, cond = self._sync_loop_primitives()
         client = _BridgeClient(writer)
         self._clients.add(client)
+        welcomed = False
         try:
             while True:
-                line = await reader.readline()
+                try:
+                    line = await reader.readline()
+                except (ConnectionError, OSError):
+                    break
                 if not line:
                     break
                 try:
@@ -919,7 +1072,8 @@ class VsCodeRuntime:
                 if not isinstance(message, dict):
                     continue
                 msg_type = message.get("type")
-                if client.window_id is None:
+                if not welcomed:
+                    welcomed = True
                     window_id = message.get("window_id")
                     if msg_type != "hello" or not isinstance(window_id, str) or not window_id:
                         break
@@ -928,10 +1082,11 @@ class VsCodeRuntime:
                         token, self._bridge_token
                     ):
                         break
+                    self.supersede_window(window_id)
                     client.window_id = window_id
                     async with cond:
                         cond.notify_all()
-                elif msg_type == "ack":
+                elif client.window_id is not None and msg_type == "ack":
                     req_id = str(message.get("id") or "")
                     future = client.pending.pop(req_id, None)
                     if future is not None and not future.done():
@@ -980,14 +1135,25 @@ class VsCodeRuntime:
         finally:
             client.pending.pop(req_id, None)
 
-    async def proxy_http(self, request: Request, actual_prefix: str) -> Response:
+    async def proxy_http(
+        self,
+        request: Request,
+        actual_prefix: str,
+        upstream_path: "typing.Optional[str]" = None,
+    ) -> Response:
         try:
             http_sock = await self.ensure_started()
         except (FileNotFoundError, RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
             raise HTTPException(status_code=503, detail=str(exc))
 
-        target = _upstream_target(request.scope, actual_prefix)
-        forwarded_prefix = _forwarded_prefix(
+        if upstream_path is not None:
+            query_bytes = request.scope.get("query_string", b"")
+            target = upstream_path + (
+                ("?" + query_bytes.decode("latin-1")) if query_bytes else ""
+            )
+        else:
+            target = _upstream_target(request.scope, actual_prefix)
+        forwarded_prefix = forwarded_vscode_prefix(
             request.headers.get, request.scope.get("root_path", ""), actual_prefix
         )
         body = await request.body()
@@ -1260,7 +1426,7 @@ class VsCodeRuntime:
             return
 
         target = _upstream_target(websocket.scope, actual_prefix)
-        forwarded_prefix = _forwarded_prefix(
+        forwarded_prefix = forwarded_vscode_prefix(
             websocket.headers.get, websocket.scope.get("root_path", ""), actual_prefix
         )
         host = websocket.headers.get("host") or websocket.url.netloc or "localhost"

@@ -1441,9 +1441,9 @@ without a password, share visitors, and `pycodex.agent_access` requests keep
 `data-enable-vscode="false"` and receive HTTP 403 / WebSocket 1008 on `vscode/` and
 `POST api/vscode/open`. On password-protected workspaces, clicking the button mounts an
 unclosable `VS Code` tab immediately to the right of `Canvas` (before read-only file/diff
-tabs), lazily loads `vscode/?folder=<work_dir>` on first open while showing a loading
-overlay and tab indicator until the workbench finishes loading (with inline retry on startup errors),
-and enters VS Code link mode. On the first VS Code request, `VsCodeRuntime` locates the
+tabs), lazily loads `vscode/window/<window_id>/?folder=<work_dir>&payload=...` on first open while showing
+a loading overlay and tab indicator until the workbench finishes loading (with inline retry on startup
+errors), and enters VS Code link mode. On the first VS Code request, `VsCodeRuntime` locates the
 host VS Code Web Server
 (`PYCODEX_VSCODE_WEB_SERVER`, `~/.vscode-server/cli/serve-web/*/bin/code-server`, or `PATH`),
 idempotently installs the lightweight `pycodex.vscode-bridge` extension into
@@ -1454,9 +1454,13 @@ assets with representation-aware `ETag`/`304` handling while leaving event strea
 unbuffered), cleaning up the process group and socket directory on app shutdown.
 The proxy accepts a browser WebSocket after the upstream handshake succeeds.
 Server startup and upstream handshake failures explicitly reject the upgrade.
-Each workspace page generates a fresh `window_id`. The workbench URL carries it
-in the `extensionEnvironment` payload, and the extension host registers that
-ID on its authenticated bridge connection. In VS Code mode, new file, Git,
+Each workspace page generates a fresh `window_id` and loads
+`vscode/window/<window_id>/` with `PYCODEX_VSCODE_WINDOW_ID` in the
+`extensionEnvironment` payload: in-workbench folder/workspace switches that drop
+`payload` redirect once to restore it, older bridge connections for that
+`window_id` are superseded on navigation and reconnect while forwarding
+`X-Forwarded-Prefix: <base>/vscode`, and top-level `Sec-Fetch-Dest: document`
+navigations strip the window binding and redirect to `vscode/`. In VS Code mode, new file, Git,
 and diff link clicks send `window_id` with `POST api/vscode/open` to open
 local files, read-only `pycodex-git:` revisions, and `vscode.diff` editors (including
 `#L` / `#R` line selections) inside VS Code while leaving existing `manager.views` tabs
