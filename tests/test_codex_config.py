@@ -404,3 +404,30 @@ def test_profile_catalog_lists_embedded_and_valid_adjacent_files(tmp_path):
     _write_profile(config, "legacy", 'model = "legacy"\n', True)
 
     assert list_codex_profiles(config) == ["_fast-2", "legacy", "work"]
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_profile_selects_and_validates_harness(tmp_path, embedded):
+    config = tmp_path / "config.toml"
+    config.write_text('model = "base"\n', encoding="utf-8")
+    _write_profile(
+        config,
+        "gemini-pool",
+        'model = "gemini-4-carbon-high"\ncompat_api = "gemini"\nharness = "pyagy"\n',
+        embedded,
+    )
+    _write_profile(
+        config,
+        "explicit-pycodex",
+        'model = "base"\nharness = "pycodex"\n',
+        embedded,
+    )
+    assert CodexConfig.from_env(config).harness == "pycodex"
+    assert CodexConfig.from_env(config, "explicit-pycodex").harness == "pycodex"
+    assert CodexConfig.from_env(config, "gemini-pool").harness == "pyagy"
+
+    for invalid in ('"codex"', '"unknown"', "true", "123", "[]"):
+        bad = tmp_path / "bad.toml"
+        bad.write_text('model = "base"\nharness = {}\n'.format(invalid), encoding="utf-8")
+        with pytest.raises(ValueError, match="harness must be one of"):
+            CodexConfig.from_env(bad)

@@ -2,10 +2,12 @@
 
 import asyncio
 import atexit
+import sys
 import threading
 import typing
 from collections import deque
 from dataclasses import replace
+from pathlib import Path
 
 from starlette.concurrency import run_in_threadpool
 
@@ -29,16 +31,31 @@ from .session_view import SPINNER_STATUS_PREVIEW_LIMIT, WebSessionView, _json_sa
 
 SessionFactory = typing.Callable[[], object]
 ThreadedSessionFactory = typing.Callable[[], "WorkspaceInteractiveSession"]
+_UNSET = object()
+
+
+def _import_build_agy_session():
+    try:
+        from pyagy.bootstrap import build_agy_session
+
+        return build_agy_session
+    except ModuleNotFoundError:
+        sibling = Path(__file__).resolve().parents[2] / "pyagy"
+        if (sibling / "pyagy" / "__init__.py").is_file():
+            sibling_str = str(sibling)
+            if sibling_str not in sys.path:
+                sys.path.insert(0, sibling_str)
+            from pyagy.bootstrap import build_agy_session
+
+            return build_agy_session
+        raise
 
 
 def build_workspace_session(
     config_path, profile, cwd, toolset, workspace_context=None, system_prompt=None,
-    tools_factory=get_tools, **model_options
+    tools_factory=get_tools, extra_tools=(), **model_options
 ):
     config = CodexConfig.from_env(config_path, profile, use_default_profile=False)
-    bootstrap = build_model(config.provider, **model_options)
-    if bootstrap.owned_server is not None:
-        atexit.register(bootstrap.owned_server.stop)
     if isinstance(workspace_context, str):
         contextual_messages = (workspace_context,) if workspace_context else ()
     elif workspace_context:
@@ -49,9 +66,43 @@ def build_workspace_session(
         config.context, cwd=cwd, base_instructions_override=system_prompt,
         extra_contextual_user_messages=contextual_messages,
     )
+    if config.harness == "pyagy":
+        build_agy_session = _import_build_agy_session()
+        agy_session = build_agy_session(
+            config_path=config_path,
+            profile=profile,
+            cwd=Path(cwd),
+            codex_config=config,
+            context_config=context,
+            toolset=toolset,
+            extra_tools=extra_tools,
+            timeout_seconds=model_options.get("timeout_seconds", 120.0),
+            enable_rollout_recording=True,
+        )
+        atexit.register(agy_session.owned_server.stop)
+        runtime = agy_session.root_node.runtime
+
+        async def _close_agy_resources():
+            try:
+                await agy_session.root_node.task_manager.close()
+                await agy_session.controller.close_subagents()
+            finally:
+                agy_session.owned_server.stop()
+
+        runtime.add_close_handler(_close_agy_resources)
+        register_feishu_commands(runtime)
+        return WorkspaceInteractiveSession(
+            runtime, config_path, configured_toolset=toolset,
+        )
+
+    bootstrap = build_model(config.provider, **model_options)
+    if bootstrap.owned_server is not None:
+        atexit.register(bootstrap.owned_server.stop)
     runtime = AgentsManager(bootstrap.client, context, toolset, tools_factory).create_root_runtime()
     register_feishu_commands(runtime)
-    return WorkspaceInteractiveSession(runtime, config_path)
+    return WorkspaceInteractiveSession(
+        runtime, config_path, configured_toolset=toolset,
+    )
 
 
 class _SubmissionStore:
@@ -139,9 +190,11 @@ class WorkspaceInteractiveSession:
         self,
         runtime,
         config_path: "typing.Union[str, None]" = None,
+        configured_toolset=_UNSET,
     ) -> None:
         self.runtime = runtime
         self.config_path = config_path
+        self.configured_toolset = configured_toolset
         self.view = WebSessionView()
         self._frontend_id = None
         self._child_views = {}

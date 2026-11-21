@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling>=1.17.1,<1.18"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyagy"
+version = "0.1.0"
+description = "Antigravity CLI (agy 1.5.13) wire-compatible harness built on pycodex"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "python-codex",
+]
+
+[project.scripts]
+pyagy = "pyagy.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["pyagy"]
+
+[tool.uv.sources]
+python-codex = { path = "../..", editable = true }

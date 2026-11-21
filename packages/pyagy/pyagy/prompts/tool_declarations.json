@@ -1,0 +1,558 @@
+[
+  {
+    "description": "Read the contents of a text, image, pdf, video, or audio file. Each read returns at most 800 lines or 46080 bytes.",
+    "name": "read_file",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "ByteOffset": {
+          "description": "Byte offset into the line range. Use to continue reading when content is truncated by the byte limit.",
+          "type": "integer"
+        },
+        "EndLine": {
+          "description": "End line to read (inclusive). Omit to read until the end of the file, within the per-read limits.",
+          "type": "integer"
+        },
+        "Path": {
+          "description": "The absolute path of the file to read.",
+          "type": "string"
+        },
+        "StartLine": {
+          "description": "Start line to read (inclusive). Omit to read from the beginning of the file.",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "Path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Execute a command in the workspace. Operating System: linux. Shell: bash. Each command runs in a new session (working directory changes and environment variables do not persist across calls). Commands that do not finish within the specified wait time continue running in the background as tasks; the system will notify you when they finish, so do not poll their status or set timers to check on them.",
+    "name": "run_command",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "CommandLine": {
+          "description": "The exact command line string to execute.",
+          "type": "string"
+        },
+        "IsDaemon": {
+          "description": "Set to true for long-running support processes that are meant to keep running in the background indefinitely and are not expected to finish on their own (e.g., dev servers, file watchers, tunnels). Leave false (the default) for normal commands that are expected to terminate.",
+          "type": "boolean"
+        },
+        "WaitMsBeforeAsync": {
+          "description": "Milliseconds to wait for the command to finish before backgrounding it (500 to 10000). Set to a larger value (e.g. 5000-10000) for commands expected to finish synchronously; set to 500 for commands intended to run in the background.",
+          "type": "integer"
+        },
+        "toolSummary": {
+          "description": "Brief 2-5 word noun phrase describing the command task. Capitalize like a sentence. Some examples: 'Git status check', 'Unit test execution', 'Package build', 'Dev server startup'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "CommandLine",
+        "toolSummary",
+        "WaitMsBeforeAsync"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Manage the background tasks of this conversation: 'list' the running tasks, check a task's 'status' and recent log output, 'send_input' to a running task, or 'kill' one. Refer to tasks by the TaskId that 'list' reports; keep task references human-readable when talking to the user.",
+    "name": "manage_task",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Action": {
+          "description": "'list' reports the running tasks; the other actions operate on the task named in TaskId.",
+          "enum": [
+            "list",
+            "kill",
+            "status",
+            "send_input"
+          ],
+          "type": "string"
+        },
+        "Input": {
+          "description": "Input to deliver to the task. Required for 'send_input'.",
+          "type": "string"
+        },
+        "TaskId": {
+          "description": "Task to manage, as reported by 'list'. Required for 'kill', 'status' and 'send_input'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "Action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Send a message to another agent, such as a subagent or a peer. Not a channel to the user.",
+    "name": "send_message",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Message": {
+          "description": "Content of the message.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "Recipient": {
+          "description": "Conversation ID of the agent to message.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "Recipient",
+        "Message"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Schedule a one-shot timer (DurationSeconds) or a recurring cron job (CronExpression) that notifies you via Prompt. This tool call runs as a background task and returns immediately; end your turn (call no more tools) to wait for notifications. A timer with a TimerCondition is cancelled early by a matching message, which is itself your wakeup. Set IsDaemon only for a cron that should keep firing after the current task is done. Set ExactTiming only when a cron must fire at the exact wall-clock time without jitter. Use the manage_task tool to cancel active schedules, and never use a shell sleep command as a timer.",
+    "name": "schedule",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "CronExpression": {
+          "description": "Standard 5-field cron expression for a recurring schedule (e.g. '*/5 * * * *' for every 5 minutes). Mutually exclusive with DurationSeconds.",
+          "type": "string"
+        },
+        "DurationSeconds": {
+          "description": "Seconds to wait for a one-shot timer. Mutually exclusive with CronExpression.",
+          "type": "integer"
+        },
+        "ExactTiming": {
+          "description": "Cron only. Set true only when the user explicitly requires the schedule to fire at the exact wall-clock time without jitter. Leave false (the default) for polling, monitoring, or periodic tasks so triggers are jittered to avoid load spikes.",
+          "type": "boolean"
+        },
+        "IsDaemon": {
+          "description": "Cron only. Set true only for an independent standing job that should keep firing after the current task is done.",
+          "type": "boolean"
+        },
+        "MaxIterations": {
+          "description": "Cron only. Maximum number of triggers before the schedule stops; defaults to unlimited.",
+          "type": "integer"
+        },
+        "Prompt": {
+          "description": "Message sent to you as a high-priority notification when the timer fires or the cron triggers.",
+          "type": "string"
+        },
+        "TimerCondition": {
+          "description": "Timer only. Cancels the timer early when a matching message arrives: 'never' (default), 'any' (any message), or a sender ID (a message from that subagent or background task).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "Prompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Launch a subagent. It runs in the background with its own prompt and sends you a message when it completes or needs guidance; there is no need to poll.\n\nGuidelines:\n* The subagent is identified by the conversationId returned; message it with the send_message tool.\n* Multiple subagents may share a type name; each still gets a unique conversationId.\n* If a task continues an existing subagent's work, message that subagent instead of launching a new one.",
+    "name": "invoke_subagent",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Model": {
+          "description": "Model for the subagent. 'inherit' (default): Uses your model. Default to 'inherit' unless the user explicitly requests a different model. 'flash_lite': The lightest, fastest model for trivial or high-volume tasks. 'flash': A lighter, faster model for simple tasks. 'pro': A larger model for complex work.",
+          "enum": [
+            "inherit",
+            "flash_lite",
+            "flash",
+            "pro"
+          ],
+          "type": "string"
+        },
+        "Prompt": {
+          "description": "A clear, actionable task description for the subagent. Be specific about what the subagent should do and what information it should return.",
+          "type": "string"
+        },
+        "Role": {
+          "description": "A 2-5 word description of the subagent's role. Should read similar to a job title, e.g. 'Codebase Researcher', 'Database Debugger', etc. Should also be detailed enough to distinguish between different subagents who might share similar purposes.",
+          "type": "string"
+        },
+        "TypeName": {
+          "description": "Type name of the subagent to invoke.",
+          "type": "string"
+        },
+        "Workspace": {
+          "description": "Workspace mode for the subagent. 'inherit' (default) uses the same workspace as the parent. 'branch' creates a new isolated workspace branched or cloned from the parent. 'share' creates a new workspace sharing the parent's underlying repository directory (similar to a git worktree or Mercurial 'hg share'), allowing independent branching without duplicating storage. If omitted, defaults to 'inherit'.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "TypeName",
+        "Role",
+        "Prompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Define a new subagent type that can then be invoked repeatedly. Subagents always have tools to research the codebase and to communicate with other agents.",
+    "name": "define_subagent",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Description": {
+          "description": "What this subagent does and when it should be used.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "EnableMCPTools": {
+          "description": "Grant access to MCP tools.",
+          "type": "boolean"
+        },
+        "EnableSubagentTools": {
+          "description": "Grant tools to define and invoke its own subagents.",
+          "type": "boolean"
+        },
+        "EnableWriteTools": {
+          "description": "Grant tools to create and edit files, and run commands.",
+          "type": "boolean"
+        },
+        "Name": {
+          "description": "Unique name used to invoke the subagent.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "SystemPrompt": {
+          "description": "System prompt for the subagent.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "Name",
+        "Description",
+        "SystemPrompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Manage the direct subagents of this conversation. 'list' reports each one's conversationId (the id used to kill or message it) and live state. Killing a subagent also kills its descendants and deletes their branched workspaces; logs and artifacts are preserved.",
+    "name": "manage_subagents",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Action": {
+          "description": "'list' lists active direct subagents; 'kill' terminates the subagents named in ConversationIds; 'kill_all' terminates all.",
+          "enum": [
+            "list",
+            "kill",
+            "kill_all"
+          ],
+          "type": "string"
+        },
+        "ConversationIds": {
+          "description": "Subagents to kill. Required for 'kill'.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "Action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Create a new file with the given contents, or append to an existing file when Append is true. Parent directories are created automatically. Fails if the file already exists unless Overwrite or Append is true. When creating an artifact, always provide ArtifactMetadata. When creating non-artifact files, do not provide it.",
+    "name": "write_file",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Append": {
+          "description": "Whether to append Content to the end of the file (creating the file if it does not exist). Cannot be combined with Overwrite=true.",
+          "type": "boolean"
+        },
+        "ArtifactMetadata": {
+          "additionalProperties": false,
+          "description": "Metadata that defines artifact properties. ONLY provide when creating an artifact file in the artifact directory. Omit this field when creating non-artifact files.",
+          "properties": {
+            "RequestFeedback": {
+              "description": "Whether to request user feedback on this artifact if its contents are executable (e.g., a plan). The user is given a 'Proceed' button to execute it.",
+              "type": "boolean"
+            },
+            "Summary": {
+              "description": "Detailed multi-line summary of the artifact's contents and purpose.",
+              "type": "string"
+            },
+            "UserFacing": {
+              "description": "Whether this artifact should be presented to the user.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Summary",
+            "UserFacing",
+            "RequestFeedback"
+          ],
+          "type": "object"
+        },
+        "Content": {
+          "description": "The full contents to write to the file.",
+          "type": "string"
+        },
+        "Overwrite": {
+          "description": "Whether to overwrite an existing file, replacing its entire contents.",
+          "type": "boolean"
+        },
+        "Path": {
+          "description": "The absolute path of the file to create.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "Path",
+        "Content"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Use this tool to edit an existing file. Follow these rules:\n1. Use this tool for a single contiguous block of edits. To edit multiple non-adjacent regions, make separate calls.\n2. Target must exactly match existing file text, including whitespace. Replacement must be a complete drop-in replacement for the Target.\n3. If Target appears multiple times in the file, every occurrence is replaced.",
+    "name": "edit_file",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "ArtifactMetadata": {
+          "additionalProperties": false,
+          "description": "Metadata updates if updating an artifact file in the artifact directory. Omit this field when editing non-artifact files. Should be updated if the content is changing meaningfully.",
+          "properties": {
+            "RequestFeedback": {
+              "description": "Whether to request user feedback on this artifact if its contents are executable (e.g., a plan). The user is given a 'Proceed' button to execute it.",
+              "type": "boolean"
+            },
+            "Summary": {
+              "description": "Detailed multi-line summary of the artifact's contents and purpose.",
+              "type": "string"
+            },
+            "UserFacing": {
+              "description": "Whether this artifact should be presented to the user.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "Summary",
+            "UserFacing",
+            "RequestFeedback"
+          ],
+          "type": "object"
+        },
+        "Path": {
+          "description": "The absolute path of the file to modify.",
+          "minLength": 1,
+          "type": "string"
+        },
+        "Replacement": {
+          "description": "The content to replace the target with. Leave empty to delete the target.",
+          "type": "string"
+        },
+        "Target": {
+          "description": "The exact string to be replaced. This must be the exact character-sequence to be replaced, including whitespace. Be very careful to include any leading whitespace otherwise this will not work at all. If the string appears multiple times in the file, every occurrence is replaced.",
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "Path",
+        "Target",
+        "Replacement"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Performs a web search for a given query. Returns a summary of relevant information along with URL citations.",
+    "name": "search_web",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "domain": {
+          "description": "Optional domain to recommend the search prioritize",
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Run a Python workflow script that orchestrates many agents and tool calls. Use it when the orchestration itself is code: fanning out over many independent pieces of work (files, modules, bugs, review angles), staged pipelines where each stage feeds the next, or aggregating, filtering, or cross-checking the results of many agents. Don't use it for a single delegated task; use a subagent. Read the run-workflow skill before writing a script: it documents the primitives, their arguments, and how the script runs. Unless it finishes within WaitMsBeforeAsync, the workflow runs in the background; you are notified when it ends.",
+    "name": "run_workflow",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "Args": {
+          "description": "Optional arguments for the script, which reads them from the args dict. A workflow's Args must match the schema in its workflow.json.",
+          "type": "object"
+        },
+        "Cwd": {
+          "description": "Optional working directory for the script, as an absolute path. Defaults to the first workspace.",
+          "type": "string"
+        },
+        "Description": {
+          "description": "Brief summary of the workflow goal.",
+          "type": "string"
+        },
+        "Script": {
+          "description": "Python source of the workflow script. Set exactly one of Script and ScriptPath.",
+          "type": "string"
+        },
+        "ScriptPath": {
+          "description": "Absolute path of a Python workflow script file. Set exactly one of Script and ScriptPath.",
+          "type": "string"
+        },
+        "WaitMsBeforeAsync": {
+          "description": "Optional. Milliseconds (up to 10000) to wait for the workflow to finish before backgrounding it; a workflow that finishes in time returns its result in this turn. 0 (the default) backgrounds it at once. Set it for quick call_tool fan-outs, not for workflows that run agents.",
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  {
+    "description": "Manage the swarm of agents working with you on the shared message board. Actions: `add` spawns a worker under a roster name (or `<name>-1`..`<name>-<k>` when `tasks` or `n` is set), pinned to a model, and posts `brief` on the board as an @mention of it, which is where the swarm sees its assignment -- by default a worker starts fresh and sees nothing of this conversation, so the brief must say what it owns and what done looks like; pass `fork:\"<member>\"` (or `\"coordinator\"`) to branch the new worker from that member's conversation history instead. `workspace:\"share\"` gives each worker its own working copy of your repository, for authors who edit or build at the same time as others; `\"branch\"` gives an isolated clone; readers and verifiers keep the default `inherit`. Briefs are public: every member can read them. `models` lists the models to choose from (`all:true` lists every model `add` accepts); with no model, a worker runs on your own model, which is what to use unless the user asks for another. `status` lists every member, the model it runs on, and its state: `waiting` is asleep on the board, costing nothing until somebody posts; `working` is somewhere in a turn; `stopped` is not loaded (e.g. after a restart) and a post naming it revives it; `killed` is gone. `model` switches a `waiting` worker (or yourself, when `name` is your own name or omitted) to another model, keeping its conversation: it is told of the switch, resumes any unfinished work on the new model, and runs on it from then on. Use it only when a worker or you run out of quota or capacity, or the user asks for another model, and say why; never `kill` and `add` instead. `kill` ends a worker PERMANENTLY and deletes its own workspace, so land its work first (uploaded for review, or its branch merged into your working copy; push to a remote only when the user asks): a killed worker cannot be revived, so use it when the work is over, never as a pause -- bringing one back means `add`ing a new worker with a new conversation. `title` names the swarm. Workers may call `status`, `models` and `add` too, to bring in helpers for their own work: the helper's brief is posted as you, it works in your workspace (or a share/branch of it), and should report back to you by name. A worker may `kill` only the workers it added, and `model` itself or the workers it added; killing a worker does not kill its helpers. The coordinator may `kill` any worker and `model` itself or any worker, and `title` is the coordinator's alone.",
+    "name": "swarm",
+    "parametersJsonSchema": {
+      "properties": {
+        "action": {
+          "description": "What to do: status, models, add, model, kill or title.",
+          "enum": [
+            "status",
+            "models",
+            "add",
+            "model",
+            "kill",
+            "title"
+          ],
+          "type": "string"
+        },
+        "all": {
+          "description": "For models: list every model add accepts, not just the suggested ones.",
+          "type": "boolean"
+        },
+        "brief": {
+          "description": "The worker's assignment, for add: what it owns and what done looks like. Posted publicly on the board.",
+          "type": "string"
+        },
+        "fork": {
+          "description": "Optional roster name of an existing member (or \"coordinator\") whose conversation history the new worker forks from instead of starting fresh.",
+          "type": "string"
+        },
+        "model": {
+          "description": "Model to pin this worker to, for add and model: a model name listed by the models action, or its display name. Leave it unset to use your own model, unless the user asks for another.",
+          "type": "string"
+        },
+        "n": {
+          "description": "Optional number of homogeneous copies to spawn (<name>-1 through <name>-<n>), for add when the user explicitly asks for multiple agents sharing one role and brief. Omit (defaults to 1) to spawn a single named worker.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "name": {
+          "description": "Roster name of the worker, for add, model and kill (or base name when n > 1 or tasks is set). Worker names: lowercase, starting with a letter or digit, up to 24 of a-z, 0-9, - and _ (including any -<k> suffix); not all, coordinator or coordinator-*.",
+          "type": "string"
+        },
+        "tasks": {
+          "description": "Optional per-worker slice targets for add when spawning a sharded group (<name>-1 through <name>-<len(tasks)>), each combined with the shared brief. Omit for normal single-worker add calls.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "description": "A short title for the swarm, for the UI.",
+          "type": "string"
+        },
+        "workspace": {
+          "description": "Where each worker works, for add. inherit (default) is your own workspace. share gives each worker its own working copy of your repository; branch gives each an isolated clone. kill deletes a share or branch workspace.",
+          "enum": [
+            "inherit",
+            "share",
+            "branch"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Ask the user one or more multiple-choice questions, e.g. to clarify requirements, and wait for the answers. Don't use it for trivial yes/no questions; ask those in plain text.",
+    "name": "ask_question",
+    "parametersJsonSchema": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "properties": {
+        "questions": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "is_multi_select": {
+                "description": "Whether the user can select several options.",
+                "type": "boolean"
+              },
+              "options": {
+                "description": "Answers to choose from, unnumbered and without an 'Other' option; the UI adds both. Put a recommended answer first, prefixed with '(Recommended)'.",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 2,
+                "type": "array"
+              },
+              "question": {
+                "description": "The question, without 'select all that apply' or similar; the UI adds that.",
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "question",
+              "options"
+            ],
+            "type": "object"
+          },
+          "minItems": 1,
+          "type": "array"
+        }
+      },
+      "required": [
+        "questions"
+      ],
+      "type": "object"
+    }
+  }
+]

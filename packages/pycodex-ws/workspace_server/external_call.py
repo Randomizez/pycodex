@@ -16,7 +16,7 @@ from pycodex.tools.base_tool import BaseTool
 from pycodex_router.protocol import route_path
 from pycodex_ws.server_support import json_object_body, read_body
 
-from .sessions import ThreadedWorkspaceInteractiveSession, build_workspace_session
+from .sessions import _UNSET, ThreadedWorkspaceInteractiveSession, build_workspace_session
 
 TOKEN_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
 EXTERNAL_CALL_CONTEXT = (
@@ -76,7 +76,11 @@ class ExternalCallSession:
         self.in_flight = None
 
     def tools_factory(self, manager, environment, toolset):
-        host_tools = tuple(name for name in toolset if name != ClientExecCommand.name)
+        host_tools = (
+            None
+            if toolset is None
+            else tuple(name for name in toolset if name != ClientExecCommand.name)
+        )
         registry = get_tools(manager, environment, host_tools)
         registry.register(ClientExecCommand(self))
         return registry
@@ -89,6 +93,7 @@ class ExternalCallSession:
             config_path, profile, cwd, host_tools,
             workspace_context=contextual_messages, system_prompt=system_prompt,
             tools_factory=self.tools_factory,
+            extra_tools=(ClientExecCommand(self),),
         )
         session.runtime.attach(self.observe, interactive=False)
         return session
@@ -224,10 +229,15 @@ def external_call_routes(resolve_workspace, prefix=""):
             if isinstance(source, ThreadedWorkspaceInteractiveSession):
                 source = source._session
             source_config = source.runtime.agent.context_manager.config
+            host_tools = (
+                source.configured_toolset
+                if source.configured_toolset is not _UNSET
+                else source.runtime.agent.tool_registry.names()
+            )
             connection = ExternalCallSession(lambda c: active.pop((manager, c.token), None))
             session = ThreadedWorkspaceInteractiveSession(partial(
                 connection.build_session, source.config_path, profile, workspace.work_dir,
-                source.runtime.agent.tool_registry.names(),
+                host_tools,
                 source_config.extra_contextual_user_messages,
                 source_config.base_instructions_override,
             ), asyncio.get_running_loop())

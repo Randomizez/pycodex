@@ -454,3 +454,348 @@ async def test_legacy_tabs_use_default_and_missing_saved_profile_fails(tmp_path)
         assert store.load_tabs() == saved
     finally:
         await manager.close()
+
+
+def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, monkeypatch):
+    import time
+
+    home_dir = tmp_path / "home"
+    codex_dir = home_dir / ".codex"
+    codex_dir.mkdir(parents=True)
+    app_data_dir = home_dir / ".gemini" / "antigravity-cli"
+    app_data_dir.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+    monkeypatch.setenv("PYAGY_WS_TEST_KEY", "test-secret")
+    monkeypatch.setenv(LOCAL_RESPONSES_SERVER_API_KEY_ENV, "dummy")
+
+    # Create a Codex home AGENTS.md (must NOT be injected into pyagy) and a Web skill (MUST be injected when enabled).
+    (codex_dir / "AGENTS.md").write_text(
+        "Use apply_patch for manual edits in codex_home.\n", encoding="utf-8",
+    )
+    skill_dir = codex_dir / "skills" / "demo-web-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo-web-skill\ndescription: Demo web skill visible in pyagy.\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    sub_dir = work_dir / "subdir"
+    sub_dir.mkdir()
+    (work_dir / "AGENTS.md").write_text("Project rule from work_dir.\n", encoding="utf-8")
+
+    captured_requests = []
+    lock = threading.Lock()
+
+    async def generate(request):
+        body = json.loads((await request.body()).decode("utf-8"))
+        with lock:
+            captured_requests.append({
+                "path": request.url.path,
+                "headers": dict(request.headers),
+                "body": body,
+            })
+
+        contents = body.get("contents") or []
+        last_user_texts = []
+        has_func_resp = False
+        func_resp_text = ""
+        if contents:
+            for part in contents[-1].get("parts") or []:
+                if "text" in part:
+                    last_user_texts.append(part["text"])
+                if "functionResponse" in part:
+                    has_func_resp = True
+                    resp_obj = part["functionResponse"].get("response") or {}
+                    func_resp_text = resp_obj.get("output") or resp_obj.get("error") or ""
+        joined_last = "\n".join(last_user_texts)
+
+        if "Wrap your response in <summary></summary> tags." in joined_last:
+            parts = [{"text": "<summary>Compacted workspace session summary.</summary>"}]
+        elif has_func_resp:
+            parts = [{"text": "tool-done:" + func_resp_text.splitlines()[-1]}]
+        elif "WRITE_BOARD_TEST" in joined_last:
+            board_file = str((tmp_path / "board-on.html").resolve())
+            parts = [{
+                "functionCall": {
+                    "id": "call_write_1",
+                    "name": "write_file",
+                    "args": {
+                        "Path": board_file,
+                        "Content": "<h1>Live Board</h1>",
+                        "Overwrite": True,
+                    },
+                },
+                "thoughtSignature": "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=",
+            }]
+        elif "SPAWN_SUBAGENT_TEST" in joined_last and "<subagent_reminder>" not in "\n".join(
+            p.get("text", "") for p in (body.get("systemInstruction") or {}).get("parts", [])
+        ):
+            parts = [{
+                "functionCall": {
+                    "id": "call_sub_1",
+                    "name": "invoke_subagent",
+                    "args": {
+                        "TypeName": "research",
+                        "Role": "Explorer",
+                        "Prompt": "Inspect repo",
+                    },
+                },
+                "thoughtSignature": "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=",
+            }]
+        elif "ASK_QUESTION_TEST" in joined_last:
+            parts = [{
+                "functionCall": {
+                    "id": "call_ask_1",
+                    "name": "ask_question",
+                    "args": {
+                        "questions": [{
+                            "question": "Pick deployment mode?",
+                            "options": ["Canary", "Full"],
+                        }],
+                    },
+                },
+                "thoughtSignature": "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=",
+            }]
+        else:
+            parts = [{"text": "agy-ok"}]
+
+        sse_payload = {
+            "candidates": [{
+                "content": {"role": "model", "parts": parts},
+                "finishReason": "STOP",
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 30,
+                "totalTokenCount": 150,
+            },
+        }
+
+        async def events():
+            yield "data: " + json.dumps(sse_payload) + "\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    downstream = RunningASGITestServer(Starlette(routes=[
+        Route("/v1beta/models/{model_path:path}", generate, methods=["POST"]),
+    ]))
+    downstream.start()
+    try:
+        config_path = codex_dir / "config.toml"
+        config_path.write_text(
+            'model = "base-codex"\n'
+            'model_provider = "gpool"\n'
+            'model_context_window = 272000\n'
+            '[model_providers.gpool]\n'
+            'base_url = "{}/v1beta"\n'
+            'env_key = "PYAGY_WS_TEST_KEY"\n'
+            'http_headers = {{ "user-agent" = "legacy-ua", "x-goog-api-client" = "legacy-client" }}\n'.format(
+                downstream.base_url
+            ),
+            encoding="utf-8",
+        )
+        # Profile 1: gemini-pool with harness = "pyagy"
+        (codex_dir / "gemini-pool.config.toml").write_text(
+            'model = "gemini-4-carbon-high"\n'
+            'model_provider = "gpool"\n'
+            'compat_api = "gemini"\n'
+            'harness = "pyagy"\n'
+            'model_reasoning_effort = "high"\n'
+            'developer_instructions = "Custom dev rule."\n'
+            'user_instructions = "Custom user rule."\n',
+            encoding="utf-8",
+        )
+        # Profile 2: gemini-plain WITHOUT harness = "pyagy" -> must stay native pycodex!
+        (codex_dir / "gemini-plain.config.toml").write_text(
+            'model = "gemini-4-carbon-high"\n'
+            'model_provider = "gpool"\n'
+            'compat_api = "gemini"\n',
+            encoding="utf-8",
+        )
+
+        def_board_on = WorkspaceDefinition("on", tmp_path / "board-on", work_dir, True)
+        def_board_off = WorkspaceDefinition("off", tmp_path / "board-off", work_dir, False)
+        args = build_parser().parse_args(["--config", str(config_path)])
+        entry_on = app_module._build_workspace_entry(def_board_on, args)
+        entry_off = app_module._build_workspace_entry(def_board_off, args)
+        app = create_multi_workspace_app(WorkspaceRegistry([entry_on, entry_off]))
+
+        with TestClient(app) as browser:
+            # 1. Plain gemini profile stays native pycodex (exec/apply_patch tools, non-AgyAgent).
+            plain_created = browser.post("/w/on/api/sessions", json={"profile": "gemini-plain"}).json()
+            plain_agent = entry_on.manager.get(plain_created["session_id"])._session.runtime.agent
+            assert type(plain_agent).__name__ == "Agent"
+            assert "apply_patch" in plain_agent.tool_registry.names()
+
+            # 2. gemini-pool profile switches to pyagy backend with board ON.
+            agy_created = browser.post("/w/on/api/sessions", json={"profile": "gemini-pool"}).json()
+            agy_sid = agy_created["session_id"]
+            agy_session_obj = entry_on.manager.get(agy_sid)._session
+            agy_agent = agy_session_obj.runtime.agent
+            assert type(agy_agent).__name__ == "AgyAgent"
+            assert "edit_file" in agy_agent.tool_registry.names()
+            assert "apply_patch" not in agy_agent.tool_registry.names()
+            assert "ask_question" in agy_agent.tool_registry.names()
+
+            # Verify Context Ring limits come from AGY model spec (512000 / 1024000), not base 272000.
+            res_state = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
+            assert res_state["auto_compact_token_limit"] == 512000
+            assert res_state["max_context_window"] == 1024000
+
+            # Verify model catalog endpoint returns AGY official models.
+            models_resp = browser.get(f"/w/on/api/sessions/{agy_sid}/models").json()
+            assert "gemini-4-carbon-high" in models_resp["models"]
+            assert "gemini-4-neon-xhigh" in models_resp["models"]
+
+            # Execute write_file tool and verify Canvas + optional context injection.
+            captured_requests.clear()
+            assert browser.post("/w/on/api/session/message", json={
+                "session_id": agy_sid, "prompt": "WRITE_BOARD_TEST",
+            }).status_code == 200
+            wait_snapshot(
+                browser,
+                lambda snap: snap["turns"] and snap["turns"][-1]["status"] == "completed",
+                f"/w/on/api/session?session_id={agy_sid}",
+            )
+            assert (tmp_path / "board-on.html").read_text(encoding="utf-8") == "<h1>Live Board</h1>"
+            req_on = captured_requests[0]
+            # Ensure no duplicate/legacy user-agent overwrite.
+            assert "1.79.1" in req_on["headers"]["user-agent"]
+            sys_parts_on = "\n".join(
+                p.get("text", "") for p in req_on["body"]["systemInstruction"]["parts"]
+            )
+            assert "demo-web-skill" in sys_parts_on
+            assert "Project rule from work_dir." in sys_parts_on
+            assert "Custom dev rule." in sys_parts_on
+            first_user_parts_on = "\n".join(
+                p.get("text", "") for p in req_on["body"]["contents"][0]["parts"]
+            )
+            assert "Current workspace Canvas file:" in first_user_parts_on
+            assert "<environment_context>" in first_user_parts_on
+            assert "Custom user rule." in first_user_parts_on
+            assert "apply_patch for manual edits in codex_home" not in first_user_parts_on
+            assert "apply_patch for manual edits in codex_home" not in sys_parts_on
+
+            # 3. Board OFF workspace omits Canvas workspace_context!
+            captured_requests.clear()
+            off_created = browser.post("/w/off/api/sessions", json={
+                "profile": "gemini-pool", "prompt": "Hello no board",
+            }).json()
+            off_sid = off_created["session_id"]
+            wait_snapshot(
+                browser,
+                lambda snap: snap["turns"] and snap["turns"][-1]["response"] == "agy-ok",
+                f"/w/off/api/session?session_id={off_sid}",
+            )
+            req_off = captured_requests[0]
+            all_off_user_text = "\n".join(
+                p.get("text", "")
+                for c in req_off["body"]["contents"]
+                for p in c.get("parts", [])
+            )
+            assert "Current workspace Canvas file:" not in all_off_user_text
+            assert "<environment_context>" in all_off_user_text
+
+            # 4. ask_question remains exposed in declarations, returns disabled immediately without popup.
+            assert browser.post("/w/on/api/session/message", json={
+                "session_id": agy_sid, "prompt": "ASK_QUESTION_TEST",
+            }).status_code == 200
+            done_snap = wait_snapshot(
+                browser,
+                lambda s: len(s["turns"]) >= 2 and s["turns"][-1]["status"] == "completed",
+                f"/w/on/api/session?session_id={agy_sid}",
+            )
+            assert done_snap["input_request"] is None
+            assert (
+                done_snap["turns"][-1]["response"]
+                == "tool-done:Encountered error in tool execution: ask_question is disabled"
+            )
+
+            # 4b. Subagent spawned via invoke_subagent appears in Web Agent Tree (/agents).
+            assert browser.post("/w/on/api/session/message", json={
+                "session_id": agy_sid, "prompt": "SPAWN_SUBAGENT_TEST",
+            }).status_code == 200
+            for _ in range(200):
+                agents_tree = browser.get(f"/w/on/api/sessions/{agy_sid}/agents").json()
+                if agents_tree["agents"]:
+                    break
+                time.sleep(0.01)
+            assert len(agents_tree["agents"]) == 1
+            assert agents_tree["agents"][0]["agent_path"].startswith("/root/sub_explorer_")
+            # Wait until root turn & idle notification settle before running idle-only slash commands.
+            for _ in range(200):
+                st = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
+                ag = browser.get(f"/w/on/api/sessions/{agy_sid}/agents").json()["agents"]
+                if not st["busy"] and all(a["status"] != "running" for a in ag):
+                    break
+                time.sleep(0.02)
+            # Allow any queued subagent idle wake turn to finish as well.
+            time.sleep(0.05)
+            for _ in range(200):
+                st = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
+                if not st["busy"]:
+                    break
+                time.sleep(0.02)
+
+            # 5. Slash commands: /effort, /cd, and manual /compact!
+            def run_slash(cmd_name, arg=""):
+                resp = browser.post(
+                    f"/w/on/api/sessions/{agy_sid}/commands",
+                    json={"command": cmd_name, "argument": arg},
+                )
+                assert resp.status_code == 202
+                sub_id = resp.json()["submission_id"]
+                for _ in range(200):
+                    sub = browser.get(
+                        f"/w/on/api/sessions/{agy_sid}/submissions/{sub_id}"
+                    ).json()["submission"]
+                    if sub["status"] in ("completed", "failed"):
+                        return sub
+                    time.sleep(0.01)
+                raise AssertionError(f"command {cmd_name} timed out")
+
+            assert run_slash("effort", "low")["status"] == "completed"
+            assert run_slash("cd", str(sub_dir))["status"] == "completed"
+            sub_state = run_slash("compact")
+            assert sub_state["status"] == "completed"
+            assert sub_state["result"]["kind"] == "compacted"
+
+            # Send one post-compact turn to verify <CONTEXT_SUMMARY> is sent and rollout persists!
+            captured_requests.clear()
+            assert browser.post("/w/on/api/session/message", json={
+                "session_id": agy_sid, "prompt": "After compact turn",
+            }).status_code == 200
+            wait_snapshot(
+                browser,
+                lambda s: s["turns"] and s["turns"][-1]["response"] == "agy-ok",
+                f"/w/on/api/session?session_id={agy_sid}",
+            )
+            post_compact_req = captured_requests[-1]["body"]
+            assert post_compact_req["generationConfig"]["thinkingConfig"]["thinkingLevel"] == "LOW"
+            all_post_compact_texts = "\n".join(
+                p.get("text", "")
+                for c in post_compact_req["contents"]
+                for p in c.get("parts", [])
+            )
+            assert "<CONTEXT_SUMMARY>" in all_post_compact_texts
+            assert str(sub_dir.resolve()) in all_post_compact_texts
+
+        # 6. Restart app from persisted workspace tabs -> verify rollout history & cwd restored!
+        entry_on_restarted = app_module._build_workspace_entry(def_board_on, args)
+        app_restarted = create_multi_workspace_app(WorkspaceRegistry([entry_on_restarted]))
+        with TestClient(app_restarted) as browser2:
+            sessions2 = browser2.get("/w/on/api/sessions").json()["sessions"]
+            agy_tabs = [t for t in sessions2 if t["profile"] == "gemini-pool"]
+            assert len(agy_tabs) == 1
+            restored_sid = agy_tabs[0]["id"]
+            restored_snap = browser2.get(
+                f"/w/on/api/session?session_id={restored_sid}"
+            ).json()["snapshot"]
+            assert restored_snap["cwd"] == str(sub_dir.resolve())
+            assert any(t["kind"] == "compaction" for t in restored_snap["turns"])
+            assert restored_snap["turns"][-1]["response"] == "agy-ok"
+    finally:
+        downstream.stop()
