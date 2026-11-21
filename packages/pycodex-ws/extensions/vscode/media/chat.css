@@ -76,6 +76,8 @@ summary::-webkit-details-marker { display: none; }
 .turn.compaction { display: flex; align-items: center; gap: 12px; margin-top: 20px; padding: 0; border: 0; color: var(--muted); font-size: 11px; }
 .turn.compaction::before, .turn.compaction::after { content: ""; flex: 1; border-top: 1px solid var(--soft-edge); }
 .turn.compaction + .turn { margin-top: 20px; padding-top: 0; border-top: 0; }
+.turn-tag { display: flex; align-items: center; gap: 12px; margin: 0 0 14px; color: var(--muted); font-size: 11px; }
+.turn-tag::before, .turn-tag::after { content: ""; flex: 1; border-top: 1px solid var(--soft-edge); }
 .user-message { display: flex; justify-content: flex-end; margin: 0 0 18px; padding-left: 22px; }
 .user-bubble { max-width: 100%; background: var(--user); border-radius: 9px 9px 2px 9px; padding: 9px 12px; font-size: 13px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
 .response { font-size: 14px; line-height: 1.85; overflow-wrap: anywhere; }

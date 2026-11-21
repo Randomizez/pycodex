@@ -309,10 +309,13 @@ numbering and line breaks.
 
 Web and VS Code restore the latest 80 display entries from the saved rollout,
 including compact dividers and earlier questions/replies within that window.
-Workspace turns carry individual `messages` with `message_id`, `text`, `name`
-and `created_at`. Each input has an author/time header and a DOM key based on
-its message ID. The aggregate `prompt` and `prompt_at` are derived at the Web
-boundary. `response_at` comes from the committed assistant message; failures
+Workspace turns carry individual `messages` with `message_id`, `text`, `name`,
+`visible` and `created_at`. Ordinary inputs (`visible = True`) have an
+author/time header and a DOM key based on message ID; automatic wake-ups and
+system notifications set `visible` to a non-empty tag string and render as
+expandable dividers (`visible = False` stays hidden). The aggregate `prompt`
+joins `visible = True` inputs, while `prompt_at` is derived from the turn's
+first displayed input. `response_at` comes from the committed assistant message; failures
 without a reply do not invent a response time. `load_display_history(path)`
 always returns the same metadata. Older records use their recorded timestamps,
 or `null` when unknown. Reply times include elapsed time from the first input.

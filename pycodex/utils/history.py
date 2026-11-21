@@ -19,8 +19,10 @@ def serialize_history_item(item):
 
 def restore_message_metadata(item, payload, record_id, timestamp=None):
     visible = payload.get("visible", item.visible)
-    if not isinstance(visible, bool):
-        raise ValueError("history item visible must be a boolean")
+    if not isinstance(visible, bool) and (
+        not isinstance(visible, str) or not visible.strip()
+    ):
+        raise ValueError("history item visible must be a boolean or non-empty string")
     legacy_id = sha256(json.dumps(
         [record_id, timestamp, payload], ensure_ascii=False, sort_keys=True,
     ).encode("utf-8")).hexdigest()[:32]

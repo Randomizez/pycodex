@@ -335,6 +335,7 @@ def make_system_user_message(
     sender: "str" = "system",
     priority: "str" = "MESSAGE_PRIORITY_HIGH",
     timestamp_utc: "typing.Optional[str]" = None,
+    visible: "typing.Union[bool, str]" = False,
 ) -> "UserMessage":
     return UserMessage(
         text=format_single_system_message(
@@ -344,7 +345,7 @@ def make_system_user_message(
             timestamp_utc=timestamp_utc,
         ),
         name=AGY_SYSTEM_MESSAGE_NAME,
-        visible=False,
+        visible=visible,
     )
 
 

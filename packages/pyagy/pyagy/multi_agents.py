@@ -805,6 +805,7 @@ class AgySessionNode:
         sender: "str" = "system",
         priority: "str" = "MESSAGE_PRIORITY_HIGH",
         wake_if_idle: "bool" = True,
+        visible: "typing.Union[bool, str]" = "System",
     ) -> "bool":
         if self.state == "killed" or not self.runtime.accepts_input:
             return False
@@ -824,6 +825,7 @@ class AgySessionNode:
             sender=sender,
             priority=priority,
             timestamp_utc=ts_utc,
+            visible=visible,
         )
         waking = self.state == "idle" and wake_if_idle
         if waking:
@@ -1219,6 +1221,7 @@ class AgyMultiAgentController:
             sender=caller_conversation_id,
             priority="MESSAGE_PRIORITY_HIGH",
             wake_if_idle=True,
+            visible="Parent",
         )
         return (
             "Created the following subagent:\n"
@@ -1288,6 +1291,7 @@ class AgyMultiAgentController:
             sender="system",
             priority="MESSAGE_PRIORITY_HIGH",
             wake_if_idle=True,
+            visible="Subagent",
         )
 
     def _collect_descendants(self, root_sub_id: "str") -> "typing.List[AgySessionNode]":
@@ -1380,17 +1384,24 @@ class AgyMultiAgentController:
         if target is None or target.state == "killed":
             raise ValueError(f"recipient agent {recipient_conversation_id!r} not found or terminated")
         sender_node = self._nodes.get(sender_conversation_id)
-        if (
+        is_child_to_parent = (
             sender_node is not None
             and sender_node.parent_conversation_id == recipient_conversation_id
-        ):
+        )
+        if is_child_to_parent:
             sender_node._reported_to_parent = True
+            tag_label = "Subagent"
+        elif target.parent_conversation_id == sender_conversation_id:
+            tag_label = "Parent"
+        else:
+            tag_label = "Agent"
         await target.start()
         target.deliver_system_message(
             content=content,
             sender=sender_conversation_id,
             priority="MESSAGE_PRIORITY_HIGH",
             wake_if_idle=True,
+            visible=tag_label,
         )
 
     async def close_all(self) -> "None":

@@ -22,7 +22,7 @@ if typing.TYPE_CHECKING:
     from .transcript import AgyTranscriptStore
 
 
-NotifyCallback = typing.Callable[[str, str, str, bool], typing.Optional[bool]]
+NotifyCallback = typing.Callable[..., typing.Optional[bool]]
 
 
 @dataclass(frozen=True)
@@ -616,6 +616,7 @@ class AgyTaskManager:
                 task_id,
                 "MESSAGE_PRIORITY_HIGH",
                 True,
+                "Task done",
             )
             self._signal_state_change()
 
@@ -729,7 +730,13 @@ class AgyTaskManager:
             if final:
                 # An expiring one-shot must not cancel itself on its own notification.
                 record.status = "DONE"
-            accepted = self._notify_callback(schedule.prompt, record.task_id, "MESSAGE_PRIORITY_HIGH", True)
+            accepted = self._notify_callback(
+                schedule.prompt,
+                record.task_id,
+                "MESSAGE_PRIORITY_HIGH",
+                True,
+                "Wake-up",
+            )
             if accepted is False:
                 return  # Admission closed. Leave the saved occurrence for resume.
             if final:
@@ -808,6 +815,7 @@ class AgyTaskManager:
                 task_id,
                 "MESSAGE_PRIORITY_LOW",
                 False,
+                "Task canceled",
             )
         return f'Task "{task_id}" cancelled.'
 

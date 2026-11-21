@@ -2455,3 +2455,33 @@ def test_web_view_records_message_times():
     view.handle_event(TurnStartedEvent("broken", (UserMessage("again", turn_id="broken"),)))
     view.handle_event(TurnFailedEvent("broken", 1, "failed", "RuntimeError", 0))
     assert view.snapshot()["turns"][-1]["response_at"] is None
+
+
+def test_web_view_exposes_tag_visibility_without_polluting_prompt_or_user_order():
+    view = WebSessionView()
+    human = UserMessage("hello", created_at="2026-01-02T03:00:00.000+08:00", turn_id="t1")
+    reply1 = AssistantMessage("world", created_at="2026-01-02T03:00:05.000+08:00", turn_id="t1", phase="final")
+    wakeup = UserMessage(
+        "<SYSTEM_MESSAGE>\nwake\n</SYSTEM_MESSAGE>",
+        name="agy_system_message",
+        visible="Wake-up",
+        created_at="2026-01-02T04:00:00.000+08:00",
+        turn_id="t2",
+    )
+    reply2 = AssistantMessage("done", created_at="2026-01-02T04:00:02.000+08:00", turn_id="t2", phase="final")
+    view.load_session_history("demo", conversation_history_to_turns((human, reply1, wakeup, reply2)))
+
+    snap = view.snapshot()
+    t1, t2 = snap["turns"]
+    assert t1["prompt"] == "hello"
+    assert t1["messages"][0]["visible"] is True
+    assert t2["prompt"] == ""
+    assert t2["messages"] == [{
+        "message_id": wakeup.message_id,
+        "text": wakeup.text,
+        "name": "agy_system_message",
+        "visible": "Wake-up",
+        "created_at": "2026-01-02T04:00:00.000+08:00",
+    }]
+    summary = view.summary()
+    assert summary["last_user_at"] < summary["last_message_at"]

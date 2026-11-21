@@ -253,3 +253,45 @@ def test_compaction_splits_steered_turn_at_the_recorded_position(tmp_path):
     assert before["turn_id"] != after["turn_id"]
     for limit in (1, 2, 3, 4):
         assert load_display_history(path, limit=limit) == expected[-limit:]
+
+
+@pytest.mark.asyncio
+async def test_tag_visibility_roundtrips_and_marks_runtime_invocations(tmp_path):
+    from pycodex.events import TurnStartedEvent
+    from pycodex.protocol import ModelResponse
+    from pycodex.tools import ToolRegistry
+    from pycodex.context import ContextConfig
+    from pycodex.utils.history import restore_message_metadata
+    from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+
+    path = tmp_path / "tagged.jsonl"
+    recorder = SessionRolloutRecorder.create(tmp_path, "session", tmp_path, "test", None, "", path)
+    tag_msg = UserMessage(
+        "<SYSTEM_MESSAGE>timer fired</SYSTEM_MESSAGE>",
+        name="agy_system_message",
+        visible="Wake-up",
+        turn_id="wake",
+    )
+    recorder.append_history_items((
+        tag_msg,
+        AssistantMessage("handled", turn_id="wake", phase="final"),
+    ))
+    restored = load_display_history(path, limit=None)
+    assert len(restored) == 1
+    assert restored[0]["messages"][0].visible == "Wake-up"
+    assert restored[0]["messages"][0].text == "<SYSTEM_MESSAGE>timer fired</SYSTEM_MESSAGE>"
+    assert TurnStartedEvent("wake", (tag_msg,)).visualize() == "[Wake-up]"
+
+    with pytest.raises(ValueError):
+        restore_message_metadata(UserMessage("bad"), {"visible": "   "}, 0)
+
+    client = ScriptedModelClient([ModelResponse(items=[AssistantMessage("awake", phase="final")])])
+    runtime = make_runtime(make_agent(client, ToolRegistry(), ContextConfig()))
+    try:
+        assert await runtime.maybe_invoke({"type": "clock_tick", "period_m": 1, "current_time": "2026-11-21T22:00:00+08:00"})
+        assert runtime.title == ""
+        user_items = [item for item in runtime.agent.history if isinstance(item, UserMessage)]
+        assert len(user_items) == 1
+        assert user_items[0].visible == "Wake-up"
+    finally:
+        await runtime.close()

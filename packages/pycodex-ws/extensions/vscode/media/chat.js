@@ -193,6 +193,16 @@ import { Composer } from "../out/composer.mjs";
       element.setAttribute("aria-label", "上下文已压缩");
       return { element, signature };
     }
+    if (turn.kind !== "control" && Array.isArray(turn.messages)) {
+      for (const message of turn.messages) {
+        const tag = typeof message.visible === "string" ? message.visible.trim() : "";
+        if (!tag) continue;
+        const divider = textElement("div", "turn-tag", tag);
+        divider.setAttribute("role", "separator");
+        divider.setAttribute("aria-label", tag);
+        element.append(divider);
+      }
+    }
     if (turn.kind !== "control" && turn.prompt) {
       const user = textElement("div", "user-message", "");
       user.append(textElement("div", "user-bubble", turn.prompt));

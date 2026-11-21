@@ -109,13 +109,38 @@ def _serialize_conversation_item(item: "ConversationItem") -> "typing.Dict[str, 
     raise TypeError(f"unsupported conversation item for session persistence: {type(item).__name__}")
 
 
+def _parse_visible(
+    value: "object",
+    default: "typing.Union[bool, str]" = True,
+) -> "typing.Union[bool, str]":
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value
+    return default
+
+
+def _infer_system_message_visible(content: "str") -> "typing.Union[bool, str]":
+    if "content=[Notice] " in content:
+        return False
+    if ' finished with result:\n' in content:
+        return "Task done"
+    if ' was canceled with result:\n' in content:
+        return "Task canceled"
+    if "content=Subagent " in content and " gone idle" in content:
+        return "Subagent"
+    if "/task-" in content:
+        return "Wake-up"
+    return "System"
+
+
 def _deserialize_conversation_item(data: "typing.Dict[str, object]") -> "ConversationItem":
     kind = data.get("kind")
     if kind == "user":
         return UserMessage(
             text=str(data.get("text", "")),
             name=str(data.get("name", "user")),
-            visible=bool(data.get("visible", True)),
+            visible=_parse_visible(data.get("visible", True), True),
             message_id=str(data.get("message_id") or uuid.uuid4()),
             created_at=str(data["created_at"]) if data.get("created_at") is not None else None,
         )
@@ -465,7 +490,13 @@ class AgyTranscriptStore:
                         after_to = tail.split(" to ", 1)[1]
                         last_display = after_to.split(". No need to comment", 1)[0]
             elif step_type == "SYSTEM_MESSAGE":
-                reconstructed.append(UserMessage(text=content, name=AGY_SYSTEM_MESSAGE_NAME, visible=False))
+                reconstructed.append(
+                    UserMessage(
+                        text=content,
+                        name=AGY_SYSTEM_MESSAGE_NAME,
+                        visible=_infer_system_message_visible(content),
+                    )
+                )
             elif step_type == "CHECKPOINT":
                 reconstructed.clear()
                 summary_body = (

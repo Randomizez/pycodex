@@ -25,6 +25,7 @@ from .utils.random_ids import uuid7_string
 
 JSONValue: "TypeAlias" = Any
 JSONDict: "TypeAlias" = typing.Dict[str, Any]
+MessageVisibility: "TypeAlias" = typing.Union[bool, str]
 
 
 def message_timestamp():
@@ -99,7 +100,7 @@ class UserMessage:
     id: "typing.Union[str, None]" = None
     # Local history metadata; serialize() is the model-facing representation.
     name: "str" = "user"
-    visible: "bool" = True
+    visible: "MessageVisibility" = True
     message_id: "str" = field(default_factory=uuid7_string, compare=False)
     created_at: "typing.Union[str, None]" = field(default_factory=message_timestamp, compare=False)
     turn_id: "typing.Union[str, None]" = field(default=None, compare=False)
@@ -124,7 +125,7 @@ class AgentMessage:
     content_items: "typing.Tuple[JSONDict, ...]"
     id: "typing.Union[str, None]" = None
     internal_chat_message_metadata_passthrough: "typing.Union[JSONDict, None]" = None
-    visible: "bool" = False
+    visible: "MessageVisibility" = False
     message_id: "str" = field(default_factory=uuid7_string, compare=False)
     created_at: "typing.Union[str, None]" = field(default_factory=message_timestamp, compare=False)
     turn_id: "typing.Union[str, None]" = field(default=None, compare=False)

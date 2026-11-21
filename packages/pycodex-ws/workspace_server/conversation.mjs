@@ -147,6 +147,50 @@ function setMessageTime(body, value, detail = "") {
   }
 }
 
+const TAG_CLOCK_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3 2"></path></svg>';
+const TAG_EVENT_ICON =
+  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"></circle></svg>';
+
+function renderTagMessage(body, tag, message) {
+  let details = body.querySelector(":scope > .message-tag");
+  if (!details) {
+    details = element("details", "message-tag");
+    const summary = element("summary");
+    const label = element("span", "message-tag-label");
+    label.append(
+      element("span", "message-tag-icon"),
+      element("span", "message-tag-name"),
+      element("span", "message-tag-sep", "·"),
+      element("time", "message-tag-time"),
+    );
+    summary.appendChild(label);
+    details.append(summary, element("pre", "message-tag-source"));
+    body.replaceChildren(details);
+  }
+  const label = details.firstElementChild.firstElementChild;
+  const [iconNode, nameNode, sepNode, timeNode] = label.children;
+  const iconKind = /wake|schedul|clock|timer/i.test(tag) ? "clock" : "event";
+  if (iconNode.dataset.icon !== iconKind) {
+    iconNode.dataset.icon = iconKind;
+    iconNode.innerHTML = iconKind === "clock" ? TAG_CLOCK_ICON : TAG_EVENT_ICON;
+  }
+  if (nameNode.textContent !== tag) nameNode.textContent = tag;
+  const formattedTime = formatMessageTime(message.created_at);
+  const hideTime = !formattedTime;
+  if (sepNode.hidden !== hideTime) sepNode.hidden = hideTime;
+  if (timeNode.hidden !== hideTime) timeNode.hidden = hideTime;
+  if (formattedTime) {
+    if (timeNode.textContent !== formattedTime) timeNode.textContent = formattedTime;
+    if (timeNode.dateTime !== message.created_at) {
+      timeNode.dateTime = message.created_at;
+      timeNode.title = new Date(message.created_at).toLocaleString();
+    }
+  }
+  const sourceNode = details.lastElementChild;
+  if (sourceNode.textContent !== message.text) sourceNode.textContent = message.text;
+}
+
 function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
   const key = `turn:${turn.turn_id}`;
   if (turn.kind === "compaction") {
@@ -157,6 +201,11 @@ function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
   }
   const isControl = turn.kind === "control";
   for (const message of turn.messages) {
+    const tag = !isControl && typeof message.visible === "string" ? message.visible.trim() : "";
+    if (tag) {
+      renderTagMessage(renderEntry(`message:${message.message_id}`, "", "tag"), tag, message);
+      continue;
+    }
     const setup = message.text.startsWith("<frontend_customization>\n") &&
       message.text.endsWith("\n</frontend_customization>");
     const body = renderEntry(`message:${message.message_id}`, message.text, setup ? "setup" : isControl ? "control" : "user");

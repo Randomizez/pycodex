@@ -222,7 +222,15 @@ class WebSessionView:
                 "recorded_rollout_path": self._recorded_rollout_path,
                 "input_request": _json_safe(self._input_request),
                 "queued_inputs": [
-                    {"queue": turn["queue"], "prompt": "\n".join(message.text for message in turn["messages"])}
+                    {
+                        "queue": turn["queue"],
+                        "prompt": "\n".join(
+                            message.visible
+                            if isinstance(message.visible, str)
+                            else message.text
+                            for message in turn["messages"]
+                        ),
+                    }
                     for queue in ("steer", "enqueue")
                     for turn in self._turns_by_submission_id.values()
                     if not turn["turn_id"] and turn["queue"] == queue
@@ -612,22 +620,34 @@ def _session_timestamp(value):
     return parsed.timestamp()
 
 
+def _message_visible(message):
+    return message.get("visible", True) if isinstance(message, dict) else message.visible
+
+
 def session_timing(turns):
     last_user_at = 0
-    last_response_at = 0
+    last_activity_at = 0
     for turn in turns:
         if turn.get("kind") in ("control", "compaction"):
             continue
-        message_times = [
-            message.get("created_at") if isinstance(message, dict) else message.created_at
-            for message in turn.get("messages", ())
-        ]
-        for value in (*message_times, turn.get("prompt_at")):
-            last_user_at = max(last_user_at, _session_timestamp(value))
-        last_response_at = max(last_response_at, _session_timestamp(turn.get("response_at")))
+        messages = turn.get("messages", ())
+        has_user_message = False
+        for message in messages:
+            ts = _session_timestamp(
+                message.get("created_at") if isinstance(message, dict) else message.created_at
+            )
+            last_activity_at = max(last_activity_at, ts)
+            if _message_visible(message) is True:
+                has_user_message = True
+                last_user_at = max(last_user_at, ts)
+        prompt_ts = _session_timestamp(turn.get("prompt_at"))
+        last_activity_at = max(last_activity_at, prompt_ts)
+        if has_user_message or not messages:
+            last_user_at = max(last_user_at, prompt_ts)
+        last_activity_at = max(last_activity_at, _session_timestamp(turn.get("response_at")))
     return {
         "last_user_at": last_user_at,
-        "last_message_at": max(last_user_at, last_response_at),
+        "last_message_at": max(last_user_at, last_activity_at),
     }
 
 
@@ -664,11 +684,14 @@ def _public_turn(turn, active, started_at):
         )},
         "thinking": thinking,
         "model_errors": list(turn["model_errors"]),
-        "prompt": "\n".join(message.text for message in turn["messages"]),
+        "prompt": "\n".join(
+            message.text for message in turn["messages"] if message.visible is True
+        ),
         "prompt_at": started_at,
         "messages": [
             {"message_id": message.message_id, "text": message.text,
              "name": message.name if isinstance(message, UserMessage) else message.author,
+             "visible": message.visible,
              "created_at": message.created_at}
             for message in turn["messages"]
         ],

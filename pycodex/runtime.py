@@ -49,6 +49,12 @@ if typing.TYPE_CHECKING:
     from .multi_agents import AgentsManager
 
 
+_INVOKE_VISIBLE_TAGS = {
+    "clock_tick": "Wake-up",
+    "exec_command_completed": "Task done",
+}
+
+
 class SubmissionInterrupted(RuntimeError):
     def __init__(self) -> "None":
         super().__init__("submission interrupted")
@@ -729,7 +735,7 @@ class AgentRuntime:
             f"</{tag}>"
         )
         await self.start()
-        self.message(text)
+        self.message(UserMessage(text, visible=_INVOKE_VISIBLE_TAGS.get(tag, tag)))
         _submission_id, future = self.trigger()
         await future
         return True
@@ -939,7 +945,12 @@ class AgentRuntime:
                 self._active_turn = turn
                 turn.deliver_messages = self._deliver_messages
                 if not self.title:
-                    prompt = visible_input_text(turn.messages)
+                    prompt = "\n".join(
+                        message.text
+                        for message in turn.messages
+                        if isinstance(message, (UserMessage, AgentMessage))
+                        and message.visible is True
+                    ).strip()
                     if prompt:
                         self.title = shorten_title(prompt)
                         self.publish_state("auto_title")

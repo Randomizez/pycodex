@@ -96,7 +96,8 @@ def shorten_title(text: "str", limit: "int" = 48) -> "str":
 
 def visible_input_text(messages):
     return "\n".join(
-        message.text for message in messages
+        "[{0}]".format(message.visible) if isinstance(message.visible, str) else message.text
+        for message in messages
         if isinstance(message, (UserMessage, AgentMessage)) and message.visible
     )
 
