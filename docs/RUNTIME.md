@@ -1572,8 +1572,17 @@ Local tool events carry the existing `ToolCall` and
 Provider tool reports use `ToolCalledEvent`, distinct from local execution
 starting with `ToolStartedEvent`.
 
-Model stream notifications cover assistant deltas, tool reports, usage, stream
-errors and request timing. The Agent adds turn identity and Runtime adds the
+Model stream notifications cover assistant deltas, live reasoning text
+(`ReasoningEvent`, preferring raw `reasoning_text` and falling back to
+`summary_text`), tool reports, usage, stream errors and request timing.
+The workspace sets `preview_reasoning` on the Web views and Feishu card
+when it opens a pyagy session. Root and subagent views show the full current
+reasoning text or summary, including paragraph breaks. The next assistant delta
+restores the accumulated reply. Attaching mid-turn uses the same `reasoning` and
+`assistant_text` as live updates. A stream retry discards the failed attempt’s output. Native
+pycodex uses assistant text for the preview. Both harnesses keep reasoning
+and assistant messages distinct in events, history and model input.
+The Agent adds turn identity and Runtime adds the
 submission ID. The Agent accounts provider usage from the model result before
 publishing its token count. Terminal events carry the background-work count.
 Manual compaction has its own lifecycle. Automatic compaction runs inside the

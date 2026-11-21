@@ -150,8 +150,12 @@ State includes:
 - `model: {name, reasoning_effort}`, `title`, and `cwd`;
 - `busy`, `running`, `closed`, and `accepts_input`;
 - `active_turn`: IDs, complete `messages` passed to the current execution,
-  accumulated assistant text and model errors,
+  accumulated `assistant_text`, current `reasoning` (raw `reasoning_text` when
+  present, otherwise the latest `summary_text`), and `model_errors`,
   or `null`; completed history is excluded;
+- `last_reasoning`: after a successful turn or resume, the latest readable
+  reasoning since the last visible message, if any. During a turn the live
+  value is in `active_turn.reasoning`;
 - `queued_inputs`: `submission_id`, `turn_id`, `queue` (`steer` or `enqueue`)
   and visible input `messages`, in execution order; merged steer inputs share one
   submission ID while each message retains its own ID, author and creation time;
@@ -172,8 +176,12 @@ The response's `root` is the selected Agent and `agents` is its flattened
 descendant tree. Each row includes `agent_id`, `parent_agent_id`, canonical
 `agent_path`, `status`, `elapsed_seconds` and `last_message`. Status is `pending_init`, `running`,
 `interrupted`, `shutdown`, `{completed: text}` or `{errored: text}`.
-`last_message` is the latest assistant text, including accumulated stream deltas;
-tool progress and errors do not replace it. Polling does not start turns,
+`last_message` and the session list's `last_assistant` show the latest assistant
+text, including streamed text. When creating views for `harness = "pyagy"`,
+the workspace enables `preview_reasoning` for the root and its subagents.
+Their previews temporarily show the full current reasoning text or summary with
+its original paragraph breaks. The next assistant delta restores the accumulated
+reply. Completed replies contain assistant text. Polling does not start turns,
 change history or grant interactive permissions to descendants.
 `elapsed_seconds` measures the current or most recent turn with the Runtime's
 monotonic clock. It starts at turn start, freezes on completion, failure or
@@ -316,8 +324,11 @@ stop at `next_cursor: null`. Cursors are opaque.
 Items contain `index`, `type`, and `payload`. A `response_item` carries the
 serialized conversation item, including tool calls/results and available
 reasoning records. This does not decrypt reasoning or reconstruct unrecorded
-output. There is currently no dedicated live reasoning-delta event; the display
-snapshot's `thinking` field contains assistant text and is not a reasoning API.
+output. Both harnesses forward live `reasoning` events with raw `reasoning_text`
+when available and otherwise the latest `summary_text`. In native pycodex,
+the display snapshot's `thinking` field contains streamed assistant text.
+Pyagy also displays readable reasoning there and in Feishu's working output.
+Conversation history and final replies retain their original item types.
 A `compacted` item contains its summary in `payload.message`; it does
 not duplicate the checkpoint's replacement history.
 

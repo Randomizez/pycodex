@@ -7,6 +7,7 @@ import requests
 
 from pycodex.events import (
     DEFAULT_MAIN_PROMPT,
+    AssistantDeltaEvent,
     CommandCompletedEvent,
     CommandFailedEvent,
     Event,
@@ -14,15 +15,18 @@ from pycodex.events import (
     InputQueuedEvent,
     InputRequestedEvent,
     MessagesAddedEvent,
+    ReasoningEvent,
     SessionStateEvent,
     StreamErrorEvent,
     TurnCompletedEvent,
     TurnFailedEvent,
+    TurnInterruptedEvent,
     TurnStartedEvent,
 )
 from pycodex.protocol import AssistantMessage
 from pycodex.utils.history import conversation_history_to_turns
 
+from . import active_preview
 from .feishu_auth import (
     FEISHU_API_BASE,
     FEISHU_DOMAIN,
@@ -42,6 +46,9 @@ CARD_CONTENT_ERROR_MARKER = "Failed to create card content"
 
 
 class PycodexCard:
+    preview_reasoning = False
+    _preview = ""
+
     def __init__(
         self,
         app_id: "typing.Union[str, None]" = None,
@@ -51,7 +58,9 @@ class PycodexCard:
         verification_token: "typing.Union[str, None]" = None,
         encrypt_key: "typing.Union[str, None]" = None,
         session: "typing.Union[requests.Session, None]" = None,
+        preview_reasoning: bool = False,
     ) -> None:
+        self.preview_reasoning = preview_reasoning
         self.app_id = app_id
         self.app_secret = app_secret
         self.api_base = api_base
@@ -83,9 +92,10 @@ class PycodexCard:
         self._tenant_token_expires_at = 0.0
 
     @classmethod
-    def from_env(cls) -> "PycodexCard":
+    def from_env(cls, preview_reasoning: bool = False) -> "PycodexCard":
         api_base = os.environ.get("FEISHU_API_BASE", FEISHU_API_BASE)
         return cls(
+            preview_reasoning=preview_reasoning,
             app_id=_env("FEISHU_APP_ID", "LARK_APP_ID"),
             app_secret=_env("FEISHU_APP_SECRET", "LARK_APP_SECRET"),
             api_base=api_base,
@@ -175,7 +185,11 @@ class PycodexCard:
     def detach(self) -> None:
         self.detached = True
 
-    def apply_event(self, event: "Event") -> None:
+    @property
+    def preview_output(self):
+        return self._preview or self.working_output
+
+    def apply_event(self, event: "Event", active_turn=None) -> None:
         if isinstance(event, SessionStateEvent):
             state = event.state
             self.model_name = state["model"]
@@ -190,6 +204,8 @@ class PycodexCard:
                 self.history_index = None
                 active = state["active_turn"]
                 self.working_output = active["assistant_text"] if active is not None else ""
+                active_turn = active
+                self._preview = ""
                 self._active_turn_id = active["turn_id"] if active is not None else None
                 if active is not None:
                     current = self._append_messages(active["messages"], active["turn_id"])
@@ -219,6 +235,16 @@ class PycodexCard:
             elif any(isinstance(message, AssistantMessage) for message in event.messages):
                 self.display.stream_buffer = ""
                 self.working_output = turn["response"] if turn else ""
+        if self.preview_reasoning:
+            if active_turn is not None:
+                self._preview = active_preview(active_turn)
+            elif isinstance(event, ReasoningEvent):
+                self._preview = event.text
+            elif isinstance(event, (
+                AssistantDeltaEvent, MessagesAddedEvent, StreamErrorEvent, TurnStartedEvent,
+                TurnCompletedEvent, TurnInterruptedEvent, TurnFailedEvent,
+            )):
+                self._preview = ""
         event.render(self.display)
         if self.display.stream_buffer:
             self.working_output = self.display.stream_buffer

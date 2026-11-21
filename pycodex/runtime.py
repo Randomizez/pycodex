@@ -8,19 +8,27 @@ from time import monotonic
 
 from .agent import Agent
 from .events import (
+    AssistantDeltaEvent,
+    AutoCompactCompletedEvent,
     BASE_EVENT_HANDLER,
     CommandCompletedEvent,
     CommandFailedEvent,
     CommandStartedEvent,
+    CompactCompletedEvent,
     Event,
     EventScope,
     InputQueuedEvent,
     InputRequestedEvent,
     InputResolvedEvent,
+    MessagesAddedEvent,
+    ModelCalledEvent,
     ModelRequestInterrupted,
+    ReasoningEvent,
     RuntimeUpdatedEvent,
     SessionClosedEvent,
     SessionStateEvent,
+    StreamErrorEvent,
+    ToolStartedEvent,
     TurnEvent,
     TurnInterrupted,
 )
@@ -28,7 +36,7 @@ from .model import ModelControl, RetryCodes, matches_retry_codes
 from .protocol import AgentMessage, ToolResult, TurnResult, UserMessage
 from .tools.runtime_services import close_resources
 from .utils import uuid7_string
-from .utils.event_helpers import shorten_title, visible_input_text
+from .utils.event_helpers import last_reasoning_text, shorten_title, visible_input_text
 from .utils.history import conversation_history_to_turns
 from .utils.truncation import truncate_tool_result_for_history
 from .utils.session_persist import (
@@ -256,12 +264,27 @@ class AgentRuntime:
             "history": conversation_history_to_turns(self.agent.history),
         }
 
+    def active_turn_snapshot(self):
+        active = self._active_turn
+        if active is None:
+            return None
+        return {
+            "turn_id": active.turn_id,
+            "submission_id": self._current_submission.submission_id
+            if self._current_submission is not None else active.turn_id,
+            "messages": active.messages,
+            "assistant_text": active.assistant_text,
+            "reasoning": self._stream_reasoning,
+            "model_errors": list(active.model_errors),
+        }
+
     def state_snapshot(self):
         """Current frontend state, without completed conversation history."""
         agent = self.agent
         execution = agent.execution_snapshot()
         client = typing.cast(ModelControl, agent.model_client)
-        active = self._active_turn
+        status = self._last_agent_status
+        failed = status == "interrupted" or isinstance(status, dict) and "errored" in status
         pending = []
         if self._triggered_submission is not None:
             pending.append(("steer", self._triggered_submission))
@@ -276,14 +299,8 @@ class AgentRuntime:
                 "reasoning_effort": client.reasoning_effort,
             },
             "running": execution.running,
-            "active_turn": None if active is None else {
-                "turn_id": active.turn_id,
-                "submission_id": self._current_submission.submission_id
-                if self._current_submission is not None else active.turn_id,
-                "messages": active.messages,
-                "assistant_text": active.assistant_text,
-                "model_errors": list(active.model_errors),
-            },
+            "last_reasoning": last_reasoning_text(agent.history) if self._active_turn is None and not failed else "",
+            "active_turn": self.active_turn_snapshot(),
             "queued_inputs": [
                 {
                     "submission_id": item.submission_id,
@@ -913,6 +930,7 @@ class AgentRuntime:
             return
 
         self._last_agent_status = "running"
+        self._stream_reasoning = ""
         self._turn_started_at = monotonic()
         self._turn_finished_at = None
         final_answer = None
@@ -946,6 +964,15 @@ class AgentRuntime:
 
     @EventScope.router
     def _publish_agent_event(self, event: "Event") -> "None":
+        if isinstance(event, ReasoningEvent):
+            self._stream_reasoning = event.text
+        elif isinstance(event, AssistantDeltaEvent) and event.delta:
+            self._stream_reasoning = ""
+        elif isinstance(event, (
+            MessagesAddedEvent, StreamErrorEvent, ModelCalledEvent, ToolStartedEvent,
+            AutoCompactCompletedEvent, CompactCompletedEvent,
+        )):
+            self._stream_reasoning = last_reasoning_text(self.agent.history)
         queued = self._current_submission
         if isinstance(event, TurnEvent) and queued is not None and event.turn_id == queued.turn_id:
             event = replace(event, submission_id=event.submission_id or queued.submission_id)

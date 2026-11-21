@@ -85,7 +85,8 @@ class PycodexRuntimeLink:
     def _handle_runtime_event(self, event) -> None:
         if self._detached:
             return
-        self.card.apply_event(event)
+        active = self.runtime.active_turn_snapshot() if self.card.preview_reasoning else None
+        self.card.apply_event(event, active)
         self._update_card()
 
     async def _submit(

@@ -6,7 +6,7 @@ import shlex
 import typing
 from dataclasses import asdict
 
-from ..protocol import AgentMessage, UserMessage
+from ..protocol import AgentMessage, AssistantMessage, ReasoningItem, UserMessage
 
 PROMPT_CONTEXT_BASELINE_TOKENS = 12_000
 
@@ -99,6 +99,43 @@ def visible_input_text(messages):
         message.text for message in messages
         if isinstance(message, (UserMessage, AgentMessage)) and message.visible
     )
+
+
+def reasoning_item_text(item: "ReasoningItem", streamed_raw: "str" = "") -> "str":
+    content = item.payload.get("content")
+    if isinstance(content, list):
+        raw_text = "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "reasoning_text"
+        )
+        if raw_text.strip():
+            return raw_text
+    if streamed_raw.strip():
+        return streamed_raw
+    summary = item.payload.get("summary")
+    if isinstance(summary, list):
+        for part in reversed(summary):
+            if isinstance(part, dict) and part.get("type") == "summary_text":
+                text = str(part.get("text", ""))
+                if text.strip():
+                    return text
+    return ""
+
+
+def last_reasoning_text(history: "typing.Sequence[object]") -> "str":
+    for item in reversed(history):
+        if item is None or (isinstance(item, dict) and item.get("type") == "compacted"):
+            return ""
+        if isinstance(item, AssistantMessage) and item.visible and item.text.strip():
+            return ""
+        if isinstance(item, ReasoningItem):
+            text = reasoning_item_text(item)
+            if text:
+                return text
+        if isinstance(item, (UserMessage, AgentMessage)) and item.visible:
+            return ""
+    return ""
 
 
 def percent_of_context_window_remaining(total_tokens, context_window_tokens):

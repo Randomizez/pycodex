@@ -453,8 +453,8 @@ async def test_close_waits_for_accepted_command_then_releases_connection(
         session_key = "fake"
         message_id = "fake"
 
-        def __init__(self, queue, target):
-            pass
+        def __init__(self, queue, target, card):
+            assert card.preview_reasoning is False
 
         async def start_async(self):
             started.set()

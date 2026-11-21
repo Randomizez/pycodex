@@ -135,7 +135,7 @@ HTTP 图片 URL 需先由调用方读取并转成 data URL，适配器明确拒�
 使用 `functionResponse.parts[].inlineData`；user 图片使用 `contents[].parts[].inlineData`。
 上游 `ToolResult.is_error` 不进入 Responses 输入，本服务继续将错误作为工具输出文本，
 不从文本猜测错误状态。
-`thought` 文本流映射成 reasoning；
+Gemini 的 `thought` 文本流映射为 `response.reasoning_text.delta`，完成条目保存在 `reasoning_text` 中。
 默认请求 `includeThoughts`，`none/minimal` effort 映射为 `minimal`，
 `low/medium/high` 原样，`xhigh/max` 映射为 `high`。支持多工具返回；
 Gemini 原生 API 没有与 `parallel_tool_calls=false` 对应的开关，执行并发仍由

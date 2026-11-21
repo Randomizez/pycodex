@@ -25,10 +25,12 @@ from .events import (
     ModelEvent,
     ModelRequestInterrupted,
     ModelRequestTimingEvent,
+    ReasoningEvent,
     StreamErrorEvent,
     TokenCountEvent,
     ToolCalledEvent,
 )
+from .utils.event_helpers import reasoning_item_text
 from .utils.model_metadata import load_models_by_slug, model_metadata
 from .protocol import (
     AssistantMessage,
@@ -1096,6 +1098,39 @@ class ResponsesModelClient:
     ) -> "ModelResponse":
         items: "typing.List[typing.Union[typing.Union[AssistantMessage, ToolCall], ReasoningItem]]" = ([])
         last_event_type = ""
+        reasoning_item_id: "typing.Union[object, None]" = None
+        raw_reasoning_chunks: "typing.List[str]" = []
+        summary_index: "typing.Union[object, None]" = None
+        summary_chunks: "typing.List[str]" = []
+        last_reasoning = ""
+        last_reasoning_emit_at: "typing.Union[float, None]" = None
+
+        def flush_reasoning(force: "bool" = True) -> "None":
+            nonlocal last_reasoning, last_reasoning_emit_at
+            if not raw_reasoning_chunks and not summary_chunks:
+                return
+            now = monotonic()
+            if (
+                not force
+                and last_reasoning_emit_at is not None
+                and now - last_reasoning_emit_at < 0.08
+            ):
+                return
+            raw_text = "".join(raw_reasoning_chunks)
+            text = raw_text if raw_text.strip() else "".join(summary_chunks)
+            if text.strip() and text != last_reasoning:
+                last_reasoning = text
+                last_reasoning_emit_at = now
+                EventScope.emit(ReasoningEvent(text))
+
+        def clear_reasoning_state() -> "None":
+            nonlocal reasoning_item_id, summary_index, last_reasoning, last_reasoning_emit_at
+            reasoning_item_id = None
+            raw_reasoning_chunks.clear()
+            summary_index = None
+            summary_chunks.clear()
+            last_reasoning = ""
+            last_reasoning_emit_at = None
 
         for event_name, data in self._iter_sse_events(response, diagnostics):
             if not data:
@@ -1112,10 +1147,37 @@ class ResponsesModelClient:
                 diagnostics.last_event_type = last_event_type
 
             if event_type == "response.output_text.delta":
+                flush_reasoning()
+                clear_reasoning_state()
                 EventScope.emit(AssistantDeltaEvent(str(payload.get("delta", ""))))
                 continue
 
+            if event_type in (
+                "response.reasoning_text.delta",
+                "response.reasoning_summary_text.delta",
+            ):
+                item_id = payload.get("item_id")
+                if item_id != reasoning_item_id:
+                    flush_reasoning()
+                    clear_reasoning_state()
+                    reasoning_item_id = item_id
+
+                if event_type == "response.reasoning_text.delta":
+                    raw_reasoning_chunks.append(str(payload.get("delta", "")))
+                else:
+                    part_index = payload.get("summary_index", 0)
+                    if part_index != summary_index:
+                        flush_reasoning()
+                        summary_index = part_index
+                        summary_chunks.clear()
+                        if not raw_reasoning_chunks:
+                            last_reasoning_emit_at = None
+                    summary_chunks.append(str(payload.get("delta", "")))
+                flush_reasoning(force=False)
+                continue
+
             if event_type == "response.output_item.done":
+                flush_reasoning()
                 item_payload = payload.get("item", {})
                 if (
                     isinstance(item_payload, dict)
@@ -1163,7 +1225,13 @@ class ResponsesModelClient:
 
                 parsed = self._parse_output_item(item_payload)
                 if parsed is not None:
-                    if isinstance(parsed, ToolCall):
+                    if isinstance(parsed, ReasoningItem):
+                        streamed_raw = "".join(raw_reasoning_chunks) if item_payload.get("id") == reasoning_item_id else ""
+                        text = reasoning_item_text(parsed, streamed_raw)
+                        if text and text != last_reasoning:
+                            EventScope.emit(ReasoningEvent(text))
+                        clear_reasoning_state()
+                    elif isinstance(parsed, ToolCall):
                         EventScope.emit(ToolCalledEvent(parsed.call_id, parsed.name))
                     items.append(parsed)
                     if diagnostics is not None:
@@ -1171,6 +1239,7 @@ class ResponsesModelClient:
                 continue
 
             if event_type == "response.completed":
+                flush_reasoning()
                 response_payload = payload.get("response")
                 usage = None
                 if isinstance(response_payload, dict):
@@ -1183,6 +1252,7 @@ class ResponsesModelClient:
                 return ModelResponse(items=items, usage=usage)
 
             if event_type == "response.incomplete":
+                flush_reasoning()
                 partial_items = tuple(items)
                 reason = self._response_incomplete_reason(payload)
                 raise ResponsesIncompleteError(

@@ -44,6 +44,7 @@ from pycodex.utils import uuid7_string
 from pycodex.utils.event_helpers import shorten_title
 from pycodex.utils.history import conversation_history_to_turns
 from pycodex.utils.session_persist import load_display_history
+from pycodex_ws import active_preview
 
 
 JSONValue = typing.Union[
@@ -62,8 +63,10 @@ SPINNER_STATUS_PREVIEW_LIMIT = 180
 
 class WebSessionView:
     _session_timing = None
+    preview_reasoning = False
 
-    def __init__(self) -> None:
+    def __init__(self, preview_reasoning: bool = False) -> None:
+        self.preview_reasoning = preview_reasoning
         self._subscribers: "typing.Set[asyncio.Queue]" = set()
         self._events: "typing.List[typing.Dict[str, object]]" = []
         self._stream_id = uuid7_string()
@@ -92,6 +95,8 @@ class WebSessionView:
 
     def handle_event(self, event: "Event", runtime_state=None) -> None:
         with self._lock:
+            if self.preview_reasoning and runtime_state is None and isinstance(event, SessionStateEvent):
+                runtime_state = event.state
             if runtime_state is not None:
                 self._runtime_state = _json_safe(runtime_state)
             self._apply_runtime_event(event)
@@ -204,6 +209,7 @@ class WebSessionView:
 
     def snapshot(self) -> "typing.Dict[str, object]":
         with self._lock:
+            active = self._runtime_state["active_turn"] if self.preview_reasoning and self._runtime_state else None
             return {
                 "running": bool(self._spinner_status),
                 "last_final_id": self._last_final_id,
@@ -224,11 +230,15 @@ class WebSessionView:
                 "accepts_input": self._accepts_input,
                 "title": self._title,
                 **self._context_usage(),
-                "turns": [_public_turn(turn) for turn in self._turns[-80:]],
+                "turns": [_public_turn(turn, active) for turn in self._turns[-80:]],
             }
 
     def summary(self) -> "typing.Dict[str, object]":
         with self._lock:
+            preview = ""
+            if self.preview_reasoning and self._runtime_state:
+                active = self._runtime_state["active_turn"]
+                preview = active_preview(active) if active else self._runtime_state["last_reasoning"]
             cached = self._session_timing
             if cached is None or cached[0] is not self._turns:
                 cached = self._session_timing = (self._turns, session_timing(self._turns[-80:]))
@@ -240,7 +250,7 @@ class WebSessionView:
                 "spinner": self._spinner_status,
                 "title": self._title,
                 "turn_count": len(self._turns),
-                "last_assistant": _last_assistant_text(self._turns),
+                "last_assistant": preview or _last_assistant_text(self._turns),
                 **cached[1],
                 **self._context_usage(),
             }
@@ -363,6 +373,9 @@ class WebSessionView:
 
         if isinstance(event, StreamErrorEvent):
             turn.setdefault("model_errors", []).append(event.detail())
+            if self.preview_reasoning:
+                turn["thinking"] = ""
+                turn["_thinking_active"] = False
             return
 
         if isinstance(event, ToolStartedEvent):
@@ -600,12 +613,16 @@ def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> 
     return ""
 
 
-def _public_turn(turn: "typing.Dict[str, object]") -> "typing.Dict[str, object]":
+def _public_turn(turn: "typing.Dict[str, object]", active) -> "typing.Dict[str, object]":
+    thinking = turn["thinking"]
+    if active is not None and active["turn_id"] == turn["turn_id"]:
+        thinking = active_preview(active)
     return {
         **{key: turn[key] for key in (
             "submission_id", "turn_id", "final_id", "response", "response_at", "response_phase",
-            "thinking", "status", "error", "queue", "sender", "kind",
+            "status", "error", "queue", "sender", "kind",
         )},
+        "thinking": thinking,
         "model_errors": list(turn["model_errors"]),
         "prompt": "\n".join(message.text for message in turn["messages"]),
         "prompt_at": turn["messages"][0].created_at if turn["messages"] else None,

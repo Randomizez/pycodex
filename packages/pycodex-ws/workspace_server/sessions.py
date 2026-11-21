@@ -89,18 +89,16 @@ def build_workspace_session(
                 agy_session.owned_server.stop()
 
         runtime.add_close_handler(_close_agy_resources)
-        register_feishu_commands(runtime)
-        return WorkspaceInteractiveSession(
-            runtime, config_path, configured_toolset=toolset,
-        )
+    else:
+        bootstrap = build_model(config.provider, **model_options)
+        if bootstrap.owned_server is not None:
+            atexit.register(bootstrap.owned_server.stop)
+        runtime = AgentsManager(bootstrap.client, context, toolset, tools_factory).create_root_runtime()
 
-    bootstrap = build_model(config.provider, **model_options)
-    if bootstrap.owned_server is not None:
-        atexit.register(bootstrap.owned_server.stop)
-    runtime = AgentsManager(bootstrap.client, context, toolset, tools_factory).create_root_runtime()
-    register_feishu_commands(runtime)
+    preview_reasoning = config.harness == "pyagy"
+    register_feishu_commands(runtime, preview_reasoning=preview_reasoning)
     return WorkspaceInteractiveSession(
-        runtime, config_path, configured_toolset=toolset,
+        runtime, config_path, configured_toolset=toolset, preview_reasoning=preview_reasoning,
     )
 
 
@@ -190,11 +188,12 @@ class WorkspaceInteractiveSession:
         runtime,
         config_path: "typing.Union[str, None]" = None,
         configured_toolset=_UNSET,
+        preview_reasoning: bool = False,
     ) -> None:
         self.runtime = runtime
         self.config_path = config_path
         self.configured_toolset = configured_toolset
-        self.view = WebSessionView()
+        self.view = WebSessionView(preview_reasoning=preview_reasoning)
         self._frontend_id = None
         self._child_views = {}
         self.submissions = _SubmissionStore()
@@ -273,7 +272,7 @@ class WorkspaceInteractiveSession:
         if runtime is self.runtime:
             return self.view
         if agent_id not in self._child_views:
-            view = WebSessionView()
+            view = WebSessionView(preview_reasoning=self.view.preview_reasoning)
             view.attach_server_loop(self.view.server_loop)
             frontend_id = runtime.attach(
                 lambda event: self._handle_runtime_event(event, runtime, view),
@@ -422,6 +421,7 @@ class ThreadedWorkspaceInteractiveSession:
         asyncio.set_event_loop(loop)
         try:
             session = self._session_factory()
+            self._view.preview_reasoning = session.view.preview_reasoning
             session.view = self._view
             self._session = session
             try:

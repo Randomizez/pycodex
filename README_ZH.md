@@ -59,6 +59,8 @@ export OPENAI_API_KEY="your-api-key"
 用 `--profile NAME` 选择同目录的 `NAME.config.toml` 或内嵌的 `[profiles.NAME]`；
 用 `--config PATH` 指定其他配置文件。`pycodex doctor` 可检查配置和连接。
 浏览器工作区会为新会话动态读取 profile，修改配置后无需重启。
+使用 `harness = "pyagy"` 时，Web 和飞书用当前的完整思考文本或摘要作临时预览，
+收到下一段正文后显示累计的回复正文。原生 pycodex 通过独立事件传递推理，预览显示正文。
 
 详见[配置文档](docs/CONTEXT.md#配置读取与-profile)和
 [Gemini 配置示例](docs/responses_server/README.md#gemini-api)。

@@ -60,7 +60,7 @@ The implementation now uses these contracts:
 | Capacity | The default total is 16 including the root. Spawn enforces the configured limit and closes eligible idle leaves in least-recently-used order. Closed children are removed from the tree and Workspace views, releasing their task names. |
 | Forked context | `fork_turns="all"` is the default. Fixed context and real history retain their ordering; child identity and task are appended after the inherited prefix. `"none"` starts fresh history. |
 | Persistence | Root recording remains lazy; child agents stay in memory. Session `/fork`, `Agent.fork`, `AgentRuntime.fork`, and pending Workspace fork restoration are removed. |
-| Workspace | Context details show `To compact: N/limit` and the root/descendant tree. `last_message` is the latest assistant text, including streaming text; tool and error status do not replace it. |
+| Workspace | Context details show `To compact: N/limit` and the root/descendant tree. `last_message` is the latest assistant text, including streaming text. Pyagy temporarily previews the current reasoning text or summary until the next assistant text arrives. Tool and error status stay separate. |
 
 Developer instructions, fork assembly, message serialization, model overrides,
 and ordinary/Responses-lite placement are specified in [CONTEXT.md](CONTEXT.md).

@@ -13,7 +13,7 @@ def render_card(
     status = "Closed" if state.display.closed else state.status
     input_disabled = not state.accepts_input or state.detached or state.display.closed
     output = _truncate(state.output_text, CARD_OUTPUT_LIMIT) or "Ready."
-    working_output = _truncate(state.working_output, CARD_OUTPUT_LIMIT)
+    working_output = _truncate(state.preview_output, CARD_OUTPUT_LIMIT)
     color = _status_color("Detached" if state.detached else status or "Idle")
     body_elements = [
         _output_box(

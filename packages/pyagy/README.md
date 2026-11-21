@@ -40,6 +40,7 @@ Add `harness = "pyagy"` (default is `harness = "pycodex"`) to any Gemini profile
 - **Optional Context Alignment**: When created from `pycodex-ws`, optional `ContextConfig` inputs (`extra_contextual_user_messages` such as Canvas board instructions when `enable_board=True` and `<external_call_context>`, `include_environment_context`, `developer_instructions`, `user_instructions`, `base_instructions_override`, and `codex_home/skills` when `include_skills_instructions=True`) are injected dynamically without altering pure CLI wire parity.
 - **Disabled `ask_question` Runtime**: `ask_question` retains its official declaration in `tools` for 100% wire parity, and immediately returns `Encountered error in tool execution: ask_question is disabled` when called (without prompting).
 - **Web UI Features**: Supports `/compact`, `/model`, `/effort`, `/cd`, live subagent tree (`/api/sessions/<id>/agents`), background task & subagent tracking (`idle: sleeping` status and `/api/sessions/<id>/background-work`), rollout tab persistence, and in-place Reload PyCodex.
+- The workspace enables `preview_reasoning` for pyagy Web views and Feishu cards. Root and subagent previews show the full current reasoning text or summary, including paragraph breaks. The next assistant delta replaces it with the accumulated reply text. Recorded items retain their original roles for Gemini replay.
 
 ## Verification
 

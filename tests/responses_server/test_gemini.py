@@ -231,6 +231,7 @@ def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, che
         events = _post(client, request)
         items = _check_lifecycle(events)
         assert [item["type"] for item in items] == ["reasoning", "message", "reasoning", "function_call", "custom_tool_call"]
+        assert items[0]["content"] == [{"type": "reasoning_text", "text": "Need both tools."}]
         assert [entry["part"] for entry in items[2]["provider_data"]] == parts
         assert all("provider_data" not in item for item in items if item["type"] != "reasoning")
         assert items[-2]["encrypted_function_args"] == []
@@ -277,7 +278,9 @@ def test_signed_parallel_tools_survive_stream_recording_and_resume(tmp_path, che
 
 def test_stream_text_reasoning_usage_and_partial_usage_updates():
     streams = [[
-        _response([{"text": "Think", "thought": True}], finish=None),
+        _response([{"text": "Think ", "thought": True}], finish=None),
+        _response([{"text": "carefully.\n\n\n", "thought": True}], finish=None),
+        _response([{"text": "**Next**\n\nReply now.", "thought": True}], finish=None),
         _response([{"text": "Hello "}], finish=None),
         _response([{"text": "world"}], finish=None),
         _response([{"text": "", "thoughtSignature": "signature"}], usage={
@@ -291,11 +294,19 @@ def test_stream_text_reasoning_usage_and_partial_usage_updates():
     with _bridge(streams) as (client, captures):
         events = _post(client, {"model": "argon", "input": []})
     items = _check_lifecycle(events)
-    assert [item["content"][0]["text"] for item in items if item.get("content")] == ["Think", "Hello world"]
+    assert items[0]["summary"] == []
+    assert [item["content"][0]["text"] for item in items if item.get("content")] == [
+        "Think carefully.\n\n\n**Next**\n\nReply now.", "Hello world",
+    ]
     assert events[-1]["response"]["usage"] == {
         "input_tokens": 35, "output_tokens": 110, "total_tokens": 145,
         "input_tokens_details": {"cached_tokens": 12}, "output_tokens_details": {"reasoning_tokens": 104},
     }
+    assert [
+        event["delta"] for event in events if event["type"] == "response.reasoning_text.delta"
+    ] == [
+        "Think ", "carefully.\n\n\n", "**Next**\n\nReply now.",
+    ]
     assert [event["delta"] for event in events if event["type"] == "response.output_text.delta"] == ["Hello ", "world"]
 
 

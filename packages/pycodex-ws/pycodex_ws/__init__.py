@@ -3,7 +3,11 @@
 from importlib import import_module
 
 
-def register_feishu_commands(runtime):
+def active_preview(active):
+    return active["reasoning"] or active["assistant_text"]
+
+
+def register_feishu_commands(runtime, preview_reasoning=False):
     """Attach Feishu commands and connection cleanup to an existing runtime."""
     link = None
 
@@ -30,9 +34,11 @@ def register_feishu_commands(runtime):
             raise ValueError("Usage: /link <feishu-email|open_id|chat_id>")
         if link is not None:
             raise RuntimeError("A Feishu card is already linked. Use /unlink first.")
+        from .feishu_card import PycodexCard
         from .feishu_link import PycodexRuntimeLink
 
-        link = await PycodexRuntimeLink(runtime, target).start_async()
+        card = PycodexCard.from_env(preview_reasoning=preview_reasoning)
+        link = await PycodexRuntimeLink(runtime, target, card=card).start_async()
         return {
             "kind": "connection",
             "lines": [

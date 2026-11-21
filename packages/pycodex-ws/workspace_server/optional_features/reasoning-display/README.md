@@ -81,8 +81,9 @@ data. Provider reasoning availability was not tested with a live model.
 
 ## Limitations
 
-The current API supplies no dedicated live reasoning-delta event. This example
-does not decrypt, infer or reconstruct hidden reasoning. Some models return no
+This example renders committed history records rather than subscribing to live
+`reasoning` stream events, and it does not decrypt, infer or reconstruct hidden
+reasoning. Some models return no
 readable reasoning. Older records beyond the newest page are not loaded, and
 unrecorded sessions expose only active in-memory history. A fresh newest-page
 query each time avoids retaining cursors across fork/compaction.

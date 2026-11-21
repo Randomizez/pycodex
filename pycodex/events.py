@@ -269,6 +269,17 @@ class AssistantDeltaEvent(ModelEvent):
 
 
 @dataclass(frozen=True)
+class ReasoningEvent(ModelEvent):
+    text: "str"
+    turn_id: "str" = ""
+    submission_id: "typing.Union[str, None]" = None
+    kind: ClassVar[str] = "reasoning"
+
+    def visualize(self) -> "str":
+        return self.text
+
+
+@dataclass(frozen=True)
 class TokenCountEvent(ModelEvent):
     usage: "typing.Union[JSONDict, None]"
     turn_id: "str" = ""
