@@ -11,7 +11,6 @@
   Portable 和 `responses_server` 属于 core；Antigravity CLI harness 属于 `pyagy`；
   Web、router、飞书适配属于 ws。
 - 飞书 SDK `lark-oapi` 为手动安装的可选依赖；core 不依赖前端、`pyagy` 或 SDK。
-  VS Code 扩展独立构建 VSIX，不进入 Python wheel/sdist。
   三包发布必须按 `python-codex -> pyagy -> pycodex-ws` 顺序串行完成。
 
 ## 关键约束
@@ -50,7 +49,7 @@ env -u VIRTUAL_ENV uv run --dev pytest
 - 修改 workspace 前端源码后，用其 `frontend/` 目录的 `npm ci` /
   `npm run build` 重建资源，不手改生成的 JS/CSS/许可证文件。
 - 按改动范围验证；测试分层、隔离 HOME/CODEX_HOME、Node 版本和发布检查见
-  [测试文档](tests/TESTS.md)。独立 Node/VS Code 测试手动运行，不加入 CI；
+  [测试文档](tests/TESTS.md)。独立 Node 测试手动运行，不加入 CI；
   Python 测试已有的 Node fixture 继续随原测试运行。
 
 ## 按修改范围阅读

@@ -223,34 +223,8 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
 - `test_doctor.py` 用本地 Responses fixture 验证省略 provider 的配置可完成
   配置、API key、连通性和模型请求检查，不访问真实模型服务。
 
-### VS Code 前端
+### Workspace CLI 生命周期
 
-- `packages/pycodex-ws/extensions/vscode` 属于 workspace 前端，独立构建 VSIX。它使用 Node 22+，运行
-  `npm ci --omit=optional --ignore-scripts && npm test`；与 Python 3.6
-  测试环境独立，不给 Python runtime 增加 Node 依赖。按项目约定手动运行，
-  不加入 CI。
-- 前端测试覆盖项目后端启动、固定配置文件权限、退出/启动失败后配置保留、stdin 关闭、
-  停用等待（含已移除目录的后端）、
-  远程工作目录、venv 选择/校验、远端文件选择、项目级设置、
-  profile 参数/重启生效及重新加载提示、
-  context meter 快照字段、每个 chat 新建 session、重开侧边栏恢复已有对话及过滤空会话、
-  显式 session id、POST 不自动重试、旧轮询、多 session 隔离及 detach 不关闭后端。
-- 后端准备测试覆盖复用兼容版本、从 console script 定位原 Python 环境、
-  空 venv 的独立安装与启动、旧版升级、通过 workspace 依赖升级 core、安装后版本复查、并发安装复用
-  （含同一环境的 `python` / `python3` 别名），
-  以及安装失败/缺少 Python/无效自定义路径报错与凭据脱敏。
-  进程 fixture 在 POSIX 上执行；Windows launcher 解析使用固定样本验证。
-  安装耗时不占服务启动超时，安装期间关闭会等待准备结束且不再启动后端。
-- 编辑器文本块覆盖未保存缓冲区、1-based 光标、反向选区、截断和捕获后编辑/关闭文件，
-  以及只读 Git diff、Diff 标签页聚焦、Explorer/SCM 单选和多选资源。
-- 新会话无需源文件且默认没有代码上下文；可主动将片段插入草稿后随普通 prompt
-  发送，续问不会自动附加。片段与文字穿插，发送按原顺序展开。
-  命令、空输入和问题回答保持原样发送。
-- WebviewView 测试覆盖活动栏入口、多项目选择、文件读取期间切换会话、
-  上下文插入的 ready 握手和目标会话、折叠会话状态更新、
-  `/model` 原样发送、关闭等待/失败与其他会话隔离，
-  以及隐藏/恢复握手、CSP、过期消息和发送确认。VS Code API 使用 mock，
-  桌面 UI 联调需运行 Extension Development Host；聊天通过稳定 API 在左侧栏打开。
 - `uv run --dev pytest packages/pycodex-ws/tests/test_owned_workspace_server.py packages/pycodex-ws/tests/test_workspace_server.py`
   覆盖 UTF-8 workspace 配置文件、新格式及旧 `board: false` 的归一化，以及
   不传额外选项时默认启用 EOF 关闭、真实 CLI 使用关闭的 stdin 启动后正常退出，

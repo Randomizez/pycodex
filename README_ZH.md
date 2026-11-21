@@ -143,8 +143,6 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 
 设置菜单支持界面定制和带密码的工作区分享。会话操作、存储和飞书配置见
 [工作区指南](packages/pycodex-ws/README.md)。
-独立安装的 [VS Code 扩展](packages/pycodex-ws/extensions/vscode/README.md)
-可连接同一后端，也支持 Remote SSH。
 
 ## 使用 Python API
 

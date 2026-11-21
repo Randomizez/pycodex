@@ -163,9 +163,7 @@ descriptions and send a feature name, ID or custom request in chat to start the 
 Settings also provides password-protected sharing
 and [External Call](packages/pycodex-ws/README.md#external-call)
 sessions that connect an external client to a Web conversation. See the [workspace guide](packages/pycodex-ws/README.md) for
-session controls, storage and Feishu setup. A separate
-[VS Code extension](packages/pycodex-ws/extensions/vscode/README.md) connects to
-the same backend, including over Remote SSH.
+session controls, storage and Feishu setup.
 
 ## Use the Python API
 

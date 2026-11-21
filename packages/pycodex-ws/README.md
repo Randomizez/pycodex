@@ -80,9 +80,6 @@ identifying the source of a user message. The history API returns it, and
 recorded sessions preserve it across resume. It is metadata only: the model request and frontend display do
 not include it. See the [message API contract](workspace_server/WORKSPACE_API.md#commands-and-results).
 
-The [VS Code extension](extensions/vscode/README.md) uses this backend and is
-distributed separately as a VSIX.
-
 ## Customize the interface
 
 Choose **Settings → Customize Agent** from the conversation header to open a
