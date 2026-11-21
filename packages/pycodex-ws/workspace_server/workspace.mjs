@@ -1,5 +1,5 @@
 import {Composer, mountContentViews} from "./content_views.mjs";
-import {encodeViewPath, frontendUrl, relativeUrl} from "./workspace_dom.mjs";
+import {encodeViewPath, frontendUrl, reconcileChildren, relativeUrl} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
 import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
@@ -50,9 +50,8 @@ const customizeSessions = new Set(
   JSON.parse(window.sessionStorage.getItem(customizeSessionsKey) || "[]")
 );
 let pollTimer = null;
-let boardPollTimer = null;
-let boardPollInFlight = false;
 let lastBoardSignature = null;
+let contentViewsActive = false;
 let resizeStart = null;
 let spinnerText = "";
 let toastTimer = null;
@@ -88,6 +87,7 @@ const sessionUI = createSessionsUI({
   renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry,
   dismissSessionsDrawer, closeContextBlock, resizePrompt,
+  beginWorkspacePoll,
 });
 const {
   sessionById, stateForSession, restoreSessionScroll,
@@ -380,10 +380,9 @@ function renderSessionList(container, mobile) {
   const existing = new Map(
     Array.from(container.children, tab => [tab.dataset.sessionId, tab])
   );
-  sessionUI.sessions.forEach((session, index) => {
+  reconcileChildren(container, sessionUI.sessions.map((session, index) => {
     const sessionId = session.id || "";
     const tab = existing.get(sessionId) || template.content.firstElementChild.cloneNode(true);
-    existing.delete(sessionId);
     tab.dataset.sessionId = sessionId;
     const active = sessionId === sessionUI.activeId;
     tab.classList.toggle("active", active);
@@ -421,9 +420,8 @@ function renderSessionList(container, mobile) {
       if (close.getAttribute("aria-label") !== closeLabel) close.setAttribute("aria-label", closeLabel);
       close.disabled = sessionUI.sessions.length <= 1;
     }
-    if (container.children[index] !== tab) container.insertBefore(tab, container.children[index] || null);
-  });
-  existing.forEach(tab => tab.remove());
+    return tab;
+  }));
 }
 
 function editSessionTitle(tab, sessionId) {
@@ -642,34 +640,28 @@ function startPolling() {
   pollTimer = setInterval(pollSession, 2000);
 }
 
-async function pollBoard() {
-  if (boardPollInFlight) return;
-  boardPollInFlight = true;
-  try {
-    const response = await fetch(relativeUrl("api/board"));
-    if (!response.ok) return;
-    const payload = await response.json();
-    if (!payload.exists) {
-      lastBoardSignature = null;
-      return;
-    }
-    const signature = `${payload.mtime_ns || ""}:${payload.size || ""}`;
-    // Automatic Canvas refreshes must not add browser Back history entries.
-    if (signature !== lastBoardSignature) {
-      lastBoardSignature = signature;
-      boardFrame.contentWindow.location.replace(relativeUrl(`board?t=${Date.now()}`));
-    }
-  } catch (_error) {
+function refreshBoard(board) {
+  if (!board || !board.exists) {
+    lastBoardSignature = null;
     return;
-  } finally {
-    boardPollInFlight = false;
+  }
+  const signature = `${board.mtime_ns || ""}:${board.size || ""}`;
+  // Automatic Canvas refreshes must not add browser Back history entries.
+  if (signature !== lastBoardSignature) {
+    lastBoardSignature = signature;
+    boardFrame.contentWindow.location.replace(relativeUrl(`board?t=${Date.now()}`));
   }
 }
 
-function startBoardPolling() {
-  if (!enableBoard || boardPollTimer) return;
-  pollBoard();
-  boardPollTimer = setInterval(pollBoard, 2000);
+/** Return a callback for this session poll's workspace fields, or null while views are paused. */
+function beginWorkspacePoll() {
+  if (!contentViewsActive) return null;
+  const token = contentTabs.pollToken();
+  return payload => {
+    if (!contentViewsActive) return;
+    if (enableBoard) refreshBoard(payload.board);
+    contentTabs.applyViews(payload.views, token, payload.views_error);
+  };
 }
 
 function renderQueueHint(inputs) {
@@ -926,8 +918,6 @@ document.addEventListener("visibilitychange", () => {
     return;
   }
   pollSession();
-  pollBoard();
-  contentTabs.poll();
   requestAnimationFrame(markVisibleFinalRead);
 });
 
@@ -953,8 +943,6 @@ setupContextDetails({
   }),
 });
 resizePrompt();
-startPolling();
-startBoardPolling();
 document.querySelectorAll(".content-tabs").forEach(tabs => {
   tabs.addEventListener("wheel", event => {
     if (event.ctrlKey || event.shiftKey || event.deltaX !== 0 || event.deltaY === 0) return;
@@ -1041,10 +1029,12 @@ function startContentViews() {
     boardFrame.addEventListener("load", bindCanvasLinks);
     bindCanvasLinks();
   }
+  contentViewsActive = true;
   contentTabs.start();
 }
 
 function stopContentViews() {
+  contentViewsActive = false;
   document.removeEventListener("click", followMarkdownLink);
   boardFrame.removeEventListener("load", bindCanvasLinks);
   if (canvasDocument) canvasDocument.removeEventListener("click", followCanvasLink);
@@ -1053,6 +1043,7 @@ function stopContentViews() {
 }
 
 startContentViews();
+startPolling();
 try {
   loadEmbeddedBanners(document, banners);
 } catch (error) {

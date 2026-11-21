@@ -138,7 +138,7 @@ const {chromium} = require("playwright");
         onSelect() {},
       });
       linkFixture.openView = (...args) => tabs.open(...args);
-      linkFixture.refreshReport = () => tabs.poll();
+      linkFixture.refreshReport = () => tabs.applyViews([snapshot], tabs.pollToken());
     }, report);
     await page.evaluate(report =>
       linkFixture.render(`[Leo](${report}#leo-benchmarks)`, "/notes/index.md"), report);

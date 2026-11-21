@@ -21,7 +21,7 @@ const entry = fs.readFileSync(path.join(directory, "workspace.mjs"), "utf8") + `
     switchSession, closeSession, pollSession, restoreSessionScroll,
     renderSnapshot, updateSessions, sessionState: sessionUI.sessionState, composer, renderMermaidInto: markdown.renderMermaidInto, setSessionsOpen,
     active: () => sessionUI.activeId,
-    stop: () => {clearInterval(pollTimer); clearInterval(boardPollTimer); stopContentViews();},
+    stop: () => {clearInterval(pollTimer); stopContentViews();},
   };`;
 
 function turn(id, text) {
@@ -96,7 +96,6 @@ function turn(id, text) {
           contentType: name.endsWith(".css") ? "text/css" : "text/javascript",
         });
       }
-      if (url.pathname === "/api/views") return route.fulfill({json: {views: []}});
       if (url.pathname === "/api/views/open") {
         const {href, session_id} = route.request().postDataJSON();
         assert.equal(href, "/test/Package%20%231%25/optional_features/README.md");
@@ -106,7 +105,6 @@ function turn(id, text) {
           documents: [{label: catalogPath, text}]};
         return route.fulfill({json: {view, views: [view]}});
       }
-      if (url.pathname === "/api/board") return route.fulfill({json: {exists: false}});
       if (url.pathname === "/api/session") {
         const id = url.searchParams.get("session_id") || tabs[0];
         requests.push(id);
@@ -115,6 +113,7 @@ function turn(id, text) {
         if (!tabs.includes(id)) return route.fulfill({status: 404, json: {}});
         const payload = {session_id: id, sessions: list(), snapshot: snapshots.get(id)};
         if (externalCalls.has(id)) payload.external_call = externalCalls.get(id);
+        if (url.searchParams.get("workspace") === "true") Object.assign(payload, {views: [], board: {exists: false}});
         return route.fulfill({json: payload});
       }
       if (url.pathname === "/api/external-call-sessions") {

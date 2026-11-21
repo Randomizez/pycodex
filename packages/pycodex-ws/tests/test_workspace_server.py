@@ -729,6 +729,12 @@ def test_canvas_toggle_preserves_sessions_and_file_views(tmp_path, multi):
                     ("keep this conversation", "done")
                 ]
                 assert browser.get(prefix + "/api/views").json()["views"][0]["id"] == opened["id"]
+                polled = browser.get(prefix + "/api/session?workspace=true").json()
+                assert polled["views"] == browser.get(prefix + "/api/views").json()["views"]
+                if enable_board:
+                    assert polled["board"] == browser.get(prefix + "/api/board").json()
+                else:
+                    assert polled["board"] is None
                 view = browser.get(prefix + "/api/views/" + opened["id"]).json()
                 assert view["documents"][0]["text"] == "saved file view"
     assert board.read_text(encoding="utf-8") == "saved Canvas"

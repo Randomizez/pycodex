@@ -1,5 +1,6 @@
 // Workspace content tabs, live updates and editor lifecycle.
 import {tabLabels} from "./view_labels.mjs";
+import {reconcileChildren} from "../workspace_dom.mjs";
 import {TranscriptView} from "./transcript.mjs";
 export {Composer} from "./composer.mjs";
 export {PromptHistory} from "./prompt_history.mjs";
@@ -58,10 +59,8 @@ export class ContentTabs {
     this.initialSelection = selected;
     this.initialized = false;
     this.mutation = 0;
-    this.pollRequest = null;
     this.contentRequest = null;
     this.openRequest = null;
-    this.timer = null;
   }
 
   isBuiltin(id) {
@@ -69,53 +68,40 @@ export class ContentTabs {
       (id === "vscode" && this.vscodeMode);
   }
 
-  start() {
-    if (this.timer !== null) return;
-    this.poll();
-    this.timer = setInterval(() => this.poll(), 2000);
-  }
-
   stop() {
-    clearInterval(this.timer);
-    this.timer = null;
     this.cancelOpen();
-    if (this.pollRequest) this.pollRequest.abort();
+    this.mutation += 1;
     if (this.contentRequest) this.contentRequest.abort();
-    this.pollRequest = null;
     this.contentRequest = null;
     this.loading = false;
   }
 
-  async poll() {
-    if (this.pollRequest || this.openRequest) return;
-    const request = new AbortController();
-    const mutation = this.mutation;
-    this.pollRequest = request;
-    try {
-      const payload = await this.request("api/views", {signal: request.signal});
-      if (this.pollRequest !== request || mutation !== this.mutation) return;
-      this.updateViews(payload.views);
-      const remaining = new Set(this.views.map(view => view.id));
-      this.error = "";
-      let next = this.activeId;
-      if (!this.initialized) {
-        next = this.initialSelection || this.defaultId();
-        this.initialized = true;
-      }
-      if (next !== null && !this.isBuiltin(next) && !remaining.has(next)) next = this.defaultId();
-      if (next !== this.activeId || (next !== null && !this.isBuiltin(next) && !this.snapshot && !this.loading)) {
-        this.select(next, null, null, false);
-      } else {
-        if (next !== null && !this.isBuiltin(next) && !this.cache.has(next) && !this.contentRequest) this.load(next);
-        this.onChange(this);
-      }
-    } catch (error) {
-      if (this.pollRequest === request && mutation === this.mutation && error.name !== "AbortError") {
-        this.error = "Unable to load tabs: " + error.message;
-        this.onChange(this);
-      }
-    } finally {
-      if (this.pollRequest === request) this.pollRequest = null;
+  /** Token for a view list request; a later click, close or stop invalidates it. */
+  pollToken() {
+    return this.openRequest ? null : this.mutation;
+  }
+
+  applyViews(views, token, error = "") {
+    if (token === null || token !== this.mutation || this.openRequest) return;
+    if (error) {
+      this.error = "Unable to load tabs: " + error;
+      this.onChange(this);
+      return;
+    }
+    this.updateViews(views);
+    const remaining = new Set(this.views.map(view => view.id));
+    this.error = "";
+    let next = this.activeId;
+    if (!this.initialized) {
+      next = this.initialSelection || this.defaultId();
+      this.initialized = true;
+    }
+    if (next !== null && !this.isBuiltin(next) && !remaining.has(next)) next = this.defaultId();
+    if (next !== this.activeId || (next !== null && !this.isBuiltin(next) && !this.snapshot && !this.loading)) {
+      this.select(next, null, null, false);
+    } else {
+      if (next !== null && !this.isBuiltin(next) && !this.cache.has(next) && !this.contentRequest) this.load(next);
+      this.onChange(this);
     }
   }
 
@@ -868,7 +854,7 @@ export function mountContentViews({
       name: "VS Code",
       description: vscodeLoadError ? "Error" : (vscodeLoading ? "Loading…" : ""),
     });
-    descriptors.forEach((view, index) => {
+    reconcileChildren(tabs, descriptors.map(view => {
       let tab = existing.get(view.id);
       if (!tab) {
         tab = element(document, "div", "tab content-tab");
@@ -920,7 +906,6 @@ export function mountContentViews({
           tab.appendChild(close);
         }
       }
-      existing.delete(view.id);
       const label = labels.get(view.id);
       tab.querySelector(".content-tab-name").textContent = label.name;
       const description = tab.querySelector(".content-tab-description");
@@ -943,9 +928,8 @@ export function mountContentViews({
         close.disabled = state.closing.has(view.id);
         close.setAttribute("aria-label", "Close " + view.title);
       }
-      if (tabs.children[index] !== tab) tabs.insertBefore(tab, tabs.children[index] || null);
-    });
-    existing.forEach(tab => tab.remove());
+      return tab;
+    }));
     display.retain(state.views.map(view => view.id));
     const isBoard = state.activeId === "board";
     const isVscode = state.activeId === "vscode";
@@ -1013,7 +997,6 @@ export function mountContentViews({
   render(controller);
   return {
     start() {
-      controller.start();
       render(controller);
     },
     stop() {
@@ -1024,7 +1007,8 @@ export function mountContentViews({
       display.clear();
       displayedId = null;
     },
-    poll() { return controller.poll(); },
+    pollToken() { return controller.pollToken(); },
+    applyViews(views, token, error) { controller.applyViews(views, token, error); },
     open(href, srcPath, sessionId) { return controller.open(href, srcPath, sessionId); },
     openTranscript(sessionId, agentId, agentPath) {
       return controller.openTranscript(sessionId, agentId, agentPath);

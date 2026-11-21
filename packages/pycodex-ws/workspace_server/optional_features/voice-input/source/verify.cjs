@@ -103,11 +103,10 @@ async function main() {
           : fs.readFileSync(path.join(workspace, url.pathname.slice('/assets/'.length)))});
       if (request.method() === 'POST') workspacePosts.push(url.pathname);
       if (url.pathname === '/api/sessions') return route.fulfill({json:{sessions, profiles:[], default_profile:null}});
-      if (url.pathname === '/api/views') return route.fulfill({json:{views:[]}});
       if (url.pathname === '/api/session') {
         const sessionId = url.searchParams.get('session_id') || 'a';
         return route.fulfill({json:{session_id:sessionId, sessions,
-          snapshot:{cwd:'/test', turns:[], spinner:'', queued_inputs:[], running:false}}});
+          snapshot:{cwd:'/test', turns:[], spinner:'', queued_inputs:[], running:false}, views:[]}});
       }
       if (url.pathname.endsWith('/history')) return route.fulfill({json:{items:[], next_cursor:null}});
       throw new Error('Unexpected workspace request: ' + url.pathname);

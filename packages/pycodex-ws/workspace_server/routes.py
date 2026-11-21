@@ -311,7 +311,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
 
     async def session(request: Request) -> JSONResponse:
         context = workspace(request)
-        return _session_response(context.manager, request, context.workspace_id)
+        return _session_response(context, request)
 
     async def root_agent_help(request: Request) -> Response:
         return _agent_help_response(request, multi=bool(prefix))
@@ -541,20 +541,22 @@ def _view_asset_response(asset_name: str, media_type: str, request: Request, cac
     )
 
 
+def _board_status(board_path: Path) -> "typing.Dict[str, object]":
+    if not board_path.is_file():
+        return {"exists": False}
+    stat = board_path.stat()
+    return {
+        "exists": True,
+        "path": str(board_path),
+        "mtime_ns": stat.st_mtime_ns,
+        "size": stat.st_size,
+    }
+
+
 def _board_status_response(board_path: "typing.Union[Path, None]") -> JSONResponse:
     if board_path is None:
         raise HTTPException(status_code=404, detail="Canvas is disabled")
-    if not board_path.is_file():
-        return JSONResponse({"exists": False})
-    stat = board_path.stat()
-    return JSONResponse(
-        {
-            "exists": True,
-            "path": str(board_path),
-            "mtime_ns": stat.st_mtime_ns,
-            "size": stat.st_size,
-        }
-    )
+    return JSONResponse(_board_status(board_path))
 
 
 def _websocket_backend_hint_response() -> JSONResponse:
@@ -650,10 +652,10 @@ async def _delete_session_response(
 
 
 def _session_response(
-    manager: "WorkspaceSessionManager",
+    context: WorkspaceRouteContext,
     request: Request,
-    workspace_id: "typing.Union[str, None]" = None,
 ) -> JSONResponse:
+    manager = context.manager
     recent_only = request.query_params.get("recent") == "true"
     session_id = request.query_params.get("session_id")
     sessions = manager.list_sessions()
@@ -683,11 +685,19 @@ def _session_response(
         binding = external_call.external_call_binding(request, manager, resolved_id)
         if binding is not None:
             payload["external_call"] = binding
+    if request.query_params.get("workspace") == "true":
+        try:
+            payload["views"] = manager.views.list_views()
+        except (OSError, ValueError) as error:
+            payload["views_error"] = str(error)
+        payload["board"] = (
+            None if context.board_path is None else _board_status(context.board_path)
+        )
     if request.query_params.get("runtime_info") == "true":
         state = request.app.state
         payload["runtime_info"] = runtime_info_prompt(
             resolved_id,
-            workspace_id,
+            context.workspace_id,
             getattr(state, "local_api_url", None),
             getattr(state, "agent_header_path", None),
         )

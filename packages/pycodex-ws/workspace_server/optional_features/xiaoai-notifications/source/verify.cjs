@@ -56,10 +56,9 @@ async function main() {
       });
       if (url.pathname === "/api/session") {
         const id = url.searchParams.get("session_id") || "a";
-        return route.fulfill({json: {session_id: id, sessions, snapshot: snapshot(id)}});
+        return route.fulfill({json: {session_id: id, sessions, snapshot: snapshot(id), views: []}});
       }
       if (url.pathname === "/api/sessions") return route.fulfill({json: {sessions, profiles: []}});
-      if (url.pathname === "/api/views") return route.fulfill({json: {views: []}});
       return route.fulfill({json: {ok: true, sessions, items: [], models: [], state: {}}});
     });
     await page.goto("https://speaker.test/", {waitUntil: "domcontentloaded"});

@@ -1,4 +1,4 @@
-import {element, frontendUrl, isNearBottom, scrollToBottom} from "./workspace_dom.mjs";
+import {element, frontendUrl, isNearBottom, reconcileChildren, scrollToBottom} from "./workspace_dom.mjs";
 
 export function messageSignature(snapshot) {
   const turns = (snapshot && snapshot.turns) || [];
@@ -64,13 +64,7 @@ export function createConversationRenderer({log, renderMarkdownInto, builtinFron
     if (inputRequest) {
       renderEntry("input-request", inputRequest.text, "control");
     }
-    const retained = new Set(entries);
-    Array.from(log.children).forEach(entry => {
-      if (!retained.has(entry)) entry.remove();
-    });
-    entries.forEach((entry, index) => {
-      if (log.children[index] !== entry) log.insertBefore(entry, log.children[index] || null);
-    });
+    reconcileChildren(log, entries);
   }
   return {renderConversation, addEntry};
 }

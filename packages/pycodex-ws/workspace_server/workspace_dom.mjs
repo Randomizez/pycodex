@@ -28,3 +28,14 @@ export function isNearBottom(log) {
 export function scrollToBottom(log) {
   log.scrollTop = log.scrollHeight;
 }
+
+/** Make `container` hold exactly `nodes`, in order, moving only misplaced children. */
+export function reconcileChildren(container, nodes) {
+  const retained = new Set(nodes);
+  for (const child of Array.from(container.children)) {
+    if (!retained.has(child)) child.remove();
+  }
+  nodes.forEach((node, index) => {
+    if (container.children[index] !== node) container.insertBefore(node, container.children[index] || null);
+  });
+}

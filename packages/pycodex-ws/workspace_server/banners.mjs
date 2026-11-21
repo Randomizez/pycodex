@@ -1,4 +1,4 @@
-import {element, isNearBottom, scrollToBottom} from "./workspace_dom.mjs";
+import {element, isNearBottom, reconcileChildren, scrollToBottom} from "./workspace_dom.mjs";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const ICON_SHAPES = {
@@ -290,15 +290,7 @@ export function createSessionBanners({
       if (!entry.node) entry.node = buildNode(entry);
       visible.push(entry.node);
     }
-    const keep = new Set(visible);
-    Array.from(container.children).forEach(child => {
-      if (!keep.has(child)) child.remove();
-    });
-    visible.forEach((node, index) => {
-      if (container.children[index] !== node) {
-        container.insertBefore(node, container.children[index] || null);
-      }
-    });
+    reconcileChildren(container, visible);
     container.hidden = visible.length === 0;
   }
 

@@ -48,6 +48,9 @@ ordinary, missing or closed session it returns `binding: null`. Browser administ
 `GET api/session` responses also include `external_call: binding` when the selected
 session is an open external session; ordinary sessions, visitors and
 `pycodex.agent_access` requests omit `external_call` and cannot read or create bindings.
+`GET api/session?workspace=true` additionally returns `views` (the `GET api/views`
+list, or a `views_error` string) and `board` (the `GET api/board` status, or `null`
+when Canvas is disabled); the built-in page uses it as its only polling request.
 
 Send tasks through the normal Web message or WebSocket interface. `exec_command`
 and the other configured host tools operate in the workspace. `client_exec_command`

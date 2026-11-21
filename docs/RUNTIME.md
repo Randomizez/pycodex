@@ -711,7 +711,10 @@ Adding, editing or deleting profiles does not require a server restart. Duplicat
 names across the two formats are errors. Provider and context settings share the
 [profile loader](CONTEXT.md#配置读取与-profile).
 The built-in page polls `GET api/session` for one conversation snapshot and
-the workspace's session summaries in tab order. Opt-in `GET api/session?recent=true`
+the workspace's session summaries in tab order. Its single two-second poll adds
+`workspace=true`, which also returns the file view list as `views` (or a
+`views_error` string) and Canvas status as `board` (`null` when Canvas is
+disabled), so the page has no separate view or Canvas timers. Opt-in `GET api/session?recent=true`
 returns up to 20 summaries sorted by latest user message (`last_user_at`, then tab ID),
 keeping the selected session in the last slot when needed and reporting overall
 `workspace_running`; without `session_id`, it selects the most recent session.
@@ -1010,7 +1013,7 @@ and Canvas respectively, preserving any suffix already in the prefix.
 `board_path` is derived from that prefix, not a second configurable input.
 The session manager receives only the prefix; each
 store receives its derived JSON file path. Disabling Canvas hides its tab,
-stops its polling, omits its context injection and returns 404 for its HTML,
+stops its refreshes, omits its context injection and returns 404 for its HTML,
 status and image routes. File views and conversations keep the same persistence
 paths across changes to the switch.
 Missing state starts a new workspace; malformed saved state fails restoration
@@ -1315,8 +1318,8 @@ or `anchor` for a decoded HTML fragment.
 `GET api/views/<id>` returns the current contents and
 `DELETE api/views/<id>` closes the view. These routes use the existing
 workspace authentication and namespace in both single- and multi-workspace
-apps. The browser polls
-the list every two seconds. The store checks only recorded file paths, using
+apps. The browser receives
+the list through the session poll every two seconds. The store checks only recorded file paths, using
 file identity, size and modification/change times to detect writes and atomic
 replacements; unchanged files are not reread. No recursive scan or additional
 watcher process is needed. Content/error changes advance the view revision and

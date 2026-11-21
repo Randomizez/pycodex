@@ -34,6 +34,7 @@ export function createSessionsUI({
   updateSpinnerNotifyUi, notifySessionDone, setSpinner,
   renderQueueHint, markVisibleFinalRead,
   renderConversation, addEntry, dismissSessionsDrawer, closeContextBlock, resizePrompt,
+  beginWorkspacePoll = null,
 }) {
   const workspaceTitle = document.title;
   let activeSessionId = window.sessionStorage.getItem(activeSessionKey) || "";
@@ -160,18 +161,24 @@ export function createSessionsUI({
     const request = {sessionId: requestedSessionId, controller: new AbortController()};
     sessionPoll = request;
     if (sessionNeedsRefresh) setSessionRefresh("loading");
+    const finishWorkspacePoll = beginWorkspacePoll ? beginWorkspacePoll() : null;
     try {
-      const path = requestedSessionId
-        ? `api/session?session_id=${encodeURIComponent(requestedSessionId)}`
-        : "api/session";
-      let response = await fetch(relativeUrl(path), {signal: request.controller.signal});
+      const sessionUrl = sessionId => {
+        const params = new URLSearchParams();
+        if (sessionId) params.set("session_id", sessionId);
+        if (finishWorkspacePoll) params.set("workspace", "true");
+        const query = params.toString();
+        return relativeUrl(query ? `api/session?${query}` : "api/session");
+      };
+      let response = await fetch(sessionUrl(requestedSessionId), {signal: request.controller.signal});
       if (sessionPoll !== request || requestedSessionId !== activeSessionId) return;
       // A saved session may have been closed since this page was last open.
       if (response.status === 404 && requestedSessionId && !sessions.length) {
-        response = await fetch(relativeUrl("api/session"), {signal: request.controller.signal});
+        response = await fetch(sessionUrl(""), {signal: request.controller.signal});
       }
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
+      if (finishWorkspacePoll) finishWorkspacePoll(payload);
       if (sessionPoll !== request || requestedSessionId !== activeSessionId) {
         return;
       }

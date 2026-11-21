@@ -80,13 +80,23 @@ async function flush() {
   await Promise.resolve();
 }
 
+async function pollViews(tabs) {
+  const token = tabs.pollToken();
+  try {
+    const payload = await tabs.request("api/views");
+    tabs.applyViews(payload.views, token);
+  } catch (error) {
+    tabs.applyViews(null, token, error.message);
+  }
+}
+
 async function newTabsAndRestore() {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "board");
   state.setViews(["a", "b", "c"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   assert.equal(state.tabs.activeId, "board");
   await state.tabs.open("c");
@@ -100,7 +110,7 @@ async function newTabsAndRestore() {
   await state.tabs.close("c");
   await flush();
   assert.equal(state.tabs.activeId, "b");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.deepEqual(state.tabs.views.map(view => view.id), ["a", "b"]);
   await state.tabs.close("board");
   assert.equal(state.requests.includes("DELETE api/views/board"), false);
@@ -108,7 +118,7 @@ async function newTabsAndRestore() {
   const restored = fixture("a");
   restored.setViews(["a", "b"]);
   assert.equal(restored.tabs.activeId, "board");
-  await restored.tabs.poll();
+  await pollViews(restored.tabs);
   await flush();
   assert.equal(restored.tabs.activeId, "a");
   assert.equal(restored.tabs.snapshot.id, "a");
@@ -126,7 +136,7 @@ async function disabledCanvasKeepsFileViewsAndAnEmptyState() {
     const state = fixture(selected, false);
     assert.equal(state.tabs.activeId, null);
     state.setViews(["a", "b"]);
-    await state.tabs.poll();
+    await pollViews(state.tabs);
     await flush();
     const expected = selected === "b" ? "b" : "a";
     assert.equal(state.tabs.activeId, expected);
@@ -145,16 +155,16 @@ async function disabledCanvasKeepsFileViewsAndAnEmptyState() {
     assert.equal(state.tabs.snapshot, null);
     assert.equal(state.tabs.loading, false);
     assert.equal(state.selections[state.selections.length - 1], null);
-    await state.tabs.poll();
+    await pollViews(state.tabs);
     state.setViews(["other-client"]);
-    await state.tabs.poll();
+    await pollViews(state.tabs);
     assert.equal(state.tabs.activeId, null);
     assert.equal(state.requests.includes("GET api/views/null"), false);
     assert.equal(state.requests.includes("GET api/views/board"), false);
   }
   const empty = fixture(null, false);
-  await empty.tabs.poll();
-  await empty.tabs.poll();
+  await pollViews(empty.tabs);
+  await pollViews(empty.tabs);
   assert.equal(empty.tabs.activeId, null);
   assert.equal(empty.tabs.error, "");
   assert.deepEqual(empty.requests, ["GET api/views", "GET api/views"]);
@@ -165,12 +175,12 @@ async function pollingNeverFollowsOtherClients() {
   state.setViews(["a", "b"]);
   state.reveal("a", 1);
   state.reveal("b", 2);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "board");
   await state.tabs.select("a");
   await state.tabs.select("b");
   state.reveal("a", 3);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   assert.equal(state.tabs.activeId, "b");
   assert.deepEqual(state.tabs.views.map(view => view.id), ["a", "b"]);
@@ -178,33 +188,33 @@ async function pollingNeverFollowsOtherClients() {
   const snapshot = state.tabs.snapshot;
   const selections = state.selections.length;
   state.reveal("a", 4);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.selections.length, selections);
   assert.equal(state.tabs.snapshot, snapshot);
   await state.tabs.select("b");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "b");
 
   const fresh = fixture();
   fresh.setViews(["a", "b"]);
   fresh.reveal("a", 4);
   fresh.reveal("b", 2);
-  await fresh.tabs.poll();
+  await pollViews(fresh.tabs);
   assert.equal(fresh.tabs.activeId, "board");
 }
 
 async function revealingDuringRefreshKeepsVisibleContent() {
   const state = fixture("a");
   state.setViews(["a"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   const snapshot = state.tabs.snapshot;
   const refreshed = deferred();
   state.pending.set("GET api/views/a", refreshed);
   state.setRevision("a", 2);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   state.reveal("a", 1);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.snapshot, snapshot);
   assert.equal(state.tabs.loading, false);
   refreshed.resolve({id: "a", revision: 2, documents: [{text: "updated"}]});
@@ -216,7 +226,7 @@ async function clickedLinesDoNotReplayOnPollOrManualSelection() {
   const state = fixture();
   state.setViews(["a"]);
   state.reveal("a", 1, {document: 0, line: 12});
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.selection, null);
   await state.tabs.open("a");
   assert.equal(state.tabs.displayMode, "source");
@@ -226,11 +236,11 @@ async function clickedLinesDoNotReplayOnPollOrManualSelection() {
   const firstSelection = state.tabs.selection;
   const snapshot = state.tabs.snapshot;
   const selections = state.selections.length;
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.selection, firstSelection);
   assert.equal(state.selections.length, selections);
   state.reveal("a", 2, {document: 0, line: 42});
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.selection, firstSelection);
   await state.tabs.open("a");
   assert.equal(state.tabs.selection.line, 42);
@@ -239,7 +249,7 @@ async function clickedLinesDoNotReplayOnPollOrManualSelection() {
   assert.equal(state.requests.filter(key => key === "GET api/views/a").length, 0);
   await state.tabs.select("board");
   await state.tabs.select("a");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.selection, null);
   assert.equal(state.tabs.displayMode, null);
   state.reveal("a", 3, {document: 0, line: 42});
@@ -285,7 +295,7 @@ async function modeToggleClearsLineTargetsAndOverridesPendingOpens() {
   const state = fixture();
   state.setViews(["a"]);
   state.reveal("a", 1, {document: 0, line: 12});
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await state.tabs.open("a");
   const snapshot = state.tabs.snapshot;
   const requests = state.requests.length;
@@ -296,7 +306,7 @@ async function modeToggleClearsLineTargetsAndOverridesPendingOpens() {
   assert.equal(state.tabs.snapshot, snapshot);
   assert.equal(state.requests.length, requests);
   assert.equal(state.selections.length, selections);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.displayMode, "preview");
   state.tabs.setDisplayMode("source");
   assert.equal(state.tabs.selection, null);
@@ -316,7 +326,7 @@ async function modeToggleClearsLineTargetsAndOverridesPendingOpens() {
 async function oldOpensCannotOverrideTheLatestIntent(action, fail) {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   const old = deferred();
   state.pending.set("POST api/views/open", old);
   const opening = state.tabs.open("a");
@@ -340,7 +350,7 @@ async function oldOpensCannotOverrideTheLatestIntent(action, fail) {
 async function failedOpensPreserveTheActiveView() {
   const state = fixture("a");
   state.setViews(["a"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   const snapshot = state.tabs.snapshot;
   const failure = deferred();
@@ -361,10 +371,10 @@ async function failedOpensPreserveTheActiveView() {
 async function oldPollCannotUndoAClick() {
   const state = fixture("board");
   state.setViews(["a"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   const old = deferred();
   state.pending.set("GET api/views", old);
-  const polling = state.tabs.poll();
+  const polling = pollViews(state.tabs);
   state.setViews(["a", "b"]);
   await state.tabs.open("b");
   old.resolve({views: [{id: "a", revision: 1}]});
@@ -396,7 +406,7 @@ function fileAndUriLinksPreserveBrowserDestinations() {
 async function oldContentCannotReplaceSelectedTab(fail) {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   const old = deferred();
   state.pending.set("GET api/views/a", old);
   const loading = state.tabs.select("a");
@@ -413,11 +423,11 @@ async function oldContentCannotReplaceSelectedTab(fail) {
 async function oldPollCannotReopenClosedTabs() {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await state.tabs.select("b");
   const old = deferred();
   state.pending.set("GET api/views", old);
-  const polling = state.tabs.poll();
+  const polling = pollViews(state.tabs);
   await state.tabs.close("b");
   old.resolve({views: [{id: "a"}, {id: "b", reveal_revision: 99}]});
   await polling;
@@ -426,14 +436,14 @@ async function oldPollCannotReopenClosedTabs() {
   state.pending.delete("GET api/views");
   state.reveal("a", 3);
   await state.tabs.select("board");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "board");
 }
 
 async function closingRespectsSelectionAndFailure() {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await state.tabs.select("b");
   const pending = deferred();
   state.pending.set("DELETE api/views/b", pending);
@@ -457,13 +467,13 @@ async function closingRespectsSelectionAndFailure() {
 async function stoppingDoesNotLeaveLoadingStuck() {
   const state = fixture("board");
   state.setViews(["a"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   const old = deferred();
   state.pending.set("GET api/views/a", old);
   const loading = state.tabs.select("a");
   state.tabs.stop();
   state.pending.delete("GET api/views/a");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   assert.equal(state.tabs.snapshot.id, "a");
   assert.equal(state.tabs.loading, false);
@@ -475,7 +485,7 @@ async function stoppingDoesNotLeaveLoadingStuck() {
 async function liveUpdatesKeepVisibleContentAndInvalidateOtherTabs() {
   const state = fixture("board");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await state.tabs.select("b");
   await state.tabs.select("a");
   const selections = state.selections.length;
@@ -483,7 +493,7 @@ async function liveUpdatesKeepVisibleContentAndInvalidateOtherTabs() {
   state.pending.set("GET api/views/a", older);
   state.setRevision("a", 2);
   state.setRevision("b", 2);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "a");
   assert.equal(state.tabs.snapshot.revision, 1);
   assert.equal(state.tabs.loading, false);
@@ -491,12 +501,12 @@ async function liveUpdatesKeepVisibleContentAndInvalidateOtherTabs() {
   assert.equal(state.tabs.cache.has("b"), false);
 
   state.setRevision("a", 3);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   older.resolve({id: "a", revision: 2, documents: [{text: "outdated"}]});
   await flush();
   assert.equal(state.tabs.snapshot.revision, 1);
   state.pending.delete("GET api/views/a");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   assert.equal(state.tabs.snapshot.revision, 3);
   assert.equal(state.selections.length, selections);
@@ -508,19 +518,19 @@ async function liveUpdatesKeepVisibleContentAndInvalidateOtherTabs() {
 async function refreshFailuresKeepContentAndRetry() {
   const state = fixture("a");
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   const failure = deferred();
   state.pending.set("GET api/views/a", failure);
   state.setRevision("a", 2);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   failure.reject(new Error("connection lost"));
   await flush();
   assert.equal(state.tabs.snapshot.revision, 1);
   assert.equal(state.tabs.loading, false);
   assert.ok(state.tabs.error.includes("connection lost"));
   state.pending.delete("GET api/views/a");
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await flush();
   assert.equal(state.tabs.snapshot.revision, 2);
   assert.equal(state.tabs.error, "");
@@ -528,7 +538,7 @@ async function refreshFailuresKeepContentAndRetry() {
   const old = deferred();
   state.pending.set("GET api/views/a", old);
   state.setRevision("a", 3);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   await state.tabs.select("b");
   old.resolve({id: "a", revision: 3, documents: []});
   await flush();
@@ -1155,7 +1165,7 @@ async function vscodeModeRoutesNewLinksWhileKeepingExistingViews() {
 
   const state = fixture("board", true, true);
   state.setViews(["a", "b"]);
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(await state.tabs.setVscodeMode(true), true);
   assert.equal(state.tabs.vscodeMode, true);
   assert.equal(state.tabs.activeId, "vscode");
@@ -1163,7 +1173,7 @@ async function vscodeModeRoutesNewLinksWhileKeepingExistingViews() {
   assert.equal(state.tabs.loading, false);
   assert.equal(state.requests.includes("GET api/views/vscode"), false);
 
-  await state.tabs.poll();
+  await pollViews(state.tabs);
   assert.equal(state.tabs.activeId, "vscode");
   assert.deepEqual(state.tabs.views.map(view => view.id), ["a", "b"]);
 
@@ -1279,7 +1289,7 @@ async function mountedVscodeTabStaysRightOfCanvasAndLazyLoadsFrame() {
   vscodeFrame.dispatch("load");
   assert.equal(overlay.hidden, true);
 
-  await mounted.poll();
+  mounted.applyViews(views, mounted.pollToken());
   assert.equal(vscodeFrame.getAttribute("src"), null);
   assert.equal(vscodeFrame.hidden, true);
   assert.deepEqual(tabs.children.map(tab => tab.dataset.viewId), ["board", "a", "b"]);
@@ -1364,7 +1374,7 @@ async function mountedVscodeTabStaysRightOfCanvasAndLazyLoadsFrame() {
   assert.equal(status.textContent, "Start the workspace server with --password to enable VS Code.");
   assert.equal(status.dataset.tone, "info");
   assert.equal(status.hidden, false);
-  await mounted.poll();
+  mounted.applyViews(views, mounted.pollToken());
   assert.equal(status.textContent, "Start the workspace server with --password to enable VS Code.");
 }
 

@@ -1,3 +1,5 @@
+import {reconcileChildren} from "../workspace_dom.mjs";
+
 function text(value) {
   if (typeof value === "string") return value;
   if (Array.isArray(value)) {
@@ -367,13 +369,7 @@ export class TranscriptView {
       return node;
     });
     if (!this.list.children.length) this.list.textContent = "";
-    const retained = new Set(nodes);
-    for (const node of Array.from(this.list.children)) {
-      if (!retained.has(node)) node.remove();
-    }
-    nodes.forEach((node, index) => {
-      if (this.list.children[index] !== node) this.list.insertBefore(node, this.list.children[index] || null);
-    });
+    reconcileChildren(this.list, nodes);
     if (!blocks.length) this.list.textContent = "No messages yet.";
     this.older.hidden = this.nextCursor === null;
     if (atBottom) this.scroll.scrollTop = this.scroll.scrollHeight;
