@@ -24,6 +24,7 @@ from pycodex.events import (
     InputRequestedEvent,
     InputResolvedEvent,
     MessagesAddedEvent,
+    RuntimeUpdatedEvent,
     SessionClosedEvent,
     SessionStateEvent,
     StreamErrorEvent,
@@ -314,6 +315,18 @@ class WebSessionView:
         if isinstance(event, (AutoCompactCompletedEvent, CompactCompletedEvent)):
             self._usage_tokens = None
             self._add_compaction_marker(event)
+        if isinstance(event, RuntimeUpdatedEvent):
+            if (
+                event.reason == "background_work"
+                and self._runtime_state is not None
+                and not self._runtime_state["busy"]
+                and not self._runtime_state["closed"]
+                and self._runtime_state["accepts_input"]
+            ):
+                self._set_idle_spinner_status(
+                    self._runtime_state["background_work_count"]
+                )
+            return
         if not isinstance(event, TurnEvent):
             return
         turn_id = event.turn_id

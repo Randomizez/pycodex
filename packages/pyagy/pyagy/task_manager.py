@@ -217,6 +217,7 @@ class _CommandProcessHandle:
         loop: "asyncio.AbstractEventLoop",
     ) -> "None":
         self.proc = proc
+        self.tty: "bool" = master_fd is not None
         self._master_fd = master_fd
         self._loop = loop
         self._lock = threading.Lock()
@@ -341,7 +342,73 @@ class AgyTaskManager:
         self._clock = clock
         self._tasks: "typing.Dict[str, AgyTaskRecord]" = {}
         self._state_change_event: "typing.Optional[asyncio.Event]" = None
+        self._state_listener: "typing.Optional[typing.Callable[[], None]]" = None
         self._closed = False
+
+    def bind(
+        self,
+        invoke: "typing.Any",
+        output: "typing.Any",
+        state_changed: "typing.Optional[typing.Callable[[], None]]",
+    ) -> "None":
+        del invoke, output
+        self._state_listener = state_changed
+
+    def set_state_listener(
+        self,
+        listener: "typing.Optional[typing.Callable[[], None]]",
+    ) -> "None":
+        self._state_listener = listener
+
+    def shutdown(self) -> "None":
+        self._state_listener = None
+
+    def restart(self) -> "None":
+        had_tasks = bool(self._tasks)
+        for rec in list(self._tasks.values()):
+            if rec.status == "RUNNING":
+                rec.status = "CANCELLED"
+            if rec.command_handle is not None:
+                rec.command_handle.terminate_group()
+            if rec.early_cancel_event is not None:
+                rec.early_cancel_event.set()
+            if rec.async_task is not None and not rec.async_task.done():
+                rec.async_task.cancel()
+        self._tasks.clear()
+        self._closed = False
+        if had_tasks:
+            self._signal_state_change()
+        elif self._state_change_event is not None:
+            self._state_change_event.set()
+
+    def background_work_count(self, after_reply: "bool") -> "int":
+        del after_reply
+        return sum(
+            1
+            for rec in self._tasks.values()
+            if rec.status == "RUNNING" and not rec.is_daemon
+        )
+
+    def background_work_snapshot(self) -> "typing.List[typing.Dict[str, object]]":
+        items: "typing.List[typing.Dict[str, object]]" = []
+        for rec in sorted(self._tasks.values(), key=lambda r: r.step_index):
+            if rec.status != "RUNNING":
+                continue
+            entry: "typing.Dict[str, object]" = {
+                "kind": "exec" if rec.tool_name == "run_command" else "schedule",
+                "session_id": rec.step_index,
+                "task_id": rec.task_id,
+                "summary": rec.tool_summary,
+                "start_time": rec.start_time_utc,
+                "is_daemon": rec.is_daemon,
+                "status": "running",
+            }
+            if rec.command_handle is not None:
+                entry["pid"] = rec.command_handle.proc.pid
+                entry["tty"] = rec.command_handle.tty
+                entry["exit_code"] = None
+            items.append(entry)
+        return items
 
     def _now(self) -> "typing.Optional[datetime]":
         return self._clock() if self._clock is not None else None
@@ -349,6 +416,8 @@ class AgyTaskManager:
     def _signal_state_change(self) -> "None":
         if self._state_change_event is not None:
             self._state_change_event.set()
+        if self._state_listener is not None:
+            self._state_listener()
 
     def has_active_non_daemon_tasks(self) -> "bool":
         return any(
@@ -469,6 +538,8 @@ class AgyTaskManager:
         step_index: "int",
     ) -> "typing.Tuple[bool, str]":
         """Run `command_line`. Returns `(completed_synchronously, formatted_body)`."""
+        if self._closed:
+            raise RuntimeError("task manager is closed")
         clamped_ms = max(500, min(10000, int(wait_ms)))
         loop = asyncio.get_running_loop()
         handle = self._spawn_shell_process(command_line=command_line, cwd=cwd, loop=loop)
@@ -479,6 +550,10 @@ class AgyTaskManager:
             return True, format_command_result_body(code, handle.output_text())
         except asyncio.TimeoutError:
             pass
+
+        if self._closed:
+            handle.terminate_group()
+            raise RuntimeError("task manager is closed")
 
         task_id = f"{self.conversation_id}/task-{step_index}"
         log_path = self.tasks_dir / f"task-{step_index}.log"
@@ -517,8 +592,9 @@ class AgyTaskManager:
             )
             self._signal_state_change()
 
-        record.async_task = asyncio.create_task(_watch_completion())
         self._tasks[task_id] = record
+        record.async_task = asyncio.create_task(_watch_completion())
+        self._signal_state_change()
         return False, format_background_task_started(
             task_id=task_id,
             log_path=log_path,
@@ -542,6 +618,8 @@ class AgyTaskManager:
             raise ValueError(
                 "exactly one of DurationSeconds or CronExpression must be provided"
             )
+        if self._closed:
+            raise RuntimeError("task manager is closed")
 
         task_id = f"{self.conversation_id}/task-{step_index}"
         log_path = self.tasks_dir / f"task-{step_index}.log"
@@ -598,8 +676,9 @@ class AgyTaskManager:
                 finally:
                     self._signal_state_change()
 
-            record.async_task = asyncio.create_task(_run_timer())
             self._tasks[task_id] = record
+            record.async_task = asyncio.create_task(_run_timer())
+            self._signal_state_change()
             return format_background_task_started(
                 task_id=task_id,
                 log_path=log_path,
@@ -643,6 +722,8 @@ class AgyTaskManager:
                     if self._closed or record.status != "RUNNING":
                         break
                     fired += 1
+                    if limit_iters is not None and fired >= limit_iters:
+                        record.status = "DONE"
                     with log_path.open("a", encoding="utf-8") as fh:
                         fh.write(
                             f"Cron trigger #{fired} at {format_utc_iso(self._now())}: {prompt}\n"
@@ -653,16 +734,17 @@ class AgyTaskManager:
                         "MESSAGE_PRIORITY_HIGH",
                         True,
                     )
-                    if limit_iters is not None and fired >= limit_iters:
-                        record.status = "DONE"
+                    if record.status == "DONE":
                         break
+                    self._signal_state_change()
             except asyncio.CancelledError:
                 return
             finally:
                 self._signal_state_change()
 
-        record.async_task = asyncio.create_task(_run_cron())
         self._tasks[task_id] = record
+        record.async_task = asyncio.create_task(_run_cron())
+        self._signal_state_change()
         return format_background_task_started(
             task_id=task_id,
             log_path=log_path,
@@ -737,10 +819,12 @@ class AgyTaskManager:
 
     async def close(self) -> "None":
         self._closed = True
+        had_running = False
         pending_tasks: "typing.List[asyncio.Task[None]]" = []
         for rec in self._tasks.values():
             if rec.status == "RUNNING":
                 rec.status = "CANCELLED"
+                had_running = True
             if rec.command_handle is not None:
                 rec.command_handle.terminate_group()
             if rec.early_cancel_event is not None:
@@ -750,4 +834,7 @@ class AgyTaskManager:
                 pending_tasks.append(rec.async_task)
         if pending_tasks:
             await asyncio.gather(*pending_tasks, return_exceptions=True)
-        self._signal_state_change()
+        if had_running:
+            self._signal_state_change()
+        elif self._state_change_event is not None:
+            self._state_change_event.set()

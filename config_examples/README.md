@@ -15,7 +15,8 @@
 | [stepfun.config.toml](stepfun.config.toml) | StepFun Coding Plan，Chat Completions | `step-5-preview` | `STEP_API_KEY` |
 | [chat-completions.config.toml](chat-completions.config.toml) | 通用 Chat Completions / vLLM | `step-3.5-flash` | `CHAT_API_KEY` |
 | [claude.config.toml](claude.config.toml) | Claude Messages，Bearer 网关 | `claude-opus-5-5` | `CLAUDE_API_KEY` |
-| [gemini.config.toml](gemini.config.toml) | Gemini 原生 API | `gemini-4-argon-high` | `GEMINI_API_KEY` |
+| [gemini.config.toml](gemini.config.toml) | Gemini 原生 API（`pycodex` 运行时） | `gemini-4-argon-high` | `GEMINI_API_KEY` |
+| [pyagy.config.toml](pyagy.config.toml) | Gemini 原生 API（`pyagy` / Antigravity 运行时） | `gemini-4-carbon-high` | `GEMINI_API_KEY` |
 
 `api.example.invalid` 是需要替换的地址，不会指向真实服务。模型名是已支持模型的
 示例，最终须使用目标 endpoint 实际提供的完整 ID，包括 provider 前缀或路由后缀。
@@ -82,6 +83,13 @@ pycodex
 ```bash
 pycodex doctor --profile stepfun
 pycodex --profile stepfun
+```
+
+安装为 `pyagy.config.toml` profile（设置 `harness = "pyagy"` 与 `compat_api = "gemini"`）后，`pycodex-ws` 中选择该 profile 新建的会话会自动切换到 `pyagy`（Antigravity CLI wire-compatible）运行时；命令行下通过 `pyagy` 验证与启动：
+
+```bash
+env -u VIRTUAL_ENV PYTHONPATH=.:packages/pyagy \
+  uv run python -m pyagy --profile pyagy -p "Hello"
 ```
 
 在仓库开发环境中，将 `pycodex` 替换为 `env -u VIRTUAL_ENV uv run pycodex`。

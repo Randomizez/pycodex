@@ -1,0 +1,13 @@
+# Antigravity (pyagy) harness over Gemini API.
+# Replace base_url/model and set GEMINI_API_KEY in the environment or adjacent .env.
+# `harness = "pyagy"` switches pycodex-ws Web sessions on this profile to the pyagy runtime;
+# for the standalone CLI, run `pyagy --profile pyagy`.
+model = "gemini-4-carbon-high"
+model_provider = "gemini"
+compat_api = "gemini"
+harness = "pyagy"
+model_reasoning_effort = "high"
+
+[model_providers.gemini]
+base_url = "https://api.example.invalid/v1beta"
+env_key = "GEMINI_API_KEY"

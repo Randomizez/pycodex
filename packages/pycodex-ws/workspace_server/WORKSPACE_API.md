@@ -205,6 +205,10 @@ arguments, environment and process output. Entries disappear when the exec
 manager releases them; this is an inventory, not an execution archive.
 Clock records include `enabled`, `period_m`, `status` (`disabled`, `paused`,
 or `armed`) and timezone-aware `next_fire_at` (`null` when not armed).
+In `pyagy` profiles, `schedule` records include `session_id`, `task_id`,
+`summary`, `start_time`, `is_daemon` and `status` (`running`, omitting raw
+prompts), and `subagent` records include `conversation_id`, `role`,
+`type_name` and `status` (`running`).
 
 ## Commands and results
 

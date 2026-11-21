@@ -292,4 +292,10 @@ def build_agy_tool_registry(
         registry.register(all_tools[name])
     for extra_tool in extra_tools:
         registry.register(extra_tool)
+    registry.runtime_environment.register_resource(
+        "run_command",
+        task_manager,
+        restart=task_manager.restart,
+        close=task_manager.close,
+    )
     return registry

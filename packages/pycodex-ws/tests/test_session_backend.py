@@ -692,3 +692,59 @@ async def test_interactive_commands_reject_direct_background_work(monkeypatch):
         release.set()
         await turn
         await session.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_spinner_tracks_background_work_updates_without_new_turn():
+    from pycodex.events import IDLE_SLEEPING_STATUS, RuntimeUpdatedEvent, TurnStartedEvent
+    from pycodex.tools.clock_manager import ClockManager
+
+    clock = ClockManager()
+    tools = ToolRegistry()
+    tools.runtime_environment.register_resource("clock", clock)
+    agent = make_agent(ScriptedModelClient([ModelResponse([AssistantMessage("ok")])]), tools, ContextConfig())
+    session = WorkspaceInteractiveSession(make_runtime(agent))
+    await session.start()
+    ws_queue = session.subscribe()
+    try:
+        hello = ws_queue.get_nowait()
+        assert hello["type"] == "hello"
+
+        clock.set_period(5)
+        receipt = await session.runtime.submit_input("hello")
+        await receipt.future
+        assert session.snapshot()["spinner"] == IDLE_SLEEPING_STATUS
+        assert session.snapshot()["running"] is True
+        while not ws_queue.empty():
+            ws_queue.get_nowait()
+
+        # Disabling background work while idle clears IDLE_SLEEPING_STATUS immediately without starting a turn.
+        clock.set_period(None)
+        assert session.snapshot()["spinner"] == ""
+        assert session.snapshot()["running"] is False
+        ws_event = ws_queue.get_nowait()
+        assert ws_event["kind"] == "runtime_updated"
+        assert ws_event["snapshot"]["spinner"] == ""
+        assert ws_event["snapshot"]["running"] is False
+
+        # Mid-turn background_work updates while busy=True do not clobber active turn spinner.
+        busy_state = dict(session.runtime.state_snapshot(), busy=True, background_work_count=0)
+        session.view.handle_event(TurnStartedEvent("turn-active", (UserMessage("work"),)), busy_state)
+        assert session.snapshot()["spinner"] == "understood"
+        session.view.handle_event(RuntimeUpdatedEvent("background_work"), busy_state)
+        assert session.snapshot()["spinner"] == "understood"
+    finally:
+        session.unsubscribe(ws_queue)
+        await session.close()
+
+    # Post-close background_work updates on a closed session cannot resurrect IDLE_SLEEPING_STATUS.
+    closed_state = dict(
+        session.runtime.state_snapshot(),
+        busy=False,
+        closed=True,
+        accepts_input=False,
+        background_work_count=1,
+    )
+    session.view.handle_event(RuntimeUpdatedEvent("background_work"), closed_state)
+    assert session.snapshot()["spinner"] == ""
+    assert session.snapshot()["running"] is False

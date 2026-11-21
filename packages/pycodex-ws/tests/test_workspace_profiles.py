@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 import threading
@@ -559,6 +560,19 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
                 },
                 "thoughtSignature": "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=",
             }]
+        elif "BG_SCHEDULE_TEST" in joined_last:
+            parts = [{
+                "functionCall": {
+                    "id": "call_sched_1",
+                    "name": "schedule",
+                    "args": {
+                        "DurationSeconds": 60,
+                        "TimerCondition": "any",
+                        "Prompt": "timer wakeup",
+                    },
+                },
+                "thoughtSignature": "c2tpcF90aG91Z2h0X3NpZ25hdHVyZV92YWxpZGF0b3I=",
+            }]
         else:
             parts = [{"text": "agy-ok"}]
 
@@ -714,7 +728,47 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
                 == "tool-done:Encountered error in tool execution: ask_question is disabled"
             )
 
-            # 4b. Subagent spawned via invoke_subagent appears in Web Agent Tree (/agents).
+            # 4b. Background schedule surfaces idle: sleeping + background-work, and clears on silent cancel.
+            assert browser.post("/w/on/api/session/message", json={
+                "session_id": agy_sid, "prompt": "BG_SCHEDULE_TEST",
+            }).status_code == 200
+            sleeping_snap = wait_snapshot(
+                browser,
+                lambda s: len(s["turns"]) >= 3 and s["turns"][-1]["status"] == "completed",
+                f"/w/on/api/session?session_id={agy_sid}",
+            )
+            assert sleeping_snap["spinner"] == "idle: sleeping"
+            assert sleeping_snap["running"] is True
+            bg_state = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
+            assert bg_state["background_work_count"] == 1
+            bg_list = browser.get(f"/w/on/api/sessions/{agy_sid}/background-work").json()["background_work"]
+            assert len(bg_list) == 1
+            assert bg_list[0]["tool"] == "run_command"
+            assert bg_list[0]["kind"] == "schedule"
+            assert "description" not in bg_list[0]
+            assert "log_path" not in bg_list[0]
+            bg_task_id = bg_list[0]["task_id"]
+
+            # Cancel silently on the session worker loop (wake_if_idle=False -> no new turn)
+            agy_worker_loop = entry_on.manager.get(agy_sid)._worker_loop
+            fut_cancel = asyncio.run_coroutine_threadsafe(
+                asyncio.sleep(0), agy_worker_loop
+            )
+            fut_cancel.result(timeout=2)
+            agy_worker_loop.call_soon_threadsafe(
+                agy_agent.tool_registry._tools["manage_task"]._task_manager.kill,
+                bg_task_id,
+            )
+            cleared_snap = wait_snapshot(
+                browser,
+                lambda s: s["spinner"] == "" and s["running"] is False,
+                f"/w/on/api/session?session_id={agy_sid}",
+            )
+            assert cleared_snap["running"] is False
+            assert browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]["background_work_count"] == 0
+            assert browser.get(f"/w/on/api/sessions/{agy_sid}/background-work").json()["background_work"] == []
+
+            # 4c. Subagent spawned via invoke_subagent appears in Web Agent Tree (/agents).
             assert browser.post("/w/on/api/session/message", json={
                 "session_id": agy_sid, "prompt": "SPAWN_SUBAGENT_TEST",
             }).status_code == 200
@@ -736,9 +790,10 @@ def test_pyagy_harness_profile_web_end_to_end_and_optional_context(tmp_path, mon
             time.sleep(0.05)
             for _ in range(200):
                 st = browser.get(f"/w/on/api/sessions/{agy_sid}/state").json()["state"]
-                if not st["busy"]:
+                if not st["busy"] and st["background_work_count"] == 0:
                     break
                 time.sleep(0.02)
+            assert st["background_work_count"] == 0
 
             # 5. Slash commands: /effort, /cd, and manual /compact!
             def run_slash(cmd_name, arg=""):

@@ -178,6 +178,31 @@ def test_models_efforts_and_subagent_tiers() -> "None":
         resolve_subagent_model("ultra", "gemini-4-carbon-high")
 
 
+def test_pyagy_config_example_loads(tmp_path: "Path") -> "None":
+    from pycodex.config import CodexConfig
+
+    repo_root = Path(__file__).resolve().parents[3]
+    example_path = repo_root / "config_examples" / "pyagy.config.toml"
+    assert example_path.is_file()
+
+    standalone = CodexConfig.from_env(example_path)
+    assert standalone.harness == "pyagy"
+    assert standalone.provider.compat_api == "gemini"
+    assert standalone.provider.model == "gemini-4-carbon-high"
+    assert standalone.provider.api_key_env == "GEMINI_API_KEY"
+
+    base_cfg = tmp_path / "config.toml"
+    base_cfg.write_text('model = "gpt-5.4"\nmodel_provider = "openai"\n', encoding="utf-8")
+    (tmp_path / "pyagy.config.toml").write_text(
+        example_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    overlay = CodexConfig.from_env(base_cfg, profile="pyagy")
+    assert overlay.profile == "pyagy"
+    assert overlay.harness == "pyagy"
+    assert overlay.provider.compat_api == "gemini"
+    assert overlay.provider.model == "gemini-4-carbon-high"
+
+
 def test_cron_parser_and_next_fire_time() -> "None":
     parsed = parse_cron_expression("*/15 9-17 * * 1-5,7")
     assert 0 in parsed.days_of_week  # Sunday 7 normalized to 0
@@ -358,6 +383,10 @@ async def test_command_schedule_and_subagent_lifecycle(
                 return bool(res.is_error), str(res.output)
 
             # Interactive background command + status + send_input + kill
+            env = reg.runtime_environment
+            assert env.background_work_count(False) == 0
+            assert env.background_work_snapshot() == []
+
             err, bg_out = await _exec(
                 "run_command",
                 {
@@ -369,6 +398,20 @@ async def test_command_schedule_and_subagent_lifecycle(
             )
             assert not err and "Tool is running as a background task with task id: " in bg_out
             bg_task_id = bg_out.splitlines()[0].split("task id: ", 1)[1].strip()
+            assert env.background_work_count(False) == 1
+            assert env.background_work_count(True) == 1
+            bg_snap = env.background_work_snapshot()
+            assert len(bg_snap) == 1
+            assert bg_snap[0]["tool"] == "run_command"
+            assert bg_snap[0]["kind"] == "exec"
+            assert bg_snap[0]["task_id"] == bg_task_id
+            assert bg_snap[0]["is_daemon"] is False
+            assert bg_snap[0]["status"] == "running"
+            assert bg_snap[0]["tty"] is True
+            assert bg_snap[0]["exit_code"] is None
+            assert "description" not in bg_snap[0]
+            assert "log_path" not in bg_snap[0]
+            assert isinstance(bg_snap[0]["pid"], int) and bg_snap[0]["pid"] > 0
 
             err, send_out = await _exec(
                 "manage_task",
@@ -391,6 +434,28 @@ async def test_command_schedule_and_subagent_lifecycle(
                 "mt_kill",
             )
             assert not err and f'Task "{bg_task_id}" cancelled.' in kill_out
+            assert env.background_work_count(False) == 0
+            assert env.background_work_snapshot() == []
+
+            # Daemon command appears in snapshot without pinning background_work_count > 0
+            err, daemon_out = await _exec(
+                "run_command",
+                {
+                    "CommandLine": "sleep 10",
+                    "WaitMsBeforeAsync": 500,
+                    "IsDaemon": True,
+                    "toolSummary": "dev daemon",
+                },
+                "cmd_daemon",
+            )
+            assert not err
+            daemon_tid = daemon_out.splitlines()[0].split("task id: ", 1)[1].strip()
+            assert env.background_work_count(False) == 0
+            assert env.background_work_count(True) == 0
+            daemon_snap = env.background_work_snapshot()
+            assert len(daemon_snap) == 1 and daemon_snap[0]["is_daemon"] is True
+            err, _ = await _exec("manage_task", {"Action": "kill", "TaskId": daemon_tid}, "mt_kill_d")
+            assert not err and env.background_work_snapshot() == []
 
             # Schedule mutual exclusion & TimerCondition="any" early cancel on incoming message
             err, bad1 = await _exec(
@@ -414,8 +479,49 @@ async def test_command_schedule_and_subagent_lifecycle(
             )
             assert not err
             cond_tid = cond_out.splitlines()[0].split("task id: ", 1)[1].strip()
+            assert env.background_work_count(True) == 1
+            assert env.background_work_snapshot()[0]["kind"] == "schedule"
+            assert "description" not in env.background_work_snapshot()[0]
+            assert "log_path" not in env.background_work_snapshot()[0]
             session.root_node.deliver_system_message("peer ping", sender="peer-1", wake_if_idle=False)
             assert session.root_node.task_manager._tasks[cond_tid].status == "CANCELLED"
+            assert env.background_work_count(True) == 0
+            assert env.background_work_snapshot() == []
+
+            # Waking TimerCondition message sets runtime busy BEFORE emitting background_work update
+            err, wake_cond_out = await _exec(
+                "schedule",
+                {"DurationSeconds": 60, "TimerCondition": "any", "Prompt": "wake timer"},
+                "sc_wake_cond",
+            )
+            assert not err
+            busy_on_bg_update: "typing.List[bool]" = []
+            obs_id = session.root_node.runtime.attach(
+                lambda ev: busy_on_bg_update.append(session.root_node.runtime.is_busy)
+                if getattr(ev, "kind", "") == "runtime_updated"
+                and getattr(ev, "reason", "") == "background_work"
+                else None,
+                interactive=False,
+            )
+            try:
+                session.root_node.deliver_system_message(
+                    "peer wake", sender="peer-2", wake_if_idle=True
+                )
+                assert busy_on_bg_update == [True]
+                await session.root_node.wait_until_settled(timeout_seconds=5.0)
+            finally:
+                session.root_node.runtime.detach(obs_id)
+
+            # task_manager.restart() cancels running tasks and resets count/snapshot
+            err, _ = await _exec(
+                "schedule",
+                {"DurationSeconds": 60, "Prompt": "restart timer"},
+                "sc_restart",
+            )
+            assert not err and env.background_work_count(True) == 1
+            session.root_node.task_manager.restart()
+            assert env.background_work_count(True) == 0
+            assert env.background_work_snapshot() == []
 
             # define_subagent, invoke_subagent (branch & share), send_message, manage_subagents
             err, builtin_err = await _exec(
@@ -455,6 +561,10 @@ async def test_command_schedule_and_subagent_lifecycle(
             )["conversationId"]
             branch_node = session.controller.get_node(branch_cid)
             assert (branch_node.cwd / "seed.txt").is_file()
+            assert env.background_work_count(True) == 1
+            sub_snap = env.background_work_snapshot()
+            assert len(sub_snap) == 1 and sub_snap[0]["kind"] == "subagent"
+            assert sub_snap[0]["conversation_id"] == branch_cid
 
             err, inv_share = await _exec(
                 "invoke_subagent",
@@ -475,6 +585,19 @@ async def test_command_schedule_and_subagent_lifecycle(
 
             await branch_node.wait_until_settled(timeout_seconds=5.0)
             await share_node.wait_until_settled(timeout_seconds=5.0)
+            assert env.background_work_count(True) == 0
+            assert env.background_work_snapshot() == []
+
+            assert branch_node.runtime.can_close_for_capacity() is True
+            await branch_node.task_manager.schedule(
+                prompt="hold capacity",
+                step_index=999,
+                duration_seconds=60,
+                timer_condition="any",
+            )
+            assert branch_node.runtime.can_close_for_capacity() is False
+            branch_node.task_manager.kill(f"{branch_cid}/task-999")
+            assert branch_node.runtime.can_close_for_capacity() is True
 
             err, sm_out = await _exec(
                 "send_message",
@@ -482,7 +605,9 @@ async def test_command_schedule_and_subagent_lifecycle(
                 "sm_1",
             )
             assert not err and f'Message sent to "{branch_cid}".' in sm_out
+            assert env.background_work_count(True) == 1
             await branch_node.wait_until_settled(timeout_seconds=5.0)
+            assert env.background_work_count(True) == 0
 
             err, kill_sub = await _exec(
                 "manage_subagents",

@@ -4,11 +4,25 @@ Antigravity CLI (`agy 1.5.13`) wire-compatible CLI harness built on top of `pyco
 
 ## Quick Start
 
-Uses existing `~/.codex/config.toml` profiles with `compat_api = "gemini"`:
+Start from [config_examples/pyagy.config.toml](../../config_examples/pyagy.config.toml) and save it as `~/.codex/pyagy.config.toml` (with `GEMINI_API_KEY` set in the environment or `~/.codex/.env`):
+
+```toml
+model = "gemini-4-carbon-high"
+model_provider = "gemini"
+compat_api = "gemini"
+harness = "pyagy"
+model_reasoning_effort = "high"
+
+[model_providers.gemini]
+base_url = "https://api.example.invalid/v1beta"
+env_key = "GEMINI_API_KEY"
+```
+
+Run from the CLI against any profile with `compat_api = "gemini"`:
 
 ```bash
 env -u VIRTUAL_ENV PYTHONPATH=.:packages/pyagy \
-  uv run python -m pyagy --profile gemini-pool -p "Hello"
+  uv run python -m pyagy --profile pyagy -p "Hello"
 ```
 
 ## Compaction & Multi-Agent Messaging
@@ -25,7 +39,7 @@ Add `harness = "pyagy"` (default is `harness = "pycodex"`) to any Gemini profile
 
 - **Optional Context Alignment**: When created from `pycodex-ws`, optional `ContextConfig` inputs (`extra_contextual_user_messages` such as Canvas board instructions when `enable_board=True` and `<external_call_context>`, `include_environment_context`, `developer_instructions`, `user_instructions`, `base_instructions_override`, and `codex_home/skills` when `include_skills_instructions=True`) are injected dynamically without altering pure CLI wire parity.
 - **Disabled `ask_question` Runtime**: `ask_question` retains its official declaration in `tools` for 100% wire parity, and immediately returns `Encountered error in tool execution: ask_question is disabled` when called (without prompting).
-- **Web UI Features**: Supports `/compact`, `/model`, `/effort`, `/cd`, live subagent tree (`/api/sessions/<id>/agents`), rollout tab persistence, and in-place Reload PyCodex.
+- **Web UI Features**: Supports `/compact`, `/model`, `/effort`, `/cd`, live subagent tree (`/api/sessions/<id>/agents`), background task & subagent tracking (`idle: sleeping` status and `/api/sessions/<id>/background-work`), rollout tab persistence, and in-place Reload PyCodex.
 
 ## Verification
 

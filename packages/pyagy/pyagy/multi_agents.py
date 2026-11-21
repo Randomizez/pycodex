@@ -379,6 +379,64 @@ class SessionRunSummary:
     usage: "typing.Dict[str, int]"
 
 
+class AgySubagentWorkTracker:
+    """Exposes active direct AGY subagents to AgentRuntimeEnvironment."""
+
+    def __init__(
+        self,
+        controller: "AgyMultiAgentController",
+        conversation_id_getter: "typing.Callable[[], str]",
+    ) -> "None":
+        self._controller = controller
+        self._conversation_id_getter = conversation_id_getter
+        self._state_listener: "typing.Optional[typing.Callable[[], None]]" = None
+
+    def bind(
+        self,
+        invoke: "typing.Any",
+        output: "typing.Any",
+        state_changed: "typing.Optional[typing.Callable[[], None]]",
+    ) -> "None":
+        del invoke, output
+        self._state_listener = state_changed
+
+    def set_state_listener(
+        self,
+        listener: "typing.Optional[typing.Callable[[], None]]",
+    ) -> "None":
+        self._state_listener = listener
+
+    def shutdown(self) -> "None":
+        self._state_listener = None
+
+    def notify_changed(self) -> "None":
+        if self._state_listener is not None:
+            self._state_listener()
+
+    def background_work_count(self, after_reply: "bool") -> "int":
+        del after_reply
+        conv_id = self._conversation_id_getter()
+        return sum(
+            1
+            for node in self._controller.iter_direct_children(conv_id)
+            if node.state == "running"
+        )
+
+    def background_work_snapshot(self) -> "typing.List[typing.Dict[str, object]]":
+        conv_id = self._conversation_id_getter()
+        return [
+            {
+                "kind": "subagent",
+                "conversation_id": node.conversation_id,
+                "role": node.role,
+                "type_name": node.type_name,
+                "status": "running",
+            }
+            for node in self._controller.iter_direct_children(conv_id)
+            if node.state == "running"
+        ]
+
+
 class AgySessionNode:
     """Wraps one AGY conversation (`AgentRuntime -> Agent` + transcript + tasks)."""
 
@@ -459,6 +517,11 @@ class AgySessionNode:
         )
 
         runtime_env = create_agent_runtime_environment()
+        self.subagent_work_tracker = AgySubagentWorkTracker(
+            controller=self.controller,
+            conversation_id_getter=lambda: self.conversation_id,
+        )
+        runtime_env.register_resource("invoke_subagent", self.subagent_work_tracker)
         self.tool_registry = build_agy_tool_registry(
             conversation_id=self.conversation_id,
             transcript_store=self.transcript_store,
@@ -724,6 +787,7 @@ class AgySessionNode:
                     self._last_turn_output,
                     already_reported=reported,
                 )
+                self.controller.notify_parent_subagent_work(self.parent_conversation_id)
 
         for listener in tuple(self._event_listeners):
             listener(event)
@@ -744,7 +808,6 @@ class AgySessionNode:
     ) -> "None":
         if self.state == "killed" or not self.runtime.accepts_input:
             return
-        self.task_manager.notify_incoming_message(sender)
         ts_utc = format_utc_iso(self._clock() if self._clock is not None else None)
         if self.parent_conversation_id is not None and sender == self.parent_conversation_id:
             self._parent_messages.append(
@@ -762,12 +825,16 @@ class AgySessionNode:
             priority=priority,
             timestamp_utc=ts_utc,
         )
-        if self.state == "idle":
+        was_idle = self.state == "idle"
+        if was_idle:
             self.state = "running"
             self._reported_to_parent = False
         self.runtime.message(sys_msg)
         if wake_if_idle:
             self.runtime.trigger()
+        self.task_manager.notify_incoming_message(sender)
+        if was_idle and self.parent_conversation_id is not None:
+            self.controller.notify_parent_subagent_work(self.parent_conversation_id)
         self._signal_activity()
 
     async def start(self) -> "None":
@@ -813,6 +880,7 @@ class AgySessionNode:
                     self._last_turn_output,
                     already_reported=reported,
                 )
+                self.controller.notify_parent_subagent_work(self.parent_conversation_id)
 
     async def run_user_prompt(
         self,
@@ -873,10 +941,10 @@ class AgySessionNode:
         )
 
     async def close(self, delete_workspace: "bool" = False) -> "None":
-        await self.task_manager.close()
         try:
             await self.runtime.close()
         finally:
+            await self.task_manager.close()
             if delete_workspace and self._owned_workspace_dir is not None:
                 if self._git_worktree_repo is not None:
                     subprocess.run(
@@ -1141,6 +1209,7 @@ class AgyMultiAgentController:
             )
         )
         self.register_node(sub_node)
+        parent.subagent_work_tracker.notify_changed()
         if self._agents_manager is not None:
             self._agents_manager.notify_parents(sub_node.agent.agent_id)
         await sub_node.start()
@@ -1162,6 +1231,26 @@ class AgyMultiAgentController:
             "The subagent will send you a message when it has completed its task or requires guidance. "
             "There is no need to poll for its response."
         )
+
+    def iter_direct_children(
+        self,
+        parent_conversation_id: "str",
+    ) -> "typing.List[AgySessionNode]":
+        return [
+            node
+            for node in self._nodes.values()
+            if node.parent_conversation_id == parent_conversation_id
+        ]
+
+    def notify_parent_subagent_work(
+        self,
+        parent_conversation_id: "typing.Optional[str]",
+    ) -> "None":
+        if parent_conversation_id is None:
+            return
+        parent = self._nodes.get(parent_conversation_id)
+        if parent is not None and parent.state != "killed":
+            parent.subagent_work_tracker.notify_changed()
 
     def has_active_subagents(self, parent_conversation_id: "str") -> "bool":
         return any(
@@ -1258,9 +1347,14 @@ class AgyMultiAgentController:
                     to_kill.append(desc)
 
         roles: "typing.List[str]" = []
+        affected_parents: "typing.Set[str]" = set()
         for node in to_kill:
+            if node.state == "running" and node.parent_conversation_id is not None:
+                affected_parents.add(node.parent_conversation_id)
             node.state = "killed"
             roles.append(node.role)
+        for pid in affected_parents:
+            self.notify_parent_subagent_work(pid)
         await asyncio.gather(
             *(node.close(delete_workspace=True) for node in reversed(to_kill)),
             return_exceptions=True,
@@ -1312,8 +1406,13 @@ class AgyMultiAgentController:
         sub_nodes = [
             node for node in self._nodes.values() if node.parent_conversation_id is not None
         ]
+        affected_parents: "typing.Set[str]" = set()
         for node in sub_nodes:
+            if node.state == "running" and node.parent_conversation_id is not None:
+                affected_parents.add(node.parent_conversation_id)
             node.state = "killed"
+        for pid in affected_parents:
+            self.notify_parent_subagent_work(pid)
         if sub_nodes:
             await asyncio.gather(
                 *(node.close(delete_workspace=False) for node in reversed(sub_nodes)),

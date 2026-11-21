@@ -84,7 +84,6 @@ def build_workspace_session(
 
         async def _close_agy_resources():
             try:
-                await agy_session.root_node.task_manager.close()
                 await agy_session.controller.close_subagents()
             finally:
                 agy_session.owned_server.stop()
