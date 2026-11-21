@@ -22,7 +22,7 @@ from workspace_server import (
     create_app,
     create_multi_workspace_app,
 )
-from workspace_server.agent_access import AgentSocketAccess
+from workspace_server.agent_access import AGENT_TOKEN_HEADER, AgentSocketAccess
 from workspace_server.vscode_server import (
     BRIDGE_EXTENSION_ID, VsCodeRuntime, find_code_server, resolve_vscode_link,
 )
@@ -411,12 +411,7 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
     tmp_path, mock_code_server, multi
 ):
     app, prefix, _work_dir, _manager = _build_app(tmp_path, multi, "admin-password")
-    app.state.agent_socket_path = "/tmp/pycodex-vscode-agent.sock"
-
-    async def over_agent_socket(scope, receive, send):
-        if scope["type"] == "http":
-            scope = dict(scope, server=("/tmp/pycodex-vscode-agent.sock", None))
-        await AgentSocketAccess(app)(scope, receive, send)
+    app.state.agent_auth_token = "vscode-agent-token"
 
     with TestClient(app) as browser:
         # Unauthenticated requests cannot reach VS Code HTTP or WebSocket endpoints.
@@ -479,9 +474,12 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
             with browser.websocket_connect(prefix + "/vscode/stable-mock"):
                 pass
 
-        # Agent socket requests (even carrying admin cookie) cannot enable or open VS Code.
-        agent_client = TestClient(over_agent_socket)
-        agent_headers = {"cookie": "pycodex_ws_auth=" + admin_cookie}
+        # Agent access requests (even carrying admin cookie) cannot enable or open VS Code.
+        agent_client = TestClient(AgentSocketAccess(app), client=("127.0.0.1", 50000))
+        agent_headers = {
+            "cookie": "pycodex_ws_auth=" + admin_cookie,
+            AGENT_TOKEN_HEADER: "vscode-agent-token",
+        }
         agent_index = agent_client.get(prefix + "/", headers=agent_headers)
         assert agent_index.status_code == 200
         assert 'data-enable-vscode="false"' in agent_index.text

@@ -248,11 +248,21 @@ Operations retain their idle/admission requirements. Runtime owns serialization
 and draining. HTTP request completion or disconnect does not cancel an accepted
 command. This adds no turn cancellation, queue editing or arbitrary tool execution.
 
-`GET api/session?session_id=<id>&runtime_info=true` includes a cross-Agent
-communication example that posts plain text to `api/session/message` by default.
-Plain text uses steer; `/queue <message>` schedules an independent follow-up turn.
-The same behavior applies through the router. These requests reuse the frontend
-input contract, so plain text answers a pending input request when one exists.
+`GET api/session?session_id=<id>&runtime_info=true` returns a two-line pointer
+with the `GET api/help?session_id=<id>` command and the installed `pycodex` /
+`workspace_server` package directories. `GET api/help` (with optional
+`session_id`, and also mounted at root `GET /api/help` on multi-workspace
+servers) returns the plain-text session identity and cross-Agent communication
+guide (`api/workspaces`, `api/sessions`, `api/session/message`, `api/session`
+and `/router` bridge). It recommends posting plain text to `api/session/message`
+by default (steer), reserving `/queue <message>` for an independent follow-up
+turn. The same behavior applies through the router. These requests reuse the
+frontend input contract, so plain text answers a pending input request when one
+exists.
+When launched by `pycodex-ws`, same-user local Agent access uses a temporary
+owner-only header file (`api.header` containing `X-Pycodex-Agent-Token` for
+direct local HTTP), keeping passwords, cookies and router keys out of
+`runtime_info`, `api/help` and rollouts.
 
 `POST api/session/message` accepts optional `name` and `trigger` fields alongside
 `session_id`, `prompt` and `sender`, for example:

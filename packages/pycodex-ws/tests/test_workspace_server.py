@@ -278,6 +278,8 @@ def test_runtime_info_uses_current_identity_and_local_frontend_api(tmp_path, mul
             assert browser.get(prefix + "/api/session", params={
                 "runtime_info": "true",
             }).status_code == 401
+            assert browser.get("/api/help").status_code == 401
+            assert browser.get(prefix + "/api/help").status_code == 401
             assert browser.post("/login", json={"password": password}).status_code == 200
         own = browser.get(prefix + "/api/session").json()["session_id"]
         # A different default tab must not receive this tab's information.
@@ -293,20 +295,39 @@ def test_runtime_info_uses_current_identity_and_local_frontend_api(tmp_path, mul
         assert "submission_id" not in result.json()
         assert model.call_count == 0
         text = result.json()["runtime_info"]
-        assert "Runtime: pycodex / pycodex-ws" in text
-        assert "session: runtime test" in text
-        assert "API ID: " + own in text
-        assert str(tmp_path / "changed") in text
-        assert "L=http://127.0.0.1:12345; current workspace=L" + prefix in text
-        assert ("GET L/api/workspaces" in text) == multi
+        assert len(text.splitlines()) == 2
+        assert (
+            "Collaboration info: GET http://127.0.0.1:12345" + prefix + "/api/help?session_id=" + own
+            in text
+        )
+        assert "Source: pycodex=" in text and "workspace_server=" in text
         assert "router" not in text.lower()
-        assert '"prompt": "From ' + own in text
-        assert "B/api/session/message" in text
-        assert "B/api/session?session_id=" in text
         assert "login" not in text.lower()
         assert "cookie" not in text.lower()
         assert "workspace-test-password" not in text
         assert not text.startswith("/queue")
+
+        help_resp = browser.get(prefix + "/api/help", params={"session_id": own})
+        assert help_resp.status_code == 200
+        assert help_resp.headers["content-type"].startswith("text/plain")
+        help_text = help_resp.text
+        assert "Runtime: pycodex / pycodex-ws" in help_text
+        assert "Source: pycodex=" in help_text
+        assert "session: runtime test" in help_text
+        assert "API ID: " + own in help_text
+        assert str(tmp_path / "changed") in help_text
+        assert "L=http://127.0.0.1:12345; current workspace=L" + prefix in help_text
+        assert '"prompt": "From ' + own in help_text
+        assert browser.get(prefix + "/api/help", params={"session_id": "missing"}).status_code == 404
+        if multi:
+            root_help = browser.get("/api/help")
+            assert root_help.status_code == 200
+            assert "GET L/api/workspaces" in root_help.text
+            assert browser.get("/w/missing/api/help").status_code == 404
+        assert ("GET L/api/workspaces" in help_text) == multi
+        assert "B/api/session/message" in help_text
+        assert "B/api/session?session_id=" in help_text
+        assert "workspace-test-password" not in help_text
         sent = browser.post(prefix + "/api/session/message", json={
             "session_id": own, "prompt": text,
         })
@@ -341,16 +362,66 @@ def test_runtime_info_router_state_contains_no_credentials(connected, api_url):
         response = browser.get("/api/session", params={"runtime_info": "true"})
         assert response.status_code == 200
         assert response.json()["snapshot"]["turns"] == []
+        help_text = browser.get("/api/help").text
     text = response.json()["runtime_info"]
-    assert ("router" in text.lower()) == connected
-    assert ("R=" in text) == bool(connected and api_url)
+    assert len(text.splitlines()) == 2
+    assert ("router" in help_text.lower()) == connected
+    assert ("R=" in help_text) == bool(connected and api_url)
     if connected and api_url:
-        assert "R=" + api_url in text
-        assert "GET R/api/workspaces" in text
-        assert "device=/n/" + client.node_id in text
-    assert "http://127.0.0.1:12345" in text
+        assert "R=" + api_url in help_text
+        assert "GET R/api/workspaces" in help_text
+        assert "device=/n/" + client.node_id in help_text
+    assert "http://127.0.0.1:12345/api/help?session_id=" in text
+    assert "http://127.0.0.1:12345" in help_text
     assert "123456789ABCDEFGH" not in text
     assert client._identity_key not in text
+    assert "123456789ABCDEFGH" not in help_text
+    assert client._identity_key not in help_text
+
+
+@pytest.mark.parametrize("header_path,expected_curl", [
+    ("/tmp/pyco-agent-test/api.header", 'curl -H "@/tmp/pyco-agent-test/api.header"'),
+    (r"C:\Users\Alice Smith\AppData\Local\Temp\pyco-agent-test\api.header",
+     r'curl.exe -H "@C:\Users\Alice Smith\AppData\Local\Temp\pyco-agent-test\api.header"'),
+])
+def test_runtime_info_header_file_includes_access_and_router_bridge_without_token(
+    header_path, expected_curl
+):
+    from pycodex_router.client import RouterClient
+
+    app = create_app(make_session, None, password="workspace-test-password")
+    client = RouterClient(app, "123456789ABCDEFGH@router.example:6000", "test", 12345, lambda: [])
+    client.connected = True
+    client.api_url = "https://router.example/proxy"
+    app.state.router_client = client
+    app.state.local_api_url = "http://127.0.0.1:12345"
+    app.state.agent_header_path = header_path
+    app.state.agent_auth_token = "secret-agent-token-value"
+    with TestClient(app) as browser:
+        assert browser.post("/login", json={"password": "workspace-test-password"}).status_code == 200
+        response = browser.get("/api/session", params={"runtime_info": "true"})
+        assert response.status_code == 200
+        own = response.json()["session_id"]
+        help_resp = browser.get("/api/help", params={"session_id": own})
+        assert help_resp.status_code == 200
+    text = response.json()["runtime_info"]
+    help_text = help_resp.text
+    assert len(text.splitlines()) == 2
+    assert (
+        'Collaboration info: {0} "http://127.0.0.1:12345/api/help?session_id={1}"'.format(
+            expected_curl, own
+        )
+        in text
+    )
+    assert "Source: pycodex=" in text
+    assert "Access: {0} URL ...".format(expected_curl) in help_text
+    assert "X-Pycodex-Agent-Token: <token>" in help_text
+    assert "G=L/router; GET G/proxy/api/workspaces -> workspaces[].url; B=G+url (same header)." in help_text
+    for body in (text, help_text):
+        assert "secret-agent-token-value" not in body
+        assert "workspace-test-password" not in body
+        assert "123456789ABCDEFGH" not in body
+        assert client._identity_key not in body
 
 
 def test_runtime_info_read_does_not_queue_during_active_turn():

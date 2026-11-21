@@ -37,7 +37,7 @@ from pycodex_ws.server_support import (
 
 from .customization import frontend_asset_response, frontend_directory, load_workspace_template
 from . import external_call
-from .runtime_info import runtime_info_prompt
+from .runtime_info import agent_help_text, runtime_info_prompt
 from .session_api import session_api_routes
 from .vscode_server import (
     VsCodeRuntime,
@@ -313,6 +313,18 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         context = workspace(request)
         return _session_response(context.manager, request, context.workspace_id)
 
+    async def root_agent_help(request: Request) -> Response:
+        return _agent_help_response(request, multi=bool(prefix))
+
+    async def agent_help(request: Request) -> Response:
+        context = workspace(request)
+        return _agent_help_response(
+            request,
+            multi=bool(prefix),
+            manager=context.manager,
+            workspace_id=context.workspace_id,
+        )
+
     async def message(request: Request) -> JSONResponse:
         payload = await _json_object_body(request)
         return await _message_response(workspace(request).manager, payload)
@@ -341,6 +353,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
     ) + external_call.external_call_routes(
         workspace, prefix,
     ) + list(leading_routes) + [
+        *([Route("/api/help", root_agent_help, methods=["GET"])] if prefix else []),
         route("/", index, ["GET"]),
         *([] if prefix else [route("/favicon.ico", favicon, ["GET"])]),
         route("/board", board, ["GET", "HEAD"]),
@@ -374,6 +387,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         route("/frontend/{asset_path:path}", frontend_asset, ["GET", "HEAD"]),
         route("/api/sessions/{session_id}", delete_session, ["DELETE"]),
         route("/api/sessions/{session_id}/read", read_session, ["POST"]),
+        route("/api/help", agent_help, ["GET"]),
         route("/api/session", session, ["GET"]),
         route("/api/session/message", message, ["POST"]),
         WebSocketRoute(
@@ -672,12 +686,44 @@ def _session_response(
     if request.query_params.get("runtime_info") == "true":
         state = request.app.state
         payload["runtime_info"] = runtime_info_prompt(
-            resolved_id, link.summary(), workspace_id,
+            resolved_id,
+            workspace_id,
             getattr(state, "local_api_url", None),
-            getattr(state, "router_client", None),
-            getattr(state, "agent_socket_path", None),
+            getattr(state, "agent_header_path", None),
         )
     return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+def _agent_help_response(
+    request: Request,
+    multi: bool,
+    manager: "typing.Union[WorkspaceSessionManager, None]" = None,
+    workspace_id: "typing.Union[str, None]" = None,
+) -> Response:
+    session_id = request.query_params.get("session_id")
+    resolved_id = None
+    summary = None
+    if manager is not None and session_id:
+        try:
+            resolved_id = manager.resolve_session_id(session_id)
+            summary = manager.get(resolved_id).summary()
+        except KeyError:
+            raise HTTPException(status_code=404, detail="session not found")
+    state = request.app.state
+    text = agent_help_text(
+        multi,
+        getattr(state, "local_api_url", None),
+        getattr(state, "router_client", None),
+        getattr(state, "agent_header_path", None),
+        workspace_id=workspace_id,
+        session_id=resolved_id,
+        summary=summary,
+    )
+    return Response(
+        text,
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 async def _message_response(

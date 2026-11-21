@@ -51,7 +51,7 @@ def agent_api_request(scope):
     if scope["type"] != "http":
         return False
     match = re.fullmatch(
-        r"(?:/n/[a-z2-7]{5}(?:[a-z2-7]{47})?)?(?:/w/[^/]+)?/api/(workspaces|sessions|session|session/message)",
+        r"(?:/n/[a-z2-7]{5}(?:[a-z2-7]{47})?)?(?:/w/[^/]+)?/api/(workspaces|sessions|session|session/message|help)",
         route_path(scope),
     )
     return match is not None and scope["method"] == (

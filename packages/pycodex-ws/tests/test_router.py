@@ -27,7 +27,7 @@ from websockets.exceptions import (
     InvalidHandshake,
     InvalidStatusCode,
 )
-from websockets.legacy.client import connect, unix_connect
+from websockets.legacy.client import connect
 from workspace_server import (
     WorkspaceDefinition,
     WorkspaceEntry,
@@ -44,6 +44,7 @@ from pycodex import (
     ToolRegistry,
 )
 from tests.fakes import ScriptedModelClient, make_agent, make_runtime
+from workspace_server.agent_access import AGENT_TOKEN_HEADER, AgentSocketAccess
 from workspace_server.owned_process import run_owned_server
 
 
@@ -219,12 +220,12 @@ async def owned_workspace(app):
         None, run_owned_server, app, "127.0.0.1", 0, read_fd,
     )
     try:
-        await eventually(lambda: getattr(app.state, "agent_socket_path", None) is not None)
+        await eventually(lambda: getattr(app.state, "agent_header_path", None) is not None)
         address = app.state.local_api_url
-        socket_path = app.state.agent_socket_path
+        header_path = app.state.agent_header_path
+        name, value = Path(header_path).read_text(encoding="ascii").strip().split(": ", 1)
         async with httpx.AsyncClient(
-            transport=httpx.AsyncHTTPTransport(uds=socket_path),
-            base_url=address, trust_env=False,
+            base_url=address, headers={name: value}, trust_env=False,
         ) as local:
             async def ready():
                 while True:
@@ -237,7 +238,7 @@ async def owned_workspace(app):
                     except httpx.ConnectError:
                         await asyncio.sleep(0.01)
             await asyncio.wait_for(ready(), 5)
-            yield address, socket_path, local
+            yield address, header_path, local
     finally:
         os.close(write_fd)
         try:
@@ -246,14 +247,33 @@ async def owned_workspace(app):
             os.close(read_fd)
 
 
-@pytest.mark.skipif(os.name != "posix", reason="owner-only Unix socket")
-async def test_private_agent_socket_exempts_local_apis_but_not_tcp(tmp_path):
+async def test_private_agent_socket_exempts_local_apis_but_not_tcp(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+
     app, registry = workspace_app(tmp_path / "local", "local-password")
-    async with owned_workspace(app) as (address, socket_path, local):
-        assert Path(socket_path).stat().st_mode & 0o777 == 0o600
-        assert Path(socket_path).parent.stat().st_mode & 0o777 == 0o700
+    seen_headers = []
+    original_call = app.__call__
+
+    async def record_headers(scope, receive, send):
+        if scope["type"] == "http" and scope["path"] == "/api/workspaces":
+            seen_headers.append([name.lower() for name, _value in scope["headers"]])
+        await original_call(scope, receive, send)
+
+    monkeypatch.setattr(app, "__call__", record_headers)
+    async with owned_workspace(app) as (address, header_path, local):
+        if os.name == "posix":
+            assert Path(header_path).stat().st_mode & 0o777 == 0o600
+            assert Path(header_path).parent.stat().st_mode & 0o777 == 0o700
+        token = app.state.agent_auth_token
+        assert token
+        assert Path(header_path).read_text(encoding="ascii") == (
+            "{0}: {1}\n".format(AGENT_TOKEN_HEADER, token)
+        )
+        seen_headers.clear()
         inventory = await local.get("/api/workspaces")
         assert inventory.status_code == 200
+        assert all(b"x-pycodex-agent-token" not in names for names in seen_headers)
         own = inventory.json()["workspaces"][0]["sessions"][0]["id"]
         response = await local.get("/w/shared/api/session", params={
             "session_id": own, "runtime_info": "true",
@@ -262,30 +282,82 @@ async def test_private_agent_socket_exempts_local_apis_but_not_tcp(tmp_path):
         link = registry.get("shared").manager.get()
         assert link.snapshot()["turns"] == []
         prompt = response.json()["runtime_info"]
-        assert "curl --unix-socket " + socket_path in prompt
+        expected_curl = "curl.exe" if os.name == "nt" else "curl"
+        help_url = "{0}/w/shared/api/help?session_id={1}".format(address, own)
+        assert 'Collaboration info: {0} -H "@{1}" "{2}"'.format(
+            expected_curl, header_path, help_url
+        ) in prompt
+        assert "Source: pycodex=" in prompt
+        assert token not in prompt
         assert "local-password" not in prompt
+
+        help_resp = await local.get("/w/shared/api/help", params={"session_id": own})
+        assert help_resp.status_code == 200
+        assert (await local.get("/api/help")).status_code == 200
+        assert "API ID: " + own in help_resp.text
+        assert 'Access: {0} -H "@{1}"'.format(expected_curl, header_path) in help_resp.text
+        assert token not in help_resp.text
+
+        if shutil.which(expected_curl):
+            curl_res = subprocess.run(
+                [expected_curl, "-fsS", "-H", "@" + header_path, help_url],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=5,
+            )
+            assert curl_res.returncode == 0, curl_res.stderr.decode("utf-8", errors="replace")
+            assert curl_res.stdout.decode("utf-8") == help_resp.text
+
         assert (await local.post("/api/workspaces", json={})).status_code == 401
         assert (await local.get("/w/shared/api/views")).status_code == 401
         assert (await local.get("/router/api/workspaces")).status_code == 503
+
+        valid = {AGENT_TOKEN_HEADER: token}
         async with httpx.AsyncClient(base_url=address, trust_env=False) as browser:
+            assert (await browser.get("/api/help")).status_code == 401
             for headers in [
-                {}, {"X-Pycodex-Agent-Access": "true"},
-                {"Forwarded": "for=127.0.0.1", "X-Forwarded-For": "127.0.0.1"},
+                {},
+                {"X-Pycodex-Agent-Access": "true"},
+                {AGENT_TOKEN_HEADER: "wrong-token"},
+                dict(valid, Origin=address),
+                dict(valid, **{"Sec-Fetch-Site": "same-origin"}),
+                dict(valid, Forwarded="for=127.0.0.1"),
+                dict(valid, **{"X-Forwarded-For": "127.0.0.1"}),
+                dict(valid, **{"X-Real-IP": "127.0.0.1"}),
             ]:
                 assert (await browser.get("/api/workspaces", headers=headers)).status_code == 401
+            dup = httpx.Headers([
+                (AGENT_TOKEN_HEADER, token),
+                (AGENT_TOKEN_HEADER, token),
+            ])
+            assert (await browser.get("/api/workspaces", headers=dup)).status_code == 401
             with pytest.raises(InvalidStatusCode):
-                async with connect(address.replace("http:", "ws:") + "/w/shared/ws/session"):
+                async with connect(
+                    address.replace("http:", "ws:") + "/w/shared/ws/session",
+                    extra_headers=valid,
+                ):
                     pass
-        with pytest.raises(InvalidStatusCode):
-            async with unix_connect(
-                socket_path, uri=address.replace("http:", "ws:") + "/w/shared/ws/session",
-            ):
-                pass
-    assert not Path(socket_path).exists()
-    assert app.state.agent_socket_path is None
+
+        remote_transport = httpx.ASGITransport(
+            app=AgentSocketAccess(app), client=("198.51.100.7", 54321),
+        )
+        async with httpx.AsyncClient(
+            transport=remote_transport, base_url=address, trust_env=False,
+        ) as remote_client:
+            assert (await remote_client.get("/api/workspaces", headers=valid)).status_code == 401
+
+        loopback_v6_transport = httpx.ASGITransport(
+            app=AgentSocketAccess(app), client=("::ffff:127.0.0.1", 54321),
+        )
+        async with httpx.AsyncClient(
+            transport=loopback_v6_transport, base_url=address, trust_env=False,
+        ) as mapped_client:
+            assert (await mapped_client.get("/api/workspaces", headers=valid)).status_code == 200
+    assert not Path(header_path).exists()
+    assert app.state.agent_header_path is None
+    assert app.state.agent_auth_token is None
 
 
-@pytest.mark.skipif(os.name != "posix", reason="owner-only Unix socket")
 @pytest.mark.parametrize("root", ["", "/remote"])
 async def test_registered_agents_contact_password_protected_peers_and_revoke_on_disconnect(tmp_path, root):
     gate = create_app("router-password")
@@ -306,12 +378,14 @@ async def test_registered_agents_contact_password_protected_peers_and_revoke_on_
                 source_link = source_registry.get("shared").manager.get()
                 assert source_link.snapshot()["turns"] == []
                 prompt = info.json()["runtime_info"]
-                assert "GET G" + root + "/api/workspaces" in prompt
-                assert "B=G+url" in prompt
+                help_text = (await local.get("/api/help")).text
+                assert "GET G" + root + "/api/workspaces" in help_text
+                assert "B=G+url" in help_text
                 assert socket_path in prompt
                 assert agent._identity_key not in prompt
                 assert gate.state.router.registration_key not in prompt
                 assert "source-password" not in prompt
+                assert agent._identity_key not in help_text
                 discovery = "/router" + root + "/api/workspaces"
                 listing = await local.get(discovery)
                 assert listing.status_code == 200
@@ -570,12 +644,19 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
                 link = registry.get("shared").manager.get()
                 assert link.snapshot()["turns"] == []
                 text = response.json()["runtime_info"]
-                assert "L=" + local_address + "; current workspace=L/w/shared" in text
-                assert "R=" + address + "/remote" in text
+                own = response.json()["session_id"]
+                assert local_address + "/w/shared/api/help?session_id=" + own in text
                 assert gate.state.router.registration_key not in text
                 assert app.state.router_client._identity_key not in text
 
-                example = next(line for line in text.splitlines()
+                help_resp = await browser.get(prefix + "/api/help", params={"session_id": own})
+                assert help_resp.status_code == 200
+                help_text = help_resp.text
+                assert "L=" + local_address + "; current workspace=L/w/shared" in help_text
+                assert "R=" + address + "/remote" in help_text
+                assert gate.state.router.registration_key not in help_text
+                assert app.state.router_client._identity_key not in help_text
+                example = next(line for line in help_text.splitlines()
                                if line.startswith("POST B/api/session/message "))
                 message = json.loads(example.split(" ", 2)[2].rsplit(" -> ", 1)[0])
                 message["session_id"] = response.json()["session_id"]
