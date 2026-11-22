@@ -123,7 +123,7 @@ env -u VIRTUAL_ENV uv run --dev pytest packages/pycodex-ws/tests/test_external_c
 测试覆盖设置创建、profile 与 host 工具集、Web 发起任务、单会话连接码及撤销、
 访客和工作区隔离、并发排队、重复回执和关闭时释放等待者。
 真实 Bash/curl（及 PATH 中存在 `pwsh` 时的 PowerShell）验证直连、Router 转发、
-多条命令连续执行、中文输出、非零退出码及会话关闭后循环退出，模型使用测试替身。
+多条命令连续执行、中文输出、非零退出码、超 128 KiB 输出流式回传、回传被拒时退出循环不重跑以及会话关闭后循环退出，模型使用测试替身。
 
 Workspace 重连诊断折叠的浏览器回归手动运行，不加入 CI。
 使用 Node 18+，在独立目录安装 Playwright 及 Chromium 后运行：
