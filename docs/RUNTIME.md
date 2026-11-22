@@ -242,8 +242,9 @@ numbering and line breaks.
 The Web frontend restores the latest 80 display entries from the saved rollout,
 including compact dividers and earlier questions/replies within that window.
 Workspace turns carry individual `messages` with `message_id`, `text`, `name`,
-`visible` and `created_at`. Ordinary inputs (`visible = True`) have an
-author/time header and a DOM key based on message ID; automatic wake-ups and
+`visible` and `created_at`. Ordinary inputs (`visible = True`) have a DOM key
+based on message ID and a header showing their timestamp (plus the author when
+`name` is non-empty and not `"user"`); automatic wake-ups and
 system notifications set `visible` to a non-empty tag string and render as
 expandable dividers (`visible = False` stays hidden). The aggregate `prompt`
 joins `visible = True` inputs, while `prompt_at` is derived from the turn's
@@ -261,7 +262,8 @@ In the workspace's single-pane phone layout, the conversation header contains
 the active session title, running status and the only Settings button. The pane
 switch occupies the same top-right position in both headers. In the board
 toolbar it follows the fullscreen button. Floating session controls stay below
-the headers and contain only the session-list button and status dots.
+the conversation header on the chat pane (hidden on the board pane) and contain
+only the session-list button and status dots.
 
 In the two-pane layout, the session sidebar starts collapsed on every page load.
 Session entries provide selection, title editing and status indicators,

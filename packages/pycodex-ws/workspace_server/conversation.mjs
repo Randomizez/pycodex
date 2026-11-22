@@ -262,16 +262,22 @@ function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
         header.append(element("span", "message-author"));
         body.before(header);
       }
-      if (header.firstElementChild.textContent !== message.name) {
-        header.firstElementChild.textContent = message.name;
+      const authorName = message.name && message.name !== "user" ? message.name : "";
+      const authorNode = header.firstElementChild;
+      if (authorNode.textContent !== authorName) {
+        authorNode.textContent = authorName;
       }
-      const isDefaultAuthor = String(message.name === "user");
-      if (header.dataset.defaultAuthor !== isDefaultAuthor) {
-        header.dataset.defaultAuthor = isDefaultAuthor;
+      const hideAuthor = !authorName;
+      if (authorNode.hidden !== hideAuthor) {
+        authorNode.hidden = hideAuthor;
       }
       setMessageTime(body, message.created_at);
       const time = body.parentElement.querySelector(".message-time");
       if (time && time.parentElement !== header) header.append(time);
+      const hideHeader = hideAuthor && !time;
+      if (header.hidden !== hideHeader) {
+        header.hidden = hideHeader;
+      }
     }
     if (setup && !body.firstElementChild) {
       const notice = element("p", "frontend-notice",

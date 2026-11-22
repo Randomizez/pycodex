@@ -300,7 +300,8 @@ ordinary inputs or a non-empty tag label string (such as `"Wake-up"`) for
 automatic wake-ups and system notifications, which the built-in page renders as
 compact expandable dividers instead of user bubbles (`false` entries are omitted
 from display turns). Each ordinary input appears separately
-with its author and time, including inputs with identical text. `prompt` is
+with a header showing its time and, when `name` is non-empty and not `"user"`,
+its author, including inputs with identical text. `prompt` is
 derived by joining `visible === true` texts, and `prompt_at` is the first input's creation
 time. `response_at` is the committed assistant message's creation time. These
 timestamps survive queueing, steer and resume; unknown legacy times stay `null`.

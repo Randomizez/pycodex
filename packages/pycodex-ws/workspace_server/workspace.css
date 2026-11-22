@@ -1005,12 +1005,9 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   font-size: 11px;
   line-height: 1.4;
 }
+.message-header[hidden],
+.message-author[hidden] { display: none; }
 .message-author { min-width: 0; overflow-wrap: anywhere; font-weight: 600; color: var(--accent); }
-.message-header[data-default-author="true"] > .message-author {
-  font-weight: 500;
-  color: var(--muted);
-  opacity: 0.78;
-}
 .message-header > .message-time { flex-shrink: 0; margin-top: 0; }
 .entry.response[data-temporary="true"],
 .entry.control,

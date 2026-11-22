@@ -184,6 +184,8 @@ function turn(id, text) {
       fixture.renderSnapshot(snapshot);
       const entry = document.getElementById("log").firstElementChild;
       const response = entry.nextElementSibling;
+      const defaultAuthorHidden = entry.querySelector(".message-author").hidden;
+      const defaultTimeInHeader = Boolean(entry.querySelector(".message-header > time.message-time"));
       const observer = new MutationObserver(() => {});
       observer.observe(entry, {attributes: true, childList: true, characterData: true, subtree: true});
       observer.observe(response, {attributes: true, childList: true, characterData: true, subtree: true});
@@ -197,7 +199,10 @@ function turn(id, text) {
       fixture.renderSnapshot(snapshot);
       observer.disconnect();
       return {
+        defaultAuthorHidden,
+        defaultTimeInHeader,
         unchanged,
+        authorHidden: entry.querySelector(".message-author").hidden,
         author: entry.querySelector(".message-author").textContent,
         createdAt: entry.querySelector(".message-header time").dateTime,
         responseAt: response.querySelector("time").dateTime,
@@ -205,7 +210,8 @@ function turn(id, text) {
       };
     }, snapshots.get("a"));
     assert.deepEqual(metadata, {
-      unchanged: 0, author: "Alice", createdAt: "2026-11-09T02:00:00Z",
+      defaultAuthorHidden: true, defaultTimeInHeader: true,
+      unchanged: 0, authorHidden: false, author: "Alice", createdAt: "2026-11-09T02:00:00Z",
       responseAt: "2026-11-09T02:01:00Z", finalId: "new-final",
     }, "streaming must leave historical DOM intact while metadata changes still render");
     await page.evaluate(snapshot => fixture.renderSnapshot(snapshot), snapshots.get("a"));
