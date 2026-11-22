@@ -262,8 +262,13 @@ function turn(id, text) {
     await page.evaluate("fixture.switchSession('b')");
     const settings = page.getByRole("button", {name: "Settings", exact: true});
     assert.equal(await settings.isVisible(), true);
+    assert.equal(await page.locator("#mobileSessionFloat").evaluate(node =>
+      getComputedStyle(node).visibility), "visible");
     await page.evaluate(() => {document.querySelector(".workspace").dataset.mobilePane = "board";});
     assert.equal(await settings.isVisible(), false);
+    assert.equal(await page.locator("#mobileSessionFloat").evaluate(node =>
+      getComputedStyle(node).visibility), "hidden");
+    assert.equal(await page.locator("#mobileSessionFloat").getAttribute("aria-hidden"), "true");
     const releaseMobile = block("a");
     await page.evaluate(() => {window.mobileSelection = fixture.switchSession("a");});
     await page.evaluate(() => {
@@ -361,7 +366,7 @@ function turn(id, text) {
       turn.submission_id = "steer";
       turn.messages[0].name = "Alice updated";
       turn.messages[0].created_at = "2026-01-01T10:00:00Z";
-      turn.messages.push({message_id: "legacy", text: "Unknown time stays empty.",
+      turn.messages.push({message_id: "legacy", text: "Unknown time stays empty: https://example.com/mr/1.",
         name: "<img src=x onerror=alert(1)>", created_at: null});
       fixture.renderSnapshot(messageSnapshot);
     });
@@ -369,6 +374,7 @@ function turn(id, text) {
     assert.equal(await page.locator(".message-author").first().textContent(), "Alice updated");
     assert.equal(await page.locator(".message-header time").first().getAttribute("datetime"), "2026-01-01T10:00:00Z");
     assert.equal(await page.locator(".entry.user").last().locator("time, img").count(), 0);
+    assert.equal(await page.locator(".entry.user").last().locator("a").getAttribute("href"), "https://example.com/mr/1");
     await page.setViewportSize({width: 390, height: 844});
     await page.evaluate(() => {
       document.querySelector('[data-pane="chat"]').click();

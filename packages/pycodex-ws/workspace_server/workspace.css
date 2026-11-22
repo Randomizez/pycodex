@@ -27,7 +27,7 @@
   --tab-max-width: 180px;
   --chat-width: min(42vw, 760px);
   --splitter-width: 8px;
-  --session-sidebar-size: 280px;
+  --session-sidebar-size: 248px;
   --session-rail-width: 56px;
   --sidebar-duration: 320ms;
   --sidebar-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -382,7 +382,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   height: 4px;
 }
 .session-sidebar {
-  --session-tab-text-width: max(0px, calc(var(--session-sidebar-open-width) - 102px - env(safe-area-inset-right, 0px)));
+  --session-tab-text-width: max(0px, calc(var(--session-sidebar-open-width) - 66px - env(safe-area-inset-right, 0px)));
   min-height: 0;
   overflow: hidden;
   contain: layout paint;
@@ -405,10 +405,11 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   justify-content: space-between;
   flex: 0 0 44px;
   padding: 0 12px;
+  border-bottom: 1px solid #e5e9ec;
 }
 .session-sidebar-header h2 {
   position: absolute;
-  left: 22px;
+  left: 18px;
   margin: 0;
   font-size: 12px;
   font-weight: 500;
@@ -508,13 +509,17 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   max-width: none;
   min-height: 42px;
   height: auto;
-  padding: 6px 76px 6px 12px;
+  padding: 6px 40px 6px 12px;
   gap: 2px;
   border-radius: 8px;
   color: #54616b;
   background: transparent;
   overflow: hidden;
   transition: background 160ms ease, box-shadow 160ms ease;
+}
+.workspace:not(.sessions-collapsed) .session-sidebar .tab:is(:hover, :focus-within, .active) {
+  --session-tab-text-width: max(0px, calc(var(--session-sidebar-open-width) - 98px - env(safe-area-inset-right, 0px)));
+  padding-right: 72px;
 }
 .sessions-collapsed .session-sidebar .tab {
   justify-content: flex-start;
@@ -566,18 +571,26 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   position: absolute;
   top: 0;
   bottom: 0;
-  right: 38px;
+  right: 36px;
   z-index: 2;
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   margin: auto 0;
   color: #84919a;
   display: grid;
-  opacity: 1;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.workspace:not(.sessions-collapsed) .session-sidebar .tab:is(:hover, :focus-within, .active) .tab-close {
+  opacity: 0.85;
   visibility: visible;
   pointer-events: auto;
 }
-.session-sidebar .tab-close:disabled { opacity: .3; cursor: default; }
+.workspace:not(.sessions-collapsed) .session-sidebar .tab:is(:hover, :focus-within, .active) .tab-close:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
 .session-sidebar .tab-status {
   position: absolute;
   top: 0;
@@ -637,6 +650,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   position: relative;
   display: flex;
   flex: 0 0 auto;
+  margin-bottom: 2px;
 }
 .context-meter {
   --context-remaining: 0%;
@@ -667,11 +681,22 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   border-radius: 999px;
   background: var(--panel-raised);
 }
+.context-meter[data-full="true"]::after {
+  content: "";
+  position: relative;
+  z-index: 1;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: 0.55;
+}
+.context-meter[data-full="true"] .context-meter-value { display: none; }
 .context-meter-value { position: relative; z-index: 1; }
 .context-details {
   position: absolute;
   bottom: 100%;
-  left: -6px;
+  left: 0;
   z-index: 5;
   width: 336px;
   max-width: calc(100vw - 48px);
@@ -682,10 +707,10 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 }
 .context-details-card {
   padding: 10px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 10px;
   background: var(--panel-raised);
-  box-shadow: 0 6px 24px rgba(27, 57, 72, 0.12);
+  box-shadow: 0 12px 32px rgba(23, 38, 48, 0.16), 0 2px 6px rgba(23, 38, 48, 0.06);
 }
 .context-usage {
   padding-bottom: 8px;
@@ -893,7 +918,8 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .workspace-back {
   width: 30px;
   height: 30px;
-  background: var(--panel-deep);
+  border-radius: var(--radius-sm);
+  background: transparent;
 }
 .tab-new svg,
 .vscode-toggle svg,
@@ -958,6 +984,8 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   border-radius: 10px 10px 3px 10px;
   background: var(--success-soft);
 }
+.entry.user a { color: var(--info); text-decoration: none; }
+.entry.user a:hover { text-decoration: underline; }
 .message-time {
   display: block;
   margin-top: 4px;
@@ -977,7 +1005,12 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   font-size: 11px;
   line-height: 1.4;
 }
-.message-author { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.message-author { min-width: 0; overflow-wrap: anywhere; font-weight: 600; color: var(--accent); }
+.message-header[data-default-author="true"] > .message-author {
+  font-weight: 500;
+  color: var(--muted);
+  opacity: 0.78;
+}
 .message-header > .message-time { flex-shrink: 0; margin-top: 0; }
 .entry.response[data-temporary="true"],
 .entry.control,
@@ -1042,11 +1075,18 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
 .entry.compaction::after {
   content: "";
   flex: 1;
-  border-top: 1px solid var(--line);
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line) 24%, var(--line));
+}
+.entry.compaction::after {
+  background: linear-gradient(90deg, var(--line), var(--line) 76%, transparent);
+}
+.log > :is(.entry.tag, .entry.compaction) + :is(.entry.tag, .entry.compaction) {
+  margin-top: -10px;
 }
 .entry.tag {
   align-self: stretch;
-  padding: 2px 0;
+  padding: 1px 0;
   color: var(--muted);
 }
 .entry.tag > .text { white-space: normal; }
@@ -1055,7 +1095,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 26px;
+  min-height: 24px;
   list-style: none;
   cursor: pointer;
   font-size: 11px;
@@ -1068,8 +1108,12 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   content: "";
   flex: 1;
   min-width: 10px;
-  border-top: 1px solid var(--line);
-  opacity: .65;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--line) 24%, var(--line));
+  opacity: .7;
+}
+.message-tag > summary::after {
+  background: linear-gradient(90deg, var(--line), var(--line) 76%, transparent);
 }
 .message-tag > summary:hover { color: var(--ink); }
 .message-tag > summary:focus-visible {
@@ -1161,6 +1205,8 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   padding: var(--space-3) var(--space-4);
   text-align: left;
   vertical-align: top;
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .markdown th { background: var(--accent-soft); font-weight: 650; }
 .markdown a { color: var(--info); text-decoration: none; }
@@ -1269,7 +1315,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   min-width: 0;
   padding: 4px 10px 4px 6px;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 10px;
 }
 .queue-hint {
@@ -1323,8 +1369,9 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   min-width: 0;
   padding: 3px 0;
   line-height: 22px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: var(--muted);
   pointer-events: none;
   user-select: none;
@@ -1611,7 +1658,8 @@ code {
     -webkit-backdrop-filter: blur(10px);
     transition: opacity 160ms ease, transform 160ms ease;
   }
-  .sessions-drawer-open .mobile-session-float {
+  .sessions-drawer-open .mobile-session-float,
+  .workspace[data-mobile-pane="board"] .mobile-session-float {
     visibility: hidden;
     opacity: 0;
     transform: translateX(8px);
@@ -1647,7 +1695,8 @@ code {
   .session-banner-row label { flex-basis: 68px; }
   .log { padding: 14px 44px 14px 16px; gap: 14px; }
   .composer { padding: 8px 16px max(10px, env(safe-area-inset-bottom)); }
-  .prompt-input { font-size: 16px; line-height: 24px; padding: 2px 0; }
+  .prompt-input,
+  .prompt-hint { font-size: 16px; line-height: 24px; padding: 2px 0; }
   .context-block-editor { font-size: 16px; }
   .tab-title-input { font-size: 16px; }
   .session-sidebar .tab-title-input { line-height: 20px; }

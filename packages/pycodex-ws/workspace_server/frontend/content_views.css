@@ -2,6 +2,18 @@
 .content-tabs {
   flex: 1;
 }
+.content-tabs[data-overflow-right="true"] {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
+}
+.content-tabs[data-overflow-left="true"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px);
+  mask-image: linear-gradient(90deg, transparent, #000 28px);
+}
+.content-tabs[data-overflow-left="true"][data-overflow-right="true"] {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+}
 .tab.content-tab {
   flex: 0 0 auto;
 }
@@ -35,14 +47,21 @@
   opacity: .75;
 }
 .content-status {
-  max-width: 50%;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: min(210px, 30%);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--danger-soft);
   font-size: 11px;
+  line-height: 1.5;
   color: var(--danger);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .content-status[data-tone="info"] {
+  background: var(--panel-deep);
   color: var(--muted);
 }
 .content-mode-toggle {
@@ -231,8 +250,6 @@
 @media (max-width: 760px) {
   .snapshot-heading { flex-wrap: wrap; gap: 4px; }
   .snapshot-stamp { margin-left: 0; }
-  .markdown-heading,
-  .pdf-view .snapshot-heading { padding-right: 48px; }
   .markdown-heading .snapshot-label { flex: 1 0 100%; }
   .markdown-heading .snapshot-stamp { margin-left: auto; }
   .snapshot-markdown { padding: 20px; }

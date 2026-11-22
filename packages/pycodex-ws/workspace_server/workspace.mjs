@@ -117,6 +117,14 @@ function clearSessionsHover() {
   sessionsHoverTimer = null;
 }
 
+function syncMobileSessionFloat() {
+  const floatHidden = (sessionsOpen && mobileSessionsMedia.matches) ||
+    !mobileSessionsMedia.matches ||
+    workspace.dataset.mobilePane === "board";
+  mobileSessionFloat.inert = floatHidden;
+  mobileSessionFloat.setAttribute("aria-hidden", String(floatHidden));
+}
+
 function setSessionsOpen(open, restoreFocus = false, pinned = true) {
   clearSessionsHover();
   sessionsOpen = open;
@@ -125,9 +133,7 @@ function setSessionsOpen(open, restoreFocus = false, pinned = true) {
   updateSessionControls();
   const modal = open && mobileSessionsMedia.matches;
   const hidden = !open && mobileSessionsMedia.matches;
-  const floatHidden = modal || !mobileSessionsMedia.matches;
-  mobileSessionFloat.inert = floatHidden;
-  mobileSessionFloat.setAttribute("aria-hidden", String(floatHidden));
+  syncMobileSessionFloat();
   sessionSidebar.inert = hidden;
   sessionSidebar.setAttribute("aria-hidden", String(hidden));
   workspace.classList.toggle("sessions-drawer-open", modal);
@@ -538,6 +544,7 @@ function updateContextMeter(snapshot = null) {
   const formatTokens = value => value == null ? "—" : value.toLocaleString("en-US");
   const remainingLabel = compact == null ? "context remaining" : "remaining until compact";
   contextMeter.style.setProperty("--context-remaining", `${percent == null ? 0 : percent}%`);
+  contextMeter.dataset.full = String(percent != null && percent >= 100);
   contextMeterValue.textContent = percent == null ? "—" : percent >= 100 ? "" : String(percent);
   contextMeter.setAttribute("aria-label", percent == null
     ? "Context and agents"
@@ -932,6 +939,10 @@ document.addEventListener("animationstart", event => {
 const recoveryNotice = document.getElementById("frontendRecovery");
 recoveryNotice.hidden = !builtinFrontend;
 recoveryNotice.querySelector("a").href = frontendUrl(false);
+new MutationObserver(syncMobileSessionFloat).observe(workspace, {
+  attributes: true,
+  attributeFilter: ["data-mobile-pane"],
+});
 setSessionsOpen(sessionsOpen);
 requestAnimationFrame(() => requestAnimationFrame(() => workspace.classList.add("sessions-ready")));
 loadChatWidth();

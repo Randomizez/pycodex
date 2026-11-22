@@ -800,6 +800,22 @@ export function mountContentViews({
     }
   }
 
+  function updateTabOverflow() {
+    const scrollLeft = tabs.scrollLeft || 0;
+    const clientWidth = tabs.clientWidth || 0;
+    const scrollWidth = tabs.scrollWidth || 0;
+    if (!tabs.dataset) return;
+    tabs.dataset.overflowLeft = String(scrollLeft > 2);
+    tabs.dataset.overflowRight = String(clientWidth > 0 && scrollLeft + clientWidth < scrollWidth - 2);
+  }
+  if (typeof tabs.addEventListener === "function") {
+    tabs.addEventListener("scroll", updateTabOverflow, {passive: true});
+  }
+  const hostWindow = document.defaultView;
+  if (hostWindow && typeof hostWindow.addEventListener === "function") {
+    hostWindow.addEventListener("resize", updateTabOverflow, {passive: true});
+  }
+
   function render(state) {
     const modeChanged = lastVscodeMode !== state.vscodeMode;
     if (
@@ -931,10 +947,18 @@ export function mountContentViews({
       return tab;
     }));
     display.retain(state.views.map(view => view.id));
+    updateTabOverflow();
     const isBoard = state.activeId === "board";
     const isVscode = state.activeId === "vscode";
     const isBuiltin = isBoard || isVscode;
     const switched = displayedId !== state.activeId;
+    if (switched && state.activeId) {
+      const activeTab = document.getElementById("content-tab-" + state.activeId);
+      if (activeTab && typeof activeTab.scrollIntoView === "function") {
+        activeTab.scrollIntoView({block: "nearest", inline: "nearest"});
+        updateTabOverflow();
+      }
+    }
     const changed = switched || displayedSnapshot !== state.snapshot ||
       displayedLoading !== state.loading || displayedSelection !== state.selection ||
       displayedMode !== state.displayMode;

@@ -21,6 +21,41 @@ export function messageSignature(snapshot) {
   ]);
 }
 
+const USER_URL_RE = /https?:\/\/[^\s<>"]+/g;
+
+function renderUserText(body, text) {
+  if (!text || !text.includes("http") || typeof document.createTextNode !== "function") {
+    body.textContent = text;
+    return;
+  }
+  USER_URL_RE.lastIndex = 0;
+  let cursor = 0;
+  let match;
+  const nodes = [];
+  while ((match = USER_URL_RE.exec(text)) !== null) {
+    const trimmed = match[0].replace(/[.,;:!?)]+$/, "");
+    if (!trimmed) continue;
+    if (match.index > cursor) {
+      nodes.push(document.createTextNode(text.slice(cursor, match.index)));
+    }
+    const link = element("a", "", trimmed);
+    link.href = trimmed;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    nodes.push(link);
+    cursor = match.index + trimmed.length;
+    USER_URL_RE.lastIndex = cursor;
+  }
+  if (!nodes.length) {
+    body.textContent = text;
+    return;
+  }
+  if (cursor < text.length) {
+    nodes.push(document.createTextNode(text.slice(cursor)));
+  }
+  body.replaceChildren(...nodes);
+}
+
 export function createConversationRenderer({log, renderMarkdownInto, builtinFrontend}) {
   function addEntry(cls, text, markdown = false, shouldStick = isNearBottom(log)) {
     const entry = element("div", "entry " + cls);
@@ -28,6 +63,7 @@ export function createConversationRenderer({log, renderMarkdownInto, builtinFron
     entry.appendChild(body);
     log.appendChild(entry);
     if (markdown) renderMarkdownInto(body, text || "");
+    else if (cls === "user") renderUserText(body, text || "");
     if (shouldStick) scrollToBottom(log);
     return body;
   }
@@ -46,13 +82,29 @@ export function createConversationRenderer({log, renderMarkdownInto, builtinFron
       } else if (entry.renderedSource !== text) {
         const body = entry.querySelector(":scope > .text");
         if (markdown) renderMarkdownInto(body, text);
+        else if (cls === "user") renderUserText(body, text || "");
         else body.textContent = text;
       }
       entry.renderedSource = text;
       entries.push(entry);
       return entry.querySelector(":scope > .text");
     }
-    turns.forEach(turn => renderTurn(turn, renderEntry, activeSessionId, builtinFrontend));
+    for (let index = 0; index < turns.length; index += 1) {
+      const turn = turns[index];
+      if (turn.kind === "compaction") {
+        let count = 1;
+        while (index + 1 < turns.length && turns[index + 1].kind === "compaction") {
+          count += 1;
+          index += 1;
+        }
+        const label = count > 1 ? `Context compacted ×${count}` : "Context compacted";
+        const marker = renderEntry(`turn:${turn.turn_id}:compact`, label, "compaction");
+        marker.parentElement.setAttribute("role", "separator");
+        marker.parentElement.setAttribute("aria-label", label);
+        continue;
+      }
+      renderTurn(turn, renderEntry, activeSessionId, builtinFrontend);
+    }
     if (!turns.length && !inputRequest) {
       let empty = log.querySelector(".empty-chat");
       if (!empty) {
@@ -164,7 +216,7 @@ function renderTagMessage(body, tag, message) {
   }
   const label = details.firstElementChild.firstElementChild;
   const [iconNode, nameNode, sepNode, timeNode] = label.children;
-  const iconKind = /wake|schedul|clock|timer/i.test(tag) ? "clock" : "event";
+  const iconKind = /wake|schedul|clock|timer|唤醒|定时/i.test(tag) ? "clock" : "event";
   if (iconNode.dataset.icon !== iconKind) {
     iconNode.dataset.icon = iconKind;
     iconNode.innerHTML = iconKind === "clock" ? TAG_CLOCK_ICON : TAG_EVENT_ICON;
@@ -212,6 +264,10 @@ function renderTurn(turn, renderEntry, activeSessionId, builtinFrontend) {
       }
       if (header.firstElementChild.textContent !== message.name) {
         header.firstElementChild.textContent = message.name;
+      }
+      const isDefaultAuthor = String(message.name === "user");
+      if (header.dataset.defaultAuthor !== isDefaultAuthor) {
+        header.dataset.defaultAuthor = isDefaultAuthor;
       }
       setMessageTime(body, message.created_at);
       const time = body.parentElement.querySelector(".message-time");
