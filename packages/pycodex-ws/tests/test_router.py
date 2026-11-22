@@ -2483,8 +2483,6 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
             sys.executable,
             "-m",
             "workspace_server",
-            "--listen",
-            "0.0.0.0:0",
             "--workspace-config",
             str(config),
             "--listen-to",
@@ -2517,7 +2515,11 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
             node = inventory["nodes"][0]
             assert node["id"]
             assert node["name"].startswith(socket.gethostname() + "/127.0.0.1:")
-            assert int(node["name"].rsplit(":", 1)[1]) > 0
+            local_port = int(node["name"].rsplit(":", 1)[1])
+            assert local_port > 0
+            local_url = "http://127.0.0.1:{0}".format(local_port)
+            async with httpx.AsyncClient(base_url=local_url, trust_env=False) as local:
+                assert (await local.get("/api/workspaces")).json()["workspaces"] == []
             assert inventory["workspaces"] == []
             renamed = await browser.post(
                 "/api/nodes/" + node["id"] + "/alias", json={"alias": "CLI device"}
@@ -2547,6 +2549,7 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
             assert workspace.returncode == 0, diagnostics.decode(
                 "utf-8", errors="replace"
             )
+            assert ("pycodex workspace listening on " + local_url).encode() in diagnostics.splitlines()
             snapshot = (await browser.get("/api/workspaces")).json()
             assert snapshot["nodes"] == []
     finally:

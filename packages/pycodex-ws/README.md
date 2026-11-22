@@ -32,6 +32,10 @@ Open `http://127.0.0.1:6007`. Use `python3 -m workspace_server` if the command
 is not on `PATH`. Keep stdin open while the server runs; EOF initiates shutdown.
 Model configuration comes from `~/.codex/config.toml`.
 
+With `pycodex-ws --listen-to KEY@router:6000`, the OS assigns a free local
+loopback port. The CLI prints the local URL and registers that port with the
+router. Add `--listen 127.0.0.1:6007` to use a fixed port.
+
 ## Conversations and views
 
 The session sidebar starts collapsed. Hover to preview it, click to keep it

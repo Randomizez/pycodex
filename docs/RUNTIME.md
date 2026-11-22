@@ -824,6 +824,11 @@ API contract.
 
 ### Router device IDs
 
+`pycodex-ws --listen-to` defaults to `127.0.0.1:0` so concurrent processes
+can each bind a local port. An explicit `--listen` selects the bind address.
+The startup URLs, local Agent API and router registration use the bound port.
+Standalone `pycodex-ws` defaults to `127.0.0.1:6007`.
+
 Registration version 2 retains the original 52-character Base32 SHA-256 identity.
 The registration response, device identifiers in API records, aliases and order
 use that full identity. Agent API requests and data channels authenticate with

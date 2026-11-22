@@ -110,7 +110,7 @@ def _configure_agent_access(state, cleanup, listener):
     state["agent_header_path"] = header_path
 
 
-def run_owned_server(build, host, port, input_fd, listen_to=None):
+def run_owned_server(build, host, port, input_fd, listen_to=None, workspaces=()):
     """Keep a reloadable server alive while its launching process holds stdin open."""
     import uvicorn
 
@@ -142,7 +142,16 @@ def run_owned_server(build, host, port, input_fd, listen_to=None):
         if ":" in local_host:
             local_host = "[" + local_host + "]"
         actual_port = listener.getsockname()[1]
-        shell.state["local_api_url"] = "http://{0}:{1}".format(local_host, actual_port)
+        local_url = "http://{0}:{1}".format(local_host, actual_port)
+        shell.state["local_api_url"] = local_url
+        print("pycodex workspace listening on " + local_url, flush=True)
+        for workspace in workspaces:
+            print(
+                "workspace {0}: state_path={1} work_dir={2} url={3}/w/{0}/".format(
+                    workspace.workspace_id, workspace.state_path, workspace.work_dir, local_url,
+                ),
+                flush=True,
+            )
         if listen_to:
             from pycodex_router.client import RouterClient
 

@@ -74,8 +74,7 @@ def build_parser() -> "argparse.ArgumentParser":
     )
     parser.add_argument(
         "--listen",
-        default="127.0.0.1:6007",
-        help="Bind address as host:port, for example 0.0.0.0:6007.",
+        help="Local host:port (default: 127.0.0.1:6007, or 127.0.0.1:0 with --listen-to).",
     )
     parser.add_argument(
         "--listen-to",
@@ -428,27 +427,13 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
 
     from .owned_process import run_owned_server
 
-    host, port = parse_listen(args.listen)
+    listen = "127.0.0.1:0" if args.listen_to and args.listen is None else args.listen
+    host, port = parse_listen(listen)
     configure_loguru()
-    definitions = load_workspace_definitions(args.workspace_config)
-    print(
-        "pycodex workspace listening on http://{0}:{1}".format(host, port),
-        flush=True,
-    )
-    for definition in definitions:
-        print(
-            "workspace {0}: state_path={1} work_dir={2} url=http://{3}:{4}/w/{0}/".format(
-                definition.workspace_id,
-                definition.state_path,
-                definition.work_dir,
-                host,
-                port,
-            ),
-            flush=True,
-        )
     run_owned_server(
         lambda: importlib.import_module("workspace_server.app").build_app(args),
         host, port, sys.stdin.fileno(), args.listen_to,
+        workspaces=load_workspace_definitions(args.workspace_config),
     )
     return 0
 

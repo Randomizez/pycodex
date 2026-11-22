@@ -42,9 +42,10 @@ def test_cli_reads_config_from_a_file_and_uses_stdin_ownership_by_default(
         stream.seek(0)
         monkeypatch.setattr("sys.stdin", stream)
 
-        def serve(build, host, port, input_fd, listen_to):
+        def serve(build, host, port, input_fd, listen_to, workspaces):
             calls.append((host, port))
-            assert listen_to is None
+            assert listen_to == "key@router"
+            assert [item.workspace_id for item in workspaces] == ["vscode"]
             assert input_fd == stream.fileno()
             assert os.read(input_fd, 4096) == b"owner pipe\n"
             with TestClient(build()) as client:
@@ -58,7 +59,7 @@ def test_cli_reads_config_from_a_file_and_uses_stdin_ownership_by_default(
 
         monkeypatch.setattr("workspace_server.owned_process.run_owned_server", serve)
         args = build_parser().parse_args(
-            ["--workspace-config", str(config_path), "--listen", "127.0.0.1:0",
+            ["--workspace-config", str(config_path), "--listen-to", "key@router",
              "--config", str(model_config)]
         )
         assert run_serve_cli(args) == 0
