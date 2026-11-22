@@ -476,7 +476,12 @@ def test_vscode_permissions_admin_visitor_and_agent_access(
                 pass
 
         # Agent access requests (even carrying admin cookie) cannot enable or open VS Code.
-        agent_client = TestClient(AgentSocketAccess(app), client=("127.0.0.1", 50000))
+        agent_access = AgentSocketAccess(app)
+
+        async def loopback_agent_app(scope, receive, send):
+            await agent_access(dict(scope, client=("127.0.0.1", 50000)), receive, send)
+
+        agent_client = TestClient(loopback_agent_app)
         agent_headers = {
             "cookie": "pycodex_ws_auth=" + admin_cookie,
             AGENT_TOKEN_HEADER: "vscode-agent-token",

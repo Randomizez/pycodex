@@ -512,15 +512,29 @@ async def test_exec_manager_reports_running_sessions(tmp_path) -> "None":
     assert manager.background_work_count(False) == 0
 
 
+def _process_dead_or_zombie(pid: "int") -> "bool":
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    stat_path = Path("/proc/{0}/stat".format(pid))
+    try:
+        stat_text = stat_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    parts = stat_text.rsplit(")", 1)
+    return len(parts) == 2 and parts[1].split()[0] in ("Z", "X")
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
 @pytest.mark.asyncio
 async def test_exec_manager_close_kills_background_process_tree(tmp_path) -> "None":
     manager = UnifiedExecManager()
     pid_file = tmp_path / "child.pid"
     output = await manager.exec_command(
-        "sleep 300 & echo $! > {0}; wait".format(pid_file),
+        "sleep 300 & echo $! > {0}; echo ready; wait".format(pid_file),
         cwd=tmp_path,
-        yield_time_ms=200,
+        yield_time_ms=2000,
     )
     assert output["session_id"] == 1000
     child = int(pid_file.read_text())
@@ -529,9 +543,7 @@ async def test_exec_manager_close_kills_background_process_tree(tmp_path) -> "No
 
     assert manager.background_work_count(False) == 0
     for _ in range(100):
-        try:
-            os.kill(child, 0)
-        except ProcessLookupError:
+        if _process_dead_or_zombie(child):
             break
         await asyncio.sleep(0.01)
     else:

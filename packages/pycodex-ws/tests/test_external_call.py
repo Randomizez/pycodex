@@ -187,7 +187,12 @@ def test_visitor_and_agent_access_cannot_read_session_connection_codes(make_work
         code = connection_code(binding)
 
         agent_headers = {AGENT_TOKEN_HEADER: "local-agent-secret"}
-        agent_client = TestClient(AgentSocketAccess(app), client=("127.0.0.1", 50000))
+        agent_access = AgentSocketAccess(app)
+
+        async def loopback_agent_app(scope, receive, send):
+            await agent_access(dict(scope, client=("127.0.0.1", 50000)), receive, send)
+
+        agent_client = TestClient(loopback_agent_app)
         agent_session = agent_client.get(
             "/w/alpha/api/session",
             params={"session_id": binding["session_id"]},
