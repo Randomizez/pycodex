@@ -14,6 +14,8 @@ Expected behavior:
 import asyncio
 import os
 import shlex
+import signal
+import subprocess
 import threading
 import typing
 import uuid
@@ -136,6 +138,21 @@ class UnifiedExecManager:
 
     def shutdown(self):
         self._notify_hook = None
+
+    async def close(self):
+        """Terminate command process trees left running when the session closes."""
+        with self._lock:
+            sessions = list(self._sessions.values())
+            self._sessions.clear()
+        for session in sessions:
+            if session.process.returncode is None:
+                _kill_process_tree(session.process.pid)
+        for session in sessions:
+            await session.process.wait()
+            if session.reader_task is not None:
+                await asyncio.gather(session.reader_task, return_exceptions=True)
+        if sessions:
+            self._state_changed()
 
     def background_work_count(self, after_reply) -> "int":
         return sum(
@@ -437,3 +454,17 @@ class UnifiedExecManager:
     def _tty_echo(self, chars: "str") -> "bytes":
         normalized = chars.replace("\n", "\r\n")
         return normalized.encode("utf-8")
+
+
+def _kill_process_tree(pid: "int") -> "None":
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return
+    try:
+        # Commands start in their own session, so the group holds their children.
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass

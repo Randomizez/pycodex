@@ -61,7 +61,6 @@ from workspace_server import (
     parse_listen,
 )
 from workspace_server.app import _build_workspace_entry, _event_data
-from workspace_server.reloader import _reproject_view
 from workspace_server.workspaces import save_workspace_definitions
 
 
@@ -2265,9 +2264,6 @@ async def test_workspace_compaction_divides_a_running_turn(tmp_path, overflow):
             assert [row["turn_id"] for row in (before, marker, after)] == [
                 row["turn_id"] for row in session.snapshot()["turns"]
             ]
-        live = session.snapshot()["turns"]
-        _reproject_view(runtime, session.view)
-        assert session.snapshot()["turns"] == live
     finally:
         release.set()
         await session.close()

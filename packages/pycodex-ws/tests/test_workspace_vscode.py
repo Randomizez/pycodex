@@ -23,6 +23,7 @@ from workspace_server import (
     create_multi_workspace_app,
 )
 from workspace_server.agent_access import AGENT_TOKEN_HEADER, AgentSocketAccess
+from workspace_server.owned_process import ReloadableApp
 from workspace_server.vscode_server import (
     BRIDGE_EXTENSION_ID, VsCodeRuntime, find_code_server, resolve_vscode_link,
 )
@@ -848,21 +849,27 @@ def test_vscode_line_selection_streams_large_files_and_git_blobs(tmp_path):
         resolve_vscode_link(tmp_path, "large.txt#L1")
 
 
-def test_vscode_survives_reload_and_reuses_bridge_installation(tmp_path, mock_code_server):
-    app, prefix, work_dir, _manager = _build_app(tmp_path, False, "admin-password")
-    with TestClient(app) as browser:
+def test_vscode_restarts_on_reload_and_reuses_bridge_installation(
+    tmp_path, mock_code_server, monkeypatch
+):
+    async def passed():
+        return None
+
+    monkeypatch.setattr("workspace_server.owned_process.preflight_check", passed)
+    monkeypatch.setattr("workspace_server.owned_process.purge_reloadable_modules", dict)
+    shell = ReloadableApp(lambda: _build_app(tmp_path, False, "admin-password")[0])
+    prefix = ""
+    work_dir = tmp_path / "work-single"
+    with TestClient(shell) as browser:
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
         before = browser.get(prefix + "/vscode/?folder=" + str(work_dir)).json()
         reload_resp = browser.post(prefix + "/api/reload", json={})
         assert reload_resp.status_code == 200
+        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
         after = browser.get(prefix + "/vscode/after-reload").json()
-        assert after["pid"] == before["pid"]
+        assert after["pid"] != before["pid"]
 
-    # Starting a second runtime reuses the installed .pycodex-ready bridge extension without reinstalling.
-    app2, prefix2, _wd2, _mgr2 = _build_app(tmp_path, False, "admin-password")
-    with TestClient(app2) as browser2:
-        assert browser2.post("/login", json={"password": "admin-password"}).status_code == 200
-        assert browser2.get(prefix2 + "/vscode/second-run").status_code == 200
+    # The restarted runtime reuses the installed .pycodex-ready bridge extension without reinstalling.
     assert int((mock_code_server / "install_count.txt").read_text(encoding="utf-8")) == 1
     ext_json = Path.home() / ".vscode-server" / "extensions" / "extensions.json"
     assert BRIDGE_EXTENSION_ID in ext_json.read_text(encoding="utf-8")

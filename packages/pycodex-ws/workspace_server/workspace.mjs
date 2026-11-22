@@ -804,8 +804,7 @@ document.getElementById("contextBlockRemove").addEventListener("click", () => {
 
 log.addEventListener("scroll", sessionUI.saveScroll);
 installDialogs({
-  getActiveSessionId: () => sessionUI.activeId, getSessions: () => sessionUI.sessions,
-  stateForSession, createSession, selectSession, updateSessions, renderSnapshot,
+  getSessions: () => sessionUI.sessions, stateForSession, createSession, selectSession,
   openView: (...args) => contentTabs.open(...args), showToast, markCustomizeSession,
 });
 splitter.addEventListener("pointerdown", startResize);

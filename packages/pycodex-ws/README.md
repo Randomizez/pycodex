@@ -49,6 +49,15 @@ Use **New session** for the default profile, or its **+** button to choose one.
 Profiles reload when you open the chooser or create a session, so config changes
 apply to new sessions without restarting the server. Existing sessions keep their configuration.
 
+Administrators can use **Settings → Reload PyCodex** and choose **Reboot** or
+**Update & reboot** to restart on updated code without restarting the process.
+Idle sessions close at once and running turns finish first (no new turns start
+meanwhile); background exec processes are terminated, clock periods resume, and
+sessions are restored from disk. Logins and share passwords are cleared; refresh
+the page afterwards. The endpoint `POST api/reload` accepts `{"upgrade": true}`
+or `{"upgrade": "VERSION"}`, which runs `pip install --upgrade pycodex-ws` with
+the server's Python first. The router connection (`--listen-to`) stays up.
+
 Consecutive model reconnection diagnostics share one collapsed `Model retries`
 row per sequence. The summary shows the number of recorded retries, the latest
 attempt and its HTTP status when available. Expand it to read the original errors

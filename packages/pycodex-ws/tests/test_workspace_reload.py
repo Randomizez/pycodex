@@ -1,16 +1,13 @@
-import asyncio
+import os
+import subprocess
 import sys
-import threading
-from concurrent.futures import Future
-from contextlib import ExitStack
-import types
+import asyncio
+from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
-import pycodex
-from pycodex.events import IDLE_SLEEPING_STATUS
-from pycodex.protocol import AssistantMessage, ModelResponse
+from pycodex import AssistantMessage, ModelResponse
 from tests.fakes import ScriptedModelClient
 from workspace_server import (
     WorkspaceDefinition,
@@ -20,327 +17,260 @@ from workspace_server import (
     create_app,
     create_multi_workspace_app,
 )
-from workspace_server.reloader import reload_modules_in_place
+from workspace_server.owned_process import ReloadableApp
 from test_workspace_server import make_session, wait_snapshot
+
+
+@pytest.fixture
+def no_module_swap(monkeypatch):
+    async def passed():
+        return None
+
+    monkeypatch.setattr("workspace_server.owned_process.preflight_check", passed)
+    monkeypatch.setattr("workspace_server.owned_process.purge_reloadable_modules", dict)
+    monkeypatch.setattr("workspace_server.owned_process.restore_modules", lambda purged: None)
 
 
 @pytest.fixture(params=[False, True], ids=["single", "multi"])
 def reload_setup(request, tmp_path):
     multi = request.param
+    builds = []
 
-    def create(factory=None, password="admin-password"):
-        session_factory = factory or (lambda: make_session(cwd=tmp_path))
-        manager = WorkspaceSessionManager(session_factory, tmp_path / "state")
+    def build():
+        manager = WorkspaceSessionManager(lambda: make_session(cwd=tmp_path), tmp_path / "state")
+        builds.append(manager)
         if multi:
             entry = WorkspaceEntry(
                 WorkspaceDefinition("first", tmp_path / "state", tmp_path, False),
                 manager,
             )
-            return create_multi_workspace_app(WorkspaceRegistry([entry]), password)
-        return create_app(manager, tmp_path / "state", password, tmp_path, False)
+            return create_multi_workspace_app(WorkspaceRegistry([entry]), "admin-password")
+        return create_app(manager, tmp_path / "state", "admin-password", tmp_path, False)
 
-    return create, "/w/first" if multi else ""
-
-
-def test_tool_event_scope_import_survives_a_second_backend_reload():
-    with ExitStack() as cleanup:
-        _, rollback = reload_modules_in_place()
-        cleanup.callback(rollback)
-        from pycodex.events import EventScope
-
-        _, rollback = reload_modules_in_place()
-        cleanup.callback(rollback)
-        assert EventScope._current_observer.get() is pycodex.events.BASE_EVENT_HANDLER
-        seen = []
-        with pycodex.events.EventScope.observe(seen.append):
-            EventScope.emit(pycodex.events.RuntimeUpdatedEvent("tool"))
-            _, rollback = reload_modules_in_place()
-            cleanup.callback(rollback)
-            EventScope.emit(pycodex.events.RuntimeUpdatedEvent("after-reload"))
-
-    assert [event.reason for event in seen] == ["tool", "after-reload"]
+    return build, builds, "/w/first" if multi else ""
 
 
-def test_reload_requires_admin_and_validates_payload(reload_setup):
-    create, prefix = reload_setup
-    with TestClient(create()) as browser:
+def test_reload_requires_admin_and_validates_payload(reload_setup, no_module_swap):
+    build, _builds, prefix = reload_setup
+    with TestClient(ReloadableApp(build)) as browser:
         assert browser.post(prefix + "/api/reload", json={}).status_code == 401
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
         assert browser.put(prefix + "/api/share", json={"password": "visitor-password"}).status_code == 200
-        assert browser.post(prefix + "/api/reload", json={"session_id": 123}).status_code == 422
+        assert browser.post(prefix + "/api/reload", json={"upgrade": 1}).status_code == 422
 
         browser.cookies.clear()
         assert browser.post(
             "/login", params={"next": prefix + "/"}, json={"password": "visitor-password"}
         ).status_code == 200
-        visitor_cookie = browser.cookies["pycodex_ws_auth"]
         visitor = browser.post(prefix + "/api/reload", json={})
         assert visitor.status_code == 403
         assert visitor.json()["error"] == "administrator access required"
 
-        # Admin reloads; share state and existing visitor cookie remain valid.
+
+def test_reload_is_unavailable_without_the_server_shell(reload_setup):
+    build, _builds, prefix = reload_setup
+    with TestClient(build()) as browser:
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        assert browser.post(prefix + "/api/reload", json={}).status_code == 200
-        assert browser.get(prefix + "/api/share").json()["enabled"] is True
-        browser.cookies.clear()
-        assert browser.get(
-            prefix + "/api/session", headers={"cookie": "pycodex_ws_auth=" + visitor_cookie}
-        ).status_code == 200
+        assert browser.post(prefix + "/api/reload", json={}).status_code == 503
 
 
-def test_reload_applies_updated_module_in_place_and_keeps_sessions(
-    reload_setup, tmp_path, monkeypatch
-):
-    module_file = tmp_path / "_reload_probe_mod.py"
-    module_file.write_text(
-        "class Greeter:\n"
-        "    def reply(self, text):\n"
-        "        return 'v1:' + text\n",
-        encoding="utf-8",
-    )
-    search_paths = list(pycodex.__path__) + [str(tmp_path)]
-    monkeypatch.setattr(pycodex, "__path__", search_paths)
-    monkeypatch.setattr(
-        pycodex.__spec__, "submodule_search_locations", search_paths
-    )
-    spec = __import__("importlib.util").util.spec_from_file_location(
-        "pycodex._reload_probe_mod", module_file
-    )
-    probe_mod = __import__("importlib.util").util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "pycodex._reload_probe_mod", probe_mod)
-    spec.loader.exec_module(probe_mod)
-    greeter = probe_mod.Greeter()
-    bound_reply = greeter.reply
-
-    model = ScriptedModelClient(
-        response_factory=lambda prompt, count: ModelResponse(
-            [AssistantMessage(bound_reply(prompt.input[-1].text))]
-        )
-    )
-    create, prefix = reload_setup
-    with TestClient(create(lambda: make_session(model=model, cwd=tmp_path))) as browser:
+def test_reload_restarts_app_and_restores_sessions_from_disk(reload_setup, no_module_swap):
+    build, builds, prefix = reload_setup
+    shell = ReloadableApp(build)
+    with TestClient(shell) as browser:
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
+        assert browser.put(prefix + "/api/share", json={"password": "visitor-password"}).status_code == 200
         first_id = browser.get(prefix + "/api/session").json()["session_id"]
-        second_id = browser.post(prefix + "/api/sessions", json={"title": "Second"}).json()["session_id"]
-        assert browser.post(
-            prefix + "/api/session/message",
-            json={"session_id": first_id, "prompt": "/effort high"},
-        ).status_code == 200
+        browser.post(prefix + "/api/sessions", json={"title": "Second"})
         assert browser.post(
             prefix + "/api/session/message",
             json={"session_id": first_id, "prompt": "hello"},
         ).status_code == 200
-        first_snap = wait_snapshot(
-            browser,
-            lambda snap: snap["turns"] and snap["turns"][-1]["response"] == "v1:hello",
+        wait_snapshot(
+            browser, lambda snap: len(snap["turns"]) == 1,
             path=prefix + "/api/session?session_id=" + first_id,
         )
-        assert any(s["id"] == first_id and s["unread"] for s in browser.get(prefix + "/api/sessions").json()["sessions"])
+        old_app = shell.app
 
-        module_file.write_text(
-            "class Greeter:\n"
-            "    def reply(self, text):\n"
-            "        return 'v2:' + text\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr(
-            "workspace_server.app.preflight_check",
-            lambda: asyncio.sleep(0),
-        )
-        reloaded = browser.post(prefix + "/api/reload", json={"session_id": first_id})
-        assert reloaded.status_code == 200
-        payload = reloaded.json()
-        assert payload["ok"] is True
-        assert payload["status"] == "reloaded"
-        assert payload["session_id"] == first_id
-        assert [s["id"] for s in payload["sessions"]] == [first_id, second_id]
-        assert payload["sessions"][0]["unread"] is True
-        assert payload["snapshot"]["turns"][0]["submission_id"] == first_snap["turns"][0]["submission_id"]
-        assert payload["snapshot"]["model"].endswith(":high")
-        assert isinstance(greeter, probe_mod.Greeter)
+        reloaded = browser.post(prefix + "/api/reload", json={})
+        assert reloaded.json() == {"ok": True, "status": "reloaded"}
+        assert shell.app is not old_app
+        assert len(builds) == 2
+        assert builds[0]._sessions == {}
 
-        assert browser.post(
-            prefix + "/api/session/message",
-            json={"session_id": first_id, "prompt": "world"},
-        ).status_code == 200
-        updated_snap = wait_snapshot(
-            browser,
-            lambda snap: len(snap["turns"]) == 3 and snap["turns"][-1]["response"] == "v2:world",
-            path=prefix + "/api/session?session_id=" + first_id,
-        )
-        assert [t["response"] for t in updated_snap["turns"][1:]] == ["v1:hello", "v2:world"]
-
-
-def test_reload_preflight_failure_leaves_running_server_intact(
-    reload_setup, tmp_path, monkeypatch
-):
-    bad_module = tmp_path / "broken_syntax_mod.py"
-    bad_module.write_text("def broken(:\n", encoding="utf-8")
-    dummy = types.ModuleType("pycodex.broken_syntax_mod")
-    dummy.__file__ = str(bad_module)
-    monkeypatch.setitem(sys.modules, "pycodex.broken_syntax_mod", dummy)
-
-    create, prefix = reload_setup
-    with TestClient(create()) as browser:
+        # Login state is process memory and is cleared like a restart.
+        assert browser.get(prefix + "/api/sessions").status_code == 401
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        session_id = browser.get(prefix + "/api/session").json()["session_id"]
-        response = browser.post(prefix + "/api/reload", json={"session_id": session_id})
-        assert response.status_code == 400
-        payload = response.json()
-        assert payload["ok"] is False
-        assert payload["status"] == "preflight_failed"
-        assert "SyntaxError" in payload["error"]
-
-        # Server and session continue working normally after preflight failure.
-        assert browser.post(
-            prefix + "/api/session/message",
-            json={"session_id": session_id, "prompt": "still alive"},
-        ).status_code == 200
-        wait_snapshot(
-            browser,
-            lambda snap: snap["turns"] and snap["turns"][-1]["response"] == "done",
-            path=prefix + "/api/session?session_id=" + session_id,
-        )
+        assert browser.get(prefix + "/api/share").json()["enabled"] is False
+        sessions = browser.get(prefix + "/api/sessions").json()["sessions"]
+        assert [session["title"] for session in sessions][1] == "Second"
+        restored = browser.get(
+            prefix + "/api/session?session_id=" + sessions[0]["id"]
+        ).json()["snapshot"]
+        assert restored["turns"][-1]["response"] == "done"
 
 
-def test_reload_waits_for_active_turn_to_finish(reload_setup, tmp_path, monkeypatch):
-    release = Future()
-
-    def finish():
-        if not release.done():
-            release.set_result(None)
-
-    async def slow_response(prompt, count):
-        if count == 1:
-            await asyncio.wrap_future(release)
-        return ModelResponse([AssistantMessage("answer-" + str(count))])
-
-    model = ScriptedModelClient(response_factory=slow_response)
-    create, prefix = reload_setup
+def test_reload_restarts_previous_code_when_new_build_fails(reload_setup, no_module_swap, monkeypatch):
+    build, builds, prefix = reload_setup
+    restored = []
     monkeypatch.setattr(
-        "workspace_server.app.preflight_check",
-        lambda: asyncio.sleep(0),
+        "workspace_server.owned_process.restore_modules", restored.append,
     )
-    with ExitStack() as cleanup:
-        browser = cleanup.enter_context(TestClient(create(lambda: make_session(model=model, cwd=tmp_path))))
-        cleanup.callback(finish)
+    failures = []
+
+    def flaky_build():
+        if len(builds) == 1 and not failures:
+            failures.append(True)
+            raise RuntimeError("new code is broken")
+        return build()
+
+    with TestClient(ReloadableApp(flaky_build)) as browser:
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        session_id = browser.get(prefix + "/api/session").json()["session_id"]
-        assert browser.post(
-            prefix + "/api/session/message",
-            json={"session_id": session_id, "prompt": "busy-1"},
-        ).status_code == 200
-        wait_snapshot(
-            browser,
-            lambda snap: snap["running"] is True,
-            path=prefix + "/api/session?session_id=" + session_id,
-        )
-        check = browser.post(
-            prefix + "/api/reload", json={"session_id": session_id, "check_only": True}
-        )
-        assert check.status_code == 200
-        assert check.json()["status"] == "waiting"
-        assert check.json()["active_turns"] == 1
-        assert len(check.json()["running_sessions"]) == 1
-
-        timer = threading.Timer(0.1, release.set_result, args=(None,))
-        timer.start()
-        cleanup.callback(timer.join)
-        cleanup.callback(timer.cancel)
-        reloaded = browser.post(prefix + "/api/reload", json={"session_id": session_id})
-        assert reloaded.status_code == 200
-        assert reloaded.json()["ok"] is True
-        assert reloaded.json()["snapshot"]["turns"][-1]["response"] == "answer-1"
-
-
-def test_reload_ignores_idle_sleeping_and_rebuilds_messages_by_identity(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(
-        "workspace_server.app.preflight_check",
-        lambda: asyncio.sleep(0),
-    )
-    manager = WorkspaceSessionManager(lambda: make_session(cwd=tmp_path), tmp_path / "state")
-    app = create_app(manager, tmp_path / "state", "admin-password", tmp_path, False)
-    with TestClient(app) as browser:
+        failed = browser.post(prefix + "/api/reload", json={})
+        assert failed.status_code == 400
+        assert failed.json()["error"] == "RuntimeError: new code is broken"
+        assert restored == [{}]
+        assert len(builds) == 2
         assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        session_id = browser.get("/api/session").json()["session_id"]
-        assert browser.post(
-            "/api/session/message",
-            json={"session_id": session_id, "prompt": "saved turn"},
-        ).status_code == 200
-        wait_snapshot(browser, lambda snap: len(snap["turns"]) == 1)
-        session = manager.get(session_id)
-        with session.view._lock:
-            session.view._spinner_status = IDLE_SLEEPING_STATUS
-            message = session.view._turns[0]["messages"][0]
-            session.view._turns[0]["response"] = "stale cached response"
-            session.view._turns[0]["messages"] = ()
-        assert session.summary()["running"] is True
-        assert session.summary()["spinner"] == IDLE_SLEEPING_STATUS
-        check = browser.post("/api/reload", json={"session_id": session_id, "check_only": True})
-        assert check.json()["status"] == "ready"
-        reloaded = browser.post("/api/reload", json={"session_id": session_id})
-        assert reloaded.status_code == 200
-        restored_turn = reloaded.json()["snapshot"]["turns"][0]
-        assert restored_turn["response"] == "done"
-        assert restored_turn["kind"] == "assistant"
-        assert restored_turn["messages"][0]["message_id"] == message.message_id
-        assert restored_turn["messages"][0]["created_at"] == message.created_at
+        assert len(browser.get(prefix + "/api/sessions").json()["sessions"]) == 1
 
 
-def test_reload_rolls_back_when_post_reload_session_sync_fails(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(
-        "workspace_server.app.preflight_check",
-        lambda: asyncio.sleep(0),
-    )
-    module_file = tmp_path / "_rollback_probe_mod.py"
-    module_file.write_text(
-        "def tag(text):\n    return 'good:' + text\n",
+def test_reload_preflight_failure_leaves_running_app_intact(reload_setup, monkeypatch):
+    async def broken():
+        raise RuntimeError("SyntaxError: invalid syntax")
+
+    monkeypatch.setattr("workspace_server.owned_process.preflight_check", broken)
+    build, builds, prefix = reload_setup
+    shell = ReloadableApp(build)
+    with TestClient(shell) as browser:
+        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
+        app = shell.app
+        failed = browser.post(prefix + "/api/reload", json={})
+        assert failed.status_code == 400
+        assert "SyntaxError" in failed.json()["error"]
+        assert shell.app is app and len(builds) == 1
+        assert browser.get(prefix + "/api/sessions").status_code == 200
+
+
+async def test_drain_finishes_running_turns_and_closes_idle_sessions(tmp_path):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        entered.set()
+        await release.wait()
+        return ModelResponse([AssistantMessage("finished")])
+
+    sessions = []
+
+    def session_factory():
+        model = ScriptedModelClient(response_factory=respond) if sessions else None
+        sessions.append(make_session(model=model, cwd=tmp_path))
+        return sessions[-1]
+
+    manager = WorkspaceSessionManager(session_factory, tmp_path / "state")
+    await manager.start()
+    busy_id = await manager.create_session(title="busy")
+    idle, busy = manager.get(), manager.get(busy_id)
+    assert (await busy.submit("work"))["ok"]
+    await asyncio.wait_for(entered.wait(), 1)
+    draining = asyncio.create_task(manager.close(True))
+    await asyncio.sleep(0.05)
+    assert idle.runtime.agent.is_shutdown
+    assert not busy.runtime.agent.is_shutdown
+    assert (await busy.submit("late"))["error"] == "agent is shutting down"
+    with pytest.raises(ValueError, match="shutting down"):
+        await manager.create_session()
+    release.set()
+    await asyncio.wait_for(draining, 2)
+    assert busy.runtime.agent.is_shutdown
+    assert busy.runtime.agent.history[-1] == AssistantMessage("finished")
+
+
+def test_reload_upgrade_runs_pip_for_the_requested_version(reload_setup, no_module_swap, monkeypatch):
+    calls = []
+
+    async def upgrade(requirement):
+        calls.append(requirement)
+
+    monkeypatch.setattr("workspace_server.owned_process.upgrade_packages", upgrade)
+    build, _builds, prefix = reload_setup
+    with TestClient(ReloadableApp(build)) as browser:
+        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
+        assert browser.post(prefix + "/api/reload", json={"upgrade": True}).status_code == 200
+        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
+        assert browser.post(prefix + "/api/reload", json={"upgrade": "1.2.3"}).status_code == 200
+    assert calls == ["pycodex-ws", "pycodex-ws==1.2.3"]
+
+
+@pytest.mark.parametrize("pip_fails", [False, True])
+async def test_upgrade_moves_the_locked_windows_launcher_aside(tmp_path, monkeypatch, pip_fails):
+    from workspace_server import reloader
+
+    launcher = tmp_path / "pycodex-ws.exe"
+    launcher.write_bytes(b"running")
+
+    async def pip(arguments):
+        assert not launcher.exists()
+        if pip_fails:
+            raise RuntimeError("pip failed")
+        launcher.write_bytes(b"new")
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "pycodex-ws")])
+    monkeypatch.setattr(reloader, "_run_python", pip)
+    if pip_fails:
+        with pytest.raises(RuntimeError, match="pip failed"):
+            await reloader.upgrade_packages("pycodex-ws")
+        assert launcher.read_bytes() == b"running"
+        assert not (tmp_path / "pycodex-ws.exe.old").exists()
+    else:
+        await reloader.upgrade_packages("pycodex-ws")
+        assert launcher.read_bytes() == b"new"
+        assert (tmp_path / "pycodex-ws.exe.old").read_bytes() == b"running"
+
+
+def test_reload_imports_backend_modules_again(tmp_path):
+    code = """
+import importlib
+import sys
+from starlette.testclient import TestClient
+from workspace_server.owned_process import ReloadableApp
+
+def build():
+    app_module = importlib.import_module("workspace_server.app")
+    args = app_module.build_parser().parse_args(sys.argv[1:])
+    app = app_module.build_app(args)
+    app.state.module = app_module
+    return app
+
+shell = ReloadableApp(build)
+with TestClient(shell) as client:
+    old_module = shell.app.state.module
+    old_core = sys.modules["pycodex.runtime"]
+    response = client.post("/w/main/api/reload", json={})
+    assert response.json() == {"ok": True, "status": "reloaded"}, response.text
+    assert shell.app.state.module is not old_module
+    assert sys.modules["pycodex.runtime"] is not old_core
+    assert client.get("/api/workspaces").json()["workspaces"][0]["id"] == "main"
+"""
+    config_path = tmp_path / "workspaces.json"
+    config_path.write_text(
+        '{"workspaces": [{"id": "main", "work_dir": ".", "state_path": "main", "enable_board": false}]}',
         encoding="utf-8",
     )
-    search_paths = list(pycodex.__path__) + [str(tmp_path)]
-    monkeypatch.setattr(pycodex, "__path__", search_paths)
-    monkeypatch.setattr(
-        pycodex.__spec__, "submodule_search_locations", search_paths
+    model_config = tmp_path / "config.toml"
+    model_config.write_text('model = "gpt-5.4"\n', encoding="utf-8")
+    environment = os.environ.copy()
+    environment["HOME"] = str(tmp_path)
+    environment["CODEX_HOME"] = str(tmp_path / "codex")
+    result = subprocess.run(
+        [sys.executable, "-c", code, "--workspace-config", str(config_path),
+         "--config", str(model_config)],
+        cwd=str(Path(__file__).resolve().parents[3]),
+        env=environment,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=60,
     )
-    spec = __import__("importlib.util").util.spec_from_file_location(
-        "pycodex._rollback_probe_mod", module_file
-    )
-    probe_mod = __import__("importlib.util").util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, "pycodex._rollback_probe_mod", probe_mod)
-    spec.loader.exec_module(probe_mod)
-    tag_fn = probe_mod.tag
-    assert tag_fn("x") == "good:x"
-
-    manager = WorkspaceSessionManager(lambda: make_session(cwd=tmp_path), tmp_path / "state")
-    app = create_app(manager, tmp_path / "state", "admin-password", tmp_path, False)
-    with TestClient(app) as browser:
-        assert browser.post("/login", json={"password": "admin-password"}).status_code == 200
-        session_id = browser.get("/api/session").json()["session_id"]
-        assert browser.post(
-            "/api/session/message",
-            json={"session_id": session_id, "prompt": "before broken reload"},
-        ).status_code == 200
-        wait_snapshot(browser, lambda snap: len(snap["turns"]) == 1)
-
-        module_file.write_text(
-            "def tag(text):\n    return 'broken:' + text\n",
-            encoding="utf-8",
-        )
-        session = manager.get(session_id)
-        monkeypatch.setattr(
-            session.view,
-            "snapshot",
-            lambda: (_ for _ in ()).throw(KeyError("missing_new_turn_field")),
-        )
-        failed = browser.post("/api/reload", json={"session_id": session_id})
-        assert failed.status_code == 400
-        payload = failed.json()
-        assert payload["ok"] is False
-        assert payload["status"] == "reload_failed"
-        assert "KeyError" in payload["error"]
-        # Reloaded function was rolled back in-place to its previous working code.
-        assert tag_fn("x") == "good:x"
+    assert result.returncode == 0, result.stdout.decode("utf-8", errors="replace")

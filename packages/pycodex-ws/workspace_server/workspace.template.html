@@ -251,7 +251,7 @@
         </span>
         <span class="settings-option-copy">
           <span id="reloadPycodexLabel" class="settings-option-title">Reload PyCodex</span>
-          <span id="reloadPycodexHint" class="settings-option-description">Apply updated backend code while keeping sessions.</span>
+          <span id="reloadPycodexHint" class="settings-option-description">Restart on updated code after running turns finish.</span>
         </span>
         <svg class="settings-option-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
       </button>
@@ -284,6 +284,22 @@
     </div>
     <p class="settings-note">Sharing ends when this server restarts.</p>
     <p id="shareError" role="alert"></p>
+  </dialog>
+  <dialog id="rebootDialog" class="workspace-settings" aria-labelledby="rebootTitle">
+    <header>
+      <h2 id="rebootTitle">Reboot PyCodex</h2>
+      <button type="button" class="settings-close" data-close-dialog aria-label="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>
+      </button>
+    </header>
+    <p>Idle sessions close immediately. Running turns finish naturally first, and no new turns start meanwhile. Background exec processes are terminated; clock periods resume after the reboot.</p>
+    <p id="rebootRunning" class="sharing-status" role="status"></p>
+    <p class="settings-note">Logins and share passwords are cleared; refresh the page and log in again afterwards.</p>
+    <div class="settings-actions">
+      <button id="rebootOnly" class="settings-primary" type="button">Reboot</button>
+      <button id="rebootUpdate" type="button">Update &amp; reboot</button>
+    </div>
+    <p id="rebootError" role="alert"></p>
   </dialog>
   <dialog id="externalCallDialog" class="workspace-settings" aria-labelledby="externalCallTitle">
     <header>

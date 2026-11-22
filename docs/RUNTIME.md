@@ -458,7 +458,14 @@ awaiting any of them. Each Runtime switches off `accepts_input`, calls
 `stop_asap()`, clears its enqueue/mailbox queues and pending trigger, resolves
 discarded submission futures with `SubmissionInterrupted`, and wakes its worker.
 The current submission reaches its cooperative stop boundary before cleanup;
-there is no special shutdown submission. The worker's result carries
+there is no special shutdown submission.
+`close(True)` is the graceful variant used by workspace reload: it applies the
+same admission shutdown and queue discard but skips `stop_asap()`, so the
+active turn ends naturally (model follow-ups and issued tools continue) and no
+continuation starts afterwards. A `clock.sleep` or `wait_agent` waiting during
+graceful close wakes and requests a cooperative stop, because no input can
+arrive. Idle runtimes therefore close immediately.
+The worker's result carries
 cleanup errors for concurrent and repeated close callers. Closing also works
 before `start()`. A cancelled close caller does not cancel the worker.
 Cleanup visits every child and connection handler even if one fails; the first
@@ -702,8 +709,34 @@ credential isolation belongs in the [workspace tests](../tests/TESTS.md#按包�
 `GET api/skills` returns skill names/descriptions through `list_skills`.
 The optional [Web adapter](../packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md)
 owns completion UI; the host exposes a generic undoable `replaceDraftText` edit.
-Reload import preflight runs off-loop with `subprocess.run`, supporting Python
-3.7 ASGI worker threads without a child watcher and preserving stderr errors.
+
+`POST api/reload` (administrators only) restarts the workspace app inside the
+running server process, equivalent to restarting `pycodex-ws`. A fixed ASGI shell
+(`owned_process.ReloadableApp`) owns uvicorn, the listening socket, stdin
+ownership, the agent token and the `--listen-to` `RouterClient`. The router
+client is only a tunnel to the shell's current app; inventory comes from
+`app.state.router_inventory` and request handling (agent API bridge, help
+text, External Call) stays in the reloadable app, so the node keeps its ID and
+connection across reloads, and the reload request itself returns through it.
+Reload optionally runs
+`sys.executable -m pip install --upgrade pycodex-ws[==VERSION]` (`{"upgrade":
+true}` or `{"upgrade": "VERSION"}`); on Windows the running console-script
+launcher (`pycodex-ws.exe`, locked against replacement) is first renamed to
+`.exe.old` and restored if pip fails. It then preflights imports in a child
+process and drains the old app via `app.state.drain` (graceful `close(True)` of
+every session concurrently: idle sessions close at once, running turns finish,
+new turns and sessions are rejected), shuts it down (background exec process
+trees are killed; clock periods are saved and resume on restore), removes
+pycodex modules from `sys.modules`, rebuilds the app with
+the original CLI arguments and starts it. Sessions, views and Canvas recover from
+disk as on a normal start; memory-only state such as login cookies, share
+passwords, unread marks and External Call codes is cleared. Pages are not
+refreshed automatically. If the new app fails to build or start, the previous
+modules are restored and the previous code is started again. Preflight and pip
+run off-loop with `subprocess.run`, supporting Python 3.7 ASGI worker threads.
+If pip succeeded but preflight fails, the error says the upgrade is installed
+but not loaded. The Settings page asks for confirmation with **Reboot** or
+**Update & reboot** and lists running sessions.
 
 `GET api/sessions` returns the session list (including each tab's `profile`),
 the available profile names in `profiles`, and `default_profile`, with
@@ -1705,9 +1738,9 @@ binding alone does not retire cells. Runtime construction and resume explicitly
 restart the environment; CodeModeManager retains its generation isolation and
 waits for retired cells during cleanup. `environment.close()` drains registered
 async cleanup; `Agent.shutdown()` accounts and saves state, then stops resources.
-Standalone callers can await environment close as well. Unified exec shutdown
-only disconnects notifications: subprocess survival and output readers retain
-their existing behavior. Goal continuation is requested through the environment.
+Standalone callers can await environment close as well. Unified exec close
+kills each remaining exec process tree (`killpg` on POSIX, `taskkill /T` on
+Windows) and waits for its readers. Goal continuation is requested through the environment.
 The environment pauses the clock when a turn or manual compaction begins and
 rearms it after a successful reply or summary. Goal accounting and the
 environment snapshot finish before the terminal notification.
@@ -1848,9 +1881,8 @@ checkpoint. UTF-8 record offsets are counted incrementally during forward reads.
 
 Runtime derives display history from Agent history on demand; it does not keep
 a `completed_history` copy. WebSessionView retains its existing presentation
-cache and loads snapshots directly. Reload refreshes that cache by stable IDs,
-preserving control output and submission aliases. Changes to Message layouts
-require a full process restart; Reload does not migrate old Agent/Runtime objects.
+cache and loads snapshots directly. Reload restarts sessions from rollouts and
+does not migrate Agent, Runtime or view objects.
 The Web snapshot exposes the committed reply's `response_phase`; the page uses
 it with execution status to keep non-final replies animated during execution.
 Committing commentary to history does not make it a final reply.

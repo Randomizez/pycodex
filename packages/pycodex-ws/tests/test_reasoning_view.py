@@ -42,7 +42,6 @@ from workspace_server import (
     create_app,
 )
 from workspace_server import app as app_module
-from workspace_server.reloader import _reproject_view
 from test_workspace_server import make_session
 
 
@@ -196,11 +195,6 @@ async def test_late_attach_mid_turn_and_invisible_post_turn_reasoning_fallback(t
             if preview_reasoning else "Turn 1 complete."
         )
         assert post_turn_view.summary()["last_assistant"] == expected_preview
-        # Reload reprojects the attached view from history without a new attach event.
-        restore = _reproject_view(root, session.view)
-        assert session.view.summary()["last_assistant"] == expected_preview
-        restore()
-        assert session.view.summary()["last_assistant"] == "Turn 1 complete."
     finally:
         release_tool.set()
         finish_reply.set()

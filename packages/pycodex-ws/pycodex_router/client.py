@@ -1,8 +1,6 @@
 import asyncio
 import logging
 import secrets
-import socket
-from contextlib import asynccontextmanager
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatusCode
 from websockets.legacy.client import connect
@@ -230,34 +228,3 @@ class RouterClient:
             self._logger.warning("Router request disconnected (%s)", type(exc).__name__)
         except Exception as exc:
             self._logger.error("Router request failed (%s)", type(exc).__name__)
-
-
-def attach_router(app, registry, target, port):
-    def inventory():
-        return [
-            {
-                "id": workspace["id"],
-                "work_dir": workspace["work_dir"],
-                "state_path": workspace["state_path"],
-                "enable_board": workspace["enable_board"],
-                "session_count": len(workspace["sessions"]),
-                "running": any(session["running"] for session in workspace["sessions"]),
-                "unread": any(session["unread"] for session in workspace["sessions"]),
-            }
-            for workspace in registry.list_workspaces()
-        ]
-
-    client = RouterClient(app, target, socket.gethostname(), port, inventory)
-    original_lifespan = app.router.lifespan_context
-
-    @asynccontextmanager
-    async def lifespan(application):
-        async with original_lifespan(application) as state:
-            await client.start()
-            try:
-                yield state
-            finally:
-                await client.close()
-
-    app.router.lifespan_context = lifespan
-    app.state.router_client = client

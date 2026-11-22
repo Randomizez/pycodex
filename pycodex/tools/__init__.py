@@ -108,7 +108,9 @@ def get_tools(
                 restart=code_mode_manager.restart, close=code_mode_manager.close,
             )
         elif tool is exec_command_tool:
-            runtime_environment.register_resource(tool.name, unified_exec_manager)
+            runtime_environment.register_resource(
+                tool.name, unified_exec_manager, close=unified_exec_manager.close,
+            )
         elif tool is set_period_tool:
             runtime_environment.register_resource("clock", clock_manager)
     return registry

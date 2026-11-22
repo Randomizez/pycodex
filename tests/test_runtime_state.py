@@ -197,6 +197,48 @@ async def test_close_before_start_discards_work_and_resume_accepts_new_work():
 
 
 @pytest.mark.asyncio
+async def test_graceful_close_finishes_active_turn_and_discards_pending_work():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def respond(prompt, count):
+        if count == 1:
+            started.set()
+            await release.wait()
+            return ModelResponse([ToolCall("work", "work", {})])
+        return ModelResponse([AssistantMessage("finished")])
+
+    class WorkTool(BaseTool):
+        name = "work"
+        description = "Finish an issued operation."
+        exec_only = False
+
+        async def run(self, context, args):
+            return "done"
+
+    model = ScriptedModelClient(response_factory=respond)
+    tools = ToolRegistry()
+    tools.register(WorkTool())
+    runtime = make_runtime(make_agent(model, tools, ContextConfig()))
+    await runtime.start()
+    _first_id, first = runtime.enqueue(UserMessage("first"))
+    _second_id, second = runtime.enqueue(UserMessage("second"))
+    await asyncio.wait_for(started.wait(), 1)
+    closing = asyncio.create_task(runtime.close(True))
+    await asyncio.sleep(0)
+    assert not runtime.accepts_input
+    with pytest.raises(SubmissionInterrupted):
+        await second
+    with pytest.raises(RuntimeError, match="shutting down"):
+        await runtime.submit_input("too late")
+    release.set()
+    assert (await asyncio.wait_for(first, 1)).output_text == "finished"
+    await asyncio.wait_for(closing, 1)
+    assert model.call_count == 2
+    assert runtime.agent.is_shutdown
+
+
+@pytest.mark.asyncio
 async def test_queue_busy_includes_direct_agent_work_until_it_finishes():
     started = asyncio.Event()
     release = asyncio.Event()

@@ -82,6 +82,7 @@ class WorkspaceSessionManager:
         self._tab_states: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._read_final_ids: "typing.Dict[str, str]" = {}
         self._lock = None
+        self._closing = False
         self._state_store = WorkspaceStateStore(
             workspace_file_path(state_path, ".pycodex-ws.json")
         )
@@ -127,12 +128,19 @@ class WorkspaceSessionManager:
             self._subscribe_session_state(session_id)
         self.persist_workspace_state()
 
-    async def close(self) -> None:
+    async def close(self, finish_turn: bool = False) -> None:
+        """Close every session together; ``finish_turn`` lets active turns end naturally."""
+        self._closing = True
         sessions = list(self._sessions.values())
         watchers = list(self._state_watchers.values())
         try:
-            for session in sessions:
-                await session.close()
+            outcomes = await asyncio.gather(
+                *(session.close(finish_turn) for session in sessions),
+                return_exceptions=True,
+            )
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
             if watchers:
                 await asyncio.gather(*watchers)
         finally:
@@ -181,6 +189,8 @@ class WorkspaceSessionManager:
             not isinstance(profile, str) or profile not in self.profile_factories
         ):
             raise ValueError("unknown Codex profile: {0}".format(profile))
+        if self._closing:
+            raise ValueError("workspace is shutting down")
         factory = (
             self._session_factory if profile is None else self.profile_factories[profile]
         )
@@ -379,10 +389,15 @@ class WorkspaceRegistry:
         for key in self._order:
             await self._entries[key].manager.start()
 
-    async def close(self) -> None:
-        for key in reversed(self._order):
-            await self._entries[key].manager.close()
+    async def close(self, finish_turn: bool = False) -> None:
+        outcomes = await asyncio.gather(
+            *(self._entries[key].manager.close(finish_turn) for key in reversed(self._order)),
+            return_exceptions=True,
+        )
         self._started = False
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                raise outcome
 
     def get(self, workspace_id: str) -> "WorkspaceEntry":
         workspace_id = normalize_workspace_id(workspace_id)

@@ -67,7 +67,9 @@ async def test_sleep_timeout_returns_elapsed_time_without_pending_waiters(tmp_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("wake", ["pending", "message", "agent_message", "steer", "stop", "close"])
+@pytest.mark.parametrize(
+    "wake", ["pending", "message", "agent_message", "steer", "stop", "close", "graceful_close"],
+)
 async def test_sleep_wakes_and_records_result_before_processing_input(tmp_path, wake):
     entered = asyncio.Event()
     model = ScriptedModelClient([
@@ -104,8 +106,10 @@ async def test_sleep_wakes_and_records_result_before_processing_input(tmp_path, 
             runtime.stop_asap()
         elif wake == "close":
             await asyncio.wait_for(runtime.close(), 1)
+        elif wake == "graceful_close":
+            await asyncio.wait_for(runtime.close(True), 1)
 
-        if wake in ("steer", "stop", "close"):
+        if wake in ("steer", "stop", "close", "graceful_close"):
             with pytest.raises(SubmissionInterrupted):
                 await asyncio.wait_for(future, 1)
         else:
@@ -120,7 +124,7 @@ async def test_sleep_wakes_and_records_result_before_processing_input(tmp_path, 
         result = history[result_index]
         assert not result.is_error
         assert result.output.endswith("\nSleep interrupted by new input.")
-        if wake in ("stop", "close"):
+        if wake in ("stop", "close", "graceful_close"):
             assert model.call_count == 1
         else:
             message_index = next(

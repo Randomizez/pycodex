@@ -13,7 +13,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 import pytest
 import uvicorn
-from pycodex_router.client import RouterClient, attach_router
+from pycodex_router.client import RouterClient
 from pycodex_router.protocol import (
     decode, device_id, encode, normalize_api_url, parse_target, tunnel_url,
 )
@@ -214,10 +214,10 @@ def workspace_app(directory, password=None, response_factory=None):
 
 
 @asynccontextmanager
-async def owned_workspace(app):
+async def owned_workspace(app, listen_to=None):
     read_fd, write_fd = os.pipe()
     task = asyncio.get_running_loop().run_in_executor(
-        None, run_owned_server, app, "127.0.0.1", 0, read_fd,
+        None, run_owned_server, lambda: app, "127.0.0.1", 0, read_fd, listen_to,
     )
     try:
         await eventually(lambda: getattr(app.state, "agent_header_path", None) is not None)
@@ -245,6 +245,72 @@ async def owned_workspace(app):
             await asyncio.wait_for(asyncio.shield(task), 10)
         finally:
             os.close(read_fd)
+
+
+def attach_router(app, target, port):
+    """Connect an app without the reload shell, as the shell would."""
+    client = RouterClient(
+        app, target, socket.gethostname(), port, app.state.router_inventory,
+    )
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(application):
+        async with original_lifespan(application) as state:
+            await client.start()
+            try:
+                yield state
+            finally:
+                await client.close()
+
+    app.router.lifespan_context = lifespan
+    app.state.router_client = client
+
+
+async def test_reload_through_router_keeps_the_node_and_serves_new_app(tmp_path, monkeypatch):
+    async def passed():
+        return None
+
+    monkeypatch.setattr("workspace_server.owned_process.preflight_check", passed)
+    monkeypatch.setattr("workspace_server.owned_process.purge_reloadable_modules", dict)
+    gate = create_app("router-password")
+    first, _registry = workspace_app(tmp_path / "workspace", "local-password")
+    second, _second_registry = workspace_app(tmp_path / "reloaded", "local-password")
+    builds = iter([first, second])
+    read_fd, write_fd = os.pipe()
+    async with serve_router(gate) as (address, target):
+        task = asyncio.get_running_loop().run_in_executor(
+            None, run_owned_server, lambda: next(builds), "127.0.0.1", 0, read_fd, target,
+        )
+        try:
+            await eventually(
+                lambda: getattr(first.state, "router_client", None) is not None
+                and first.state.router_client.connected
+            )
+            node_id = first.state.router_client.node_id
+            base = node_url(address, node_id)
+            async with ip_browser(address) as browser:
+                await login(browser)
+                assert (await browser.post(
+                    base + "login", json={"password": "local-password"},
+                )).status_code == 200
+                reloaded = await browser.post(base + "w/shared/api/reload", json={})
+                assert reloaded.json() == {"ok": True, "status": "reloaded"}
+                assert second.state.router_client is first.state.router_client
+                assert second.state.router_client.connected
+                assert (await browser.get(base + "w/shared/api/session")).status_code == 401
+                assert (await browser.post(
+                    base + "login", json={"password": "local-password"},
+                )).status_code == 200
+                session = await browser.get(base + "w/shared/api/session")
+                assert session.status_code == 200
+                assert gate.state.router.nodes[node_id].workspaces[0]["id"] == "shared"
+        finally:
+            os.close(write_fd)
+            try:
+                await asyncio.wait_for(asyncio.shield(task), 10)
+            finally:
+                os.close(read_fd)
 
 
 async def test_private_agent_socket_exempts_local_apis_but_not_tcp(tmp_path, monkeypatch):
@@ -365,10 +431,9 @@ async def test_registered_agents_contact_password_protected_peers_and_revoke_on_
     target_app, target_registry = workspace_app(tmp_path / "target", "target-password")
     async with serve_router(gate, root) as (address, target):
         gate.state.router.api_url = address + root
-        attach_router(source, source_registry, target, 6007)
-        attach_router(target_app, target_registry, target, 6007)
+        attach_router(target_app, target, 6007)
         async with serve(target_app):
-            async with owned_workspace(source) as (local_address, socket_path, local):
+            async with owned_workspace(source, target) as (local_address, socket_path, local):
                 agent = source.state.router_client
                 peer = target_app.state.router_client
                 await eventually(lambda: agent.connected and peer.connected)
@@ -446,8 +511,8 @@ async def test_real_workspace_pages_files_messages_and_namespaces(tmp_path):
     other.write_text("print('changed')\n", encoding="utf-8")
 
     async with serve_router(gate) as (address, target):
-        attach_router(first, first_registry, target, 6007)
-        attach_router(second, second_registry, target, 6008)
+        attach_router(first, target, 6007)
+        attach_router(second, target, 6008)
         first_client = first.state.router_client
         second_client = second.state.router_client
         async with first.router.lifespan_context(first):
@@ -628,7 +693,7 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
     app, registry = workspace_app(tmp_path / "info")
     async with serve_router(gate, "/remote") as (address, target):
         gate.state.router.api_url = address + "/remote"
-        attach_router(app, registry, target, 6007)
+        attach_router(app, target, 6007)
         async with serve(app) as local_address:
             app.state.local_api_url = local_address
             await eventually(lambda: app.state.router_client.connected)
@@ -676,7 +741,7 @@ async def test_router_and_workspace_passwords_protect_remote_visitors(tmp_path, 
     gate = create_app("router-password")
     app, registry = workspace_app(tmp_path / "workspace", "local-password")
     async with serve_router(gate, root) as (address, target):
-        attach_router(app, registry, target, 6007)
+        attach_router(app, target, 6007)
         async with serve(app) as local_address:
             await eventually(lambda: app.state.router_client.connected)
             node_id = app.state.router_client.node_id
@@ -1017,8 +1082,8 @@ async def test_workspace_passwords_and_cookies_are_isolated_between_devices(tmp_
     first, first_registry = workspace_app(tmp_path / "first", "first-password")
     second, second_registry = workspace_app(tmp_path / "second", "second-password")
     async with serve_router(gate) as (address, target):
-        attach_router(first, first_registry, target, 6007)
-        attach_router(second, second_registry, target, 6008)
+        attach_router(first, target, 6007)
+        attach_router(second, target, 6008)
         async with first.router.lifespan_context(first):
             async with second.router.lifespan_context(second):
                 await eventually(
@@ -1395,7 +1460,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
     aliases_path = tmp_path / "router-aliases.json"
     registration_key = load_registration_key(key_path)
     app, registry = workspace_app(tmp_path / "workspace")
-    attach_router(app, registry, client_target(address, registration_key), 6007)
+    attach_router(app, client_target(address, registration_key), 6007)
     client = app.state.router_client
     client.reconnect_seconds = 0.01
     try:
@@ -1695,7 +1760,7 @@ async def test_lifespan_attachment_keeps_runtime_alive_across_reconnect(tmp_path
     app, registry = workspace_app(tmp_path / "workspace", response_factory=complete)
     gate = create_app("router-password")
     async with serve_router(gate) as (address, target):
-        attach_router(app, registry, target, 6007)
+        attach_router(app, target, 6007)
         app.state.router_client.refresh_seconds = 0.02
         async with app.router.lifespan_context(app):
             await eventually(lambda: app.state.router_client.connected)

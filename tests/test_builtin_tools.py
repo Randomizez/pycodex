@@ -512,6 +512,32 @@ async def test_exec_manager_reports_running_sessions(tmp_path) -> "None":
     assert manager.background_work_count(False) == 0
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
+@pytest.mark.asyncio
+async def test_exec_manager_close_kills_background_process_tree(tmp_path) -> "None":
+    manager = UnifiedExecManager()
+    pid_file = tmp_path / "child.pid"
+    output = await manager.exec_command(
+        "sleep 300 & echo $! > {0}; wait".format(pid_file),
+        cwd=tmp_path,
+        yield_time_ms=200,
+    )
+    assert output["session_id"] == 1000
+    child = int(pid_file.read_text())
+
+    await manager.close()
+
+    assert manager.background_work_count(False) == 0
+    for _ in range(100):
+        try:
+            os.kill(child, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        raise AssertionError("background child survived close")
+
+
 @pytest.mark.asyncio
 async def test_exec_command_starts_process_in_new_session(
     tmp_path, monkeypatch

@@ -22,9 +22,7 @@ from starlette.routing import Route
 
 from pycodex.bootstrap import configure_loguru
 from pycodex.config import DEFAULT_CODEX_CONFIG_PATH
-from pycodex.events import IDLE_SLEEPING_STATUS
 from pycodex.utils import uuid7_string
-from pycodex.utils.get_env import get_package_version
 from pycodex.utils.codex_config import list_codex_profiles, read_codex_config
 from pycodex_ws.server_support import (
     AUTH_COOKIE_NAME,
@@ -40,7 +38,6 @@ from .routes import (
     _render_workspaces_manager_shell,
     workspace_routes,
 )
-from .reloader import preflight_check, reload_modules_in_place, sync_reloaded_sessions
 from .session_view import (
     JSONValue,
     SPINNER_STATUS_PREVIEW_LIMIT,
@@ -65,7 +62,6 @@ from .workspaces import (
     WorkspaceRegistry,
     WorkspaceSessionManager,
     load_workspace_definitions,
-    session_snapshot,
     workspace_file_path,
 )
 
@@ -159,6 +155,7 @@ def create_app(
             await vscode.close()
 
     app = _create_lifespan_app(manager.start, close)
+    app.state.drain = partial(manager.close, True)
     sharing = WorkspaceSharing(password, multi=False)
     sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
@@ -166,7 +163,6 @@ def create_app(
     _install_reload_routes(
         app,
         sharing,
-        lambda: [("", manager)],
         lambda _connection: WorkspaceRouteContext(manager, board_path, resolved_work_dir),
         "",
         (),
@@ -188,6 +184,8 @@ def create_multi_workspace_app(
             await vscode.close()
 
     app = _create_lifespan_app(registry.start, close)
+    app.state.drain = partial(registry.close, True)
+    app.state.router_inventory = partial(_router_inventory, registry)
     sharing = WorkspaceSharing(password, multi=True)
     sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
@@ -257,13 +255,27 @@ def create_multi_workspace_app(
     _install_reload_routes(
         app,
         sharing,
-        lambda: [(key, registry._entries[key].manager) for key in registry._order],
         resolve_workspace,
         "/w/{workspace_id}",
         leading_routes,
         vscode=vscode,
     )
     return app
+
+
+def _router_inventory(registry):
+    return [
+        {
+            "id": workspace["id"],
+            "work_dir": workspace["work_dir"],
+            "state_path": workspace["state_path"],
+            "enable_board": workspace["enable_board"],
+            "session_count": len(workspace["sessions"]),
+            "running": any(session["running"] for session in workspace["sessions"]),
+            "unread": any(session["unread"] for session in workspace["sessions"]),
+        }
+        for workspace in registry.list_workspaces()
+    ]
 
 
 def _install_sharing_routes(app, sharing, registry=None):
@@ -305,34 +317,14 @@ def _install_sharing_routes(app, sharing, registry=None):
 def _install_reload_routes(
     app,
     sharing,
-    get_managers,
     resolve_workspace,
     prefix,
     leading_routes,
     vscode=None,
 ):
-    reloading = False
-
-    def active_sessions() -> "typing.List[str]":
-        active = []
-        for workspace_id, manager in get_managers():
-            for session in manager.list_sessions():
-                if (
-                    session.get("running")
-                    and session.get("spinner") != IDLE_SLEEPING_STATUS
-                ):
-                    title = session.get("title") or session.get("id") or "session"
-                    active.append(
-                        "{0} / {1}".format(workspace_id, title)
-                        if workspace_id
-                        else str(title)
-                    )
-        return active
-
     async def reload_pycodex(request: Request) -> JSONResponse:
-        nonlocal reloading
         try:
-            target = resolve_workspace(request).manager
+            resolve_workspace(request)
         except (KeyError, ValueError):
             raise HTTPException(status_code=404, detail="workspace not found")
         if request.scope["pycodex.access_role"] != "admin":
@@ -342,88 +334,36 @@ def _install_reload_routes(
             if await request.body()
             else {}
         )
-        session_id = payload.get("session_id")
-        if session_id is not None and not isinstance(session_id, str):
-            return JSONResponse({"error": "session_id must be a string"}, 422)
-        if payload.get("check_only") is True:
-            active = active_sessions()
-            return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "waiting" if (reloading or active) else "ready",
-                    "active_turns": len(active),
-                    "running_sessions": active,
-                },
-                headers={"Cache-Control": "no-store"},
-            )
-        while reloading or active_sessions():
-            await asyncio.sleep(0.05)
-        reloading = True
+        upgrade = payload.get("upgrade", False)
+        if upgrade is not True and upgrade is not False and not isinstance(upgrade, str):
+            return JSONResponse({"error": "upgrade must be a boolean or version string"}, 422)
+        reload = getattr(request.app.state, "reload", None)
+        if reload is None:
+            return JSONResponse({"error": "reload requires the pycodex-ws server process"}, 503)
+        requirement = None
+        if upgrade is True:
+            requirement = "pycodex-ws"
+        elif upgrade:
+            requirement = "pycodex-ws==" + upgrade
         try:
-            try:
-                await preflight_check()
-            except Exception as exc:
-                return JSONResponse(
-                    {"ok": False, "status": "preflight_failed", "error": str(exc)},
-                    status_code=400,
-                    headers={"Cache-Control": "no-store"},
-                )
-            reloaded_modules, rollback_modules = reload_modules_in_place()
-            restore_views = lambda: None
-            try:
-                managers = [manager for _wid, manager in get_managers()]
-                restore_views = await sync_reloaded_sessions(managers)
-                refresh_routes()
-                for manager in managers:
-                    manager.refresh_profiles()
-                resolved_id = target.resolve_session_id(
-                    session_id if session_id in target._sessions else None
-                )
-                sessions_payload = target.list_sessions()
-                snapshot_payload = session_snapshot(target.get(resolved_id))
-            except Exception as exc:
-                restore_views()
-                rollback_modules()
-                refresh_routes()
-                return JSONResponse(
-                    {
-                        "ok": False,
-                        "status": "reload_failed",
-                        "error": "{0}: {1}".format(type(exc).__name__, exc),
-                    },
-                    status_code=400,
-                    headers={"Cache-Control": "no-store"},
-                )
+            await reload(requirement)
+        except Exception as exc:
             return JSONResponse(
-                {
-                    "ok": True,
-                    "status": "reloaded",
-                    "reloaded_modules": reloaded_modules,
-                    "version": get_package_version(),
-                    "session_id": resolved_id,
-                    "sessions": sessions_payload,
-                    "snapshot": snapshot_payload,
-                },
+                {"ok": False, "error": "{0}: {1}".format(type(exc).__name__, exc)},
+                status_code=400,
                 headers={"Cache-Control": "no-store"},
             )
-        finally:
-            reloading = False
+        return JSONResponse(
+            {"ok": True, "status": "reloaded"},
+            headers={"Cache-Control": "no-store"},
+        )
 
     app.routes.insert(
         0, Route(prefix + "/api/reload", reload_pycodex, methods=["POST"])
     )
-    fixed_routes = list(app.routes)
-
-    def refresh_routes() -> None:
-        from . import routes as routes_module
-
-        app.routes[:] = fixed_routes + list(
-            routes_module.workspace_routes(
-                resolve_workspace, sharing, prefix, leading_routes, vscode=vscode
-            )
-        )
-
-    refresh_routes()
+    app.routes.extend(
+        workspace_routes(resolve_workspace, sharing, prefix, leading_routes, vscode=vscode)
+    )
 
 
 async def _http_exception_response(request: Request, exc: HTTPException) -> JSONResponse:
@@ -467,12 +407,8 @@ def _workspace_entry_or_404(
         raise HTTPException(status_code=404, detail="workspace not found")
 
 
-def run_serve_cli(args: "argparse.Namespace") -> int:
-    from .owned_process import run_owned_server
-
-    host, port = parse_listen(args.listen)
-    configure_loguru()
-
+def build_app(args: "argparse.Namespace") -> Starlette:
+    """Build the workspace app from persisted configuration and CLI arguments."""
     definitions = load_workspace_definitions(args.workspace_config)
     entries = [_build_workspace_entry(definition, args) for definition in definitions]
     registry = WorkspaceRegistry(
@@ -484,12 +420,17 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             persist_callback,
         ),
     )
-    app = create_multi_workspace_app(registry, password=args.password)
-    if args.listen_to:
-        from pycodex_router.client import attach_router
+    return create_multi_workspace_app(registry, password=args.password)
 
-        attach_router(app, registry, args.listen_to, port)
 
+def run_serve_cli(args: "argparse.Namespace") -> int:
+    import importlib
+
+    from .owned_process import run_owned_server
+
+    host, port = parse_listen(args.listen)
+    configure_loguru()
+    definitions = load_workspace_definitions(args.workspace_config)
     print(
         "pycodex workspace listening on http://{0}:{1}".format(host, port),
         flush=True,
@@ -505,7 +446,10 @@ def run_serve_cli(args: "argparse.Namespace") -> int:
             ),
             flush=True,
         )
-    run_owned_server(app, host, port, sys.stdin.fileno())
+    run_owned_server(
+        lambda: importlib.import_module("workspace_server.app").build_app(args),
+        host, port, sys.stdin.fileno(), args.listen_to,
+    )
     return 0
 
 

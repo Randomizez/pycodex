@@ -217,8 +217,8 @@ function frontendCustomizationPrompt(catalogPath) {
 }
 
 export function installDialogs({
-  getActiveSessionId, getSessions, stateForSession, createSession, selectSession,
-  updateSessions, renderSnapshot, openView, showToast, markCustomizeSession = () => {},
+  getSessions, stateForSession, createSession, selectSession, openView, showToast,
+  markCustomizeSession = () => {},
 }) {
   const newTabButton = document.getElementById("newTab");
   const newSessionDialog = document.getElementById("newSessionDialog");
@@ -284,23 +284,17 @@ export function installDialogs({
   const shareLink = document.getElementById("shareLink");
   const settingsError = document.getElementById("settingsError");
   const reloadButton = document.getElementById("reloadPycodex");
-  const reloadHint = document.getElementById("reloadPycodexHint");
-  const defaultReloadHint = reloadHint.textContent;
-  let reloadAborter = null;
+  const rebootDialog = document.getElementById("rebootDialog");
+  const rebootRunning = document.getElementById("rebootRunning");
+  const rebootError = document.getElementById("rebootError");
+  const rebootButtons = [document.getElementById("rebootOnly"), document.getElementById("rebootUpdate")];
   const isAdministrator = document.body.dataset.accessRole === "admin";
-  for (const dialog of [settingsDialog, shareDialog, newSessionDialog, document.getElementById("externalCallDialog")]) {
+  for (const dialog of [settingsDialog, shareDialog, rebootDialog, newSessionDialog, document.getElementById("externalCallDialog")]) {
     dialog.querySelector("[data-close-dialog]").addEventListener("click", () => dialog.close());
     dialog.addEventListener("click", event => { if (event.target === dialog) dialog.close(); });
   }
   settingsDialog.addEventListener("close", () => {
-    if (reloadAborter) {
-      reloadAborter.abort();
-      reloadAborter = null;
-      showToast("Reload canceled");
-    }
     settingsError.textContent = "";
-    reloadHint.textContent = defaultReloadHint;
-    reloadButton.disabled = false;
   });
   shareDialog.addEventListener("close", () => { sharePassword.value = ""; });
   customizeButtons.forEach(button => {
@@ -436,61 +430,39 @@ export function installDialogs({
     });
   }
   installExternalCallSettings();
-  reloadButton.addEventListener("click", async () => {
+  reloadButton.addEventListener("click", () => {
     if (!isAdministrator) return;
-    settingsError.textContent = "";
-    reloadButton.disabled = true;
-    const aborter = reloadAborter = new AbortController();
-    const activeLocal = getSessions().filter(s => s.running && s.spinner !== "idle: sleeping");
-    reloadHint.textContent = activeLocal.length
-      ? `Waiting for active turn (${activeLocal.map(s => s.title || s.id).join(", ")})…`
-      : "Checking active sessions…";
+    const running = getSessions().filter(session => session.running).map(session => session.title || "Untitled");
+    rebootRunning.textContent = running.length
+      ? `Waiting for ${running.length} running session(s): ${running.join(", ")}`
+      : "No session is running.";
+    rebootError.textContent = "";
+    rebootButtons.forEach(button => { button.disabled = false; });
+    settingsDialog.close();
+    rebootDialog.showModal();
+  });
+  rebootButtons.forEach((button, index) => button.addEventListener("click", async () => {
+    rebootError.textContent = "";
+    rebootButtons.forEach(item => { item.disabled = true; });
+    rebootRunning.textContent = index
+      ? "Updating, then waiting for running turns to finish…"
+      : "Waiting for running turns to finish…";
     try {
-      while (true) {
-        const checkResp = await fetch(relativeUrl("api/reload"), {
-          method: "POST",
-          headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({session_id: getActiveSessionId(), check_only: true}),
-          signal: aborter.signal,
-        });
-        const checkPayload = await checkResp.json();
-        if (!checkResp.ok || !checkPayload.ok) {
-          throw new Error(checkPayload.error || checkPayload.detail || `HTTP ${checkResp.status}`);
-        }
-        if (checkPayload.status === "ready") break;
-        const names = (checkPayload.running_sessions || []).join(", ");
-        reloadHint.textContent = names
-          ? `Waiting for active turn (${names})…`
-          : "Waiting for active turn to finish…";
-        await new Promise(resolve => setTimeout(resolve, 400));
-      }
-      reloadHint.textContent = "Checking syntax & reloading modules…";
       const response = await fetch(relativeUrl("api/reload"), {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({session_id: getActiveSessionId()}),
-        signal: aborter.signal,
+        body: JSON.stringify({upgrade: index === 1}),
       });
       const payload = await response.json();
       if (!response.ok || !payload.ok) {
         throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
       }
-      if (reloadAborter === aborter) reloadAborter = null;
-      settingsDialog.close();
-      updateSessions(payload.sessions);
-      renderSnapshot(payload.snapshot);
-      showToast(payload.reloaded_modules
-        ? `PyCodex reloaded (${payload.reloaded_modules} modules)`
-        : "PyCodex reloaded");
+      rebootRunning.textContent = "PyCodex restarted. Refresh the page and log in again.";
     } catch (error) {
-      if (aborter.signal.aborted) return;
-      settingsError.textContent = error.message;
-      reloadHint.textContent = defaultReloadHint;
-      reloadButton.disabled = false;
-    } finally {
-      if (reloadAborter === aborter) reloadAborter = null;
+      rebootError.textContent = error.message;
+      rebootButtons.forEach(item => { item.disabled = false; });
     }
-  });
+  }));
   document.getElementById("shareCopy").addEventListener("click", async () => {
     try {
       await navigator.clipboard.writeText(shareLink.value);

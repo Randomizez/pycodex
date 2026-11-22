@@ -394,20 +394,29 @@ class AgentRuntime:
         if self._queue_event is not None:
             self._queue_event.set()
 
-    async def close(self):
-        """Stop admission across the subtree and wait for issued work and cleanup."""
+    async def close(self, finish_turn=False):
+        """Stop admission across the subtree and wait for issued work and cleanup.
+
+        With ``finish_turn`` active turns run to their natural end instead of
+        receiving a cooperative stop; only waits are woken early.
+        """
         if self._worker is None:
             self._worker = asyncio.create_task(self._run_forever())
         if self.accepts_input:
-            self.agents_manager.request_close(self.agent.agent_id)
+            self.agents_manager.request_close(self.agent.agent_id, finish_turn)
         await asyncio.shield(self._worker)
 
-    def request_close(self):
+    def request_close(self, finish_turn=False):
         """Manager-only local signal, after it captures this node's children."""
         if not self.accepts_input:
             return
         self.agent.accepts_input = False
-        self.stop_asap()
+        if not finish_turn:
+            self.stop_asap()
+        elif self.agent.is_running:
+            self._wait_interrupted = True
+            if self._input_activity is not None:
+                self._input_activity.set()
         pending = list(self._enqueue_queue)
         if self._triggered_submission is not None:
             pending.append(self._triggered_submission)
@@ -835,6 +844,9 @@ class AgentRuntime:
                         await waiter
                     except asyncio.CancelledError:
                         pass
+        if not self.accepts_input:
+            # A graceful close cannot wait for input that will never arrive.
+            self.stop_asap()
         if self._wait_interrupted:
             return {"message": "Wait interrupted by new input.", "timed_out": False}
         if self._steer_queue:

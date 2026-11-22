@@ -42,11 +42,12 @@ def test_cli_reads_config_from_a_file_and_uses_stdin_ownership_by_default(
         stream.seek(0)
         monkeypatch.setattr("sys.stdin", stream)
 
-        def serve(app, host, port, input_fd):
+        def serve(build, host, port, input_fd, listen_to):
             calls.append((host, port))
+            assert listen_to is None
             assert input_fd == stream.fileno()
             assert os.read(input_fd, 4096) == b"owner pipe\n"
-            with TestClient(app) as client:
+            with TestClient(build()) as client:
                 workspaces = client.get("/api/workspaces").json()["workspaces"]
                 assert len(workspaces) == 1
                 assert workspaces[0]["work_dir"] == str(project)
@@ -116,7 +117,7 @@ async def lifespan(app):
     )
     yield
 
-run_owned_server(Starlette(lifespan=lifespan), "127.0.0.1", 0, sys.stdin.fileno())
+run_owned_server(lambda: Starlette(lifespan=lifespan), "127.0.0.1", 0, sys.stdin.fileno())
 """
     environment = os.environ.copy()
     environment["HOME"] = str(tmp_path)
@@ -154,5 +155,5 @@ def test_owner_eof_runs_lifespan_shutdown_even_when_it_precedes_startup(early_eo
     with os.fdopen(read_fd, "rb") as reader, os.fdopen(write_fd, "wb") as writer:
         if early_eof:
             writer.close()
-        run_owned_server(Starlette(lifespan=lifespan), "127.0.0.1", 0, reader.fileno())
+        run_owned_server(lambda: Starlette(lifespan=lifespan), "127.0.0.1", 0, reader.fileno())
     assert events == ["startup", "shutdown"]

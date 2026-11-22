@@ -226,9 +226,9 @@ class WorkspaceInteractiveSession:
         view.handle_event(event, runtime.state_snapshot())
         self.submissions.handle_event(event, runtime, view)
 
-    async def close(self) -> None:
+    async def close(self, finish_turn: bool = False) -> None:
         try:
-            await self.runtime.close()
+            await self.runtime.close(finish_turn)
         finally:
             self.detach()
 
@@ -445,13 +445,13 @@ class ThreadedWorkspaceInteractiveSession:
             asyncio.set_event_loop(None)
             loop.close()
 
-    async def close(self) -> None:
+    async def close(self, finish_turn: bool = False) -> None:
         session = self._session
         loop = self._worker_loop
         try:
             if session is not None and loop is not None and loop.is_running():
                 future = asyncio.wrap_future(
-                    asyncio.run_coroutine_threadsafe(session.close(), loop)
+                    asyncio.run_coroutine_threadsafe(session.close(finish_turn), loop)
                 )
                 try:
                     await asyncio.shield(future)
@@ -474,6 +474,8 @@ class ThreadedWorkspaceInteractiveSession:
     async def submit(
         self, prompt: str, sender: str = "web", name: str = "user", trigger: bool = True,
     ) -> "typing.Dict[str, object]":
+        if not self._worker_loop.is_running():
+            return {"ok": False, "error": "agent is shutting down", "snapshot": self.snapshot()}
         return await self._call(
             self._session.submit(prompt, sender, name=name, trigger=trigger)
         )

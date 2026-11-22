@@ -326,7 +326,7 @@ class AgentsManager:
     async def wait_for_activity(self, agent_id, timeout_ms):
         return await self._runtimes[agent_id].wait_for_activity(timeout_ms)
 
-    def request_close(self, agent_id) -> "None":
+    def request_close(self, agent_id, finish_turn=False) -> "None":
         """Signal a whole subtree before waiting for any of its operations."""
         path = self._runtimes[agent_id].agent.agent_path
         runtimes = [
@@ -340,7 +340,7 @@ class AgentsManager:
                     child for child in runtimes
                     if child.agent.agent_path.rsplit("/", 1)[0] == runtime.agent.agent_path
                 )
-                runtime.request_close()
+                runtime.request_close(finish_turn)
 
     async def shutdown_children(self, agent_id) -> "None":
         # Children may finish and unregister while their parent's turn stops.

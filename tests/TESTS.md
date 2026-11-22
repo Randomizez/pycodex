@@ -59,9 +59,10 @@ Read-only view tests compare snapshots only after the model turn has finished;
 response text may arrive before final status and final IDs. This keeps the full
 snapshot-equality assertion meaningful without racing turn completion.
 
-Backend reload tests use a future wrapped on the server loop and release the
-turn after observing running/waiting. The syntax probe avoids the old pytest
-`pkg_resources` helper. Reload checks passed on Python 3.7, 3.8 and 3.10.
+Backend reload tests drive `ReloadableApp` through `TestClient`; module purge is
+stubbed except in one subprocess test that verifies fresh imports.
+Router reload runs the real `run_owned_server` shell with `--listen-to` against
+an in-process router, and graceful drain is tested on `WorkspaceSessionManager`.
 
 ## CI 环境
 
