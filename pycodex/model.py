@@ -428,6 +428,12 @@ class ContextLengthExceeded(ResponsesApiError):
         self.usage: "typing.Union[typing.Dict[str, int], None]" = None
         self.token_limit: "typing.Union[int, None]" = None
         requested = re.search(r"requested\s+([0-9,]+)\s+tokens", message, re.IGNORECASE)
+        if requested is None:
+            requested = re.search(
+                r"input\s+token\s+count(?:\s*:\s*|\s*\()([0-9,]+)",
+                message,
+                re.IGNORECASE,
+            )
         if requested is not None:
             total = int(requested.group(1).replace(",", ""))
             self.usage = {"total_tokens": total, "input_tokens": total}
@@ -444,6 +450,12 @@ class ContextLengthExceeded(ResponsesApiError):
             message,
             re.IGNORECASE,
         )
+        if limit is None:
+            limit = re.search(
+                r"maximum\s+number\s+of\s+tokens\s+allowed\s*(?:is\s*|\()([0-9,]+)",
+                message,
+                re.IGNORECASE,
+            )
         if limit is not None:
             self.token_limit = int(limit.group(1).replace(",", ""))
 
@@ -1676,6 +1688,8 @@ def _is_context_length_error_message(message: "str") -> "bool":
         or "maximum context length" in lower
         or "exceeds the context window" in lower
         or "exceeded the context window" in lower
+        or "exceeds the maximum number of tokens" in lower
+        or "exceeded the maximum number of tokens" in lower
     )
 
 

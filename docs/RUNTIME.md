@@ -1953,7 +1953,9 @@ Only the Responses provider classifies external error text:
 - Transient/disconnected streams and retryable `response.failed` events
   use `ResponsesRetryableError`.
 - Context overflow uses `ContextLengthExceeded`, with optional usage and limit
-  parsed from the provider's error details.
+  parsed from the provider's error details (including OpenAI `maximum context length` /
+  `context window` and Gemini `input token count exceeds the maximum number of tokens allowed`
+  formats) without stream retries.
 - A terminal incomplete response uses `ResponsesIncompleteError`. The default
   retry policy propagates it to the caller.
 

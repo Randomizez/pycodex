@@ -204,6 +204,9 @@ def build_agy_session(
             initial_anchor_tokens=(
                 restored.anchor_tokens if restored is not None else 0
             ),
+            initial_anchor_history_len=(
+                restored.anchor_history_len if restored is not None else None
+            ),
             search_handler=search_handler,
             clock=clock,
             extra_tools=extra_tools,

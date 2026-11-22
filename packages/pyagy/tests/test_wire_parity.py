@@ -1197,3 +1197,84 @@ def test_compaction_auto_manual_and_subagent_to_root_message_parity(tmp_path: "P
         "",
         "Status summarized.\n",
     ]
+
+
+def test_oversized_sync_and_background_run_command_truncation_parity(tmp_path: "Path") -> "None":
+    sync_cmd = (
+        "python3 -c 'import sys; "
+        'sys.stdout.write("SYNC_HEAD_" + "A" * 8000 + "中文段落" * 600 + "_SYNC_TAIL\\n")\''
+    )
+    bg_cmd = (
+        "sleep 0.7 && python3 -c 'import sys; "
+        'sys.stdout.write("BG_HEAD_" + "B" * 9000 + "异步输出" * 600 + "_BG_TAIL\\n")\''
+    )
+
+    def _responder(
+        _body: "typing.Dict[str, object]",
+        _is_sub: "bool",
+        idx: "int",
+    ) -> "typing.Sequence[typing.Sequence[typing.Dict[str, object]]]":
+        if idx == 0:
+            return [
+                [
+                    {
+                        "functionCall": {
+                            "id": "cmd_sync_big",
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": sync_cmd,
+                                "WaitMsBeforeAsync": 5000,
+                                "toolSummary": "Sync big output",
+                            },
+                        },
+                        "thoughtSignature": "c2lnX3N5bmM=",
+                    },
+                    {
+                        "functionCall": {
+                            "id": "cmd_bg_big",
+                            "name": "run_command",
+                            "args": {
+                                "CommandLine": bg_cmd,
+                                "WaitMsBeforeAsync": 500,
+                                "toolSummary": "Background big output",
+                            },
+                        },
+                    },
+                ]
+            ]
+        if idx == 1:
+            return [[{"text": "Waiting for background task.", "thoughtSignature": "c2lnX3dhaXQ="}]]
+        return [[{"text": "Both truncated outputs verified.", "thoughtSignature": "c2lnX2RvbmU="}]]
+
+    def _run_agy() -> "typing.List[typing.Dict[str, object]]":
+        root = tmp_path / "agy_trunc"
+        home_d, work_d, _ = _prepare_isolated_tree(root, "http://127.0.0.1:1")
+        with MockGeminiServer(_responder) as srv:
+            _run_official_agy(
+                ["--model", "gemini-4-carbon-high", "-p", "run oversized commands"],
+                home_d,
+                work_d,
+                srv.base_url,
+            )
+            return normalize_request_sequence(srv.agent_requests, root)
+
+    def _run_pyagy() -> "typing.List[typing.Dict[str, object]]":
+        root = tmp_path / "pyg_trunc"
+        home_d, work_d, _ = _prepare_isolated_tree(root, "http://127.0.0.1:1")
+        with MockGeminiServer(_responder) as srv:
+            _, _, cfg = _prepare_isolated_tree(root, srv.base_url)
+            _run_pyagy_cli(
+                ["--model", "gemini-4-carbon-high", "-p", "run oversized commands"],
+                home_d,
+                cfg,
+                work_d,
+            )
+            return normalize_request_sequence(srv.agent_requests, root)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_run_agy)
+        pyagy_reqs = _run_pyagy()
+        agy_reqs = fut.result()
+
+    assert len(pyagy_reqs) == 3
+    assert_wire_equal(pyagy_reqs, agy_reqs)

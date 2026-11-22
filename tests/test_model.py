@@ -43,6 +43,7 @@ from pycodex.events import (
     ToolCalledEvent,
 )
 from pycodex.model import (
+    ContextLengthExceeded,
     RESPONSES_LITE_HEADER,
     ResponsesApiError,
     ResponsesRetryableError,
@@ -2601,3 +2602,65 @@ def test_responses_model_client_emits_event_for_web_search_call() -> "None":
         )
         in seen
     )
+
+
+@pytest.mark.asyncio
+async def test_responses_model_client_classifies_gemini_token_limit_error_without_retry() -> (
+    "None"
+):
+    provider = ResponsesProviderConfig(
+        model="gemini-4-carbon-high",
+        provider_name="gemini-pool",
+        base_url="https://example.com/v1",
+        api_key_env=None,
+        stream_max_retries=5,
+    )
+    client = ResponsesModelClient(provider)
+    send_calls: "typing.List[int]" = []
+
+    class _GeminiTokenLimitFailedStream:
+        status_code = 200
+        text = ""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            return None
+
+        def iter_lines(self, chunk_size=1, decode_unicode=False):
+            del chunk_size, decode_unicode
+            yield b"event: response.failed"
+            yield (
+                b'data: {"type":"response.failed","response":{"error":{"message":'
+                b'"downstream request failed with HTTP 400: {\\"error\\":{\\"code\\":400,'
+                b'\\"message\\":\\"The input token count exceeds the maximum number of '
+                b'tokens allowed (1048576); input token count: 1113435.\\"}}",'
+                b'"type":"server_error"}}}'
+            )
+            yield b""
+
+    original_send = requests.Session.send
+
+    def fake_send(self, request, timeout, allow_redirects, **settings):
+        del self, request, timeout, allow_redirects, settings
+        send_calls.append(1)
+        return _GeminiTokenLimitFailedStream()
+
+    requests.Session.send = fake_send
+    try:
+        with pytest.raises(ContextLengthExceeded) as exc_info:
+            await client.complete(
+                Prompt(input=[UserMessage(text="hi")], tools=[]),
+                NOOP_MODEL_STREAM_EVENT_HANDLER,
+            )
+    finally:
+        requests.Session.send = original_send
+
+    assert len(send_calls) == 1
+    assert exc_info.value.token_limit == 1048576
+    assert exc_info.value.usage == {
+        "total_tokens": 1113435,
+        "input_tokens": 1113435,
+    }

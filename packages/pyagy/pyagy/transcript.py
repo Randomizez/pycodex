@@ -30,6 +30,114 @@ from .context import (
 
 
 COMPACT_TRUNCATION_LIMIT = 4096
+AGY_TOOL_OUTPUT_MAX_BYTES = 10240
+_ANCHOR_MODEL_ITEM_TYPES = (AssistantMessage, ReasoningItem, ToolCall)
+
+
+def _utf8_prefix_bytes(raw_bytes: "bytes", limit: "int") -> "str":
+    if limit <= 0 or not raw_bytes:
+        return ""
+    if len(raw_bytes) <= limit:
+        return raw_bytes.decode("utf-8", errors="replace")
+    end = limit
+    while end > 0 and (raw_bytes[end] & 0xC0) == 0x80:
+        end -= 1
+    return raw_bytes[:end].decode("utf-8", errors="ignore")
+
+
+def _utf8_suffix_bytes(raw_bytes: "bytes", limit: "int") -> "str":
+    if limit <= 0 or not raw_bytes:
+        return ""
+    if len(raw_bytes) <= limit:
+        return raw_bytes.decode("utf-8", errors="replace")
+    start = len(raw_bytes) - limit
+    while start < len(raw_bytes) and (raw_bytes[start] & 0xC0) == 0x80:
+        start += 1
+    return raw_bytes[start:].decode("utf-8", errors="ignore")
+
+
+def truncate_agy_tool_output(
+    text: "str",
+    output_path: "typing.Optional[Path]" = None,
+    max_bytes: "int" = AGY_TOOL_OUTPUT_MAX_BYTES,
+    always_persist: "bool" = False,
+) -> "str":
+    """Apply exact agy 1.5.13 10 KiB middle truncation and optional step file persistence."""
+    raw_bytes = text.encode("utf-8")
+    total_bytes = len(raw_bytes)
+    should_truncate = total_bytes > max_bytes
+    if output_path is not None and (always_persist or should_truncate):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(raw_bytes)
+    if not should_truncate:
+        return text
+    if output_path is not None:
+        preamble = (
+            "The tool's output was truncated due to being too long. "
+            f"You can find the full output in a file at file://{output_path}.\n\n"
+            "Here is a preview with the middle of the output truncated:\n"
+        )
+    else:
+        preamble = (
+            "The tool's output was truncated due to being too long.\n\n"
+            "Here is a preview with the middle of the output truncated:\n\n"
+        )
+    max_marker = f"\n<truncated {total_bytes} of {total_bytes} bytes from the middle of the output>\n"
+    content_budget = max_bytes - len(preamble.encode("utf-8")) - len(max_marker.encode("utf-8"))
+    if content_budget <= 0:
+        return f"{preamble}<truncated {total_bytes} of {total_bytes} bytes from the middle of the output>"
+    half = content_budget // 2
+    head_str = _utf8_prefix_bytes(raw_bytes, half)
+    tail_str = _utf8_suffix_bytes(raw_bytes, half)
+    removed_bytes = (
+        total_bytes - len(head_str.encode("utf-8")) - len(tail_str.encode("utf-8"))
+    )
+    return (
+        f"{preamble}{head_str}"
+        f"\n<truncated {removed_bytes} of {total_bytes} bytes from the middle of the output>\n"
+        f"{tail_str}"
+    )
+
+
+def infer_anchor_history_len(history: "typing.Sequence[ConversationItem]") -> "int":
+    """Return index immediately after the last model-produced item in `history`."""
+    for idx in range(len(history) - 1, -1, -1):
+        if isinstance(history[idx], _ANCHOR_MODEL_ITEM_TYPES):
+            return idx + 1
+    return 0
+
+
+def align_anchor_state_to_history(
+    anchor_tokens: "int",
+    source_history: "typing.Sequence[ConversationItem]",
+    source_anchor_len: "typing.Optional[int]",
+    target_history: "typing.Sequence[ConversationItem]",
+) -> "typing.Tuple[int, int]":
+    """Map `(anchor_tokens, source_anchor_len)` onto `target_history` (e.g. a resumed rollout)."""
+    tokens = max(0, int(anchor_tokens))
+    if tokens <= 0 or not target_history:
+        return 0, 0
+    if not source_history:
+        return tokens, infer_anchor_history_len(target_history)
+    eff_src_len = (
+        infer_anchor_history_len(source_history)
+        if source_anchor_len is None
+        else max(0, min(int(source_anchor_len), len(source_history)))
+    )
+    anchored_model_count = sum(
+        1
+        for item in source_history[:eff_src_len]
+        if isinstance(item, _ANCHOR_MODEL_ITEM_TYPES)
+    )
+    if anchored_model_count <= 0:
+        return 0, 0
+    seen = 0
+    for idx, item in enumerate(target_history):
+        if isinstance(item, _ANCHOR_MODEL_ITEM_TYPES):
+            seen += 1
+            if seen == anchored_model_count:
+                return tokens, idx + 1
+    return 0, 0
 
 
 @dataclass(frozen=True)
@@ -46,6 +154,7 @@ class RestoredConversation:
     parent_messages: "typing.Tuple[str, ...]" = ()
     spawned_subagents: "typing.Tuple[SpawnedSubagentSummary, ...]" = ()
     anchor_tokens: "int" = 0
+    anchor_history_len: "int" = 0
 
 
 def _serialize_conversation_item(item: "ConversationItem") -> "typing.Dict[str, object]":
@@ -249,6 +358,9 @@ class AgyTranscriptStore:
         self._step_index += 1
         return idx
 
+    def step_output_path(self, step_index: "int") -> "Path":
+        return self.system_dir / "steps" / str(int(step_index)) / "output.txt"
+
     def ensure_dirs(self) -> "None":
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         (self.logs_dir / "chunks" / "transcript").mkdir(parents=True, exist_ok=True)
@@ -356,14 +468,30 @@ class AgyTranscriptStore:
         parent_messages: "typing.Sequence[str]" = (),
         spawned_subagents: "typing.Sequence[SpawnedSubagentSummary]" = (),
         anchor_tokens: "int" = 0,
+        anchor_history_len: "typing.Optional[int]" = None,
     ) -> "None":
         self.ensure_dirs()
         expanded_history: "typing.List[ConversationItem]" = []
         post_map = emitted_post_user_messages or {}
-        for item in history:
+        norm_anchor_tokens = max(0, int(anchor_tokens))
+        raw_anchor_len = (
+            0
+            if norm_anchor_tokens <= 0
+            else (
+                infer_anchor_history_len(history)
+                if anchor_history_len is None
+                else max(0, min(int(anchor_history_len), len(history)))
+            )
+        )
+        expanded_anchor_len = 0
+        for idx, item in enumerate(history):
+            if idx == raw_anchor_len:
+                expanded_anchor_len = len(expanded_history)
             expanded_history.append(item)
             if isinstance(item, UserMessage) and item.message_id in post_map:
                 expanded_history.extend(post_map[item.message_id])
+        if raw_anchor_len >= len(history):
+            expanded_anchor_len = len(expanded_history)
 
         state = {
             "conversation_id": self.conversation_id,
@@ -376,7 +504,8 @@ class AgyTranscriptStore:
             "user_requests": list(user_requests),
             "parent_messages": list(parent_messages),
             "spawned_subagents": [sub.to_dict() for sub in spawned_subagents],
-            "anchor_tokens": int(anchor_tokens),
+            "anchor_tokens": norm_anchor_tokens,
+            "anchor_history_len": expanded_anchor_len,
             "history": [_serialize_conversation_item(it) for it in expanded_history],
         }
         self.session_state_path.write_text(
@@ -421,6 +550,14 @@ class AgyTranscriptStore:
             raw_user_reqs = raw.get("user_requests")
             raw_parent_msgs = raw.get("parent_messages")
             raw_subagents = raw.get("spawned_subagents")
+            restored_anchor_tokens = max(0, int(raw.get("anchor_tokens", 0) or 0))
+            raw_anchor_len = raw.get("anchor_history_len")
+            if restored_anchor_tokens <= 0:
+                restored_anchor_len = 0
+            elif isinstance(raw_anchor_len, int) and not isinstance(raw_anchor_len, bool):
+                restored_anchor_len = max(0, min(raw_anchor_len, len(history)))
+            else:
+                restored_anchor_len = infer_anchor_history_len(history)
             return RestoredConversation(
                 conversation_id=conversation_id,
                 cwd=Path(cwd_str) if isinstance(cwd_str, str) and cwd_str else None,
@@ -456,7 +593,8 @@ class AgyTranscriptStore:
                     if isinstance(raw_subagents, list)
                     else ()
                 ),
-                anchor_tokens=int(raw.get("anchor_tokens", 0) or 0),
+                anchor_tokens=restored_anchor_tokens,
+                anchor_history_len=restored_anchor_len,
             )
 
         transcript_full = system_dir / "logs" / "transcript_full.jsonl"

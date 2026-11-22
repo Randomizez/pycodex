@@ -29,6 +29,7 @@ from pycodex.events import (
     TurnInputReadyEvent,
     TurnInterrupted,
 )
+from pycodex.model import ContextLengthExceeded
 from pycodex.multi_agents import AgentsManager
 from pycodex.protocol import (
     AgentMessage,
@@ -36,13 +37,14 @@ from pycodex.protocol import (
     ContextMessage,
     ConversationItem,
     ModelResponse,
+    ReasoningItem,
     ToolCall,
     ToolResult,
     TurnResult,
     UserMessage,
 )
 from pycodex.tools.base_tool import BaseTool
-from pycodex.utils.compactor import CompactResult
+from pycodex.utils.compactor import CompactResult, prune_oldest_tool_response
 from pycodex.utils.session_persist import resolve_codex_home, rollout_path_for_session
 
 from .context import (
@@ -75,7 +77,13 @@ from .tools import (
     build_agy_tool_registry,
     load_official_declarations,
 )
-from .transcript import AgyTranscriptStore
+from .transcript import (
+    AGY_TOOL_OUTPUT_MAX_BYTES,
+    AgyTranscriptStore,
+    align_anchor_state_to_history,
+    infer_anchor_history_len,
+    truncate_agy_tool_output,
+)
 
 if typing.TYPE_CHECKING:
     from responses_server.config import CompatServerConfig
@@ -118,6 +126,34 @@ class AgyAgentsManager(AgentsManager):
         self.notify_parents(agent_id)
 
 
+def _truncate_oversized_history_for_compaction(
+    items: "typing.Sequence[ConversationItem]",
+) -> "typing.Tuple[typing.List[ConversationItem], int]":
+    updated: "typing.List[ConversationItem]" = []
+    truncated_count = 0
+    for item in items:
+        if (
+            isinstance(item, UserMessage)
+            and item.name == AGY_SYSTEM_MESSAGE_NAME
+            and len(item.text.encode("utf-8")) > AGY_TOOL_OUTPUT_MAX_BYTES
+        ):
+            updated.append(replace(item, text=truncate_agy_tool_output(item.text)))
+            truncated_count += 1
+        elif (
+            isinstance(item, ToolResult)
+            and item.content_items is None
+            and not item.is_error
+            and item.name != "read_file"
+            and isinstance(item.output, str)
+            and len(item.output.encode("utf-8")) > AGY_TOOL_OUTPUT_MAX_BYTES
+        ):
+            updated.append(replace(item, output=truncate_agy_tool_output(item.output)))
+            truncated_count += 1
+        else:
+            updated.append(item)
+    return updated, truncated_count
+
+
 class AgyAgent(Agent):
     """Agent subclass implementing AGY manual `/compact` and pre-invocation auto-compaction."""
 
@@ -132,6 +168,7 @@ class AgyAgent(Agent):
         parallel_tool_calls: "bool" = True,
         initial_history: "typing.Tuple[ConversationItem, ...]" = (),
         initial_anchor_tokens: "int" = 0,
+        initial_anchor_history_len: "typing.Optional[int]" = None,
         session_file_path: "typing.Union[str, Path, None]" = None,
         agent_path: "str" = "/root",
         on_cwd_changed: "typing.Optional[typing.Callable[[Path], None]]" = None,
@@ -149,8 +186,9 @@ class AgyAgent(Agent):
         )
         self._compaction_threshold_getter = compaction_threshold_getter
         self._summary_builder = summary_builder
-        self._anchor_tokens = int(initial_anchor_tokens)
-        self._anchor_history_len = len(self._history)
+        self._anchor_tokens = 0
+        self._anchor_history_len = 0
+        self.set_anchor_state(initial_anchor_tokens, initial_anchor_history_len)
         self._on_cwd_changed = on_cwd_changed
         self._on_resumed = on_resumed
 
@@ -166,8 +204,7 @@ class AgyAgent(Agent):
         if session_file_path is not None:
             if isinstance(self.context_manager, AgyContextManager):
                 self.context_manager.clear_anchored_messages()
-            self._anchor_tokens = 0
-            self._anchor_history_len = len(self._history)
+            self.set_anchor_state(0, 0)
             if self._on_resumed is not None:
                 self._on_resumed(self.session_id)
         return resumed
@@ -175,6 +212,24 @@ class AgyAgent(Agent):
     @property
     def anchor_tokens(self) -> "int":
         return self._anchor_tokens
+
+    @property
+    def anchor_history_len(self) -> "int":
+        return self._anchor_history_len
+
+    def set_anchor_state(
+        self,
+        anchor_tokens: "int",
+        anchor_history_len: "typing.Optional[int]" = None,
+    ) -> "None":
+        tokens = max(0, int(anchor_tokens))
+        self._anchor_tokens = tokens
+        if tokens <= 0:
+            self._anchor_history_len = 0
+        elif anchor_history_len is None:
+            self._anchor_history_len = infer_anchor_history_len(self._history)
+        else:
+            self._anchor_history_len = max(0, min(int(anchor_history_len), len(self._history)))
 
     def _estimate_delta_tokens(self) -> "int":
         delta_bytes = 0
@@ -208,6 +263,12 @@ class AgyAgent(Agent):
                 delta_bytes += len(str(item.output).encode("utf-8"))
             elif isinstance(item, AssistantMessage):
                 delta_bytes += len(item.text.encode("utf-8"))
+            elif isinstance(item, ReasoningItem):
+                summary = item.payload.get("summary") if isinstance(item.payload, dict) else None
+                if isinstance(summary, list):
+                    for part in summary:
+                        if isinstance(part, dict) and isinstance(part.get("text"), str):
+                            delta_bytes += len(part["text"].encode("utf-8"))
             elif isinstance(item, ToolCall):
                 delta_bytes += len(item.name.encode("utf-8")) + len(
                     json.dumps(item.arguments, ensure_ascii=False).encode("utf-8")
@@ -221,7 +282,12 @@ class AgyAgent(Agent):
         estimated = self._anchor_tokens + self._estimate_delta_tokens()
         return estimated >= threshold
 
-    async def _run_agy_compaction(self, turn: "TurnContext", manual: "bool") -> "CompactResult":
+    async def _run_agy_compaction(
+        self,
+        turn: "TurnContext",
+        manual: "bool",
+        prune_on_overflow: "bool" = True,
+    ) -> "CompactResult":
         committed = list(self._history)
         comp_prompt_text = (
             AGY_MANUAL_COMPACTION_PROMPT if manual else AGY_AUTO_COMPACTION_PROMPT
@@ -231,12 +297,53 @@ class AgyAgent(Agent):
             name=AGY_COMPACTION_PROMPT_NAME,
             visible=False,
         )
-        working: "typing.List[ConversationItem]" = [*self._history, comp_msg]
-        turn.compact_input = working
+        history_items: "typing.List[ConversationItem]" = list(committed)
+        pruned = 0
+        oversized_truncated = False
         comp_start = time.monotonic()
         try:
-            prompt = self._build_prompt(turn.turn_id, working, capture_context=True)
-            response = await self.model_client.complete(prompt)
+            while True:
+                working: "typing.List[ConversationItem]" = [*history_items, comp_msg]
+                turn.compact_input = working
+                prompt = self._build_prompt(turn.turn_id, working, capture_context=True)
+                try:
+                    response = await self.model_client.complete(prompt)
+                    break
+                except ContextLengthExceeded:
+                    if not prune_on_overflow:
+                        raise
+                    if not oversized_truncated:
+                        oversized_truncated = True
+                        history_items, trunc_n = _truncate_oversized_history_for_compaction(
+                            history_items
+                        )
+                        if trunc_n > 0:
+                            pruned += trunc_n
+                            continue
+                    remaining_tools = sum(
+                        1 for it in history_items if isinstance(it, ToolResult)
+                    )
+                    if remaining_tools > 0:
+                        batch = (
+                            1
+                            if remaining_tools <= 4
+                            else max(1, (remaining_tools + 3) // 4)
+                        )
+                        pruned_items = prune_oldest_tool_response(history_items, batch)
+                        if pruned_items is not None:
+                            history_items = list(pruned_items)
+                            pruned += batch
+                            continue
+                    if len(history_items) > 1:
+                        drop_n = max(1, len(history_items) // 4)
+                        trimmed = list(history_items[drop_n:])
+                        while len(trimmed) > 1 and isinstance(trimmed[0], ToolResult):
+                            trimmed.pop(0)
+                        if len(trimmed) < len(history_items):
+                            pruned += len(history_items) - len(trimmed)
+                            history_items = trimmed
+                            continue
+                    raise
         finally:
             turn.compact_input = None
 
@@ -258,8 +365,7 @@ class AgyAgent(Agent):
             self._rollout_recorder.append_compacted_history(self.history, committed)
         if isinstance(self.context_manager, AgyContextManager):
             self.context_manager.clear_anchored_messages()
-        self._anchor_tokens = 0
-        self._anchor_history_len = len(self._history)
+        self.set_anchor_state(0, 0)
         self._last_total_usage_tokens = None
 
         EventScope.emit(
@@ -270,7 +376,7 @@ class AgyAgent(Agent):
                 usage=norm_usage,
             )
         )
-        return CompactResult(self.history, len(committed), 0)
+        return CompactResult(self.history, len(committed), pruned)
 
     async def _run_compaction(
         self,
@@ -278,13 +384,19 @@ class AgyAgent(Agent):
         prune_on_overflow: "bool" = True,
         record_usage: "bool" = False,
     ) -> "CompactResult":
-        return await self._run_agy_compaction(turn, manual=True)
+        return await self._run_agy_compaction(
+            turn,
+            manual=record_usage,
+            prune_on_overflow=prune_on_overflow,
+        )
 
     async def _sample(self, turn: "TurnContext") -> "ModelResponse":
         response = await super()._sample(turn)
         if response.usage is not None:
             norm = normalize_agy_usage(response.usage)
-            self._anchor_tokens = norm["input_tokens"] + norm["output_tokens"]
+            self._anchor_tokens = (
+                norm["input_tokens"] + norm["cache_read_tokens"] + norm["output_tokens"]
+            )
             self._anchor_history_len = len(self._history) + len(response.items)
         return response
 
@@ -320,22 +432,7 @@ class AgyAgent(Agent):
                     phase = "pre_turn" if first else "mid_turn"
                     limit = self._compaction_threshold_getter()
                     used = self._anchor_tokens + self._estimate_delta_tokens()
-                    EventScope.emit(AutoCompactStartedEvent(turn.turn_id, phase, used, limit))
-                    try:
-                        compact_res = await self._run_agy_compaction(turn, manual=False)
-                    finally:
-                        self._save_environment_state()
-                    EventScope.emit(
-                        AutoCompactCompletedEvent(
-                            turn.turn_id,
-                            phase,
-                            used,
-                            limit,
-                            compact_res.original_item_count,
-                            compact_res.retained_item_count,
-                            compact_res.pruned_tool_results,
-                        )
-                    )
+                    await self._auto_compact(turn, phase, used, limit)
                     if turn.stop_requested:
                         raise TurnInterrupted()
 
@@ -467,6 +564,7 @@ class AgySessionNode:
         initial_parent_messages: "typing.Sequence[str]" = (),
         initial_spawned_subagents: "typing.Sequence[SpawnedSubagentSummary]" = (),
         initial_anchor_tokens: "int" = 0,
+        initial_anchor_history_len: "typing.Optional[int]" = None,
         search_handler: "typing.Optional[SearchHandler]" = None,
         owned_workspace_dir: "typing.Optional[Path]" = None,
         git_worktree_repo: "typing.Optional[Path]" = None,
@@ -585,6 +683,7 @@ class AgySessionNode:
             parallel_tool_calls=True,
             initial_history=initial_history,
             initial_anchor_tokens=initial_anchor_tokens,
+            initial_anchor_history_len=initial_anchor_history_len,
             session_file_path=session_file_path,
             agent_path=agent_path,
             on_cwd_changed=self._on_agent_cwd_changed,
@@ -711,7 +810,13 @@ class AgySessionNode:
             self._user_requests = list(restored.user_requests)
             self._parent_messages = list(restored.parent_messages)
             self._spawned_subagents = list(restored.spawned_subagents)
-            self.agent._anchor_tokens = restored.anchor_tokens
+            aligned_tokens, aligned_len = align_anchor_state_to_history(
+                restored.anchor_tokens,
+                restored.history,
+                restored.anchor_history_len,
+                self.agent.history,
+            )
+            self.agent.set_anchor_state(aligned_tokens, aligned_len)
 
     def _signal_activity(self) -> "None":
         if self._activity_event is not None:
@@ -941,6 +1046,7 @@ class AgySessionNode:
             parent_messages=self._parent_messages,
             spawned_subagents=self._spawned_subagents,
             anchor_tokens=self.agent.anchor_tokens,
+            anchor_history_len=self.agent.anchor_history_len,
         )
 
     async def close(self, delete_workspace: "bool" = False) -> "None":
@@ -1226,9 +1332,9 @@ class AgyMultiAgentController:
         return (
             "Created the following subagent:\n"
             "{\n"
-            f'  "conversationId":  {json.dumps(sub_conv_id)},\n'
-            f'  "logAbsoluteUri":  {json.dumps(log_uri)},\n'
-            '  "workspaceUris":  [\n'
+            f'  "conversationId": {json.dumps(sub_conv_id)},\n'
+            f'  "logAbsoluteUri": {json.dumps(log_uri)},\n'
+            '  "workspaceUris": [\n'
             f'    {json.dumps(ws_uri)}\n'
             "  ]\n"
             "}\n"

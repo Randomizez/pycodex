@@ -12,6 +12,7 @@ from pycodex.tools.base_tool import BaseTool, StructuredToolOutput, ToolContext,
 from pycodex.tools.runtime_services import AgentRuntimeEnvironment
 
 from ..context import format_local_iso
+from ..transcript import truncate_agy_tool_output
 
 if typing.TYPE_CHECKING:
     from responses_server.config import CompatServerConfig
@@ -182,6 +183,17 @@ class AgyToolRegistry(ToolRegistry):
                 output_val = raw_output
             if is_err and isinstance(output_val, str):
                 output_val = self._format_error_message(output_val)
+            elif (
+                content_items is None
+                and isinstance(output_val, str)
+                and call.name != "read_file"
+            ):
+                is_sync_run_cmd = call.name == "run_command" and output_val.startswith("Created At: ")
+                output_val = truncate_agy_tool_output(
+                    output_val,
+                    output_path=self.transcript_store.step_output_path(step_idx),
+                    always_persist=is_sync_run_cmd,
+                )
             transcript_content = (
                 json.dumps(output_val, ensure_ascii=False)
                 if isinstance(output_val, (dict, list))

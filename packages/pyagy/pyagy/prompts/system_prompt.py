@@ -96,6 +96,15 @@ BUILTIN_MOUNTED_SKILLS: "typing.Tuple[typing.Tuple[str, str, str], ...]" = (
             "and other workers: do not load this."
         ),
     ),
+    (
+        "swarm_pane",
+        "swarm_pane",
+        (
+            "ONLY for the coordinator of an active /swarm session. What the coordinator writes so the Swarm UI's "
+            "Overview can show the swarm's goal, its groups of work and a screenshot timeline; load it before you "
+            "brief and add the first workers. Outside /swarm, do not load this."
+        ),
+    ),
 )
 
 

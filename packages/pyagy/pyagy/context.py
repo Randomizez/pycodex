@@ -164,13 +164,19 @@ def normalize_agy_usage(
             "cache_read_tokens": 0,
             "total_tokens": 0,
         }
-    in_tok = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
+    raw_in = int(usage.get("input_tokens", usage.get("prompt_tokens", 0)) or 0)
     out_tok = int(usage.get("output_tokens", usage.get("completion_tokens", 0)) or 0)
-    tot_tok = int(usage.get("total_tokens", in_tok + out_tok) or 0)
     cached = int(usage.get("cache_read_tokens", 0) or 0)
     details = usage.get("input_tokens_details") or usage.get("prompt_tokens_details")
-    if isinstance(details, dict):
+    has_cached_details = isinstance(details, dict) and "cached_tokens" in details
+    if has_cached_details:
+        assert isinstance(details, dict)
         cached = int(details.get("cached_tokens", cached) or 0)
+        in_tok = max(0, raw_in - cached)
+        tot_tok = in_tok + out_tok
+    else:
+        in_tok = raw_in
+        tot_tok = int(usage.get("total_tokens", in_tok + out_tok) or 0)
     thinking = int(usage.get("thinking_tokens", 0) or 0)
     out_details = usage.get("output_tokens_details") or usage.get("completion_tokens_details")
     if isinstance(out_details, dict):
@@ -199,14 +205,14 @@ def format_subagents_section(
         ws_block = f"[\n{ws_lines}\n    ]" if ws_lines else "[]"
         blocks.append(
             "{\n"
-            '  "spec":  {\n'
-            f'    "typeName":  {json.dumps(sub.type_name, ensure_ascii=False)},\n'
-            f'    "role":  {json.dumps(sub.role, ensure_ascii=False)}\n'
+            '  "spec": {\n'
+            f'    "typeName": {json.dumps(sub.type_name, ensure_ascii=False)},\n'
+            f'    "role": {json.dumps(sub.role, ensure_ascii=False)}\n'
             "  },\n"
-            '  "result":  {\n'
-            f'    "conversationId":  {json.dumps(sub.conversation_id, ensure_ascii=False)},\n'
-            f'    "logAbsoluteUri":  {json.dumps(sub.log_absolute_uri, ensure_ascii=False)},\n'
-            f'    "workspaceUris":  {ws_block}\n'
+            '  "result": {\n'
+            f'    "conversationId": {json.dumps(sub.conversation_id, ensure_ascii=False)},\n'
+            f'    "logAbsoluteUri": {json.dumps(sub.log_absolute_uri, ensure_ascii=False)},\n'
+            f'    "workspaceUris": {ws_block}\n'
             "  }\n"
             "}"
         )

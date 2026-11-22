@@ -25,6 +25,7 @@ from pyagy.context import (
     SpawnedSubagentSummary,
     format_checkpoint_transcript_text,
     format_wire_context_summary,
+    normalize_agy_usage,
 )
 from pyagy.models import (
     OFFICIAL_MODELS,
@@ -34,7 +35,11 @@ from pyagy.models import (
 )
 from pyagy.task_manager import cron_matches, next_cron_fire_time, parse_cron_expression
 from pyagy.tools import load_official_declarations
-from pyagy.transcript import AgyTranscriptStore
+from pyagy.transcript import (
+    AGY_TOOL_OUTPUT_MAX_BYTES,
+    AgyTranscriptStore,
+    truncate_agy_tool_output,
+)
 
 
 def _write_codex_gemini_config(
@@ -956,7 +961,7 @@ def test_compaction_thresholds_formatting_and_repl(
     assert "# Subagents (2 total)\n" in wire_sum
     assert "communicate with them.\n\n{\n" in wire_sum
     assert wire_sum.index("00001111-") < wire_sum.index("ffff0000-")
-    assert '"typeName":  "research"' in wire_sum
+    assert '"typeName": "research"' in wire_sum
 
     sub_ckpt = format_checkpoint_transcript_text(
         summary_text="<summary>sub</summary>",
@@ -1101,5 +1106,350 @@ async def test_subagent_idle_fallback_and_parent_report_suppression(
             )
             assert any("Direct report to root" in txt for txt in root_texts)
             assert not any(f"Subagent {cid2} has gone idle." in txt for txt in root_texts)
+        finally:
+            await session.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_output_truncation_and_step_persistence(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+
+    # 1. UTF-8 multibyte boundary safety and byte cap in truncate_agy_tool_output
+    step_out = tmp_path / "steps" / "7" / "output.txt"
+    chinese_payload = "前缀\n" + ("中文测试" * 2000) + "\n后缀"
+    truncated = truncate_agy_tool_output(chinese_payload, output_path=step_out)
+    assert len(truncated.encode("utf-8")) <= AGY_TOOL_OUTPUT_MAX_BYTES
+    assert f"file://{step_out}" in truncated
+    assert "<truncated " in truncated and " bytes from the middle of the output>" in truncated
+    assert step_out.read_text(encoding="utf-8") == chinese_payload
+
+    def _responder(_path: "str", _body: "typing.Dict[str, object]") -> "typing.Tuple[int, bytes, bool]":
+        return 200, _sse_bytes([{"text": "Ack.", "thoughtSignature": "c2ln"}]), False
+
+    with _LocalGeminiResponder(_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        app_data = tmp_path / "trunc_appdata"
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        session = build_agy_session(config_path=cfg, cwd=ws, app_data_dir=app_data)
+        try:
+            await session.root_node.start()
+            reg = session.root_node.tool_registry
+            conv_id = session.root_node.conversation_id
+            store = session.root_node.transcript_store
+
+            # 2. Small sync run_command (<10 KiB) persists steps/<idx>/output.txt without truncating
+            r_small = await reg.execute(
+                ToolCall(
+                    call_id="cmd_small",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": "echo hello_small",
+                        "WaitMsBeforeAsync": 5000,
+                        "toolSummary": "small echo",
+                    },
+                ),
+                _make_tool_context(ws, conv_id, "cmd_small"),
+            )
+            assert not r_small.is_error
+            assert "<truncated " not in str(r_small.output)
+            assert store.step_output_path(0).is_file()
+            assert "hello_small" in store.step_output_path(0).read_text(encoding="utf-8")
+
+            # 3. Large sync run_command (>10 KiB) truncates at <=10 KiB and writes full output.txt
+            r_big_sync = await reg.execute(
+                ToolCall(
+                    call_id="cmd_big_sync",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": "python3 -c 'print(\"S\" * 18000)'",
+                        "WaitMsBeforeAsync": 5000,
+                        "toolSummary": "big sync",
+                    },
+                ),
+                _make_tool_context(ws, conv_id, "cmd_big_sync"),
+            )
+            sync_txt = str(r_big_sync.output)
+            assert len(sync_txt.encode("utf-8")) <= AGY_TOOL_OUTPUT_MAX_BYTES
+            assert f"file://{store.step_output_path(1)}" in sync_txt
+            assert len(store.step_output_path(1).read_bytes()) > 18000
+
+            # 4. Large async background run_command (>10 KiB) truncates <SYSTEM_MESSAGE> body
+            finished = asyncio.Event()
+            session.root_node.add_event_listener(
+                lambda ev: finished.set() if ev.kind == "turn_completed" else None
+            )
+            r_big_bg = await reg.execute(
+                ToolCall(
+                    call_id="cmd_big_bg",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": "sleep 0.7 && python3 -c 'print(\"B\" * 25000)'",
+                        "WaitMsBeforeAsync": 500,
+                        "toolSummary": "big bg",
+                    },
+                ),
+                _make_tool_context(ws, conv_id, "cmd_big_bg"),
+            )
+            assert "Tool is running as a background task" in str(r_big_bg.output)
+            await asyncio.wait_for(finished.wait(), timeout=8.0)
+
+            sys_msgs = [
+                it.text
+                for it in session.root_node.agent.history
+                if isinstance(it, UserMessage) and "finished with result:" in it.text
+            ]
+            assert len(sys_msgs) == 1
+            assert len(sys_msgs[0].encode("utf-8")) < 11200
+            assert f"file://{store.step_output_path(2)}" in sys_msgs[0]
+            assert "<truncated " in sys_msgs[0]
+            assert len(store.step_output_path(2).read_bytes()) > 25000
+            assert len((store.tasks_dir / "task-2.log").read_bytes()) >= 25000
+
+            # 5. read_file keeps its own 46,080-byte limit (not truncated at 10 KiB)
+            twenty_kb = ws / "twenty_kb.txt"
+            twenty_kb.write_text(("0123456789abcdef" * 4 + "\n") * 300, encoding="utf-8")
+            r_read = await reg.execute(
+                ToolCall(
+                    call_id="read_20k",
+                    name="read_file",
+                    arguments={"Path": str(twenty_kb)},
+                ),
+                _make_tool_context(ws, conv_id, "read_20k"),
+            )
+            assert not r_read.is_error
+            assert len(str(r_read.output).encode("utf-8")) > 19000
+            assert "The tool's output was truncated" not in str(r_read.output)
+        finally:
+            await session.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_anchor_resume_and_compaction_overflow_recovery(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+
+    # Verify cached_tokens accounting matches official agy
+    norm_cached = normalize_agy_usage(
+        {
+            "input_tokens": 520000,
+            "input_tokens_details": {"cached_tokens": 400000},
+            "output_tokens": 21000,
+            "output_tokens_details": {"reasoning_tokens": 20000},
+            "total_tokens": 541000,
+        }
+    )
+    assert norm_cached == {
+        "input_tokens": 120000,
+        "output_tokens": 21000,
+        "thinking_tokens": 20000,
+        "cache_read_tokens": 400000,
+        "total_tokens": 141000,
+    }
+
+    overflow_err = json.dumps(
+        {
+            "error": {
+                "code": 400,
+                "message": (
+                    "The input token count exceeds the maximum number of tokens allowed "
+                    "(1048576); input token count: 1113435."
+                ),
+                "status": "INVALID_ARGUMENT",
+            }
+        }
+    ).encode("utf-8")
+
+    compaction_attempts = [0]
+
+    def _responder(_path: "str", body: "typing.Dict[str, object]") -> "typing.Tuple[int, bytes, bool]":
+        dumped = json.dumps(body["contents"], ensure_ascii=False)
+        if "Wrap your response in <summary></summary> tags." in dumped:
+            compaction_attempts[0] += 1
+            # First compaction attempt has the legacy 300 KB <SYSTEM_MESSAGE> -> return Gemini 400!
+            if "X" * 50000 in dumped:
+                return 400, overflow_err, False
+            # Second compaction attempt has truncated the oversized <SYSTEM_MESSAGE> -> succeeds!
+            return 200, _sse_bytes([{"text": "<summary>Recovered Carbon summary</summary>"}]), False
+
+        # Normal turn: return high promptTokenCount (432,476) on turn 1
+        if "seed turn" in dumped and "<CONTEXT_SUMMARY>" not in dumped:
+            ev = {
+                "candidates": [
+                    {
+                        "content": {"role": "model", "parts": [{"text": "Seed reply"}]},
+                        "finishReason": "STOP",
+                    }
+                ],
+                "usageMetadata": {
+                    "promptTokenCount": 432400,
+                    "candidatesTokenCount": 76,
+                    "totalTokenCount": 432476,
+                },
+            }
+            return 200, ("data: " + json.dumps(ev) + "\n\n").encode("utf-8"), False
+
+        return 200, _sse_bytes([{"text": "Post-recovery reply"}]), False
+
+    with _LocalGeminiResponder(_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        app_data = tmp_path / "carbon_appdata"
+        codex_home = tmp_path / "codex_home"
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        # Step 1: Run initial session with rollout recording enabled (simulating pycodex-ws Carbon)
+        s1 = build_agy_session(
+            config_path=cfg,
+            cwd=tmp_path,
+            app_data_dir=app_data,
+            enable_rollout_recording=True,
+        )
+        try:
+            await s1.root_node.run_user_prompt("seed turn")
+            conv_id = s1.root_node.conversation_id
+            rollout_path = s1.root_node.agent.recorded_session_file_path
+            assert rollout_path is not None and rollout_path.is_file()
+            assert s1.root_node.agent.anchor_tokens == 432476
+
+            # Inject a legacy un-truncated 300 KB <SYSTEM_MESSAGE> AFTER the anchor (like task-874)
+            s1.root_node.deliver_system_message(
+                'Task id "legacy/task-874" finished with result:\n' + ("X" * 300000),
+                sender="legacy/task-874",
+                wake_if_idle=False,
+            )
+            # Commit pending message into rollout & pyagy_session.json, then strip anchor_history_len
+            # to simulate legacy pyagy_session.json written before this fix.
+            s1.root_node.agent.receive_messages(
+                (s1.root_node.runtime._pending[0].messages[0],)
+                if getattr(s1.root_node.runtime, "_pending", ())
+                else ()
+            )
+            from pyagy.context import make_system_user_message
+
+            legacy_big_msg = make_system_user_message(
+                content='Task id "legacy/task-874" finished with result:\n' + ("X" * 300000),
+                sender="legacy/task-874",
+            )
+            s1.root_node.agent._append_history([legacy_big_msg])
+            s1.root_node.save_session_state()
+            state_path = s1.root_node.transcript_store.session_state_path
+            raw_state = json.loads(state_path.read_text(encoding="utf-8"))
+            assert raw_state["anchor_history_len"] < len(raw_state["history"])
+            del raw_state["anchor_history_len"]
+            state_path.write_text(json.dumps(raw_state, ensure_ascii=False), encoding="utf-8")
+        finally:
+            await s1.close()
+
+        # Step 2: Resume via runtime.resume(rollout_path) (exact pycodex-ws reboot path!)
+        s2 = build_agy_session(
+            config_path=cfg,
+            cwd=tmp_path,
+            app_data_dir=app_data,
+            enable_rollout_recording=True,
+        )
+        try:
+            await s2.root_node.start()
+            s2.root_node.runtime.resume(rollout_path)
+            assert s2.root_node.agent.anchor_tokens == 432476
+            # Legacy 300 KB <SYSTEM_MESSAGE> MUST sit after anchor_history_len, pushing estimate > 512,000!
+            assert s2.root_node.agent.anchor_history_len < len(s2.root_node.agent.history)
+            assert (
+                s2.root_node.agent.anchor_tokens + s2.root_node.agent._estimate_delta_tokens()
+                >= 512000
+            )
+
+            summary = await s2.root_node.run_user_prompt("continue")
+            assert summary.final_response == "Post-recovery reply"
+            # Compaction hit Gemini 400 once, truncated the 300 KB <SYSTEM_MESSAGE>, and succeeded on attempt 2!
+            assert compaction_attempts[0] == 2
+        finally:
+            await s2.close()
+
+
+@pytest.mark.asyncio
+async def test_sample_overflow_fallback_and_tool_pruning_compaction(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+
+    overflow_err = json.dumps(
+        {
+            "error": {
+                "code": 400,
+                "message": (
+                    "The input token count exceeds the maximum number of tokens allowed "
+                    "(1048576); input token count: 1090000."
+                ),
+            }
+        }
+    ).encode("utf-8")
+
+    big_file_1 = tmp_path / "f1.txt"
+    big_file_2 = tmp_path / "f2.txt"
+    big_file_1.write_text("OLD_READ_CONTENT_" * 400, encoding="utf-8")
+    big_file_2.write_text("NEW_READ_CONTENT_" * 400, encoding="utf-8")
+
+    step = [0]
+
+    def _responder(_path: "str", body: "typing.Dict[str, object]") -> "typing.Tuple[int, bytes, bool]":
+        dumped = json.dumps(body["contents"], ensure_ascii=False)
+        if "Wrap your response in <summary></summary> tags." in dumped:
+            # Force pruning of the oldest read_file tool result before compaction fits!
+            if "OLD_READ_CONTENT_" in dumped:
+                return 400, overflow_err, False
+            assert "NEW_READ_CONTENT_" in dumped
+            return 200, _sse_bytes([{"text": "<summary>Pruned oldest tool and compacted</summary>"}]), False
+
+        step[0] += 1
+        if step[0] == 1:
+            return (
+                200,
+                _sse_bytes(
+                    [
+                        {
+                            "functionCall": {
+                                "id": "rf1",
+                                "name": "read_file",
+                                "args": {"Path": str(big_file_1)},
+                            },
+                            "thoughtSignature": "c2lnMQ==",
+                        },
+                        {
+                            "functionCall": {
+                                "id": "rf2",
+                                "name": "read_file",
+                                "args": {"Path": str(big_file_2)},
+                            },
+                        },
+                    ]
+                ),
+                False,
+            )
+        if step[0] == 2:
+            # Simulate unexpected context overflow during normal _sample (e.g. unestimated tokens)
+            return 400, overflow_err, False
+        return 200, _sse_bytes([{"text": "Recovered from sample overflow"}]), False
+
+    with _LocalGeminiResponder(_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        session = build_agy_session(
+            config_path=cfg,
+            cwd=tmp_path,
+            app_data_dir=tmp_path / "overflow_appdata",
+        )
+        try:
+            res = await session.root_node.run_user_prompt("read both files")
+            assert res.final_response == "Recovered from sample overflow"
+            text_items = [
+                it.text for it in session.root_node.agent.history if hasattr(it, "text")
+            ]
+            assert "<CONTEXT_SUMMARY>" in str(text_items[0])
+            assert text_items[-1] == "Recovered from sample overflow"
         finally:
             await session.close()

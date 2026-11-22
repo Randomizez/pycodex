@@ -1,6 +1,6 @@
 # pyagy
 
-Antigravity CLI (`agy 1.5.13`) wire-compatible CLI harness built on top of `pycodex` and `responses_server`.
+Antigravity CLI (`agy 1.5.14`) wire-compatible CLI harness built on top of `pycodex` and `responses_server`.
 
 ## Quick Start
 
@@ -27,8 +27,9 @@ env -u VIRTUAL_ENV PYTHONPATH=.:packages/pyagy \
 
 ## Compaction & Multi-Agent Messaging
 
-- **Context Compaction (`agy 1.5.13` wire parity)**:
-  - Pre-invocation auto-compaction triggers when estimated context tokens reach the model's threshold (`512000` for Gemini 4 Neon/Carbon/Argon, `256000` for Gemini 4 Hydrogen / 3.8 / 3.7 / 3.6 Flash / 3.1 Pro, or `AGY_CLI_AUTO_COMPACT_OVERRIDE` integer / `1..100%`).
+- **Context Compaction & Tool Output Truncation (`agy 1.5.14` wire parity)**:
+  - Pre-invocation auto-compaction triggers when estimated context tokens reach the model's threshold (`512000` for Gemini 4 Neon/Carbon/Argon, `256000` for Gemini 4 Hydrogen / 3.8 / 3.7 / 3.6 Flash / 3.1 Pro, or `AGY_CLI_AUTO_COMPACT_OVERRIDE` integer / `1..100%`), with automatic overflow fallback on `ContextLengthExceeded`.
+  - Sync and background `run_command` outputs (as well as other non-`read_file` plain-text tool outputs exceeding `10,240` UTF-8 bytes) apply exact middle truncation and persist full output under `.system_generated/steps/<step_index>/output.txt`.
   - Manual `/compact` and `/compact <follow-up>` emit the on-demand compaction prompt (`maxOutputTokens` `32768` / `16384`), replace conversation history with `<CONTEXT_SUMMARY>`, and persist `CHECKPOINT` transcript steps across `--continue` / `--conversation`.
 - **Subagent -> Root Messaging**:
   - Subagents spawned via `invoke_subagent` receive the caller's `conversation_id` and can proactively send progress or questions back to root (or any live peer) via `send_message(Recipient=<root_id>, Message=...)`, in addition to automatic idle reporting.
@@ -46,7 +47,7 @@ Add `harness = "pyagy"` (default is `harness = "pycodex"`) to any Gemini profile
 
 ## Verification
 
-See [ALIGNMENT.md](ALIGNMENT.md) for the detailed alignment status (unaligned/placeholder items vs verified wire-compatible contracts) against official `agy 1.5.13`.
+See [ALIGNMENT.md](ALIGNMENT.md) for the detailed alignment status (unaligned/placeholder items vs verified wire-compatible contracts) against official `agy 1.5.14`.
 
 ```bash
 env -u VIRTUAL_ENV PYTHONPATH=.:packages/pyagy \

@@ -17,6 +17,7 @@ from time import time
 import typing
 
 from .context import format_single_system_message, format_utc_iso
+from .transcript import truncate_agy_tool_output
 
 if typing.TYPE_CHECKING:
     from .transcript import AgyTranscriptStore
@@ -445,6 +446,11 @@ class AgyTaskManager:
     def _now(self) -> "typing.Optional[datetime]":
         return self._clock() if self._clock is not None else None
 
+    def _step_output_path(self, step_index: "int") -> "Path":
+        if self.transcript_store is not None:
+            return self.transcript_store.step_output_path(step_index)
+        return self.tasks_dir.parent / "steps" / str(int(step_index)) / "output.txt"
+
     def _signal_state_change(self) -> "None":
         if self._state_change_event is not None:
             self._state_change_event.set()
@@ -605,7 +611,12 @@ class AgyTaskManager:
                 return
             record.status = "DONE"
             code = 0 if handle.exit_code is None else int(handle.exit_code)
-            result_body = format_command_result_body(code, handle.output_text())
+            raw_result_body = format_command_result_body(code, handle.output_text())
+            result_body = truncate_agy_tool_output(
+                raw_result_body,
+                output_path=self._step_output_path(step_index),
+                always_persist=True,
+            )
             msg_content = (
                 f'Task id "{task_id}" finished with result:\n'
                 f"{result_body}\n"
