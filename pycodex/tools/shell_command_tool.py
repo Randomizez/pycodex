@@ -12,8 +12,11 @@ Expected behavior:
 """
 
 import asyncio
+import os
+import subprocess
 
 from ..protocol import JSONDict, JSONValue
+from ..utils.get_env import build_shell_command
 from .base_tool import BaseTool, ToolContext
 
 DEFAULT_SHELL_TIMEOUT_MS = 10_000
@@ -61,7 +64,10 @@ class ShellCommandTool(BaseTool):
         login = bool(args.get("login", True))
         workdir_arg = args.get("workdir")
         working_directory = context.resolve_path(workdir_arg)
-        shell_args = ["bash", "-lc" if login else "-c", command]
+        if os.name == "nt":
+            shell_args = build_shell_command(command, login=login)
+        else:
+            shell_args = ["bash", "-lc" if login else "-c", command]
 
         process = await asyncio.create_subprocess_exec(
             *shell_args,
@@ -77,7 +83,17 @@ class ShellCommandTool(BaseTool):
             )
             timed_out = False
         except asyncio.TimeoutError:
-            process.kill()
+            if os.name == "nt":
+                try:
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                except OSError:
+                    process.kill()
+            else:
+                process.kill()
             stdout_bytes, stderr_bytes = await process.communicate()
             timed_out = True
 

@@ -1438,3 +1438,102 @@ def test_resume_restores_background_tool_hooks(tmp_path, restore_file) -> "None"
     assert exec_manager._notify_hook == runtime.maybe_invoke
     assert agent.session_file_path.exists() == restore_file
     agent.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_windows_shell_resolution_and_command_builders(tmp_path, monkeypatch) -> "None":
+    import pycodex.tools.shell_command_tool as shell_command_mod
+    import pycodex.utils.get_env as get_env
+
+    class _WinOS:
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+
+    win_os = _WinOS()
+    ps_exe = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    pwsh_exe = r"C:\Program Files\PowerShell\7\pwsh.exe"
+    cmd_exe = r"C:\Windows\System32\cmd.exe"
+
+    monkeypatch.setattr(get_env, "os", win_os)
+    monkeypatch.setattr(shell_command_mod, "os", win_os)
+    monkeypatch.delenv("SHELL", raising=False)
+    monkeypatch.setenv("COMSPEC", cmd_exe)
+
+    monkeypatch.setattr(
+        get_env.shutil,
+        "which",
+        lambda name: ps_exe if name == "powershell.exe" else None,
+    )
+    assert get_env.get_shell_name() == "powershell"
+    exec_mgr = UnifiedExecManager()
+    assert exec_mgr._build_shell_command("Get-Location", None, True) == [
+        ps_exe,
+        "-NoProfile",
+        "-Command",
+        "Get-Location",
+    ]
+
+    monkeypatch.setattr(
+        get_env.shutil,
+        "which",
+        lambda name: pwsh_exe if name == "pwsh.exe" else None,
+    )
+    assert get_env.get_shell_name() == "pwsh"
+    assert exec_mgr._build_shell_command("Get-Location", None, False) == [
+        pwsh_exe,
+        "-NoProfile",
+        "-Command",
+        "Get-Location",
+    ]
+
+    monkeypatch.setattr(get_env.shutil, "which", lambda _name: None)
+    assert get_env.get_shell_name() == "cmd"
+    assert exec_mgr._build_shell_command("echo hi", None, True) == [
+        cmd_exe,
+        "/C",
+        "echo hi",
+    ]
+
+    captured_exec_args = []
+    taskkill_calls = []
+
+    class FakeTimeoutProc:
+        pid = 42424
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b""
+
+        def kill(self):
+            return None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured_exec_args.append(list(args))
+        return FakeTimeoutProc()
+
+    async def raise_timeout(awaitable, timeout):
+        close = getattr(awaitable, "close", None)
+        if close is not None:
+            close()
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(
+        shell_command_mod.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(shell_command_mod.asyncio, "wait_for", raise_timeout)
+    monkeypatch.setattr(
+        shell_command_mod.subprocess,
+        "run",
+        lambda cmd, **kwargs: taskkill_calls.append(list(cmd)),
+    )
+
+    tool = ShellCommandTool()
+    out = await tool.run(
+        ToolContext(turn_id="win_sc", history=(), cwd=tmp_path),
+        {"command": "dir", "timeout_ms": 50},
+    )
+    assert captured_exec_args == [[cmd_exe, "/C", "dir"]]
+    assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", "42424"]]
+    assert "Timeout: exceeded 50 ms" in str(out)

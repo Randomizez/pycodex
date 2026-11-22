@@ -1564,6 +1564,23 @@ def _terminate_process_group(process: subprocess.Popen) -> None:
     import signal
 
     if process.poll() is None:
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            return
         try:
             os.killpg(process.pid, signal.SIGTERM)
         except OSError:

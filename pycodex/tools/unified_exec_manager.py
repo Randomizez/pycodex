@@ -26,6 +26,7 @@ from loguru import logger
 
 from ..protocol import JSONValue
 from ..utils.compat import shlex_join, stream_writer_is_closing
+from ..utils.get_env import build_shell_command
 from ..utils.truncation import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     approx_token_count,
@@ -433,13 +434,12 @@ class UnifiedExecManager:
         shell: "typing.Union[str, None]",
         login: "bool",
     ) -> "typing.List[str]":
-        shell_path = shell or os.environ.get("SHELL") or "/bin/bash"
-        shell_name = Path(shell_path).name.lower()
-        if shell_name in {"cmd", "cmd.exe"}:
-            return [shell_path, "/C", cmd]
-        if "powershell" in shell_name:
-            return [shell_path, "-NoProfile", "-Command", cmd]
-        return [shell_path, "-lc" if login else "-c", cmd]
+        return build_shell_command(
+            cmd,
+            shell=shell,
+            login=login,
+            default_posix="/bin/bash",
+        )
 
     def _truncate_output(
         self, output: "str", max_output_tokens: "typing.Union[int, None]"

@@ -6,15 +6,24 @@ from datetime import datetime, timedelta
 import errno
 import json
 import os
-from pathlib import Path
-import pty
+from pathlib import Path, PureWindowsPath
 import random
+import shutil
 import signal
 import subprocess
 import tempfile
 import threading
 from time import time
 import typing
+
+pty: "typing.Any"
+if os.name == "nt":
+    pty = None
+else:
+    try:
+        import pty
+    except ImportError:
+        pty = None
 
 from .context import format_single_system_message, format_utc_iso
 from .transcript import truncate_agy_tool_output
@@ -274,6 +283,21 @@ class _CommandProcessHandle:
         if self.proc.poll() is not None:
             self.close_master()
             return
+        if os.name == "nt":
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError:
+                self.proc.kill()
+            try:
+                self.proc.wait(timeout=0.3)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.close_master()
+            return
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -350,6 +374,57 @@ class _Schedule:
         finally:
             if temporary.exists():
                 temporary.unlink()
+
+
+def resolve_agy_shell_command(
+    command_line: "str",
+) -> "typing.Tuple[str, typing.List[str]]":
+    """Return `(shell_label, argv)` for executing `command_line` on the host OS."""
+    if os.name != "nt":
+        return "bash", ["bash", "-c", command_line]
+
+    env_shell = (os.environ.get("SHELL") or "").strip()
+    resolved_env: "typing.Optional[str]" = None
+    if env_shell:
+        if env_shell.startswith("/"):
+            if os.path.isfile(env_shell):
+                resolved_env = env_shell
+            else:
+                resolved_env = shutil.which(PureWindowsPath(env_shell).name)
+        else:
+            resolved_env = shutil.which(env_shell) or env_shell
+
+    if resolved_env:
+        env_name = PureWindowsPath(resolved_env).name.lower()
+        if env_name in {"cmd", "cmd.exe"}:
+            return "cmd", [resolved_env, "/C", command_line]
+        if "powershell" in env_name or env_name in {"pwsh", "pwsh.exe"}:
+            label = "pwsh" if env_name in {"pwsh", "pwsh.exe"} else "powershell"
+            return label, [
+                resolved_env,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                command_line,
+            ]
+        stem = env_name[:-4] if env_name.endswith(".exe") else env_name
+        return (stem or "bash"), [resolved_env, "-c", command_line]
+
+    for candidate in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+        found = shutil.which(candidate)
+        if found:
+            found_name = PureWindowsPath(found).name.lower()
+            label = "pwsh" if found_name in {"pwsh", "pwsh.exe"} else "powershell"
+            return label, [
+                found,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                command_line,
+            ]
+
+    comspec = os.environ.get("COMSPEC") or "cmd.exe"
+    return "cmd", [comspec, "/C", command_line]
 
 
 def _next_cron_deadline(expression: str, exact_timing: bool) -> float:
@@ -491,17 +566,19 @@ class AgyTaskManager:
         cwd: "Path",
         loop: "asyncio.AbstractEventLoop",
     ) -> "_CommandProcessHandle":
+        _, shell_argv = resolve_agy_shell_command(command_line)
         master_fd: "typing.Optional[int]" = None
         slave_fd: "typing.Optional[int]" = None
-        try:
-            master_fd, slave_fd = pty.openpty()
-        except OSError:
-            master_fd, slave_fd = None, None
+        if pty is not None and os.name != "nt":
+            try:
+                master_fd, slave_fd = pty.openpty()
+            except OSError:
+                master_fd, slave_fd = None, None
 
         if master_fd is not None and slave_fd is not None:
             try:
                 proc = subprocess.Popen(
-                    ["bash", "-c", command_line],
+                    shell_argv,
                     stdin=slave_fd,
                     stdout=slave_fd,
                     stderr=slave_fd,
@@ -535,15 +612,21 @@ class AgyTaskManager:
             threading.Thread(target=_read_pty, daemon=True).start()
             return handle
 
-        proc = subprocess.Popen(
-            ["bash", "-c", command_line],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=str(cwd),
-            start_new_session=True,
-            close_fds=True,
-        )
+        popen_kwargs: "typing.Dict[str, typing.Any]" = {
+            "stdin": subprocess.PIPE,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.STDOUT,
+            "bufsize": 0,
+            "cwd": str(cwd),
+        }
+        if os.name == "nt":
+            popen_kwargs["creationflags"] = getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+            )
+        else:
+            popen_kwargs["start_new_session"] = True
+            popen_kwargs["close_fds"] = True
+        proc = subprocess.Popen(shell_argv, **popen_kwargs)
         handle = _CommandProcessHandle(proc=proc, master_fd=None, loop=loop)
 
         def _read_pipe() -> "None":

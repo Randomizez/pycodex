@@ -4,6 +4,7 @@ import asyncio
 from copy import deepcopy
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import typing
 
@@ -12,6 +13,7 @@ from pycodex.tools.base_tool import BaseTool, StructuredToolOutput, ToolContext,
 from pycodex.tools.runtime_services import AgentRuntimeEnvironment
 
 from ..context import format_local_iso
+from ..task_manager import resolve_agy_shell_command
 from ..transcript import truncate_agy_tool_output
 
 if typing.TYPE_CHECKING:
@@ -56,6 +58,14 @@ def load_official_declarations() -> "typing.Tuple[typing.Tuple[str, ...], typing
         name = str(entry["name"])
         order.append(name)
         by_name[name] = deepcopy(entry)
+    if os.name == "nt" and "run_command" in by_name:
+        shell_label, _ = resolve_agy_shell_command("")
+        by_name["run_command"]["description"] = str(
+            by_name["run_command"]["description"]
+        ).replace(
+            "Operating System: linux. Shell: bash.",
+            f"Operating System: windows. Shell: {shell_label}.",
+        )
     return tuple(order), by_name
 
 

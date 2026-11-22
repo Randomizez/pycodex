@@ -1,16 +1,68 @@
 import os
 import platform
+import shutil
 import subprocess
 import typing
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+
+
+def resolve_default_shell_path(default_posix: "str" = "/bin/bash") -> "str":
+    shell_path = (os.environ.get("SHELL") or "").strip()
+    if shell_path:
+        if os.name != "nt":
+            return shell_path
+        if not shell_path.startswith("/") or os.path.isfile(shell_path):
+            return shell_path
+        win_equiv = shutil.which(PureWindowsPath(shell_path).name)
+        if win_equiv:
+            return win_equiv
+    if os.name == "nt":
+        for candidate in ("powershell.exe", "powershell", "pwsh.exe", "pwsh"):
+            resolved = shutil.which(candidate)
+            if resolved:
+                return resolved
+        return os.environ.get("COMSPEC") or "cmd.exe"
+    return default_posix
+
+
+def build_shell_command(
+    cmd: "str",
+    shell: "typing.Union[str, None]" = None,
+    login: "bool" = True,
+    default_posix: "str" = "/bin/bash",
+) -> "typing.List[str]":
+    shell_path = shell or resolve_default_shell_path(default_posix=default_posix)
+    shell_name = (
+        PureWindowsPath(shell_path).name.lower()
+        if os.name == "nt"
+        else Path(shell_path).name.lower()
+    )
+    if shell_name in {"cmd", "cmd.exe"}:
+        return [shell_path, "/C", cmd]
+    if "powershell" in shell_name or shell_name in {"pwsh", "pwsh.exe"}:
+        return [shell_path, "-NoProfile", "-Command", cmd]
+    return [shell_path, "-lc" if login else "-c", cmd]
 
 
 def get_shell_name() -> "str":
-    shell_path = os.environ.get("SHELL")
-    if shell_path:
-        return Path(shell_path).name or shell_path
-    return "bash"
+    if os.name != "nt":
+        shell_path = os.environ.get("SHELL")
+        if shell_path:
+            return Path(shell_path).name or shell_path
+        return "bash"
+    resolved = resolve_default_shell_path()
+    name = PureWindowsPath(resolved).name or resolved
+    lower = name.lower()
+    if "powershell" in lower:
+        return "powershell"
+    if lower in {"pwsh", "pwsh.exe"}:
+        return "pwsh"
+    if lower in {"cmd", "cmd.exe"}:
+        return "cmd"
+    if lower.endswith(".exe"):
+        return name[:-4]
+    return name
 
 
 def get_timezone_name() -> "str":

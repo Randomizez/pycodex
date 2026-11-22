@@ -1453,3 +1453,125 @@ async def test_sample_overflow_fallback_and_tool_pruning_compaction(
             assert text_items[-1] == "Recovered from sample overflow"
         finally:
             await session.close()
+
+
+@pytest.mark.asyncio
+async def test_windows_no_pty_import_pipe_execution_and_taskkill(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    import os
+    import sys
+    from pyagy import task_manager
+    from pyagy import tools as agy_tools
+
+    # 1. Verify fresh Python interpreter with `pty` and `termios` blocked imports pyagy cleanly.
+    check_code = (
+        "import sys; sys.modules['pty'] = None; sys.modules['termios'] = None; "
+        "import pyagy.cli, pyagy.task_manager, pyagy.tools; "
+        "assert pyagy.task_manager.pty is None"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", check_code],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
+
+    # 2. Verify Windows shell resolution & tool declaration adaptation.
+    class _WinOS:
+        name = "nt"
+
+        def __getattr__(self, attr: "str") -> "object":
+            return getattr(os, attr)
+
+    win_os = _WinOS()
+    ps_exe = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+    cmd_exe = r"C:\Windows\System32\cmd.exe"
+    git_bash = r"C:\Program Files\Git\bin\bash.exe"
+
+    with monkeypatch.context() as mp:
+        mp.setattr(task_manager, "os", win_os)
+        mp.setattr(agy_tools, "os", win_os)
+        mp.delenv("SHELL", raising=False)
+        mp.setenv("COMSPEC", cmd_exe)
+
+        mp.setattr(
+            task_manager.shutil,
+            "which",
+            lambda name: ps_exe if name == "powershell.exe" else None,
+        )
+        label, argv = task_manager.resolve_agy_shell_command("Get-ChildItem")
+        assert label == "powershell"
+        assert argv == [
+            ps_exe,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Get-ChildItem",
+        ]
+        _, decls_ps = agy_tools.load_official_declarations()
+        assert "Operating System: windows. Shell: powershell." in str(
+            decls_ps["run_command"]["description"]
+        )
+
+        mp.setattr(task_manager.shutil, "which", lambda _name: None)
+        label_cmd, argv_cmd = task_manager.resolve_agy_shell_command("ver")
+        assert label_cmd == "cmd"
+        assert argv_cmd == [cmd_exe, "/C", "ver"]
+        _, decls_cmd = agy_tools.load_official_declarations()
+        assert "Operating System: windows. Shell: cmd." in str(
+            decls_cmd["run_command"]["description"]
+        )
+
+        mp.setenv("SHELL", "/nonexistent/msys/bash")
+        mp.setattr(
+            task_manager.shutil,
+            "which",
+            lambda name: git_bash if name == "bash" else None,
+        )
+        label_bash, argv_bash = task_manager.resolve_agy_shell_command("ls -la")
+        assert label_bash == "bash"
+        assert argv_bash == [git_bash, "-c", "ls -la"]
+
+    # 3. Verify pipe fallback (pty=None) + Windows taskkill termination path.
+    monkeypatch.setattr(task_manager, "pty", None)
+    mgr = task_manager.AgyTaskManager(
+        conversation_id="win-conv",
+        tasks_dir=tmp_path / "tasks",
+        api_model_getter=lambda: "gemini-4-carbon",
+        notify_callback=lambda *_a, **_kw: True,
+    )
+    try:
+        completed, out = await mgr.run_command(
+            command_line='read line && echo "PIPE:$line" && sleep 10',
+            tool_summary="pipe test",
+            wait_ms=500,
+            is_daemon=False,
+            cwd=tmp_path,
+            step_index=1,
+        )
+        assert completed is False
+        tid = "win-conv/task-1"
+        snap = mgr.background_work_snapshot()
+        assert len(snap) == 1 and snap[0]["tty"] is False
+        mgr.send_input(tid, "ok_win\n")
+        await asyncio.sleep(0.25)
+        assert "PIPE:ok_win" in mgr.status(tid)
+
+        taskkill_calls: "typing.List[typing.List[str]]" = []
+        handle = mgr._tasks[tid].command_handle
+        assert handle is not None
+
+        def _fake_taskkill(cmd: "typing.List[str]", **_kwargs: "object") -> "None":
+            taskkill_calls.append(list(cmd))
+            handle.proc.kill()
+
+        with monkeypatch.context() as mp:
+            mp.setattr(task_manager, "os", win_os)
+            mp.setattr(task_manager.subprocess, "run", _fake_taskkill)
+            mgr.kill(tid)
+
+        assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", str(handle.proc.pid)]]
+    finally:
+        await mgr.close()
