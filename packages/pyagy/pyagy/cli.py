@@ -1,4 +1,4 @@
-"""Antigravity CLI (`agy 1.5.13`) wire-compatible command-line entrypoint."""
+"""Antigravity CLI (`agy 1.5.14`) wire-compatible command-line entrypoint."""
 
 import argparse
 import asyncio
@@ -108,7 +108,7 @@ def _run_agents_subcommand(
 def build_cli_parser() -> "argparse.ArgumentParser":
     parser = argparse.ArgumentParser(
         prog="pyagy",
-        description="Antigravity CLI (agy 1.5.13) wire-compatible mode built on pycodex",
+        description="Antigravity CLI (agy 1.5.14) wire-compatible mode built on pycodex",
     )
     parser.add_argument(
         "prompt",
@@ -120,7 +120,7 @@ def build_cli_parser() -> "argparse.ArgumentParser":
         "-v",
         "--version",
         action="version",
-        version=f"{__version__} (agy 1.5.13 wire-compatible)",
+        version=f"{__version__} (agy 1.5.14 wire-compatible)",
     )
     parser.add_argument(
         "-p",
@@ -709,7 +709,7 @@ def main(
     effective_cwd = (cwd if cwd is not None else Path.cwd()).resolve()
 
     if raw_args in (["-v"], ["--version"]):
-        out_stream.write(f"{__version__} (agy 1.5.13 wire-compatible)\n")
+        out_stream.write(f"{__version__} (agy 1.5.14 wire-compatible)\n")
         out_stream.flush()
         return 0
     if raw_args:
