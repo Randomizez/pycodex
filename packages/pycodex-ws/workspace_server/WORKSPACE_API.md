@@ -119,6 +119,15 @@ even when the launch default changed. Older tabs without a profile use the
 launch default. A missing saved profile fails restoration. Existing sessions
 keep their configuration; this API does not switch profiles in a running tab.
 
+## Markdown images
+
+`GET/HEAD api/views/{id}/images/{path}` serves an image relative to an open
+local Markdown file. The resolved path must stay within the document's directory.
+The image loads inline in the existing tab and works with Canvas disabled.
+`GET/HEAD api/images?path=...` serves an absolute local PNG, JPEG, GIF or WebP
+through the workspace's authenticated routes, with the image viewer's 10 MiB
+and 20 megapixel limits. Loading an image leaves the view list untouched.
+
 ## PDF previews
 
 `POST api/views/open` with `{"href": "report.pdf"}` opens a local PDF using the

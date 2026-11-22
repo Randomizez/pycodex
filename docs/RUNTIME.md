@@ -1209,7 +1209,12 @@ Opening the moved reference again resolves its new version and creates a separat
 comparison when that version is not already open.
 
 Text is decoded as UTF-8 with replacement for invalid bytes. Markdown and HTML
-files default to previews. Markdown uses the existing sanitized renderer; HTML
+files default to previews. Markdown uses the existing sanitized renderer.
+For local Markdown files, relative inline images resolve within the document's
+directory, including subdirectories. The browser loads each relative image
+through the open view ID, independently of Canvas. Absolute raster image paths
+in chat and Markdown previews use the workspace's authenticated image endpoint
+and the image viewer's size and format limits. HTML
 (`.html` / `.htm`, case-insensitive) renders its markup, styles and scripts in an
 ordinary same-origin iframe, just like Canvas. Canvas is the persistent iframe
 for the configured live HTML file; other HTML tabs render their current file or

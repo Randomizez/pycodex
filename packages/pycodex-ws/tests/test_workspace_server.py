@@ -792,6 +792,50 @@ def test_board_routes_enforce_image_boundaries(tmp_path, multi):
             assert browser.get("/w/missing/api/session").status_code == 404
 
 
+def test_markdown_images_use_the_open_document_directory(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    readme = docs / "README.md"
+    readme.write_text("![Screenshot](preview.png)", encoding="utf-8")
+    (docs / "preview.png").write_bytes(b"document image")
+    (tmp_path / "preview.png").write_bytes(b"other image")
+    (docs / "outside.png").symlink_to(tmp_path / "preview.png")
+    with TestClient(create_app(make_session, None, enable_board=False)) as browser:
+        view = browser.post("/api/views/open", json={"href": str(readme)}).json()["view"]
+        base = "/api/views/" + view["id"]
+        image = base + "/images/preview.png"
+        response = browser.get(image)
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == b"document image"
+        assert browser.head(image).status_code == 200
+        for name in ("README.md", "missing.png", "outside.png", "%2e%2e/preview.png"):
+            assert browser.get(base + "/images/" + name).status_code == 404
+        assert len(browser.get("/api/views").json()["views"]) == 1
+        assert browser.delete(base).status_code == 200
+        assert browser.get(image).status_code == 404
+
+
+def test_absolute_inline_image_without_canvas_or_view_tab(tmp_path):
+    from PIL import Image
+
+    image = tmp_path / "图 #1&2+3%.png"
+    Image.new("RGB", (3, 2)).save(str(image))
+    disguised = tmp_path / "text.png"
+    disguised.write_bytes(b"plain text")
+    params = {"path": str(image)}
+    with TestClient(create_app(make_session, None, password="test-password", enable_board=False)) as browser:
+        assert browser.get("/api/images", params=params).status_code == 401
+        assert browser.post("/login", json={"password": "test-password"}).status_code == 200
+        response = browser.get("/api/images", params=params)
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content == image.read_bytes()
+        assert browser.head("/api/images", params=params).headers["content-length"] == str(image.stat().st_size)
+        assert browser.get("/api/images", params={"path": str(disguised)}).status_code == 400
+        assert browser.get("/api/images", params={"path": "relative.png"}).status_code == 404
+        assert browser.get("/api/views").json()["views"] == []
+
+
 @pytest.mark.parametrize("multi", [False, True])
 def test_password_protects_http_and_websocket(tmp_path, multi):
     board = tmp_path / "board.html"

@@ -669,7 +669,7 @@ export class SnapshotDisplay {
     if (markdown) {
       const parent = this.content.querySelector(".snapshot-markdown");
       if (source.source) parent.setAttribute("data-src-path", source.source.path);
-      this.renderMarkdown(parent, source.text);
+      this.renderMarkdown(parent, source.text, source.source ? `api/views/${encodeURIComponent(id)}/images/` : null);
     }
     const [left, top] = this.scrollPositions.get(id) || [0, 0];
     this.content.scrollLeft = left;

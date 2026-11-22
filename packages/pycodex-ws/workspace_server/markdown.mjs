@@ -263,6 +263,18 @@ export function createMarkdownRenderer(log) {
     }
     const validateLink = markdownRenderer.validateLink;
     markdownRenderer.validateLink = href => validateLink(href) || workspaceFilePath(href) !== null;
+    const renderImage = markdownRenderer.renderer.rules.image;
+    markdownRenderer.renderer.rules.image = (tokens, index, options, env, renderer) => {
+      const token = tokens[index];
+      const src = token.attrGet("src");
+      if (/^(?:\/(?![/\\])|[a-z]:(?:[\\/]|%5c))/i.test(src) && /\.(?:png|jpe?g|gif|webp)$/i.test(src)) {
+        // markdown-it already percent-encoded the path. Escape query delimiters without encoding it twice.
+        token.attrSet("src", "api/images?path=" + src.replace(/[&+#]/g, encodeURIComponent));
+      } else if (env.imageBase && src && !/^(?:[a-z][a-z\d+.-]*:|[/\\?#])/i.test(src)) {
+        token.attrSet("src", env.imageBase + src);
+      }
+      return renderImage(tokens, index, options, env, renderer);
+    };
     markdownRenderer.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
       const token = tokens[index];
       const href = token.attrGet("href");
@@ -276,13 +288,13 @@ export function createMarkdownRenderer(log) {
     };
   }
 
-  function renderMarkdownInto(root, source) {
+  function renderMarkdownInto(root, source, imageBase = null) {
     if (!markdownRenderer || !window.DOMPurify) {
       root.textContent = source || "";
       return;
     }
     const protectedMath = protectMath(String(source || ""));
-    const dirtyHtml = markdownRenderer.render(protectedMath.source);
+    const dirtyHtml = markdownRenderer.render(protectedMath.source, {imageBase});
     root.innerHTML = window.DOMPurify.sanitize(dirtyHtml, {
       USE_PROFILES: {html: true},
       ADD_ATTR: ["target", "rel"],

@@ -6,13 +6,14 @@ import hashlib
 import html
 import json
 import mimetypes
-import os
+import stat
 import subprocess
 import typing
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
+from PIL import Image
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
@@ -48,7 +49,7 @@ from .vscode_server import (
     strip_vscode_window_payload,
     websocket_origin_allowed,
 )
-from .workspace_views import WorkspaceViewOpener
+from .workspace_views import WorkspaceViewOpener, raster_image_type
 from .workspaces import WorkspaceSessionManager, session_snapshot
 
 
@@ -140,6 +141,45 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
 
     def view_pdf(request: Request) -> Response:
         return _view_pdf_response(workspace(request).manager, request)
+
+    def view_image(request: Request) -> Response:
+        try:
+            view = workspace(request).manager.views.get(request.path_params["view_id"])
+        except KeyError:
+            raise HTTPException(status_code=404, detail="view not found")
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error))
+        document = view["documents"][0]
+        if view["kind"] != "file" or "source" not in document:
+            raise HTTPException(status_code=404, detail="local Markdown view required")
+        path = Path(document["source"]["path"])
+        if path.suffix.lower() not in (".md", ".markdown"):
+            raise HTTPException(status_code=404, detail="local Markdown view required")
+        return _image_asset_response(path, request.path_params["asset_path"])
+
+    def local_image(request: Request) -> Response:
+        manager = workspace(request).manager
+        path = Path(request.query_params.get("path", ""))
+        if not path.is_absolute() or path.suffix.lower() not in (".png", ".jpg", ".jpeg", ".gif", ".webp"):
+            raise HTTPException(status_code=404, detail="local raster image required")
+        try:
+            info = path.stat()
+            if not stat.S_ISREG(info.st_mode):
+                raise ValueError("expected a regular image file")
+            with path.open("rb") as handle:
+                data = handle.read(manager.views.max_file_bytes + 1)
+            if len(data) > manager.views.max_file_bytes:
+                raise ValueError("image exceeds 10 MiB")
+            media_type = raster_image_type(data, str(path))
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="image not found")
+        except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+            raise HTTPException(status_code=400, detail="invalid local raster image")
+        return Response(b"" if request.method == "HEAD" else data, media_type=media_type, headers={
+            "Content-Length": str(len(data)),
+            "Cache-Control": "private, no-cache",
+            "X-Content-Type-Options": "nosniff",
+        })
 
     def close_view(request: Request) -> JSONResponse:
         return _close_view_response(workspace(request).manager, request.path_params["view_id"])
@@ -340,7 +380,7 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         )
 
     async def board_asset(request: Request) -> Response:
-        return _board_asset_response(
+        return _image_asset_response(
             workspace(request).board_path, request.path_params["asset_path"]
         )
 
@@ -360,8 +400,10 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         route("/api/board", board_status, ["GET"]),
         route("/api/views", views, ["GET"]),
         route("/api/views/open", open_view, ["POST"]),
+        route("/api/images", local_image, ["GET", "HEAD"]),
         route("/api/views/{view_id}", view, ["GET"]),
         route("/api/views/{view_id}/pdf", view_pdf, ["GET", "HEAD"]),
+        route("/api/views/{view_id}/images/{asset_path:path}", view_image, ["GET", "HEAD"]),
         route("/api/views/{view_id}", close_view, ["DELETE"]),
         route("/api/vscode/open", open_vscode_link, ["POST"]),
         route("/vscode", vscode_root, vscode_methods),
@@ -863,31 +905,23 @@ def _board_response(board_path: "typing.Union[Path, None]") -> Response:
     return _html_response(board_path.read_text(encoding="utf-8", errors="replace"))
 
 
-def _board_asset_response(
-    board_path: "typing.Union[Path, None]",
+def _image_asset_response(
+    document_path: "typing.Union[Path, None]",
     asset_path: str,
 ) -> Response:
     media_type, unused_encoding = mimetypes.guess_type(str(asset_path or ""))
     del unused_encoding
-    if board_path is None or not media_type or not media_type.startswith("image/"):
-        raise HTTPException(status_code=404, detail="board image not found")
+    if document_path is None or not media_type or not media_type.startswith("image/"):
+        raise HTTPException(status_code=404, detail="image not found")
 
-    resolved_asset = None
     try:
-        board_directory = board_path.parent.resolve()
-        resolved_asset = (board_directory / asset_path).resolve()
-        within_board_directory = os.path.commonpath(
-            [str(board_directory), str(resolved_asset)]
-        ) == str(board_directory)
+        directory = document_path.parent.resolve()
+        resolved_asset = (directory / asset_path).resolve()
+        resolved_asset.relative_to(directory)
     except (OSError, RuntimeError, ValueError):
-        within_board_directory = False
-
-    if (
-        not within_board_directory
-        or resolved_asset is None
-        or not resolved_asset.is_file()
-    ):
-        raise HTTPException(status_code=404, detail="board image not found")
+        raise HTTPException(status_code=404, detail="image not found")
+    if not resolved_asset.is_file():
+        raise HTTPException(status_code=404, detail="image not found")
 
     return FileResponse(
         str(resolved_asset),

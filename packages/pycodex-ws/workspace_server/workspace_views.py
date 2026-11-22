@@ -19,6 +19,19 @@ from pycodex.utils import uuid7_string
 from .view_sources import WorkspaceViewOpener
 
 
+def raster_image_type(data, label):
+    with Image.open(io.BytesIO(data)) as image:
+        media_type = {
+            "PNG": "image/png", "JPEG": "image/jpeg", "GIF": "image/gif", "WEBP": "image/webp",
+        }.get(image.format)
+        if media_type is None:
+            raise ValueError("unsupported image format: {0}".format(label))
+        if image.width * image.height > 20000000:
+            raise ValueError("image exceeds 20 megapixels: {0}".format(label))
+        image.verify()
+    return media_type
+
+
 def _view_title(documents):
     return " <-> ".join(document["label"].replace("\\", "/") for document in documents)
 
@@ -251,18 +264,7 @@ class WorkspaceViewStore:
             and media_type.startswith("image/")
             and media_type != "image/svg+xml"
         ):
-            with Image.open(io.BytesIO(data)) as image:
-                image_type = {
-                    "PNG": "image/png",
-                    "JPEG": "image/jpeg",
-                    "GIF": "image/gif",
-                    "WEBP": "image/webp",
-                }.get(image.format)
-                if image_type is None:
-                    raise ValueError("unsupported image format: {0}".format(label))
-                if image.width * image.height > 20000000:
-                    raise ValueError("image exceeds 20 megapixels: {0}".format(label))
-                image.verify()
+            image_type = raster_image_type(data, label)
             return {
                 "label": label,
                 "image_url": "data:{0};base64,{1}".format(

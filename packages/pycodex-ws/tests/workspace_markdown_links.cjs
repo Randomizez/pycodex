@@ -1,5 +1,6 @@
 // Run manually with Playwright, markdown-it and DOMPurify installed; see tests/TESTS.md.
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
 const path = require("node:path");
 const {openWorkspaceFixture} = require("./workspace_browser_assets.cjs");
 const {chromium} = require("playwright");
@@ -112,6 +113,34 @@ const {chromium} = require("playwright");
     assert.equal(await anchor.count(), 0);
     await render("![image](file:///data/image.png)");
     assert.equal(await page.locator("#content img[src], #content a").count(), 0);
+
+    const feature = path.join(__dirname, "../workspace_server/optional_features/clock-ticks");
+    const readme = path.join(feature, "README.md");
+    const plotPath = "/data/results/图 #1&2+3%.png";
+    await page.route(url => url.pathname === "/api/images", route => {
+      assert.equal(new URL(route.request().url()).searchParams.get("path"), plotPath);
+      return route.fulfill({path: path.join(feature, "preview.png")});
+    });
+    await render("![Plot](/data/results/图%20%231&2+3%25.png)");
+    await page.locator("#content img").evaluate(image => image.decode());
+    await page.route("**/api/views/feature/images/preview.png", route =>
+      route.fulfill({path: path.join(feature, "preview.png")}));
+    await page.evaluate(async ({label, text}) => {
+      const {SnapshotDisplay} = await import("/assets/content_views.mjs");
+      const {createMarkdownRenderer} = await import("/assets/markdown.mjs");
+      const content = document.createElement("section");
+      document.body.appendChild(content);
+      const display = new SnapshotDisplay({content, renderMarkdown: createMarkdownRenderer(content).renderMarkdownInto});
+      await display.show("feature", {kind: "file", revision: 1, documents: [{label, text, source: {path: label}}]});
+    }, {label: readme, text: fs.readFileSync(readme, "utf8")});
+    assert.ok(await page.locator(".snapshot-markdown img").evaluate(async image => {
+      await image.decode();
+      return image.naturalWidth > 0;
+    }));
+    await page.locator('.snapshot-markdown a[href="preview-mobile.png"]').click();
+    assert.deepEqual(await page.evaluate(() => linkFixture.opened), [
+      {href: "preview-mobile.png", srcPath: readme, sessionId: "session-a"},
+    ]);
 
     const report = "/data/project/index.html";
     await page.evaluate(async report => {
