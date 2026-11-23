@@ -121,6 +121,9 @@ env_key = "GEMINI_API_KEY"
 `base_url` 是 Gemini API 根地址（包含版本路径），请求直接追加
 `/models/{model}:streamGenerateContent?alt=sse`；自定义部署的路径前缀原样保留。
 仅提供 origin 时，Gemini 默认补 `/v1beta`。认证使用 `x-goog-api-key`。
+生成请求默认以 `Content-Encoding: gzip` 压缩上行 JSON 请求体并声明 `Accept-Encoding: gzip`
+流式解压响应（可通过 `PYCODEX_DISABLE_REQUEST_GZIP=1` 关闭上行压缩）；若下游网关拒绝压缩请求体
+（返回 HTTP `415` 或因未解压导致的 JSON 解码 `400`），会自动降级为未压缩重发并按 `base_url` 缓存。
 模型目录请求同一根地址下的 `/models`，逐页将 Gemini 的 `models[].name`
 转换为 Responses 模型列表；生成请求仍使用调用方指定的 model。
 不自动探测或回退到其他 API。

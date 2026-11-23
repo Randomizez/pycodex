@@ -101,8 +101,10 @@ class MockGeminiServer:
             def do_POST(self) -> "None":
                 length = int(self.headers.get("Content-Length") or 0)
                 raw_bytes = self.rfile.read(length)
-                body = json.loads(raw_bytes.decode("utf-8"))
                 lower_headers = {str(k).lower(): str(v) for k, v in self.headers.items()}
+                if lower_headers.get("content-encoding", "").strip().lower() == "gzip":
+                    raw_bytes = gzip.decompress(raw_bytes)
+                body = json.loads(raw_bytes.decode("utf-8"))
 
                 if not body.get("tools"):
                     # Official `agy` safety-rater side-call (`tools` omitted).

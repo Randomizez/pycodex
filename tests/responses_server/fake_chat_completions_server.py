@@ -1,6 +1,7 @@
 """Minimal ASGI Chat Completions server for standalone responses-server tests."""
 
 import asyncio
+import gzip
 import json
 import socket
 import threading
@@ -62,18 +63,72 @@ class CaptureStore:
         )
 
 
+class _GzipRequestASGIMiddleware:
+    def __init__(self, app: "typing.Any") -> "None":
+        self.app = app
+
+    async def __call__(
+        self,
+        scope: "typing.Dict[str, typing.Any]",
+        receive: "typing.Any",
+        send: "typing.Any",
+    ) -> "None":
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = scope.get("headers") or []
+        encoding = ""
+        filtered = []
+        for k, v in headers:
+            lower_k = k.lower()
+            if lower_k == b"content-encoding":
+                encoding = v.decode("latin-1").strip().lower()
+            elif lower_k == b"content-length":
+                continue
+            else:
+                filtered.append((k, v))
+        if encoding != "gzip":
+            await self.app(scope, receive, send)
+            return
+        chunks = []
+        while True:
+            msg = await receive()
+            if msg["type"] != "http.request":
+                break
+            chunks.append(msg.get("body", b""))
+            if not msg.get("more_body", False):
+                break
+        raw = gzip.decompress(b"".join(chunks))
+        new_scope = dict(scope)
+        new_scope["headers"] = filtered + [
+            (b"content-length", str(len(raw)).encode("ascii")),
+            (b"x-test-decompressed-from", b"gzip"),
+        ]
+        replayed = [False]
+
+        async def replay_receive() -> "typing.Dict[str, typing.Any]":
+            if not replayed[0]:
+                replayed[0] = True
+                return {"type": "http.request", "body": raw, "more_body": False}
+            return await receive()
+
+        await self.app(new_scope, replay_receive, send)
+
+
 class RunningASGITestServer:
     def __init__(
         self,
         app: "Starlette",
         host: "str" = "127.0.0.1",
         port: "typing.Union[int, None]" = None,
+        decompress_gzip_requests: "bool" = True,
     ) -> "None":
         self.app = app
+        asgi_app = _GzipRequestASGIMiddleware(app) if decompress_gzip_requests else app
         self.host = host
         self.port = port or _reserve_free_port()
         self._config = uvicorn.Config(
-            self.app,
+            asgi_app,
             host=self.host,
             port=self.port,
             log_level="error",

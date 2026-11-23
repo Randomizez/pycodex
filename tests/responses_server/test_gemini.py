@@ -651,3 +651,54 @@ def test_unsigned_and_mixed_provider_calls_attach_validator_bypass_signature():
         "functionCall": {"id": "call_exec", "name": "exec", "args": {"input": "pwd"}},
         "thoughtSignature": "exec-sig",
     }]}
+
+
+def test_gemini_outbound_request_gzip_and_proxy_fallback(monkeypatch):
+    import gzip
+    from starlette.responses import Response
+    from responses_server import transport as rs_transport
+
+    monkeypatch.delenv("PYCODEX_DISABLE_REQUEST_GZIP", raising=False)
+    seen_encodings = []
+
+    async def generate(request):
+        enc = request.headers.get("content-encoding", "")
+        seen_encodings.append(enc)
+        raw = await request.body()
+        if enc == "gzip":
+            # First call simulates a custom proxy rejecting Content-Encoding: gzip.
+            return JSONResponse(
+                {"error": {"code": 400, "message": "Invalid JSON payload received."}},
+                status_code=400,
+            )
+        parsed = json.loads(raw.decode("utf-8"))
+        assert parsed["contents"][0]["parts"][0]["text"] == "hello"
+        sse = ("data: " + json.dumps(_response([{"text": "world"}])) + "\n\n").encode("utf-8")
+        return Response(
+            content=gzip.compress(sse),
+            media_type="text/event-stream",
+            headers={"Content-Encoding": "gzip"},
+        )
+
+    server = RunningASGITestServer(
+        Starlette(routes=[Route("/v1beta/models/{model_path}", generate, methods=["POST"])]),
+        decompress_gzip_requests=False,
+    )
+    server.start()
+    base_v1 = server.base_url + "/v1beta"
+    rs_transport._GZIP_UNSUPPORTED_BASE_URLS.discard(base_v1)
+    try:
+        app = ManagedResponseServer.build_app(
+            CompatServerConfig(outcomming_base_url=base_v1, outcomming_api="gemini")
+        )
+        with TestClient(app) as client:
+            req = {"model": "gemini-test", "input": [UserMessage("hello").serialize()]}
+            events1 = _check_lifecycle(_post(client, req))
+            events2 = _check_lifecycle(_post(client, req))
+        assert events1[0]["content"][0]["text"] == "world"
+        assert events2[0]["content"][0]["text"] == "world"
+        # First call tried gzip -> fell back to uncompressed; second call skipped gzip via cached base_url.
+        assert seen_encodings == ["gzip", "", ""]
+    finally:
+        rs_transport._GZIP_UNSUPPORTED_BASE_URLS.discard(base_v1)
+        server.stop()

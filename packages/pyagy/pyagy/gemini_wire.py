@@ -37,7 +37,14 @@ from responses_server.request_translation import inline_history_instructions
 from responses_server.server import PreparedResponse, ResponseServer
 from responses_server.session_store import SessionStore
 from responses_server.stream_router import StreamRouter
-from responses_server.transport import OutcommingChatError, OutcommingTransport
+from responses_server.transport import (
+    OutcommingChatError,
+    OutcommingTransport,
+    encode_gemini_request_body,
+    is_gzip_request_rejected_http_error,
+    mark_gzip_unsupported,
+    should_gzip_gemini_request,
+)
 
 from .context import AGY_COMPACTION_PROMPT_NAME, SYSTEM_MESSAGE_PREAMBLE
 from .models import (
@@ -447,13 +454,17 @@ def build_agy_gemini_request(
 class AgyOutcommingTransport(OutcommingTransport):
     """Gemini SSE transport reproducing exact agy 1.5.13 headers, URL and body."""
 
-    def _build_agy_stream_headers(self) -> "typing.Dict[str, str]":
+    def _build_agy_stream_headers(
+        self, gzip_request: "bool" = False
+    ) -> "typing.Dict[str, str]":
         headers: "typing.Dict[str, str]" = {
             "Content-Type": "application/json",
             "User-agent": AGY_USER_AGENT,
             "x-goog-api-client": AGY_USER_AGENT,
             "Accept-Encoding": "gzip",
         }
+        if gzip_request:
+            headers["Content-Encoding"] = "gzip"
         for name, value in self.config.outcomming_http_headers.items():
             if name.lower() in ("user-agent", "x-goog-api-client"):
                 continue
@@ -470,15 +481,34 @@ class AgyOutcommingTransport(OutcommingTransport):
         except ValueError as exc:
             raise OutcommingChatError(str(exc)) from exc
 
-        body_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        request = urllib.request.Request(
-            url,
-            data=body_bytes,
-            headers=self._build_agy_stream_headers(),
-            method="POST",
-        )
-        with self._request_diagnostics(request) as progress:
-            yield from self._read_agy_gemini_stream(request, progress)
+        raw_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        use_gzip = should_gzip_gemini_request(self.config.outcomming_base_url)
+
+        def _make_request(compress: "bool") -> "urllib.request.Request":
+            return urllib.request.Request(
+                url,
+                data=encode_gemini_request_body(raw_bytes, compress),
+                headers=self._build_agy_stream_headers(gzip_request=compress),
+                method="POST",
+            )
+
+        request = _make_request(use_gzip)
+        try:
+            with self._request_diagnostics(request) as progress:
+                yield from self._read_agy_gemini_stream(request, progress)
+            return
+        except OutcommingChatError as exc:
+            if not (
+                use_gzip
+                and progress["chunks"] == 0
+                and is_gzip_request_rejected_http_error(exc.http_status, str(exc))
+            ):
+                raise
+            mark_gzip_unsupported(self.config.outcomming_base_url)
+
+        fallback_request = _make_request(False)
+        with self._request_diagnostics(fallback_request) as progress:
+            yield from self._read_agy_gemini_stream(fallback_request, progress)
 
     def _read_agy_gemini_stream(self, request: "urllib.request.Request", progress: "typing.Dict[str, object]"):
         try:

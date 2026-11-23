@@ -1,8 +1,11 @@
 """Downstream HTTP transport, provider boundary adapters and SSE diagnostics."""
 
+import gzip
 import http.client
 import json
+import os
 import ssl
+import threading
 import time
 import typing
 import urllib.error
@@ -18,6 +21,58 @@ from .messages_api import MessagesAPIAdapterError, build_messages_request
 from .messages_api import iter_chat_chunks as iter_chat_chunks_from_messages
 from .messages_api import saw_message_stop as messages_saw_message_stop
 from .request_translation import split_tool_images
+
+
+_GZIP_UNSUPPORTED_LOCK = threading.Lock()
+_GZIP_UNSUPPORTED_BASE_URLS = set()  # type: typing.Set[str]
+_GZIP_PARSE_ERROR_MARKERS = (
+    "invalid json",
+    "syntax error",
+    "unexpected character",
+    "expecting value",
+    "invalid utf-8",
+    "invalid character",
+    "malformed",
+    "content-encoding",
+    "unsupported encoding",
+    "failed to decode",
+)
+
+
+def should_gzip_gemini_request(base_url: "str") -> "bool":
+    disabled = os.environ.get("PYCODEX_DISABLE_REQUEST_GZIP", "").strip().lower()
+    if disabled in ("1", "true", "yes"):
+        return False
+    with _GZIP_UNSUPPORTED_LOCK:
+        return base_url not in _GZIP_UNSUPPORTED_BASE_URLS
+
+
+def mark_gzip_unsupported(base_url: "str") -> "None":
+    with _GZIP_UNSUPPORTED_LOCK:
+        _GZIP_UNSUPPORTED_BASE_URLS.add(base_url)
+
+
+def encode_gemini_request_body(raw_bytes: "bytes", compress: "bool") -> "bytes":
+    return gzip.compress(raw_bytes, compresslevel=6) if compress else raw_bytes
+
+
+def is_gzip_request_rejected_http_error(
+    http_status: "typing.Union[int, None]",
+    error_text: "str",
+) -> "bool":
+    if http_status == 415:
+        return True
+    if http_status == 400:
+        lower = error_text.lower()
+        return any(marker in lower for marker in _GZIP_PARSE_ERROR_MARKERS)
+    return False
+
+
+def _header_is_gzip(headers: "object") -> "bool":
+    getter = getattr(headers, "get", None)
+    if getter is None:
+        return False
+    return (getter("Content-Encoding") or "").strip().lower() == "gzip"
 
 
 class OutcommingChatError(RuntimeError):
@@ -185,12 +240,38 @@ class OutcommingTransport:
             url = self.config.outcomming_gemini_url(outcomming_request["model"])
         except ValueError as exc:
             raise OutcommingChatError(str(exc)) from exc
-        request = urllib.request.Request(
-            url, data=json.dumps(payload).encode("utf-8"),
-            headers=self._build_headers(accept="text/event-stream"), method="POST",
-        )
-        with self._request_diagnostics(request) as progress:
-            yield from self._read_outcomming_native_stream(request, progress, "gemini")
+        raw_bytes = json.dumps(payload).encode("utf-8")
+        use_gzip = should_gzip_gemini_request(self.config.outcomming_base_url)
+
+        def _make_request(compress):
+            headers = self._build_headers(accept="text/event-stream")
+            headers["accept-encoding"] = "gzip"
+            if compress:
+                headers["content-encoding"] = "gzip"
+            return urllib.request.Request(
+                url,
+                data=encode_gemini_request_body(raw_bytes, compress),
+                headers=headers,
+                method="POST",
+            )
+
+        request = _make_request(use_gzip)
+        try:
+            with self._request_diagnostics(request) as progress:
+                yield from self._read_outcomming_native_stream(request, progress, "gemini")
+            return
+        except OutcommingChatError as exc:
+            if not (
+                use_gzip
+                and progress["chunks"] == 0
+                and is_gzip_request_rejected_http_error(exc.http_status, str(exc))
+            ):
+                raise
+            mark_gzip_unsupported(self.config.outcomming_base_url)
+
+        fallback_request = _make_request(False)
+        with self._request_diagnostics(fallback_request) as progress:
+            yield from self._read_outcomming_native_stream(fallback_request, progress, "gemini")
 
     def _read_outcomming_native_stream(self, request, progress, api):
         try:
@@ -202,9 +283,14 @@ class OutcommingTransport:
                 progress["headers_at"] = time.monotonic()
                 progress["status"] = response.status
                 progress["phase"] = "waiting_first_chunk"
+                line_source = (
+                    gzip.GzipFile(fileobj=response)
+                    if _header_is_gzip(getattr(response, "headers", None))
+                    else response
+                )
                 try:
                     stream_state: "typing.Dict[str, object]" = {}
-                    for event_name, data in self._iter_sse_events(response):
+                    for event_name, data in self._iter_sse_events(line_source):
                         if not data:
                             yield {}
                             continue
@@ -249,7 +335,13 @@ class OutcommingTransport:
             progress["headers_at"] = time.monotonic()
             progress["status"] = exc.code
             progress["phase"] = "reading_error_body"
-            body = exc.read().decode("utf-8", errors="replace")
+            raw_err = exc.read()
+            if _header_is_gzip(getattr(exc, "headers", None)):
+                try:
+                    raw_err = gzip.decompress(raw_err)
+                except OSError:
+                    pass
+            body = raw_err.decode("utf-8", errors="replace")
             raise OutcommingChatError(
                 f"outcomming {api} request failed with status {exc.code}: {body[:500]}",
                 http_status=exc.code,

@@ -77,8 +77,10 @@ class _LocalGeminiResponder:
     def __init__(
         self,
         handler_fn: "typing.Callable[[str, typing.Dict[str, object]], typing.Tuple[int, bytes, bool]]",
+        reject_gzip_status: "typing.Optional[int]" = None,
     ) -> "None":
         self.requests: "typing.List[typing.Tuple[str, typing.Dict[str, object]]]" = []
+        self.request_encodings: "typing.List[str]" = []
         lock = threading.Lock()
         outer = self
 
@@ -88,7 +90,21 @@ class _LocalGeminiResponder:
 
             def do_POST(self) -> "None":
                 length = int(self.headers.get("Content-Length") or 0)
-                body = json.loads(self.rfile.read(length).decode("utf-8"))
+                raw_bytes = self.rfile.read(length)
+                req_enc = (self.headers.get("Content-Encoding") or "").strip().lower()
+                with lock:
+                    outer.request_encodings.append(req_enc)
+                if req_enc == "gzip":
+                    if reject_gzip_status is not None:
+                        err_payload = b'{"error":{"code":400,"message":"Invalid JSON payload: unexpected character"}}'
+                        self.send_response(reject_gzip_status)
+                        self.send_header("Content-Type", "application/json")
+                        self.send_header("Content-Length", str(len(err_payload)))
+                        self.end_headers()
+                        self.wfile.write(err_payload)
+                        return
+                    raw_bytes = gzip.decompress(raw_bytes)
+                body = json.loads(raw_bytes.decode("utf-8"))
                 with lock:
                     outer.requests.append((self.path, body))
                     status, payload_bytes, is_gzip = handler_fn(self.path, body)
@@ -1959,3 +1975,83 @@ async def test_subagent_turn_failure_and_background_settlement_wake_parent(
             )
         finally:
             await session.close()
+
+
+@pytest.mark.asyncio
+async def test_gemini_request_gzip_compression_and_fallback(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    from responses_server import transport as rs_transport
+
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+    monkeypatch.delenv("PYCODEX_DISABLE_REQUEST_GZIP", raising=False)
+
+    def _ok_responder(
+        _path: "str", _body: "typing.Dict[str, object]"
+    ) -> "typing.Tuple[int, bytes, bool]":
+        return 200, gzip.compress(_sse_bytes([{"text": "Compressed OK."}])), True
+
+    # 1. Default behavior: both main turn and search_web compress outbound body with Content-Encoding: gzip.
+    with _LocalGeminiResponder(_ok_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        session = build_agy_session(
+            config_path=cfg,
+            cwd=tmp_path,
+            app_data_dir=tmp_path / "gzip_ok_appdata",
+        )
+        try:
+            res = await session.root_node.run_user_prompt("hello compressed")
+            assert res.final_response == "Compressed OK."
+            sw = await session.root_node.tool_registry.execute(
+                ToolCall(call_id="sw_gz", name="search_web", arguments={"query": "gzip test"}),
+                _make_tool_context(tmp_path, session.root_node.conversation_id, "sw_gz"),
+            )
+            assert not sw.is_error and "Compressed OK." in str(sw.output)
+            assert srv.request_encodings == ["gzip", "gzip"]
+        finally:
+            await session.close()
+
+    # 2. Proxy rejecting Content-Encoding: gzip (400 Invalid JSON / 415) falls back and caches endpoint.
+    with _LocalGeminiResponder(_ok_responder, reject_gzip_status=415) as srv415:
+        base_v1 = f"{srv415.base_url}/v1beta"
+        rs_transport._GZIP_UNSUPPORTED_BASE_URLS.discard(base_v1)
+        cfg415 = _write_codex_gemini_config(tmp_path / "p415", srv415.base_url) if (tmp_path / "p415").mkdir() is None else tmp_path / "p415" / "config.toml"
+        session415 = build_agy_session(
+            config_path=cfg415,
+            cwd=tmp_path,
+            app_data_dir=tmp_path / "gzip_415_appdata",
+        )
+        try:
+            r1 = await session415.root_node.run_user_prompt("turn 1")
+            assert r1.final_response == "Compressed OK."
+            r2 = await session415.root_node.run_user_prompt("turn 2")
+            assert r2.final_response == "Compressed OK."
+            sw2 = await session415.root_node.tool_registry.execute(
+                ToolCall(call_id="sw_415", name="search_web", arguments={"query": "cached plain"}),
+                _make_tool_context(tmp_path, session415.root_node.conversation_id, "sw_415"),
+            )
+            assert not sw2.is_error and "Compressed OK." in str(sw2.output)
+            # First request tried gzip -> got 415 -> retried uncompressed (""); subsequent turns & search_web went straight to ""!
+            assert srv415.request_encodings == ["gzip", "", "", ""]
+        finally:
+            await session415.close()
+            rs_transport._GZIP_UNSUPPORTED_BASE_URLS.discard(base_v1)
+
+    # 3. PYCODEX_DISABLE_REQUEST_GZIP=1 disables request compression explicitly.
+    monkeypatch.setenv("PYCODEX_DISABLE_REQUEST_GZIP", "1")
+    with _LocalGeminiResponder(_ok_responder) as srv_off:
+        d_off = tmp_path / "poff"
+        d_off.mkdir()
+        cfg_off = _write_codex_gemini_config(d_off, srv_off.base_url)
+        session_off = build_agy_session(
+            config_path=cfg_off,
+            cwd=tmp_path,
+            app_data_dir=tmp_path / "gzip_off_appdata",
+        )
+        try:
+            r_off = await session_off.root_node.run_user_prompt("plain turn")
+            assert r_off.final_response == "Compressed OK."
+            assert srv_off.request_encodings == [""]
+        finally:
+            await session_off.close()

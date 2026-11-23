@@ -43,9 +43,9 @@
 1. **省略官方 `SAFETY_RATER` 旁路请求**
    - 官方 `agy 1.5.14` 在模型返回 `run_command` 后、真正执行命令前，会额外向 `/v1beta/models/gemini-3.1-flash-lite-preview:streamGenerateContent?alt=sse` 发送一条无 `tools`、带 `X-Server-Timeout: 8` 且 `thinkingLevel: "MINIMAL"` 的安全评估请求（`You are a safety and security rater overseeing Jetski...`）。
    - `pyagy` 不发送该旁路请求，直接执行工具调用。
-2. **JSON 原始字节转义与 HTTP 连接头**
-   - 双端请求体解析后的 JSON 结构、键顺序与字段值完全一致；但官方基于 Go `encoding/json.Encoder`，会将 `<`、`>`、`&` 转义为 `\u003c`、`\u003e`、`\u0026` 并在请求体末尾追加 `\n`，同时默认复用 HTTP/1.1 长连接。
-   - `pyagy` 使用 Python `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` 直接输出原字符且无末尾换行；底层 `urllib.request` 会附带 `Connection: close`，HTTP Header 排列顺序与 Go 标准库略有不同。
+2. **JSON 原始字节转义、上行 `gzip` 压缩与 HTTP 连接头**
+   - 双端请求体解压并解析后的 JSON 结构、键顺序与字段值完全一致；但官方基于 Go `encoding/json.Encoder`，会将 `<`、`>`、`&` 转义为 `\u003c`、`\u003e`、`\u0026` 并在请求体末尾追加 `\n`，且默认明文发送请求体、复用 HTTP/1.1 长连接。
+   - `pyagy` 使用 Python `json.dumps(..., ensure_ascii=False, separators=(",", ":"))` 直接输出原字符且无末尾换行，并默认附带 `Content-Encoding: gzip` 压缩上行请求体（下游若返回 `415` 或 JSON 解码 `400` 则自动回退为明文重发并缓存，也可设 `PYCODEX_DISABLE_REQUEST_GZIP=1` 禁用）；底层 `urllib.request` 会附带 `Connection: close`。
 3. **本地会话存储格式与 `transcript.jsonl` 详略度**
    - 官方使用内部 protobuf 会话文件，并在 `transcript.jsonl` / `transcript_full.jsonl` 的 `PLANNER_RESPONSE` 步骤中写入完整 `thinking`、`content` 与 `tool_calls` 字段。
    - `pyagy` 使用 `.system_generated/pyagy_session.json` 保存完整历史与恢复元数据（含 `anchor_tokens` 与对应的 `anchor_history_len` 锚定边界；缺少 `anchor_history_len` 的旧版存档在恢复时自动定位至最后一条模型响应条目之后，确保尾部未采样消息计入增量估算）；运行时实时追加的 `PLANNER_RESPONSE` 步骤目前仅记录 `step_index`、`created_at` 与 `model`（完整推理及工具记录保存在 `pyagy_session.json` 及 Web 模式的 Codex rollout 文件中）。
@@ -66,7 +66,7 @@
 ### 2.1 Gemini Wire 请求结构与客户端指纹
 
 - **端点路径**：统一发送 `POST /v1beta/models/{api_model}:streamGenerateContent?alt=sse`。
-- **请求头对齐**：固定发送 `Content-Type: application/json`、`Accept-Encoding: gzip`、`x-goog-api-key`，并将 `User-agent` 与 `x-goog-api-client` 锁定为 `agy 1.5.14` 的 `google-genai-sdk/1.79.1 ...` 指纹（自动忽略 provider 配置中旧版本的同名 header 覆盖）；支持响应流 gzip 解压。
+- **请求头与传输压缩**：固定发送 `Content-Type: application/json`、`Accept-Encoding: gzip`、`x-goog-api-key`，默认启用 `Content-Encoding: gzip` 上行压缩（带不支持网关注册回退）及响应流 `gzip` 解压，并将 `User-agent` 与 `x-goog-api-client` 锁定为 `agy 1.5.14` 的 `google-genai-sdk/1.79.1 ...` 指纹（自动忽略 provider 配置中旧版本的同名 header 覆盖）。
 - **顶层字段顺序**：固定按 `['contents', 'generationConfig', 'systemInstruction', 'tools']` 顺序序列化（显式指定 `tool_choice` 时追加 `toolConfig`）。
 
 ### 2.2 模型目录与 `generationConfig` 映射

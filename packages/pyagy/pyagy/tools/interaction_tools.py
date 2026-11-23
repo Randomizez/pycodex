@@ -10,6 +10,12 @@ import urllib.request
 
 from pycodex.protocol import JSONDict, JSONValue
 from pycodex.tools.base_tool import ToolContext
+from responses_server.transport import (
+    encode_gemini_request_body,
+    is_gzip_request_rejected_http_error,
+    mark_gzip_unsupported,
+    should_gzip_gemini_request,
+)
 
 from ..models import AGY_USER_AGENT
 from . import (
@@ -50,15 +56,16 @@ def _execute_gemini_web_search_sync(
     if api_key is not None:
         headers["x-goog-api-key"] = api_key
 
-    def _call_once(use_google_search: "bool") -> "str":
-        payload: "typing.Dict[str, object]" = {
-            "contents": [{"role": "user", "parts": [{"text": search_prompt}]}],
-            "generationConfig": {"maxOutputTokens": 4096},
-        }
-        if use_google_search:
-            payload["tools"] = [{"googleSearch": {}}]
-        body_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        req = urllib.request.Request(url, data=body_bytes, headers=headers, method="POST")
+    def _send_post(raw_body: "bytes", compress: "bool") -> "bytes":
+        req_headers = dict(headers)
+        if compress:
+            req_headers["Content-Encoding"] = "gzip"
+        req = urllib.request.Request(
+            url,
+            data=encode_gemini_request_body(raw_body, compress),
+            headers=req_headers,
+            method="POST",
+        )
         with urllib.request.urlopen(
             req,
             context=ssl.create_default_context(),
@@ -67,45 +74,74 @@ def _execute_gemini_web_search_sync(
             raw = resp.read()
             if (resp.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
                 raw = gzip.decompress(raw)
-            text_chunks: "typing.List[str]" = []
-            sources: "typing.List[str]" = []
-            seen_uris: "typing.Set[str]" = set()
-            for line in raw.decode("utf-8", errors="replace").splitlines():
-                if not line.startswith("data:"):
-                    continue
-                data_str = line[5:].strip()
-                if not data_str or data_str == "[DONE]":
-                    continue
-                chunk = json.loads(data_str)
-                for cand in chunk.get("candidates") or []:
-                    for part in (cand.get("content") or {}).get("parts") or []:
-                        if not part.get("thought") and isinstance(part.get("text"), str):
-                            text_chunks.append(part["text"])
-                    grounding = cand.get("groundingMetadata") or {}
-                    for gchunk in grounding.get("groundingChunks") or []:
-                        web = gchunk.get("web") if isinstance(gchunk, dict) else None
-                        if isinstance(web, dict):
-                            uri = str(web.get("uri") or "").strip()
-                            title = str(web.get("title") or uri).strip()
-                            if uri and uri not in seen_uris:
-                                seen_uris.add(uri)
-                                sources.append(f"- [{title}]({uri})")
-            summary = "".join(text_chunks).strip()
-            if sources:
-                summary = f"{summary}\n\nSources:\n" + "\n".join(sources)
-            return summary or "No search results returned."
+            return raw
+
+    def _call_once(use_google_search: "bool") -> "str":
+        payload: "typing.Dict[str, object]" = {
+            "contents": [{"role": "user", "parts": [{"text": search_prompt}]}],
+            "generationConfig": {"maxOutputTokens": 4096},
+        }
+        if use_google_search:
+            payload["tools"] = [{"googleSearch": {}}]
+        body_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        use_gzip = should_gzip_gemini_request(compat_config.outcomming_base_url)
+        try:
+            raw = _send_post(body_bytes, use_gzip)
+        except urllib.error.HTTPError as exc:
+            err_raw = exc.read()
+            if (exc.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
+                try:
+                    err_raw = gzip.decompress(err_raw)
+                except OSError:
+                    pass
+            err_text = err_raw.decode("utf-8", errors="replace")
+            if use_gzip and is_gzip_request_rejected_http_error(exc.code, err_text):
+                mark_gzip_unsupported(compat_config.outcomming_base_url)
+                raw = _send_post(body_bytes, False)
+            else:
+                exc._pyagy_cached_err_text = err_text  # type: ignore[attr-defined]
+                raise
+
+        text_chunks: "typing.List[str]" = []
+        sources: "typing.List[str]" = []
+        seen_uris: "typing.Set[str]" = set()
+        for line in raw.decode("utf-8", errors="replace").splitlines():
+            if not line.startswith("data:"):
+                continue
+            data_str = line[5:].strip()
+            if not data_str or data_str == "[DONE]":
+                continue
+            chunk = json.loads(data_str)
+            for cand in chunk.get("candidates") or []:
+                for part in (cand.get("content") or {}).get("parts") or []:
+                    if not part.get("thought") and isinstance(part.get("text"), str):
+                        text_chunks.append(part["text"])
+                grounding = cand.get("groundingMetadata") or {}
+                for gchunk in grounding.get("groundingChunks") or []:
+                    web = gchunk.get("web") if isinstance(gchunk, dict) else None
+                    if isinstance(web, dict):
+                        uri = str(web.get("uri") or "").strip()
+                        title = str(web.get("title") or uri).strip()
+                        if uri and uri not in seen_uris:
+                            seen_uris.add(uri)
+                            sources.append(f"- [{title}]({uri})")
+        summary = "".join(text_chunks).strip()
+        if sources:
+            summary = f"{summary}\n\nSources:\n" + "\n".join(sources)
+        return summary or "No search results returned."
 
     try:
         return _call_once(True)
     except urllib.error.HTTPError as exc:
         if exc.code in (400, 501):
             return _call_once(False)
-        err_raw = exc.read()
-        if (exc.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
-            err_raw = gzip.decompress(err_raw)
-        raise AgyToolError(
-            f"search_web HTTP {exc.code}: {err_raw.decode('utf-8', errors='replace')[:300]}"
-        ) from exc
+        cached_text = getattr(exc, "_pyagy_cached_err_text", None)
+        if cached_text is None:
+            err_raw = exc.read()
+            if (exc.headers.get("Content-Encoding") or "").strip().lower() == "gzip":
+                err_raw = gzip.decompress(err_raw)
+            cached_text = err_raw.decode("utf-8", errors="replace")
+        raise AgyToolError(f"search_web HTTP {exc.code}: {cached_text[:300]}") from exc
     except Exception as exc:
         raise AgyToolError(f"search_web failed: {exc}") from exc
 
