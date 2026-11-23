@@ -5,4 +5,4 @@ from pycodex.utils.compat import importlib_metadata
 try:
     __version__ = importlib_metadata.version("pyagy")
 except importlib_metadata.PackageNotFoundError:  # pragma: no cover - uninstalled checkout
-    __version__ = "0.7.1"
+    __version__ = "0.7.2"
