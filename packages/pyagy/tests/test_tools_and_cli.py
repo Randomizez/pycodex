@@ -46,8 +46,14 @@ def _write_codex_gemini_config(
     root: "Path",
     base_url: "str",
     compat_api: "str" = "gemini",
+    stream_max_retries: "typing.Optional[int]" = None,
 ) -> "Path":
     cfg = root / "config.toml"
+    retry_line = (
+        f"stream_max_retries = {int(stream_max_retries)}\n"
+        if stream_max_retries is not None
+        else ""
+    )
     cfg.write_text(
         'model = "gemini-4-carbon-high"\n'
         'model_provider = "gmock"\n\n'
@@ -55,7 +61,8 @@ def _write_codex_gemini_config(
         'name = "Gemini Mock"\n'
         f'base_url = "{base_url}/v1beta"\n'
         'env_key = "PYAGY_UNIT_API_KEY"\n'
-        f'compat_api = "{compat_api}"\n\n'
+        f'compat_api = "{compat_api}"\n'
+        f"{retry_line}\n"
         "[profiles.alt]\n"
         'model = "gemini-3.8-flash-low"\n'
         'model_provider = "gmock"\n',
@@ -363,7 +370,7 @@ async def test_command_schedule_and_subagent_lifecycle(
         return 200, _sse_bytes([{"text": "Subagent finished.", "thoughtSignature": "c3Vi"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         app_data = tmp_path / "appdata"
         ws = tmp_path / "repo"
         ws.mkdir()
@@ -735,7 +742,7 @@ async def test_search_web_grounding_and_fallback(
         return 200, _sse_bytes([{"text": "Fallback search answer."}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         session = build_agy_session(
             config_path=cfg,
             cwd=tmp_path,
@@ -998,7 +1005,7 @@ def test_compaction_thresholds_formatting_and_repl(
         return 200, _sse_bytes([{"text": "REPL normal reply"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         repl_in = io.StringIO(
             "/compact\n"
             "first turn in repl\n"
@@ -1067,7 +1074,7 @@ async def test_subagent_idle_fallback_and_parent_report_suppression(
         return 200, _sse_bytes([{"text": "Root ack"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         session = build_agy_session(
             config_path=cfg,
             cwd=tmp_path,
@@ -1130,7 +1137,7 @@ async def test_tool_output_truncation_and_step_persistence(
         return 200, _sse_bytes([{"text": "Ack.", "thoughtSignature": "c2ln"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         app_data = tmp_path / "trunc_appdata"
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -1297,7 +1304,7 @@ async def test_legacy_anchor_resume_and_compaction_overflow_recovery(
         return 200, _sse_bytes([{"text": "Post-recovery reply"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         app_data = tmp_path / "carbon_appdata"
         codex_home = tmp_path / "codex_home"
         monkeypatch.setenv("CODEX_HOME", str(codex_home))
@@ -1437,7 +1444,7 @@ async def test_sample_overflow_fallback_and_tool_pruning_compaction(
         return 200, _sse_bytes([{"text": "Recovered from sample overflow"}]), False
 
     with _LocalGeminiResponder(_responder) as srv:
-        cfg = _write_codex_gemini_config(tmp_path, srv.base_url)
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
         session = build_agy_session(
             config_path=cfg,
             cwd=tmp_path,
@@ -1478,7 +1485,37 @@ async def test_windows_no_pty_import_pipe_execution_and_taskkill(
     )
     assert proc.returncode == 0, proc.stderr.decode("utf-8", errors="replace")
 
-    # 2. Verify Windows shell resolution & tool declaration adaptation.
+    # 2. Verify Windows case-insensitive env deduplication & UTF-8 / non-interactive env defaults.
+    win_env = task_manager.build_agy_command_env(
+        base_env={
+            "Path": r"C:\Windows\System32",
+            "git_pager": "less -R",
+            "Term": "xterm-256color",
+            "pythonutf8": "0",
+        },
+        conversation_id="conv-win-1",
+        is_windows=True,
+    )
+    assert "git_pager" not in win_env
+    assert win_env["GIT_PAGER"] == "cat"
+    assert win_env["PAGER"] == "cat"
+    assert win_env["JJ_PAGER"] == "cat"
+    assert win_env["GIT_EDITOR"] == "false"
+    assert win_env["HGEDITOR"] == "false"
+    assert win_env["JJ_EDITOR"] == "false"
+    assert win_env["GIT_TERMINAL_PROMPT"] == "0"
+    assert "Term" not in win_env and win_env["TERM"] == "dumb"
+    assert win_env["ANTIGRAVITY_AGENT"] == "1"
+    assert win_env["ANTIGRAVITY_CONVERSATION_ID"] == "conv-win-1"
+    # Existing `pythonutf8` is preserved case-insensitively on Windows; unset gets PYTHONUTF8=1.
+    assert win_env["pythonutf8"] == "0" and "PYTHONUTF8" not in win_env
+    win_env_default_utf8 = task_manager.build_agy_command_env(
+        base_env={"SystemRoot": r"C:\Windows"},
+        is_windows=True,
+    )
+    assert win_env_default_utf8["PYTHONUTF8"] == "1"
+
+    # 3. Verify Windows shell resolution (including PowerShell UTF-8 OutputEncoding) & tool declaration.
     class _WinOS:
         name = "nt"
 
@@ -1508,7 +1545,7 @@ async def test_windows_no_pty_import_pipe_execution_and_taskkill(
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Get-ChildItem",
+            f"{task_manager._POWERSHELL_UTF8_PRELUDE}Get-ChildItem",
         ]
         _, decls_ps = agy_tools.load_official_declarations()
         assert "Operating System: windows. Shell: powershell." in str(
@@ -1534,7 +1571,7 @@ async def test_windows_no_pty_import_pipe_execution_and_taskkill(
         assert label_bash == "bash"
         assert argv_bash == [git_bash, "-c", "ls -la"]
 
-    # 3. Verify pipe fallback (pty=None) + Windows taskkill termination path.
+    # 4. Verify pipe execution (pty=None), Windows creationflags, closed-stdin error, and taskkill.
     monkeypatch.setattr(task_manager, "pty", None)
     mgr = task_manager.AgyTaskManager(
         conversation_id="win-conv",
@@ -1559,19 +1596,366 @@ async def test_windows_no_pty_import_pipe_execution_and_taskkill(
         await asyncio.sleep(0.25)
         assert "PIPE:ok_win" in mgr.status(tid)
 
-        taskkill_calls: "typing.List[typing.List[str]]" = []
+        # Verify Windows Popen creationflags include CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        captured_popen_kwargs: "typing.Dict[str, object]" = {}
+        real_popen = subprocess.Popen
+
+        def _spy_popen(argv_in: "typing.Sequence[str]", **kw: "object") -> "subprocess.Popen[bytes]":
+            captured_popen_kwargs.update(kw)
+            clean_kw = dict(kw)
+            clean_kw.pop("creationflags", None)
+            clean_kw["start_new_session"] = True
+            return real_popen(["bash", "-c", "echo win_spawn_ok"], **clean_kw)  # type: ignore[arg-type]
+
+        with monkeypatch.context() as mp:
+            mp.setattr(task_manager, "os", win_os)
+            mp.setattr(task_manager.subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200, raising=False)
+            mp.setattr(task_manager.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+            mp.setattr(task_manager.subprocess, "Popen", _spy_popen)
+            sync_done, sync_out = await mgr.run_command(
+                command_line="Write-Output win_spawn_ok",
+                tool_summary="win flags check",
+                wait_ms=2000,
+                is_daemon=False,
+                cwd=tmp_path,
+                step_index=2,
+            )
+            assert sync_done is True and "win_spawn_ok" in sync_out
+            assert captured_popen_kwargs["creationflags"] == (0x200 | 0x08000000)
+
+        taskkill_calls: "typing.List[typing.Tuple[typing.List[str], typing.Dict[str, object]]]" = []
         handle = mgr._tasks[tid].command_handle
         assert handle is not None
 
-        def _fake_taskkill(cmd: "typing.List[str]", **_kwargs: "object") -> "None":
-            taskkill_calls.append(list(cmd))
+        def _fake_taskkill(cmd: "typing.List[str]", **kwargs: "object") -> "None":
+            taskkill_calls.append((list(cmd), dict(kwargs)))
             handle.proc.kill()
 
         with monkeypatch.context() as mp:
             mp.setattr(task_manager, "os", win_os)
+            mp.setattr(task_manager.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
             mp.setattr(task_manager.subprocess, "run", _fake_taskkill)
             mgr.kill(tid)
 
-        assert taskkill_calls == [["taskkill", "/F", "/T", "/PID", str(handle.proc.pid)]]
+        assert len(taskkill_calls) == 1
+        assert taskkill_calls[0][0] == ["taskkill", "/F", "/T", "/PID", str(handle.proc.pid)]
+        assert taskkill_calls[0][1].get("creationflags") == 0x08000000
+        assert taskkill_calls[0][1].get("timeout") == 5.0
+
+        # Verify closed-stdin child raises clean ValueError instead of raw OSError/EINVAL on Windows/POSIX
+        closed_sync, _ = await mgr.run_command(
+            command_line=f'exec "{sys.executable}" -c "import os, time; os.close(0); time.sleep(5)"',
+            tool_summary="closed stdin test",
+            wait_ms=600,
+            is_daemon=False,
+            cwd=tmp_path,
+            step_index=3,
+        )
+        assert closed_sync is False
+        with pytest.raises(ValueError, match="stdin"):
+            mgr.send_input("win-conv/task-3", "late_input\n")
+        mgr.kill("win-conv/task-3")
     finally:
         await mgr.close()
+
+
+@pytest.mark.asyncio
+async def test_run_command_non_interactive_pager_and_orphan_grandchild_drain(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    import os
+    import signal
+    import sys
+    import time
+
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+    # Simulate hostile interactive pager/editor environment in parent process
+    hang_cmd = f"{sys.executable} -c 'import time; time.sleep(60)'"
+    monkeypatch.setenv("PAGER", hang_cmd)
+    monkeypatch.setenv("GIT_PAGER", hang_cmd)
+    monkeypatch.setenv("JJ_PAGER", hang_cmd)
+    monkeypatch.setenv("GIT_EDITOR", hang_cmd)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+    def _responder(_path: "str", _body: "typing.Dict[str, object]") -> "typing.Tuple[int, bytes, bool]":
+        return 200, _sse_bytes([{"text": "Woken after orphan.", "thoughtSignature": "c2ln"}]), False
+
+    spawned_pids: "typing.List[int]" = []
+    with _LocalGeminiResponder(_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@example.com"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "Tester"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "core.pager", hang_cmd], check=True)
+        (repo / "f.txt").write_text("line1\nline2\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "f.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-m", "initial"], check=True, capture_output=True)
+        (repo / "f.txt").write_text("line1\nline2_modified\n", encoding="utf-8")
+
+        session = build_agy_session(config_path=cfg, cwd=repo, app_data_dir=tmp_path / "appdata")
+        try:
+            await session.root_node.start()
+            reg = session.root_node.tool_registry
+            conv_id = session.root_node.conversation_id
+
+            # 1. Even inside a real POSIX PTY (isatty=True), GIT_PAGER=cat / PAGER=cat overrides
+            # prevent git log / git diff from hanging in an interactive pager!
+            t0 = time.monotonic()
+            r_git = await reg.execute(
+                ToolCall(
+                    call_id="c_git",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": (
+                            f'"{sys.executable}" -c "import os, sys; '
+                            "assert sys.stdout.isatty(); "
+                            "assert os.environ['GIT_PAGER'] == 'cat' and os.environ['TERM'] == 'dumb'\" "
+                            "&& git log -n 1 && git diff"
+                        ),
+                        "WaitMsBeforeAsync": 5000,
+                        "toolSummary": "git diff check",
+                    },
+                ),
+                _make_tool_context(repo, conv_id, "c_git"),
+            )
+            assert not r_git.is_error
+            assert (time.monotonic() - t0) < 3.0
+            assert "line2_modified" in str(r_git.output)
+
+            # 2. Sync command that spawns an orphan grandchild inheriting PTY slave FD completes in <2.5s!
+            pid_file_1 = tmp_path / "orphan1.pid"
+            orphan_sync_script = (
+                "import subprocess, sys; "
+                f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                f"open({str(pid_file_1)!r}, 'w').write(str(p.pid)); "
+                "print('SYNC_ORPHAN_PARENT_DONE', flush=True)"
+            )
+            t1 = time.monotonic()
+            r_sync_orphan = await reg.execute(
+                ToolCall(
+                    call_id="c_orphan_sync",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": f'"{sys.executable}" -c "{orphan_sync_script}"',
+                        "WaitMsBeforeAsync": 5000,
+                        "toolSummary": "sync orphan test",
+                    },
+                ),
+                _make_tool_context(repo, conv_id, "c_orphan_sync"),
+            )
+            elapsed_sync = time.monotonic() - t1
+            if pid_file_1.is_file():
+                spawned_pids.append(int(pid_file_1.read_text(encoding="utf-8").strip()))
+            assert not r_sync_orphan.is_error
+            assert elapsed_sync < 2.5
+            assert "Command exited with code 0." in str(r_sync_orphan.output)
+            assert "SYNC_ORPHAN_PARENT_DONE" in str(r_sync_orphan.output)
+
+            # 3. Background command that exits after 0.7s while leaving an orphan grandchild STILL wakes agent!
+            pid_file_2 = tmp_path / "orphan2.pid"
+            orphan_bg_script = (
+                "import subprocess, sys, time; "
+                "time.sleep(0.7); "
+                f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                f"open({str(pid_file_2)!r}, 'w').write(str(p.pid)); "
+                "print('BG_ORPHAN_PARENT_DONE', flush=True)"
+            )
+            woken_done = asyncio.Event()
+            session.root_node.add_event_listener(
+                lambda ev: woken_done.set() if ev.kind == "turn_completed" else None
+            )
+            r_bg_orphan = await reg.execute(
+                ToolCall(
+                    call_id="c_orphan_bg",
+                    name="run_command",
+                    arguments={
+                        "CommandLine": f'"{sys.executable}" -c "{orphan_bg_script}"',
+                        "WaitMsBeforeAsync": 500,
+                        "toolSummary": "bg orphan test",
+                    },
+                ),
+                _make_tool_context(repo, conv_id, "c_orphan_bg"),
+            )
+            assert "Tool is running as a background task" in str(r_bg_orphan.output)
+            await asyncio.wait_for(woken_done.wait(), timeout=4.0)
+            if pid_file_2.is_file():
+                spawned_pids.append(int(pid_file_2.read_text(encoding="utf-8").strip()))
+            assert any(
+                "BG_ORPHAN_PARENT_DONE" in msg.text
+                for msg in session.root_node.agent.history
+                if isinstance(msg, UserMessage)
+            )
+
+            # 4. Windows pipe mode (pty=None): orphan grandchild inheriting stdout/stderr pipe also drains in <2.5s!
+            from pyagy import task_manager as tm_mod
+
+            pid_file_3 = tmp_path / "orphan3.pid"
+            orphan_pipe_script = (
+                "import subprocess, sys; "
+                f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+                f"open({str(pid_file_3)!r}, 'w').write(str(p.pid)); "
+                "print('PIPE_ORPHAN_PARENT_DONE', flush=True)"
+            )
+            with monkeypatch.context() as mp_pipe:
+                mp_pipe.setattr(tm_mod, "pty", None)
+                t_pipe = time.monotonic()
+                r_pipe_orphan = await reg.execute(
+                    ToolCall(
+                        call_id="c_orphan_pipe",
+                        name="run_command",
+                        arguments={
+                            "CommandLine": f'"{sys.executable}" -c "{orphan_pipe_script}"',
+                            "WaitMsBeforeAsync": 5000,
+                            "toolSummary": "pipe orphan test",
+                        },
+                    ),
+                    _make_tool_context(repo, conv_id, "c_orphan_pipe"),
+                )
+                elapsed_pipe = time.monotonic() - t_pipe
+            if pid_file_3.is_file():
+                spawned_pids.append(int(pid_file_3.read_text(encoding="utf-8").strip()))
+            assert not r_pipe_orphan.is_error
+            assert elapsed_pipe < 2.5
+            assert "PIPE_ORPHAN_PARENT_DONE" in str(r_pipe_orphan.output)
+        finally:
+            await session.close()
+            for pid in spawned_pids:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+
+@pytest.mark.asyncio
+async def test_subagent_turn_failure_and_background_settlement_wake_parent(
+    tmp_path: "Path",
+    monkeypatch: "pytest.MonkeyPatch",
+) -> "None":
+    monkeypatch.setenv("PYAGY_UNIT_API_KEY", "dummy")
+    sub_err_step = [0]
+
+    def _responder(_path: "str", body: "typing.Dict[str, object]") -> "typing.Tuple[int, bytes, bool]":
+        sys_txt = "".join(
+            str(p.get("text", ""))
+            for p in (body.get("systemInstruction") or {}).get("parts", [])
+        )
+        dumped = json.dumps(body["contents"])
+        if "<subagent_reminder>" in sys_txt:
+            if "FailAfterProgress" in dumped:
+                sub_err_step[0] += 1
+                if sub_err_step[0] == 1:
+                    root_id = sys_txt.split('id: "', 1)[1].split('"', 1)[0]
+                    return (
+                        200,
+                        _sse_bytes(
+                            [
+                                {
+                                    "functionCall": {
+                                        "id": "sm_prog",
+                                        "name": "send_message",
+                                        "args": {
+                                            "Recipient": root_id,
+                                            "Message": "Progress step 1; step 2 next",
+                                        },
+                                    },
+                                    "thoughtSignature": "c2lnX3Byb2c=",
+                                }
+                            ]
+                        ),
+                        False,
+                    )
+                return 400, b'{"error":{"code":400,"message":"simulated fatal subagent API error"}}', False
+            if "TimerSettleSub" in dumped:
+                if "functionResponse" not in dumped:
+                    return (
+                        200,
+                        _sse_bytes(
+                            [
+                                {
+                                    "functionCall": {
+                                        "id": "sc_sub",
+                                        "name": "schedule",
+                                        "args": {
+                                            "DurationSeconds": 120,
+                                            "TimerCondition": "any",
+                                            "Prompt": "sub timer",
+                                        },
+                                    },
+                                    "thoughtSignature": "c2lnX3Nj",
+                                }
+                            ]
+                        ),
+                        False,
+                    )
+                return 200, _sse_bytes([{"text": "Subagent waiting on timer"}]), False
+        return 200, _sse_bytes([{"text": "Root handled subagent event"}]), False
+
+    with _LocalGeminiResponder(_responder) as srv:
+        cfg = _write_codex_gemini_config(tmp_path, srv.base_url, stream_max_retries=0)
+        session = build_agy_session(
+            config_path=cfg,
+            cwd=tmp_path,
+            app_data_dir=tmp_path / "sub_fail_appdata",
+        )
+        try:
+            await session.root_node.start()
+            env = session.root_node.tool_registry.runtime_environment
+
+            # Case 1: Subagent sends progress message (_reported_to_parent=True) then crashes with TurnFailedEvent.
+            # Parent MUST still be notified of the failure and not left waiting forever!
+            inv_err = await session.controller.invoke_subagent(
+                caller_conversation_id=session.root_node.conversation_id,
+                type_name="self",
+                role="CrashWorker",
+                prompt="FailAfterProgress",
+            )
+            cid_err = json.loads(inv_err[inv_err.index("{") : inv_err.rindex("}") + 1])["conversationId"]
+            sub_err_node = session.controller.get_node(cid_err)
+            await sub_err_node.wait_until_settled(timeout_seconds=5.0)
+            await session.root_node.wait_until_settled(timeout_seconds=5.0)
+            assert sub_err_node.state == "idle"
+            assert env.background_work_count(True) == 0
+            root_msgs = [
+                it.text for it in session.root_node.agent.history if isinstance(it, UserMessage)
+            ]
+            assert any("Progress step 1; step 2 next" in m for m in root_msgs)
+            assert any(
+                f"Subagent {cid_err} has gone idle." in m
+                and "simulated fatal subagent API error" in m
+                for m in root_msgs
+            )
+
+            # Case 2: Subagent finishes turn while holding a TimerCondition="any" timer, then timer is
+            # cancelled without waking subagent (simulating Web mode where wait_until_settled isn't polling).
+            inv_tmr = await session.controller.invoke_subagent(
+                caller_conversation_id=session.root_node.conversation_id,
+                type_name="self",
+                role="TimerWorker",
+                prompt="TimerSettleSub",
+            )
+            cid_tmr = json.loads(inv_tmr[inv_tmr.index("{") : inv_tmr.rindex("}") + 1])["conversationId"]
+            sub_tmr_node = session.controller.get_node(cid_tmr)
+            for _ in range(50):
+                if not sub_tmr_node.runtime.is_busy and sub_tmr_node.task_manager.has_active_non_daemon_tasks():
+                    break
+                await asyncio.sleep(0.05)
+            assert sub_tmr_node.state == "running"
+            assert env.background_work_count(True) == 1
+
+            # Deliver non-waking message to cancel TimerCondition="any" without calling sub_tmr_node.wait_until_settled!
+            sub_tmr_node.deliver_system_message("cancel timer", sender="peer", wake_if_idle=False)
+            assert sub_tmr_node.state == "idle"
+            assert env.background_work_count(True) == 0
+            await session.root_node.wait_until_settled(timeout_seconds=5.0)
+            root_msgs_after = [
+                it.text for it in session.root_node.agent.history if isinstance(it, UserMessage)
+            ]
+            assert any(
+                f"Subagent {cid_tmr} has gone idle." in m and "Subagent waiting on timer" in m
+                for m in root_msgs_after
+            )
+        finally:
+            await session.close()

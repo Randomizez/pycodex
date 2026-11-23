@@ -1,31 +1,30 @@
-"""Background command and schedule task manager matching agy 1.5.13."""
+"""Background command and schedule task manager matching agy 1.5.14."""
 
 import asyncio
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
-import errno
 import json
 import os
 from pathlib import Path, PureWindowsPath
 import random
+import selectors
 import shutil
 import signal
 import subprocess
 import tempfile
 import threading
-from time import time
+from time import monotonic, time
 import typing
 
-pty: "typing.Any"
-if os.name == "nt":
-    pty = None
-else:
+if os.name != "nt":
     try:
         import pty
-    except ImportError:
-        pty = None
+    except ImportError:  # pragma: no cover
+        pty = None  # type: ignore[assignment]
+else:
+    pty = None  # type: ignore[assignment]
 
-from .context import format_single_system_message, format_utc_iso
+from .context import format_utc_iso
 from .transcript import truncate_agy_tool_output
 
 if typing.TYPE_CHECKING:
@@ -33,6 +32,77 @@ if typing.TYPE_CHECKING:
 
 
 NotifyCallback = typing.Callable[..., typing.Optional[bool]]
+
+_POST_EXIT_IDLE_DRAIN_SECONDS = 0.2
+_POST_EXIT_MAX_DRAIN_SECONDS = 1.0
+
+_POWERSHELL_UTF8_PRELUDE = (
+    "try { $OutputEncoding = [System.Text.UTF8Encoding]::new($false); "
+    "[Console]::OutputEncoding = $OutputEncoding } catch {}; "
+)
+
+_FORCED_COMMAND_ENV: "typing.Tuple[typing.Tuple[str, str], ...]" = (
+    ("TERM", "dumb"),
+    ("PAGER", "cat"),
+    ("GIT_PAGER", "cat"),
+    ("JJ_PAGER", "cat"),
+    ("GIT_EDITOR", "false"),
+    ("HGEDITOR", "false"),
+    ("JJ_EDITOR", "false"),
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("ANTIGRAVITY_AGENT", "1"),
+)
+
+_DEFAULT_COMMAND_ENV: "typing.Tuple[typing.Tuple[str, str], ...]" = (
+    ("PYTHONUTF8", "1"),
+)
+
+
+def build_agy_command_env(
+    base_env: "typing.Optional[typing.Mapping[str, str]]" = None,
+    conversation_id: "str" = "",
+    is_windows: "typing.Optional[bool]" = None,
+) -> "typing.Dict[str, str]":
+    """Build non-interactive, UTF-8-safe child environment matching official agy."""
+    source = os.environ if base_env is None else base_env
+    win_mode = (os.name == "nt") if is_windows is None else bool(is_windows)
+    if not win_mode:
+        env = {str(k): str(v) for k, v in source.items()}
+        for key, val in _DEFAULT_COMMAND_ENV:
+            env.setdefault(key, val)
+        for key, val in _FORCED_COMMAND_ENV:
+            env[key] = val
+        if conversation_id:
+            env["ANTIGRAVITY_CONVERSATION_ID"] = conversation_id
+        return env
+
+    env = {}
+    upper_to_actual: "typing.Dict[str, str]" = {}
+    for raw_k, raw_v in source.items():
+        key_str = str(raw_k)
+        upper_k = key_str.upper()
+        prev_actual = upper_to_actual.get(upper_k)
+        if prev_actual is not None and prev_actual != key_str:
+            env.pop(prev_actual, None)
+        env[key_str] = str(raw_v)
+        upper_to_actual[upper_k] = key_str
+
+    for key, val in _DEFAULT_COMMAND_ENV:
+        if key.upper() not in upper_to_actual:
+            env[key] = val
+            upper_to_actual[key.upper()] = key
+
+    forced_items = list(_FORCED_COMMAND_ENV)
+    if conversation_id:
+        forced_items.append(("ANTIGRAVITY_CONVERSATION_ID", conversation_id))
+    for key, val in forced_items:
+        upper_k = key.upper()
+        prev_actual = upper_to_actual.get(upper_k)
+        if prev_actual is not None and prev_actual != key:
+            env.pop(prev_actual, None)
+        env[key] = val
+        upper_to_actual[upper_k] = key
+    return env
 
 
 @dataclass(frozen=True)
@@ -225,18 +295,26 @@ class _CommandProcessHandle:
     def __init__(
         self,
         proc: "subprocess.Popen[bytes]",
-        master_fd: "typing.Optional[int]",
         loop: "asyncio.AbstractEventLoop",
+        master_fd: "typing.Optional[int]" = None,
     ) -> "None":
         self.proc = proc
+        self._master_fd: "typing.Optional[int]" = master_fd
         self.tty: "bool" = master_fd is not None
-        self._master_fd = master_fd
         self._loop = loop
         self._lock = threading.Lock()
         self._buffer = bytearray()
+        self._output_seq = 0
+        self._finished = False
+        self._stdin_closed = False
         self._log_path: "typing.Optional[Path]" = None
         self.done_event = asyncio.Event()
         self.exit_code: "typing.Optional[int]" = None
+
+    @property
+    def output_seq(self) -> "int":
+        with self._lock:
+            return self._output_seq
 
     def attach_log_file(self, log_path: "Path") -> "None":
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,7 +326,10 @@ class _CommandProcessHandle:
         if not data:
             return
         with self._lock:
+            if self._finished:
+                return
             self._buffer.extend(data)
+            self._output_seq += 1
             if self._log_path is not None:
                 with self._log_path.open("ab") as fh:
                     fh.write(data)
@@ -260,43 +341,70 @@ class _CommandProcessHandle:
     def write_input(self, data: "str") -> "None":
         encoded = data.encode("utf-8")
         with self._lock:
+            if self._finished or self._stdin_closed:
+                raise ValueError("task stdin is already closed")
             if self._master_fd is not None:
-                os.write(self._master_fd, encoded)
+                try:
+                    os.write(self._master_fd, encoded)
+                except (BrokenPipeError, OSError, ValueError) as exc:
+                    self._stdin_closed = True
+                    raise ValueError(f"failed to write to task stdin: {exc}") from exc
                 return
-            if self.proc.stdin is not None:
+            if self.proc.stdin is None:
+                raise ValueError("task stdin is already closed")
+            try:
                 self.proc.stdin.write(encoded)
                 self.proc.stdin.flush()
-                return
-        raise RuntimeError("task stdin is already closed")
+            except (BrokenPipeError, OSError, ValueError) as exc:
+                self._stdin_closed = True
+                raise ValueError(f"failed to write to task stdin: {exc}") from exc
 
-    def close_master(self) -> "None":
+    def _close_master_fd(self) -> "None":
         with self._lock:
-            if self._master_fd is not None:
-                fd = self._master_fd
-                self._master_fd = None
+            fd = self._master_fd
+            self._master_fd = None
+            self._stdin_closed = True
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+    def close_stdin(self) -> "None":
+        with self._lock:
+            if self._stdin_closed:
+                return
+            self._stdin_closed = True
+            if self._master_fd is None and self.proc.stdin is not None:
                 try:
-                    os.close(fd)
-                except OSError:
+                    self.proc.stdin.close()
+                except (OSError, ValueError):
                     pass
 
     def terminate_group(self) -> "None":
+        self.close_stdin()
         if self.proc.poll() is not None:
-            self.close_master()
             return
         if os.name == "nt":
+            kill_kwargs: "typing.Dict[str, typing.Any]" = {
+                "stdout": subprocess.DEVNULL,
+                "stderr": subprocess.DEVNULL,
+                "timeout": 5.0,
+            }
+            no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            if no_win:
+                kill_kwargs["creationflags"] = no_win
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self.proc.pid)],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
+                    **kill_kwargs,
                 )
-            except OSError:
+            except (OSError, subprocess.TimeoutExpired):
                 self.proc.kill()
             try:
                 self.proc.wait(timeout=0.3)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
-            self.close_master()
             return
         try:
             os.killpg(self.proc.pid, signal.SIGTERM)
@@ -311,11 +419,14 @@ class _CommandProcessHandle:
                 os.killpg(self.proc.pid, signal.SIGKILL)
             except OSError:
                 self.proc.kill()
-        self.close_master()
 
     def mark_finished(self, code: "int") -> "None":
-        self.exit_code = code
-        self.close_master()
+        with self._lock:
+            if self._finished:
+                return
+            self._finished = True
+            self.exit_code = code
+        self.close_stdin()
         try:
             self._loop.call_soon_threadsafe(self.done_event.set)
         except RuntimeError:
@@ -383,6 +494,7 @@ def resolve_agy_shell_command(
     if os.name != "nt":
         return "bash", ["bash", "-c", command_line]
 
+    ps_script = f"{_POWERSHELL_UTF8_PRELUDE}{command_line}" if command_line else ""
     env_shell = (os.environ.get("SHELL") or "").strip()
     resolved_env: "typing.Optional[str]" = None
     if env_shell:
@@ -405,7 +517,7 @@ def resolve_agy_shell_command(
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                command_line,
+                ps_script,
             ]
         stem = env_name[:-4] if env_name.endswith(".exe") else env_name
         return (stem or "bash"), [resolved_env, "-c", command_line]
@@ -420,7 +532,7 @@ def resolve_agy_shell_command(
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                command_line,
+                ps_script,
             ]
 
     comspec = os.environ.get("COMSPEC") or "cmd.exe"
@@ -482,8 +594,8 @@ class AgyTaskManager:
         for rec in list(self._tasks.values()):
             if rec.status == "RUNNING":
                 rec.status = "CANCELLED"
-            if rec.command_handle is not None:
-                rec.command_handle.terminate_group()
+                if rec.command_handle is not None:
+                    rec.command_handle.terminate_group()
             if rec.async_task is not None and not rec.async_task.done():
                 rec.async_task.cancel()
         self._tasks.clear()
@@ -567,15 +679,12 @@ class AgyTaskManager:
         loop: "asyncio.AbstractEventLoop",
     ) -> "_CommandProcessHandle":
         _, shell_argv = resolve_agy_shell_command(command_line)
-        master_fd: "typing.Optional[int]" = None
-        slave_fd: "typing.Optional[int]" = None
-        if pty is not None and os.name != "nt":
-            try:
-                master_fd, slave_fd = pty.openpty()
-            except OSError:
-                master_fd, slave_fd = None, None
+        child_env = build_agy_command_env(conversation_id=self.conversation_id)
+        reader_done = threading.Event()
+        stop_reader = threading.Event()
 
-        if master_fd is not None and slave_fd is not None:
+        if pty is not None and os.name != "nt":
+            master_fd, slave_fd = pty.openpty()
             try:
                 proc = subprocess.Popen(
                     shell_argv,
@@ -583,65 +692,114 @@ class AgyTaskManager:
                     stdout=slave_fd,
                     stderr=slave_fd,
                     cwd=str(cwd),
+                    env=child_env,
                     start_new_session=True,
                     close_fds=True,
                 )
-            except BaseException:
-                os.close(master_fd)
-                os.close(slave_fd)
+            except Exception:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
                 raise
-            os.close(slave_fd)
-            handle = _CommandProcessHandle(proc=proc, master_fd=master_fd, loop=loop)
+            finally:
+                try:
+                    os.close(slave_fd)
+                except OSError:
+                    pass
+
+            handle = _CommandProcessHandle(proc=proc, loop=loop, master_fd=master_fd)
 
             def _read_pty() -> "None":
+                sel = selectors.DefaultSelector()
                 try:
+                    sel.register(master_fd, selectors.EVENT_READ)
                     while True:
+                        timeout = 0.0 if stop_reader.is_set() else 0.1
+                        events = sel.select(timeout=timeout)
+                        if not events:
+                            if stop_reader.is_set():
+                                break
+                            continue
                         try:
                             chunk = os.read(master_fd, 4096)
-                        except OSError as exc:
-                            if exc.errno in (errno.EIO, errno.EBADF):
-                                break
+                        except OSError:
                             break
                         if not chunk:
                             break
                         handle.append_chunk(chunk)
+                        if stop_reader.is_set():
+                            break
                 finally:
-                    code = proc.wait()
-                    handle.mark_finished(code)
+                    try:
+                        sel.close()
+                    except OSError:
+                        pass
+                    reader_done.set()
+                    handle._close_master_fd()
 
-            threading.Thread(target=_read_pty, daemon=True).start()
-            return handle
-
-        popen_kwargs: "typing.Dict[str, typing.Any]" = {
-            "stdin": subprocess.PIPE,
-            "stdout": subprocess.PIPE,
-            "stderr": subprocess.STDOUT,
-            "bufsize": 0,
-            "cwd": str(cwd),
-        }
-        if os.name == "nt":
-            popen_kwargs["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
+            reader_target = _read_pty
         else:
-            popen_kwargs["start_new_session"] = True
-            popen_kwargs["close_fds"] = True
-        proc = subprocess.Popen(shell_argv, **popen_kwargs)
-        handle = _CommandProcessHandle(proc=proc, master_fd=None, loop=loop)
+            popen_kwargs: "typing.Dict[str, typing.Any]" = {
+                "stdin": subprocess.PIPE,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "bufsize": 0,
+                "cwd": str(cwd),
+                "close_fds": True,
+                "env": child_env,
+            }
+            if os.name == "nt":
+                popen_kwargs["creationflags"] = (
+                    getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                )
+            else:
+                popen_kwargs["start_new_session"] = True
+            proc = subprocess.Popen(shell_argv, **popen_kwargs)
+            handle = _CommandProcessHandle(proc=proc, loop=loop)
 
-        def _read_pipe() -> "None":
-            try:
-                assert proc.stdout is not None
-                while True:
-                    chunk = proc.stdout.read(4096)
-                    if not chunk:
-                        break
-                    handle.append_chunk(chunk)
-            finally:
-                code = proc.wait()
-                handle.mark_finished(code)
+            def _read_pipe() -> "None":
+                stdout = proc.stdout
+                try:
+                    if stdout is not None:
+                        while True:
+                            try:
+                                chunk = stdout.read(4096)
+                            except (OSError, ValueError):
+                                break
+                            if not chunk:
+                                break
+                            handle.append_chunk(chunk)
+                            if stop_reader.is_set():
+                                break
+                finally:
+                    reader_done.set()
+                    if stdout is not None:
+                        try:
+                            stdout.close()
+                        except (OSError, ValueError):
+                            pass
 
-        threading.Thread(target=_read_pipe, daemon=True).start()
+            reader_target = _read_pipe
+
+        def _wait_process() -> "None":
+            code = proc.wait()
+            deadline = monotonic() + _POST_EXIT_MAX_DRAIN_SECONDS
+            while not reader_done.is_set():
+                before_seq = handle.output_seq
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                if reader_done.wait(timeout=min(_POST_EXIT_IDLE_DRAIN_SECONDS, remaining)):
+                    break
+                if handle.output_seq == before_seq:
+                    break
+            stop_reader.set()
+            handle.mark_finished(code)
+
+        threading.Thread(target=reader_target, daemon=True).start()
+        threading.Thread(target=_wait_process, daemon=True).start()
         return handle
 
     async def run_command(
@@ -688,31 +846,35 @@ class AgyTaskManager:
         )
 
         async def _watch_completion() -> "None":
-            await handle.done_event.wait()
-            if self._closed or record.status != "RUNNING":
+            try:
+                await handle.done_event.wait()
+                if self._closed or record.status != "RUNNING":
+                    return
+                record.status = "DONE"
+                code = 0 if handle.exit_code is None else int(handle.exit_code)
+                raw_result_body = format_command_result_body(code, handle.output_text())
+                try:
+                    result_body = truncate_agy_tool_output(
+                        raw_result_body,
+                        output_path=self._step_output_path(step_index),
+                        always_persist=True,
+                    )
+                except OSError:
+                    result_body = truncate_agy_tool_output(raw_result_body)
+                msg_content = (
+                    f'Task id "{task_id}" finished with result:\n'
+                    f"{result_body}\n"
+                    f"Log: file://{log_path}"
+                )
+                self._notify_callback(
+                    msg_content,
+                    task_id,
+                    "MESSAGE_PRIORITY_HIGH",
+                    True,
+                    "Task done",
+                )
+            finally:
                 self._signal_state_change()
-                return
-            record.status = "DONE"
-            code = 0 if handle.exit_code is None else int(handle.exit_code)
-            raw_result_body = format_command_result_body(code, handle.output_text())
-            result_body = truncate_agy_tool_output(
-                raw_result_body,
-                output_path=self._step_output_path(step_index),
-                always_persist=True,
-            )
-            msg_content = (
-                f'Task id "{task_id}" finished with result:\n'
-                f"{result_body}\n"
-                f"Log: file://{log_path}"
-            )
-            self._notify_callback(
-                msg_content,
-                task_id,
-                "MESSAGE_PRIORITY_HIGH",
-                True,
-                "Task done",
-            )
-            self._signal_state_change()
 
         self._tasks[task_id] = record
         record.async_task = asyncio.create_task(_watch_completion())
@@ -834,7 +996,10 @@ class AgyTaskManager:
             if accepted is False:
                 return  # Admission closed. Leave the saved occurrence for resume.
             if final:
-                path.unlink()
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
             else:
                 schedule.next_fire_at = _next_cron_deadline(schedule.cron_expression, schedule.exact_timing)
                 schedule.save(path)
@@ -921,8 +1086,8 @@ class AgyTaskManager:
             if rec.status == "RUNNING":
                 rec.status = "CANCELLED"
                 had_running = True
-            if rec.command_handle is not None:
-                rec.command_handle.terminate_group()
+                if rec.command_handle is not None:
+                    rec.command_handle.terminate_group()
             if rec.async_task is not None and not rec.async_task.done():
                 rec.async_task.cancel()
                 pending_tasks.append(rec.async_task)

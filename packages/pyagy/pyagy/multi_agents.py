@@ -4,10 +4,13 @@ import asyncio
 from dataclasses import dataclass, replace
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
+import sys
 import time
 import typing
 import uuid
@@ -28,6 +31,7 @@ from pycodex.events import (
     TurnFailedEvent,
     TurnInputReadyEvent,
     TurnInterrupted,
+    TurnInterruptedEvent,
 )
 from pycodex.model import ContextLengthExceeded
 from pycodex.multi_agents import AgentsManager
@@ -68,7 +72,7 @@ from .prompts.system_prompt import (
     build_subagent_system_instruction,
     find_git_repo_root,
 )
-from .task_manager import AgyTaskManager
+from .task_manager import AgyTaskManager, build_agy_command_env
 from .tools import (
     IMAGE_GENERATOR_SUBAGENT_TOOLS,
     RESEARCH_SUBAGENT_TOOLS,
@@ -124,6 +128,32 @@ class AgyAgentsManager(AgentsManager):
 
     def finish_turn(self, agent_id: "str", final_answer: "typing.Optional[str]") -> "None":
         self.notify_parents(agent_id)
+
+
+def _git_subprocess_kwargs() -> "typing.Dict[str, typing.Any]":
+    kwargs: "typing.Dict[str, typing.Any]" = {
+        "capture_output": True,
+        "env": build_agy_command_env(),
+    }
+    if os.name == "nt":
+        no_win = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        if no_win:
+            kwargs["creationflags"] = no_win
+    return kwargs
+
+
+def _rmtree_force(path: "Path") -> "None":
+    def _clear_readonly(func: "typing.Any", target: "str", _exc: "typing.Any") -> "None":
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except OSError:
+            pass
+
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=_clear_readonly)
+    else:
+        shutil.rmtree(path, onerror=_clear_readonly)
 
 
 def _truncate_oversized_history_for_compaction(
@@ -700,6 +730,7 @@ class AgySessionNode:
         self._activity_event: "typing.Optional[asyncio.Event]" = None
         self._turn_outputs: "typing.List[str]" = []
         self._last_turn_output = ""
+        self._last_turn_failed = False
         self._pending_idle_notify = False
         self._reported_to_parent = False
         self._completed_turns = 0
@@ -822,6 +853,26 @@ class AgySessionNode:
         if self._activity_event is not None:
             self._activity_event.set()
 
+    def _maybe_finalize_idle(self) -> "None":
+        if (
+            self._pending_idle_notify
+            and self.parent_conversation_id is not None
+            and self.state != "killed"
+            and not self.has_pending_work()
+        ):
+            self._pending_idle_notify = False
+            failed = self._last_turn_failed
+            self._last_turn_failed = False
+            reported = False if failed else self._reported_to_parent
+            self._reported_to_parent = False
+            self.state = "idle"
+            self.controller.notify_parent_subagent_idle(
+                self,
+                self._last_turn_output,
+                already_reported=reported,
+            )
+            self.controller.notify_parent_subagent_work(self.parent_conversation_id)
+
     def _on_runtime_event(self, event: "Event") -> "None":
         if isinstance(event, MessagesAddedEvent):
             for msg in event.messages:
@@ -867,32 +918,26 @@ class AgySessionNode:
             self._last_turn_output = out_txt
             if out_txt:
                 self._turn_outputs.append(out_txt)
+            self._last_turn_failed = False
             self._pending_idle_notify = True
             self.save_session_state()
             self._signal_activity()
         elif isinstance(event, TurnFailedEvent):
             self._last_turn_output = f"{event.error_type}: {event.error}"
+            self._last_turn_failed = True
             self._pending_idle_notify = True
             self.save_session_state()
             self._signal_activity()
-        elif isinstance(event, RuntimeUpdatedEvent) and event.reason == "idle":
+        elif isinstance(event, TurnInterruptedEvent):
+            self._last_turn_output = event.output_text or "Turn interrupted."
+            self._last_turn_failed = True
+            self._pending_idle_notify = True
+            self.save_session_state()
             self._signal_activity()
-            if (
-                self._pending_idle_notify
-                and self.parent_conversation_id is not None
-                and self.state != "killed"
-                and not self.has_pending_work()
-            ):
-                self._pending_idle_notify = False
-                reported = self._reported_to_parent
-                self._reported_to_parent = False
-                self.state = "idle"
-                self.controller.notify_parent_subagent_idle(
-                    self,
-                    self._last_turn_output,
-                    already_reported=reported,
-                )
-                self.controller.notify_parent_subagent_work(self.parent_conversation_id)
+        elif isinstance(event, RuntimeUpdatedEvent):
+            if event.reason in ("idle", "background_work", "queue", "interrupt"):
+                self._signal_activity()
+                self._maybe_finalize_idle()
 
         for listener in tuple(self._event_listeners):
             listener(event)
@@ -936,6 +981,9 @@ class AgySessionNode:
         if waking:
             self.state = "running"
             self._reported_to_parent = False
+            self._last_turn_failed = False
+        if wake_if_idle:
+            self._pending_idle_notify = False
         self.runtime.message(sys_msg)
         if wake_if_idle:
             self.runtime.trigger()
@@ -973,22 +1021,8 @@ class AgySessionNode:
                 await asyncio.wait_for(self._activity_event.wait(), timeout=wait_slice)
             except asyncio.TimeoutError:
                 pass
-            if (
-                self._pending_idle_notify
-                and self.parent_conversation_id is not None
-                and self.state != "killed"
-                and not self.has_pending_work()
-            ):
-                self._pending_idle_notify = False
-                reported = self._reported_to_parent
-                self._reported_to_parent = False
-                self.state = "idle"
-                self.controller.notify_parent_subagent_idle(
-                    self,
-                    self._last_turn_output,
-                    already_reported=reported,
-                )
-                self.controller.notify_parent_subagent_work(self.parent_conversation_id)
+            self._maybe_finalize_idle()
+        self._maybe_finalize_idle()
 
     async def run_user_prompt(
         self,
@@ -1056,19 +1090,23 @@ class AgySessionNode:
             await self.task_manager.close()
             if delete_workspace and self._owned_workspace_dir is not None:
                 if self._git_worktree_repo is not None:
-                    subprocess.run(
-                        [
-                            "git",
-                            "-C",
-                            str(self._git_worktree_repo),
-                            "worktree",
-                            "remove",
-                            "--force",
-                            str(self._owned_workspace_dir),
-                        ],
-                        capture_output=True,
-                    )
-                shutil.rmtree(self._owned_workspace_dir, ignore_errors=True)
+                    try:
+                        subprocess.run(
+                            [
+                                "git",
+                                "-C",
+                                str(self._git_worktree_repo),
+                                "worktree",
+                                "remove",
+                                "--force",
+                                str(self._owned_workspace_dir),
+                            ],
+                            timeout=10.0,
+                            **_git_subprocess_kwargs(),
+                        )
+                    except (OSError, subprocess.TimeoutExpired):
+                        pass
+                _rmtree_force(self._owned_workspace_dir)
 
 
 class AgyMultiAgentController:
@@ -1174,12 +1212,16 @@ class AgyMultiAgentController:
         has_git = (repo_root / ".git").exists()
 
         if mode == "share" and has_git:
-            proc = subprocess.run(
-                ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(target_ws)],
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode == 0:
+            try:
+                proc = subprocess.run(
+                    ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(target_ws)],
+                    text=True,
+                    timeout=15.0,
+                    **_git_subprocess_kwargs(),
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                proc = None
+            if proc is not None and proc.returncode == 0:
                 rel = parent_cwd.relative_to(repo_root)
                 effective_cwd = (target_ws / rel).resolve()
                 return effective_cwd, target_ws, repo_root
@@ -1187,7 +1229,7 @@ class AgyMultiAgentController:
         shutil.copytree(
             parent_cwd,
             target_ws,
-            symlinks=True,
+            symlinks=(os.name != "nt"),
             ignore=shutil.ignore_patterns(".git") if mode == "branch" and not has_git else None,
         )
         return target_ws.resolve(), target_ws.resolve(), None
