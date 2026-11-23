@@ -83,15 +83,22 @@ def agent_help_text(
                 )
             else:
                 lines.append("GET R/api/workspaces -> workspaces[].url; resolve against R to get B.")
-    sender = session_id or "<sender_id>"
+    sender_name = (summary["title"] if summary else "") or "<your agent name>"
     lines += [
         "B=target workspace URL (no trailing /); use its session_id.",
         "GET B/api/sessions -> sessions[].id/title",
+        "Set name to your username on each message. Use your session title by default, "
+        "or choose a short name if untitled. Start prompt with the message itself.",
         "POST B/api/session/message "
-        + json.dumps({"session_id": "<target>", "prompt": "From " + sender + ": <task; reply address>"})
+        + json.dumps(
+            {"session_id": "<target>", "name": sender_name, "prompt": "<message>"},
+            ensure_ascii=False,
+        )
         + " -> submission_id (accepted)",
+        "If the recipient needs a reply address, include it at the end of the message.",
         "Use plain messages (steer) by default. Add /queue only for an independent follow-up task "
         "that should wait for current work to finish.",
         "GET B/api/session?session_id=<target> -> snapshot.turns; match submission_id for status/response/error.",
+        "Read each message's author from snapshot.turns[].messages[].name.",
     ]
     return "\n".join(lines) + "\n"

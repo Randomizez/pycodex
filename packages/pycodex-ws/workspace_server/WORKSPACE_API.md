@@ -266,8 +266,11 @@ with the `GET api/help?session_id=<id>` command and the installed `pycodex` /
 `session_id`, and also mounted at root `GET /api/help` on multi-workspace
 servers) returns the plain-text session identity and cross-Agent communication
 guide (`api/workspaces`, `api/sessions`, `api/session/message`, `api/session`
-and `/router` bridge). It recommends posting plain text to `api/session/message`
-by default (steer), reserving `/queue <message>` for an independent follow-up
+and `/router` bridge). For Agent messages, set `name` to the sending Agent's
+username. The example uses the sending session's title when available. An untitled
+Agent can choose a short name. `session_id` addresses the recipient and `prompt`
+starts with the message text. Include a reply address at the end if needed.
+Plain text steers by default. Use `/queue <message>` for an independent follow-up
 turn. The same behavior applies through the router. These requests reuse the
 frontend input contract, so plain text answers a pending input request when one
 exists.

@@ -89,14 +89,14 @@ When using a router, its directory groups workspaces by device and lists unread
 workspaces at the top. Device handles reorder the list; pencil buttons edit
 device names.
 
-The runtime information shared between Agents recommends plain messages, which
-steer active work at the next safe boundary. Use `/queue` explicitly for an
-independent follow-up task that should wait for current work to finish.
+When messaging another workspace Agent, set `name` to your username (by default,
+your session title), put the recipient's ID in `session_id`, and start `prompt`
+with the message itself. Plain messages steer active work at the next safe
+boundary. Use `/queue` for an independent task that should wait.
 
-The message API also accepts a string `name`, defaulting to `"user"`, for
-identifying the source of a user message. The history API returns it, and
-recorded sessions preserve it across resume. It is metadata only: the model request and frontend display do
-not include it. See the [message API contract](workspace_server/WORKSPACE_API.md#commands-and-results).
+The workspace displays the author above the message and retains `name` in session
+history across resume. Omitting `name` uses the default `"user"` for ordinary input.
+See the [message API contract](workspace_server/WORKSPACE_API.md#commands-and-results).
 
 ## Customize the interface
 

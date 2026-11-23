@@ -318,7 +318,10 @@ def test_runtime_info_uses_current_identity_and_local_frontend_api(tmp_path, mul
         assert "API ID: " + own in help_text
         assert str(tmp_path / "changed") in help_text
         assert "L=http://127.0.0.1:12345; current workspace=L" + prefix in help_text
-        assert '"prompt": "From ' + own in help_text
+        example = next(line for line in help_text.splitlines()
+                       if line.startswith("POST B/api/session/message "))
+        message = json.loads(example.split(" ", 2)[2].rsplit(" -> ", 1)[0])
+        assert message == {"session_id": "<target>", "name": "runtime test", "prompt": "<message>"}
         assert browser.get(prefix + "/api/help", params={"session_id": "missing"}).status_code == 404
         if multi:
             root_help = browser.get("/api/help")
@@ -329,21 +332,23 @@ def test_runtime_info_uses_current_identity_and_local_frontend_api(tmp_path, mul
         assert "B/api/session/message" in help_text
         assert "B/api/session?session_id=" in help_text
         assert "workspace-test-password" not in help_text
-        sent = browser.post(prefix + "/api/session/message", json={
-            "session_id": own, "prompt": text,
-        })
+        message.update(session_id=other, prompt=text)
+        sent = browser.post(prefix + "/api/session/message", json=message)
         assert sent.status_code == 200
         submission_id = sent.json()["submission_id"]
         snapshot = wait_snapshot(
             browser, lambda s: any(
                 turn["submission_id"] == submission_id and turn["response"] == "noted"
                 for turn in s["turns"]
-            ), prefix + "/api/session?session_id=" + own,
+            ), prefix + "/api/session?session_id=" + other,
         )
-        assert next(t["prompt"] for t in snapshot["turns"] if t["submission_id"] == submission_id) == text
+        turn = next(t for t in snapshot["turns"] if t["submission_id"] == submission_id)
+        assert turn["prompt"] == text
+        assert turn["messages"][0]["name"] == "runtime test"
         assert any(isinstance(item, UserMessage) and item.text == text
                    for item in model.prompts[-1].input)
-        assert browser.get(prefix + "/api/session?session_id=" + other).json()["snapshot"]["turns"] == []
+        sender_snapshot = browser.get(prefix + "/api/session?session_id=" + own).json()["snapshot"]
+        assert sender_snapshot["turns"] == result.json()["snapshot"]["turns"]
 
 
 @pytest.mark.parametrize("connected,api_url", [
@@ -364,6 +369,7 @@ def test_runtime_info_router_state_contains_no_credentials(connected, api_url):
         assert response.status_code == 200
         assert response.json()["snapshot"]["turns"] == []
         help_text = browser.get("/api/help").text
+        assert '"name": "<your agent name>"' in help_text
     text = response.json()["runtime_info"]
     assert len(text.splitlines()) == 2
     assert ("router" in help_text.lower()) == connected

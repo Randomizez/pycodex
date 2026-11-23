@@ -724,6 +724,8 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
                 example = next(line for line in help_text.splitlines()
                                if line.startswith("POST B/api/session/message "))
                 message = json.loads(example.split(" ", 2)[2].rsplit(" -> ", 1)[0])
+                assert message["prompt"] == "<message>"
+                message["name"] = "reviewer"
                 message["session_id"] = response.json()["session_id"]
                 sent = await browser.post(prefix + "/api/session/message", json=message)
                 assert sent.status_code == 200
@@ -732,6 +734,7 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
                 turn = link.snapshot()["turns"][-1]
                 assert turn["submission_id"] == sent.json()["submission_id"]
                 assert turn["prompt"] == message["prompt"]
+                assert turn["messages"][0]["name"] == "reviewer"
                 assert turn["queue"] == "steer"
 
 
