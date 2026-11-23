@@ -34,6 +34,10 @@ On Windows you can leave the console idle. Press Ctrl+Z followed by Enter
 to send EOF, or close the stdin pipe if using a launcher.
 Model configuration comes from `~/.codex/config.toml`.
 
+Start the router with `pycodex-router --password` and enter the browser login
+password at the hidden prompt. With redirected stdin, the router reads one line.
+`pycodex-router --password VALUE` also accepts the password as a command-line argument.
+
 With `pycodex-ws --listen-to KEY@router:6000`, the OS assigns a free local
 loopback port. The CLI prints the local URL and registers that port with the
 router. Add `--listen 127.0.0.1:6007` to use a fixed port.

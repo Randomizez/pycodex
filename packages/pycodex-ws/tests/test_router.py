@@ -170,8 +170,8 @@ async def device(app, target, name="device", workspaces=None):
             await client.close()
 
 
-async def login(browser, root=""):
-    response = await browser.post(root + "/login", json={"password": "router-password"})
+async def login(browser, root="", password="router-password"):
+    response = await browser.post(root + "/login", json={"password": password})
     assert response.status_code == 200
 
 
@@ -1510,7 +1510,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                 )
                 replacement_listener.bind(("127.0.0.1", port))
                 restarted_gate = create_app(
-                    "router-password",
+                    "new-browser-password",
                     registration_key=load_registration_key(key_path),
                     aliases_path=aliases_path,
                 )
@@ -1522,7 +1522,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                     assert client.node_id == node_id
                     assert registry.get("shared").manager.get() is session
                     async with ip_browser(web) as browser:
-                        await login(browser)
+                        await login(browser, password="new-browser-password")
                         inventory = (await browser.get("/api/workspaces")).json()
                         assert inventory["nodes"][0]["alias"] == "开发机"
                         resumed = (
@@ -2399,8 +2399,11 @@ async def test_wrong_registration_key_retries_without_logging_credentials(caplog
             await client.close()
 
 
-@pytest.mark.parametrize("password_args", [(), ("--password", "")])
-async def test_router_cli_requires_a_nonempty_password(password_args):
+@pytest.mark.parametrize("password_args,stdin_data", [
+    ((), b""), (("--password", ""), b"unused\n"),
+    (("--password",), b""), (("--password",), b"\n"),
+])
+async def test_router_cli_requires_a_nonempty_password(password_args, stdin_data):
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
@@ -2410,11 +2413,12 @@ async def test_router_cli_requires_a_nonempty_password(password_args):
         "--tunnel-listen",
         "localhost:0",
         *password_args,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        output, error = await asyncio.wait_for(process.communicate(), 5)
+        output, error = await asyncio.wait_for(process.communicate(stdin_data), 5)
         assert process.returncode == 2
         assert b"--password" in error
         assert b"Uvicorn running" not in output
@@ -2425,9 +2429,12 @@ async def test_router_cli_requires_a_nonempty_password(password_args):
             await asyncio.wait_for(process.communicate(), 10)
 
 
-@pytest.mark.parametrize("tunnel_host", ["localhost", "0.0.0.0"])
+@pytest.mark.parametrize("tunnel_host,password_args,stdin_password", [
+    ("localhost", ("--password", "router-password"), None),
+    ("0.0.0.0", ("--password",), "  stdin-password  "),
+])
 async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
-    tmp_path, tunnel_host
+    tmp_path, tunnel_host, password_args, stdin_password
 ):
     config = tmp_path / "workspaces.json"
     config.write_text('{"workspaces": []}\n', encoding="utf-8")
@@ -2439,13 +2446,17 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
         "127.0.0.1:0",
         "--tunnel-listen",
         tunnel_host + ":0",
-        "--password",
-        "router-password",
+        *password_args,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
     workspace = None
     try:
+        if stdin_password is not None:
+            router.stdin.write((stdin_password + "\r\nignored\n").encode("utf-8"))
+            await router.stdin.drain()
+        router.stdin.close()
 
         async def addresses():
             result = []
@@ -2505,7 +2516,7 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
                             )
                         )
                     try:
-                        await login(browser)
+                        await login(browser, password=stdin_password or "router-password")
                     except httpx.ConnectError:
                         await asyncio.sleep(0.02)
                         continue

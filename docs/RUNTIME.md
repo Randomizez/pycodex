@@ -834,6 +834,11 @@ can each bind a local port. An explicit `--listen` selects the bind address.
 The startup URLs, local Agent API and router registration use the bound port.
 Standalone `pycodex-ws` defaults to `127.0.0.1:6007`.
 
+The router CLI requires `--password [PASSWORD]` for browser login. A bare
+`--password` prompts with echo disabled on a terminal or reads one line from
+redirected stdin. Device connections use the persistent registration key in
+`<codex-home>/router.key` and reconnect automatically after a router restart.
+
 Registration version 2 retains the original 52-character Base32 SHA-256 identity.
 The registration response, device identifiers in API records, aliases and order
 use that full identity. Agent API requests and data channels authenticate with

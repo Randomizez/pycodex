@@ -4,8 +4,10 @@ import json
 import os
 import re
 import secrets
+import sys
 import tempfile
 from contextlib import asynccontextmanager
+from getpass import getpass
 from pathlib import Path
 from uuid import uuid4
 
@@ -647,8 +649,9 @@ def build_parser():
     )
     parser.add_argument(
         "--password",
+        nargs="?",
         required=True,
-        help="Password required for browser access to the router.",
+        help="Browser login password. Omit the value to read one line from stdin.",
     )
     return parser
 
@@ -658,6 +661,14 @@ def main(argv=None):
 
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.password is None:
+        if sys.stdin.isatty():
+            try:
+                args.password = getpass("Router password: ")
+            except EOFError:
+                parser.error("--password requires a line on stdin")
+        else:
+            args.password = sys.stdin.readline().rstrip("\r\n")
     if not args.password:
         parser.error("--password must not be empty")
     if args.api_url is not None:
