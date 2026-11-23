@@ -582,7 +582,7 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   visibility: hidden;
   pointer-events: none;
 }
-.workspace:not(.sessions-collapsed) .session-sidebar .tab:is(:hover, :focus-within, .active) .tab-close {
+.workspace:not(.sessions-collapsed) .session-sidebar .tab:not(.confirming-close):is(:hover, :focus-within, .active) .tab-close {
   opacity: 0.85;
   visibility: visible;
   pointer-events: auto;
@@ -591,6 +591,45 @@ body[data-access-role="visitor"] .session-banner[data-admin-only="true"] { displ
   opacity: 0.28;
   cursor: default;
 }
+.session-sidebar .tab.confirming-close > :not(.tab-close-confirmation) { visibility: hidden; }
+.tab-close-confirmation:not([hidden]) {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-inline: 8px;
+  color: var(--ink);
+  background: var(--panel-deep);
+  box-shadow: inset 0 0 0 1px var(--line);
+  border-radius: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tab-close-confirmation span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tab-close-confirmation button {
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding-inline: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+.tab-close-confirmation .tab-close-confirm {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.tab-close-cancel:hover { color: var(--ink); background: var(--panel-hover); }
+.tab-close-confirm:hover { border-color: var(--danger); }
+.tab-close-confirmation button:focus-visible { outline: 1px solid currentColor; outline-offset: -2px; }
 .session-sidebar .tab-status {
   position: absolute;
   top: 0;
