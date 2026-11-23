@@ -17,6 +17,7 @@ from pycodex_ws.workspace_config import (
     workspace_file_path,
 )
 
+from .sessions import ThreadedWorkspaceInteractiveSession
 from .session_view import session_timing
 from .workspace_views import WorkspaceViewStore
 
@@ -82,6 +83,7 @@ class WorkspaceSessionManager:
         self._tab_states: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._read_final_ids: "typing.Dict[str, str]" = {}
         self._lock = None
+        self._thread_launcher = None
         self._closing = False
         self._state_store = WorkspaceStateStore(
             workspace_file_path(state_path, ".pycodex-ws.json")
@@ -111,7 +113,14 @@ class WorkspaceSessionManager:
     ) -> None:
         self._persist_callback = callback
 
-    async def start(self) -> None:
+    async def _start_session(self, session) -> None:
+        if isinstance(session, ThreadedWorkspaceInteractiveSession):
+            await session.start(self._thread_launcher)
+        else:
+            await session.start()
+
+    async def start(self, thread_launcher=None) -> None:
+        self._thread_launcher = thread_launcher
         self.refresh_profiles()
         state_tabs = self._state_store.load_tabs()
         if not state_tabs:
@@ -198,7 +207,7 @@ class WorkspaceSessionManager:
             session_id = uuid7_string()
             if session is None:
                 session = factory()
-            await session.start()
+            await self._start_session(session)
 
             try:
                 if rollout_path or title or cwd is not None:
@@ -358,6 +367,7 @@ class WorkspaceRegistry:
         self._name_to_key: "typing.Dict[str, str]" = {}
         self._order: "typing.List[str]" = []
         self._started = False
+        self._thread_launcher = None
         self._config_path = (
             None if config_path is None else Path(config_path).expanduser().resolve()
         )
@@ -384,10 +394,11 @@ class WorkspaceRegistry:
     def _key_for_definition(self, definition: "WorkspaceDefinition") -> str:
         return str(definition.state_path.resolve())
 
-    async def start(self) -> None:
+    async def start(self, thread_launcher=None) -> None:
+        self._thread_launcher = thread_launcher
         self._started = True
         for key in self._order:
-            await self._entries[key].manager.start()
+            await self._entries[key].manager.start(thread_launcher)
 
     async def close(self, finish_turn: bool = False) -> None:
         outcomes = await asyncio.gather(
@@ -451,7 +462,7 @@ class WorkspaceRegistry:
         entry = self._entry_factory(definition, self.persist_definitions)
         self._register(entry)
         if self._started:
-            await entry.manager.start()
+            await entry.manager.start(self._thread_launcher)
         self.persist_definitions()
         return entry
 

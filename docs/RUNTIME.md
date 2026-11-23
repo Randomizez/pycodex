@@ -234,6 +234,8 @@ before startup finishes. Launchers must keep stdin open for the backend's
 lifetime; closed stdin (including `/dev/null`) requests shutdown. Runtime
 closure interrupts pending turns and stops active turns cooperatively across
 each session tree; no turn timeout or forced cancellation is added.
+On Windows the owner watcher reads the native stdin handle so idle console or
+pipe input leaves the CRT descriptor lock available to other threads.
 Programmatic Starlette app construction does not read stdin.
 
 Web command output preserves the event's plain text, including resume-list
@@ -792,7 +794,10 @@ its existing `workspace_server` and `workspace_server.app` imports remain availa
 Each ordinary Session owns one submission store shared by its observed Runtime
 tree; it retains pending receipts and the last 500 completed results. The threaded
 adapter dispatches operations to its worker loop and drains Runtime before stopping
-that loop. On Python 3.7 on Unix, Workspace startup on the main thread attaches
+that loop. The ASGI lifespan starts a dedicated thread before serving requests
+to handle session thread startup and joining. While a new worker starts, the
+server loop can continue serving existing workspaces and the router connection.
+On Python 3.7 on Unix, Workspace startup on the main thread attaches
 the asyncio child watcher to the server loop so worker subprocesses report their
 exit status. Session imports and method signatures remain available through the
 package and app entry points.

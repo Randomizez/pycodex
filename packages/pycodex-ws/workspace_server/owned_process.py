@@ -2,6 +2,7 @@ import asyncio
 import os
 import secrets
 import socket
+import sys
 import tempfile
 import threading
 from contextlib import AsyncExitStack, ExitStack
@@ -110,6 +111,27 @@ def _configure_agent_access(state, cleanup, listener):
     state["agent_header_path"] = header_path
 
 
+def _wait_for_owner_eof(input_fd):
+    if sys.platform == "win32":
+        import _winapi
+        import msvcrt
+
+        # A blocking CRT _read holds the descriptor lock until input arrives.
+        handle = msvcrt.get_osfhandle(input_fd)
+        terminal = os.isatty(input_fd)
+        while True:
+            try:
+                data, _ = _winapi.ReadFile(handle, 4096)
+            except BrokenPipeError:
+                return
+            if not data or (terminal and data.startswith(b"\x1a")):
+                return
+    else:
+        # Avoid holding a buffered stdin lock across interpreter shutdown.
+        while os.read(input_fd, 4096):
+            pass
+
+
 def run_owned_server(build, host, port, input_fd, listen_to=None, workspaces=()):
     """Keep a reloadable server alive while its launching process holds stdin open."""
     import uvicorn
@@ -117,9 +139,7 @@ def run_owned_server(build, host, port, input_fd, listen_to=None, workspaces=())
     owner_closed = threading.Event()
 
     def watch_owner():
-        # A buffered stdin read can hold its lock across interpreter shutdown.
-        while os.read(input_fd, 4096):
-            pass
+        _wait_for_owner_eof(input_fd)
         owner_closed.set()
 
     class OwnedServer(uvicorn.Server):

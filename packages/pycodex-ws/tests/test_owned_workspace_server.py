@@ -6,6 +6,7 @@ import sys
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from starlette.applications import Starlette
@@ -14,7 +15,61 @@ from starlette.testclient import TestClient
 from pycodex.bootstrap import ModelBootstrapResult
 from tests.fakes import ScriptedModelClient
 from workspace_server.app import build_parser, run_serve_cli
-from workspace_server.owned_process import run_owned_server
+from workspace_server.owned_process import _wait_for_owner_eof, run_owned_server
+
+
+@pytest.mark.parametrize("terminal, inputs", [
+    (True, [b"\r\n", b"\x1a\r\n"]),
+    (False, [b"\x1a", b"\r\n", BrokenPipeError()]),
+    (False, [b"owner data", b""]),
+])
+def test_windows_owner_waits_on_native_handle(monkeypatch, terminal, inputs):
+    pending = list(inputs)
+
+    def read_file(handle, size):
+        assert handle == 123 and size > 0
+        item = pending.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item, 0
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda fd: 123))
+    monkeypatch.setitem(sys.modules, "_winapi", SimpleNamespace(ReadFile=read_file))
+    monkeypatch.setattr(os, "isatty", lambda fd: terminal)
+    _wait_for_owner_eof(42)
+    assert pending == []
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows CRT and native pipes")
+def test_idle_windows_owner_pipe_keeps_its_crt_descriptor_available():
+    # A subprocess bounds the test even if a regression blocks os.dup on the CRT lock.
+    code = '''
+import _winapi
+import os
+import threading
+from unittest.mock import patch
+from workspace_server.owned_process import _wait_for_owner_eof
+
+reader, writer = os.pipe()
+reading = threading.Event()
+read_file = _winapi.ReadFile
+
+def read(handle, size):
+    reading.set()
+    return read_file(handle, size)
+
+with patch.object(_winapi, "ReadFile", read):
+    watcher = threading.Thread(target=_wait_for_owner_eof, args=(reader,), daemon=True)
+    watcher.start()
+    assert reading.wait(5)
+    os.close(os.dup(reader))
+    os.close(writer)
+    watcher.join(5)
+    assert not watcher.is_alive()
+os.close(reader)
+'''
+    subprocess.run([sys.executable, "-c", code], check=True, timeout=15)
 
 
 @pytest.mark.parametrize("legacy", [False, True])

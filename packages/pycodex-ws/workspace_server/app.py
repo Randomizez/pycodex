@@ -4,6 +4,7 @@ import os
 import secrets
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
 from contextlib import asynccontextmanager
@@ -372,7 +373,7 @@ async def _http_exception_response(request: Request, exc: HTTPException) -> JSON
 
 
 def _create_lifespan_app(
-    start: "typing.Callable[[], typing.Awaitable[None]]",
+    start: "typing.Callable[[ThreadPoolExecutor], typing.Awaitable[None]]",
     close: "typing.Callable[[], typing.Awaitable[None]]",
 ) -> Starlette:
     @asynccontextmanager
@@ -384,11 +385,15 @@ def _create_lifespan_app(
             and threading.current_thread() is threading.main_thread()
         ):
             asyncio.get_child_watcher().attach_loop(asyncio.get_running_loop())
-        await start()
-        try:
-            yield
-        finally:
-            await close()
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="workspace-launch") as launcher:
+            # Even executor.submit() starts a thread synchronously on first use.
+            # Warm this single worker before accepting requests, including for an empty registry.
+            await asyncio.get_running_loop().run_in_executor(launcher, threading.get_ident)
+            await start(launcher)
+            try:
+                yield
+            finally:
+                await close()
 
     return Starlette(
         lifespan=lifespan,

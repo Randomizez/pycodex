@@ -6,9 +6,11 @@ import sys
 import threading
 import typing
 from collections import deque
+from concurrent.futures import Future
 from dataclasses import replace
 from pathlib import Path
 
+import anyio
 from starlette.concurrency import run_in_threadpool
 
 from pycodex.bootstrap import build_model
@@ -395,27 +397,46 @@ class ThreadedWorkspaceInteractiveSession:
         self._view.attach_server_loop(server_loop)
         self._thread: "typing.Union[threading.Thread, None]" = None
         self._worker_loop: "typing.Union[asyncio.AbstractEventLoop, None]" = None
-        self._ready = threading.Event()
-        self._startup_error: "typing.Union[BaseException, None]" = None
+        self._startup: "typing.Optional[asyncio.Task]" = None
+        self._thread_launcher = None
         self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
 
-    async def start(self) -> "ThreadedWorkspaceInteractiveSession":
-        if self._thread is not None:
-            return self
-        self._thread = threading.Thread(
+    async def start(self, thread_launcher=None) -> "ThreadedWorkspaceInteractiveSession":
+        if self._startup is None:
+            self._thread_launcher = thread_launcher
+            self._startup = asyncio.create_task(self._launch_worker())
+        try:
+            await asyncio.shield(self._startup)
+        except asyncio.CancelledError:
+            # The ASGI request scope may already be cancelled at every await.
+            with anyio.CancelScope(shield=True):
+                await self.close()
+            raise
+        return self
+
+    async def _launch_worker(self) -> None:
+        ready = Future()
+        thread = threading.Thread(
             target=self._thread_main,
+            args=(ready,),
             name="pycodex-workspace-session",
             daemon=True,
         )
-        self._thread.start()
-        await asyncio.to_thread(self._ready.wait)
-        if self._startup_error is not None:
-            raise RuntimeError(
-                "workspace session thread failed to start"
-            ) from self._startup_error
-        return self
+        await self._server_loop.run_in_executor(self._thread_launcher, thread.start)
+        self._thread = thread
+        startup_error = await asyncio.wrap_future(ready)
+        if startup_error is not None:
+            raise RuntimeError("workspace session thread failed to start") from startup_error
 
-    def _thread_main(self) -> None:
+    def _thread_main(self, ready) -> None:
+        try:
+            self._run_worker(ready)
+        except BaseException as exc:
+            if ready.done():
+                raise
+            ready.set_result(exc)
+
+    def _run_worker(self, ready) -> None:
         loop = asyncio.new_event_loop()
         self._worker_loop = loop
         asyncio.set_event_loop(loop)
@@ -429,11 +450,8 @@ class ThreadedWorkspaceInteractiveSession:
             except BaseException:
                 loop.run_until_complete(session.close())
                 raise
-            self._ready.set()
+            loop.call_soon(ready.set_result, None)
             loop.run_forever()
-        except BaseException as exc:
-            self._startup_error = exc
-            self._ready.set()
         finally:
             pending = asyncio.all_tasks(loop)
             for task in pending:
@@ -446,6 +464,8 @@ class ThreadedWorkspaceInteractiveSession:
             loop.close()
 
     async def close(self, finish_turn: bool = False) -> None:
+        if self._startup is not None and not self._startup.done():
+            await asyncio.gather(asyncio.shield(self._startup), return_exceptions=True)
         session = self._session
         loop = self._worker_loop
         try:
@@ -463,8 +483,9 @@ class ThreadedWorkspaceInteractiveSession:
                 loop.call_soon_threadsafe(loop.stop)
             thread = self._thread
             if thread is not None:
-                await asyncio.to_thread(thread.join)
+                await self._server_loop.run_in_executor(self._thread_launcher, thread.join)
             self._thread = None
+            self._startup = None
 
     async def _call(self, coroutine):
         return await asyncio.wrap_future(

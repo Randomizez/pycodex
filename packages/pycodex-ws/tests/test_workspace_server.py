@@ -6,6 +6,7 @@ import time
 from dataclasses import asdict
 from pathlib import Path
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -2386,6 +2387,60 @@ def test_threaded_sessions_do_not_block_other_sessions():
         finally:
             release.set()
     assert all(session._thread is None for session in sessions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_http_remains_responsive_while_a_session_thread_is_starting(tmp_path, monkeypatch, cancel):
+    loop = asyncio.get_running_loop()
+    sessions = []
+
+    def build():
+        session = ThreadedWorkspaceInteractiveSession(make_session, loop)
+        sessions.append(session)
+        return session
+
+    entry = WorkspaceEntry(
+        WorkspaceDefinition("work", tmp_path / "state", tmp_path, False),
+        WorkspaceSessionManager(build),
+    )
+    app = create_multi_workspace_app(WorkspaceRegistry([entry]))
+    async with app.router.lifespan_context(app):
+        started = asyncio.Event()
+        release = threading.Event()
+        server_thread = threading.get_ident()
+        original_start = threading.Thread.start
+
+        def slow_start(thread):
+            assert threading.get_ident() != server_thread
+            if thread.name == "pycodex-workspace-session":
+                loop.call_soon_threadsafe(started.set)
+                assert release.wait(5)
+            return original_start(thread)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as browser:
+            with monkeypatch.context() as patch:
+                patch.setattr(threading.Thread, "start", slow_start)
+                create = asyncio.create_task(browser.post("/w/work/api/sessions", json={}))
+                try:
+                    await asyncio.wait_for(started.wait(), 2)
+                    assert (await browser.get("/")).status_code == 200
+                    assert (await browser.get("/api/workspaces")).status_code == 200
+                    assert not create.done()
+                    if cancel:
+                        create.cancel()
+                finally:
+                    release.set()
+                    await asyncio.gather(create, return_exceptions=True)
+                if cancel:
+                    assert create.cancelled()
+                else:
+                    assert create.result().status_code == 200
+            listed = (await browser.get("/w/work/api/sessions")).json()["sessions"]
+            assert len(listed) == (1 if cancel else 2)
+            if cancel:
+                assert sessions[-1]._thread is None
 
 
 @pytest.mark.parametrize("failure", ["start", "close"])

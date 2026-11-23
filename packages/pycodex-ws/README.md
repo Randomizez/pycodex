@@ -30,6 +30,8 @@ pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 
 Open `http://127.0.0.1:6007`. Use `python3 -m workspace_server` if the command
 is not on `PATH`. Keep stdin open while the server runs; EOF initiates shutdown.
+On Windows you can leave the console idle. Press Ctrl+Z followed by Enter
+to send EOF, or close the stdin pipe if using a launcher.
 Model configuration comes from `~/.codex/config.toml`.
 
 With `pycodex-ws --listen-to KEY@router:6000`, the OS assigns a free local
