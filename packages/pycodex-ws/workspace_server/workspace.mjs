@@ -41,6 +41,8 @@ const mobileSessionsToggle = document.querySelector(".mobile-sessions-toggle");
 let sessionsOpen = false;
 let sessionsPinned = false;
 let sessionsHoverTimer = null;
+let sessionCloseRequest = null;
+let closingSession = false;
 const contextMeter = document.getElementById("contextMeter");
 const contextMeterValue = document.getElementById("contextMeterValue");
 const activeSessionKey = "pycodex.workspace.activeSession:" + window.location.pathname;
@@ -127,6 +129,7 @@ function syncMobileSessionFloat() {
 
 function setSessionsOpen(open, restoreFocus = false, pinned = true) {
   clearSessionsHover();
+  if (!open) dismissSessionClose();
   sessionsOpen = open;
   sessionsPinned = open && pinned;
   workspace.classList.toggle("sessions-collapsed", !open);
@@ -383,6 +386,8 @@ function renderTabs() {
 
 function renderSessionList(container, mobile) {
   const template = document.getElementById(mobile ? "mobileSessionDot" : "sessionTab");
+  const focused = document.activeElement;
+  const focusedTab = !mobile && container.contains(focused) ? focused.closest(".tab") : null;
   const existing = new Map(
     Array.from(container.children, tab => [tab.dataset.sessionId, tab])
   );
@@ -423,11 +428,57 @@ function renderSessionList(container, mobile) {
       if (age.textContent !== replyAge) age.textContent = replyAge;
       const close = tab.querySelector(".tab-close");
       const closeLabel = `Close session: ${title}`;
-      if (close.getAttribute("aria-label") !== closeLabel) close.setAttribute("aria-label", closeLabel);
-      close.disabled = sessionUI.sessions.length <= 1;
+      if (close.getAttribute("aria-label") !== closeLabel) {
+        close.setAttribute("aria-label", closeLabel);
+        tab.querySelector(".tab-close-confirmation").setAttribute("aria-label", closeLabel);
+      }
+      close.disabled = closingSession || sessionUI.sessions.length <= 1;
+      if (tab === sessionCloseRequest?.tab && close.disabled) dismissSessionClose();
     }
     return tab;
   }));
+  if (!mobile && sessionCloseRequest && !container.contains(sessionCloseRequest.tab)) dismissSessionClose();
+  if (sessionsOpen && focusedTab && !container.contains(focusedTab)) {
+    (container.querySelector(".tab.active .tab-label") || sessionsClose).focus({preventScroll: true});
+  }
+}
+
+function dismissSessionClose(restoreFocus = false) {
+  const tab = sessionCloseRequest?.tab;
+  if (!tab) return;
+  sessionCloseRequest = null;
+  tab.classList.remove("confirming-close");
+  tab.querySelector(".tab-close-confirmation").hidden = true;
+  if (restoreFocus) tab.querySelector(".tab-close").focus({preventScroll: true});
+}
+
+function requestSessionClose(tab, trigger, event) {
+  if (!sessionsOpen || trigger.disabled) return;
+  dismissSessionClose();
+  sessionCloseRequest = {tab, x: event.clientX, y: event.clientY};
+  const confirmation = tab.querySelector(".tab-close-confirmation");
+  confirmation.hidden = false;
+  tab.classList.add("confirming-close");
+  confirmation.querySelector(".tab-close-cancel").focus({preventScroll: true});
+}
+
+async function confirmSessionClose(tab, event) {
+  const request = sessionCloseRequest;
+  if (tab !== request?.tab || closingSession) return;
+  // A second click at the trigger's position can land on the confirmation as the row changes.
+  if (event.detail > 1 && Math.hypot(event.clientX - request.x, event.clientY - request.y) <= 6) return;
+  dismissSessionClose();
+  tab.querySelector(".tab-label").focus({preventScroll: true});
+  closingSession = true;
+  renderSessionList(tabsEl, false);
+  try {
+    await closeSession(tab.dataset.sessionId);
+  } catch (error) {
+    showToast("Unable to close session: " + error.message);
+  } finally {
+    closingSession = false;
+    renderSessionList(tabsEl, false);
+  }
 }
 
 function editSessionTitle(tab, sessionId) {
@@ -822,13 +873,26 @@ for (const container of [tabsEl, mobileSessionDots]) {
       selectSession(sessionId);
       return;
     }
-    if (event.target.closest(".tab-close")) {
-      closeSession(sessionId).catch(error => showToast("Unable to close session: " + error.message));
+    const close = event.target.closest(".tab-close");
+    if (close) {
+      requestSessionClose(tab, close, event);
+    } else if (event.target.closest(".tab-close-confirmation")) {
+      if (event.target.closest(".tab-close-confirm")) confirmSessionClose(tab, event);
+      if (event.target.closest(".tab-close-cancel")) dismissSessionClose(true);
     } else if (sessionId === sessionUI.activeId && event.target.closest(".tab-label")) {
       editSessionTitle(tab, sessionId);
     } else selectSession(sessionId);
   });
 }
+document.addEventListener("pointerdown", event => {
+  const tab = sessionCloseRequest?.tab;
+  if (tab && !tab.contains(event.target)) dismissSessionClose();
+});
+tabsEl.addEventListener("focusout", event => {
+  const confirmation = event.target.closest(".tab-close-confirmation");
+  if (confirmation && confirmation.parentElement === sessionCloseRequest?.tab &&
+      !confirmation.contains(event.relatedTarget)) dismissSessionClose();
+});
 mobileSessionsToggle.addEventListener("click", () => setSessionsOpen(!sessionsOpen));
 sessionsClose.addEventListener("click", () => setSessionsOpen(!sessionsPinned, true));
 sessionSidebar.addEventListener("pointerenter", event => {
@@ -879,7 +943,8 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && sessionsOpen && !event.defaultPrevented &&
       !event.target.closest("dialog")) {
     event.preventDefault();
-    setSessionsOpen(false, true);
+    if (sessionCloseRequest) dismissSessionClose(true);
+    else setSessionsOpen(false, true);
   }
 });
 document.querySelectorAll(".fullscreen-toggle").forEach(button => {

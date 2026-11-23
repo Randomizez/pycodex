@@ -313,9 +313,7 @@ export function createSessionsUI({
   }
 
   async function closeSession(sessionId) {
-    const session = sessionById(sessionId);
-    if (!session || sessions.length <= 1) return;
-    if (!window.confirm(`Close session “${session.title || "pycodex"}”? It will be removed from this workspace.`)) return;
+    if (!sessionById(sessionId) || sessions.length <= 1) return;
     const response = await fetch(relativeUrl(`api/sessions/${encodeURIComponent(sessionId)}`), {
       method: "DELETE",
     });

@@ -18,7 +18,7 @@ const html = source.replace(/__([A-Z_]+)__/g, (_, name) => ({
 </script></body>`);
 const entry = fs.readFileSync(path.join(directory, "workspace.mjs"), "utf8") + `
   window.fixture = {
-    switchSession, closeSession, pollSession, restoreSessionScroll,
+    switchSession, pollSession, restoreSessionScroll,
     renderSnapshot, updateSessions, sessionState: sessionUI.sessionState, composer, renderMermaidInto: markdown.renderMermaidInto, setSessionsOpen,
     active: () => sessionUI.activeId,
     stop: () => {clearInterval(pollTimer); stopContentViews();},
@@ -35,9 +35,13 @@ function turn(id, text) {
   const browser = await chromium.launch({headless: true, executablePath: process.env.CHROMIUM_EXECUTABLE});
   try {
     const errors = [];
+    const dialogs = [];
     const page = await browser.newPage({viewport: {width: 1100, height: 850}});
     page.on("pageerror", error => errors.push(error.message));
-    page.on("dialog", dialog => dialog.accept());
+    page.on("dialog", dialog => {
+      dialogs.push(dialog.type());
+      void dialog.dismiss();
+    });
     let tabs = ["a", "b"];
     let savedSession = "";
     const snapshots = new Map([
@@ -328,7 +332,29 @@ function turn(id, text) {
     await page.evaluate("fixture.switchSession('a')");
     assert.equal(await page.locator("#sessionBanners").getAttribute("hidden"), "");
     assert.equal(await page.locator(".response").last().textContent(), "Arrived during creation");
-    await page.evaluate("fixture.closeSession('b')");
+    await page.evaluate("fixture.setSessionsOpen(true)");
+    const tabB = page.locator('#tabs [data-session-id="b"]');
+    const closeB = tabB.locator(".tab-close");
+    const confirmationB = tabB.getByRole("group", {name: "Close session: b"});
+    await tabB.hover();
+    await closeB.click();
+    await confirmationB.waitFor();
+    assert.ok(await confirmationB.getByRole("button", {name: "Cancel"}).evaluate(
+      button => document.activeElement === button));
+    await page.keyboard.press("Escape");
+    await confirmationB.waitFor({state: "hidden"});
+    assert.ok(await closeB.evaluate(button => document.activeElement === button));
+    assert.ok(tabs.includes("b"));
+    await closeB.click();
+    await confirmationB.getByRole("button", {name: "Cancel"}).click();
+    await confirmationB.waitFor({state: "hidden"});
+    assert.ok(tabs.includes("b"));
+    await closeB.dblclick();
+    assert.ok(tabs.includes("b"));
+    if (!await confirmationB.isVisible()) await closeB.click();
+    await confirmationB.getByRole("button", {name: "Close", exact: true}).click();
+    await tabB.waitFor({state: "detached"});
+    assert.equal(await page.evaluate("fixture.active()"), "a");
     assert.equal(await page.evaluate("fixture.sessionState.has('b')"), false);
 
     await page.evaluate(() => {
@@ -348,9 +374,17 @@ function turn(id, text) {
     assert.equal(await page.evaluate("document.getElementById('log').scrollTop === diagramScroll"), true);
     await page.evaluate("fixture.switchSession('a')");
     assert.equal(await page.locator(".mermaid-diagram svg").count(), 1);
-    await page.evaluate("fixture.closeSession('a')");
+    await page.evaluate("fixture.setSessionsOpen(true)");
+    const tabA = page.locator('#tabs [data-session-id="a"]');
+    await tabA.locator(".tab-close").click();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Enter");
+    await tabA.waitFor({state: "detached"});
     assert.equal(await page.evaluate("fixture.active()"), "c");
     assert.equal(await page.evaluate("fixture.sessionState.has('a')"), false);
+    assert.ok(await page.locator('#tabs [data-session-id="c"] .tab-close').isDisabled());
+    assert.deepEqual(dialogs, []);
+    await page.evaluate("fixture.setSessionsOpen(false)");
 
     await page.evaluate(() => {
       window.messageSnapshot = {model: "test", queued_inputs: [], spinner: "", turns: [{

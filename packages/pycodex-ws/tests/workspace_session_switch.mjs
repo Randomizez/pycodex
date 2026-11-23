@@ -46,11 +46,8 @@ globalThis.document = {
 globalThis.requestAnimationFrame = () => {};
 const markVisibleFinalRead = () => {};
 const activeSessionKey = "test-workspace";
-let confirmClose = false;
-const confirmations = [];
 globalThis.window = {
   sessionStorage: {getItem: () => null}, location: {href: "http://workspace.test/"},
-  confirm(message) { confirmations.push(message); return confirmClose; },
 };
 const resizePrompt = () => {};
 const dismissSessionsDrawer = () => {};
@@ -156,12 +153,8 @@ async function checkClosingActiveSession() {
   assert.equal(document.title, "Workspace");
   composer.set({parts: [{type: "text", text: "draft b"}]});
   log.scrollTop = 9;
-  await closeSession("b");
-  assert.ok(/Second session/.test(confirmations[0]));
-  assert.deepEqual(deletions, []);
   assert.equal(ui.activeId, "b");
   assert.deepEqual(composer.read(), {parts: [{type: "text", text: "draft b"}]});
-  confirmClose = true;
   delayOldPoll = process.argv[2] !== "none";
   const oldPoll = delayOldPoll ? pollSession() : null;
   logVisible = process.argv[3] === "chat";
@@ -181,7 +174,7 @@ async function checkClosingActiveSession() {
   assert.equal(sessionState.has("b"), false);
   assert.deepEqual(clearedBannerSessions, ["b"]);
   await closeSession("a");
-  assert.equal(confirmations.length, 2);
+  assert.deepEqual(deletions, ["/api/sessions/b"]);
   assert.equal(document.title, "Workspace");
   if (oldPoll) {
     assert.equal(delayedSignal.aborted, true);
