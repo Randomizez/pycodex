@@ -1,26 +1,59 @@
 /* Source for the workspace content pane. */
 .content-tabs {
   flex: 1;
+  gap: 6px;
 }
 .content-tabs[data-overflow-right="true"] {
   -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
   mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent);
 }
-.content-tabs[data-overflow-left="true"] {
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px);
-  mask-image: linear-gradient(90deg, transparent, #000 28px);
-}
-.content-tabs[data-overflow-left="true"][data-overflow-right="true"] {
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent);
-  mask-image: linear-gradient(90deg, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+.content-tabs[data-overflow-left="true"] .tab.content-tab[data-view-id="board"]::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 100%;
+  width: 22px;
+  background: linear-gradient(90deg, var(--board-chrome) 30%, transparent);
+  pointer-events: none;
 }
 .tab.content-tab {
   flex: 0 0 auto;
-}
-.tab.content-tab:first-child,
-.tab.content-tab[data-view-id="vscode"] {
   min-width: 0;
-  padding-right: 12px;
+  padding: 0 10px;
+}
+.tab.content-tab:not(.active):not(:hover) {
+  background: var(--code);
+}
+.tab.content-tab:not(.active):hover {
+  background: var(--panel-hover);
+}
+.tab.content-tab.active {
+  max-width: 240px;
+}
+.tab.content-tab.active:has(.content-tab-close) {
+  padding-right: 6px;
+}
+.tab.content-tab[data-view-id="board"] {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  box-shadow: 0 0 0 4px var(--board-chrome);
+}
+.tab.content-tab:not(.active) .content-tab-close {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+.tab.content-tab:not(.active):is(:hover, :focus-within) .content-tab-close {
+  opacity: 0.85;
+  visibility: visible;
+  pointer-events: auto;
+}
+.tab.content-tab:not(.active):has(.content-tab-close):is(:hover, :focus-within) .content-tab-label {
+  -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent calc(100% - 12px));
+  mask-image: linear-gradient(90deg, #000 calc(100% - 28px), transparent calc(100% - 12px));
 }
 .content-tab:focus-visible {
   outline: 2px solid var(--accent);

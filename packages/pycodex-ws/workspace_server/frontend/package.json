@@ -9,6 +9,8 @@
     "build": "node build.mjs"
   },
   "dependencies": {
+    "dompurify": "3.2.6",
+    "markdown-it": "14.1.0",
     "monaco-editor": "0.57.0"
   },
   "devDependencies": {

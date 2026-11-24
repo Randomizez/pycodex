@@ -1,7 +1,10 @@
 // Workspace content tabs, live updates and editor lifecycle.
+import DOMPurify from "dompurify";
+import markdownit from "markdown-it";
 import {tabLabels} from "./view_labels.mjs";
 import {reconcileChildren} from "../workspace_dom.mjs";
 import {TranscriptView} from "./transcript.mjs";
+export {DOMPurify, markdownit};
 export {Composer} from "./composer.mjs";
 export {PromptHistory} from "./prompt_history.mjs";
 
@@ -888,6 +891,17 @@ export function mountContentViews({
         label.appendChild(element(document, "span", "content-tab-description"));
         tab.appendChild(label);
         tab.addEventListener("click", () => controller.select(view.id));
+        if (view.id !== "board" && view.id !== "vscode") {
+          tab.addEventListener("mousedown", event => {
+            if (event.button === 1) event.preventDefault();
+          });
+          tab.addEventListener("auxclick", event => {
+            if (event.button === 1) {
+              event.preventDefault();
+              controller.close(view.id);
+            }
+          });
+        }
         tab.addEventListener("keydown", event => {
           if (event.target !== tab) return;
           const order = (enableBoard ? ["board"] : [])

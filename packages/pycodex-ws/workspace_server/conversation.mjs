@@ -193,10 +193,31 @@ function setMessageTime(body, value, detail = "") {
   }
 }
 
-const TAG_CLOCK_ICON =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3 2"></path></svg>';
-const TAG_EVENT_ICON =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"></circle></svg>';
+const TAG_ICONS = {
+  clock: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><path d="M12 7v5l3 2"></path></svg>',
+  exec: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 8 4 4-4 4m6 0h6"></path></svg>',
+  agent: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="7" cy="7" r="2.5"></circle><circle cx="17" cy="17" r="2.5"></circle><path d="M7 9.5v2a3.5 3.5 0 0 0 3.5 3.5h4"></path></svg>',
+  event: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"></circle><circle cx="12" cy="12" r="2.4" fill="currentColor" stroke="none"></circle></svg>',
+};
+const EXIT_CODE_RE = /(?:^Command exited with code (-?\d+)\b|"exit_code"\s*:\s*(-?\d+))/m;
+
+function describeTag(tag, text) {
+  if (/wake|schedul|clock|timer|唤醒|定时/i.test(tag)) return {icon: "clock", tone: "clock", label: tag, exit: ""};
+  if (/^task\b|exec/i.test(tag)) {
+    const canceled = /cancel/i.test(tag);
+    const match = canceled ? null : EXIT_CODE_RE.exec(text);
+    const code = match ? (match[1] || match[2]) : "";
+    const failed = Boolean(code && code !== "0");
+    return {
+      icon: "exec",
+      tone: failed ? "warn" : canceled ? "muted" : "exec",
+      label: tag,
+      exit: failed ? `exit ${code}` : "",
+    };
+  }
+  if (/agent|parent/i.test(tag)) return {icon: "agent", tone: "muted", label: tag, exit: ""};
+  return {icon: "event", tone: "muted", label: tag, exit: ""};
+}
 
 function renderTagMessage(body, tag, message) {
   let details = body.querySelector(":scope > .message-tag");
@@ -207,24 +228,26 @@ function renderTagMessage(body, tag, message) {
     label.append(
       element("span", "message-tag-icon"),
       element("span", "message-tag-name"),
-      element("span", "message-tag-sep", "·"),
+      element("span", "message-tag-exit"),
       element("time", "message-tag-time"),
     );
     summary.appendChild(label);
     details.append(summary, element("pre", "message-tag-source"));
     body.replaceChildren(details);
   }
-  const label = details.firstElementChild.firstElementChild;
-  const [iconNode, nameNode, sepNode, timeNode] = label.children;
-  const iconKind = /wake|schedul|clock|timer|唤醒|定时/i.test(tag) ? "clock" : "event";
-  if (iconNode.dataset.icon !== iconKind) {
-    iconNode.dataset.icon = iconKind;
-    iconNode.innerHTML = iconKind === "clock" ? TAG_CLOCK_ICON : TAG_EVENT_ICON;
+  const info = describeTag(tag, message.text || "");
+  if (details.dataset.tone !== info.tone) details.dataset.tone = info.tone;
+  const [iconNode, nameNode, exitNode, timeNode] = details.firstElementChild.firstElementChild.children;
+  if (iconNode.dataset.icon !== info.icon) {
+    iconNode.dataset.icon = info.icon;
+    iconNode.innerHTML = TAG_ICONS[info.icon];
   }
-  if (nameNode.textContent !== tag) nameNode.textContent = tag;
+  if (nameNode.textContent !== info.label) nameNode.textContent = info.label;
+  const hideExit = !info.exit;
+  if (exitNode.hidden !== hideExit) exitNode.hidden = hideExit;
+  if (info.exit && exitNode.textContent !== info.exit) exitNode.textContent = info.exit;
   const formattedTime = formatMessageTime(message.created_at);
   const hideTime = !formattedTime;
-  if (sepNode.hidden !== hideTime) sepNode.hidden = hideTime;
   if (timeNode.hidden !== hideTime) timeNode.hidden = hideTime;
   if (formattedTime) {
     if (timeNode.textContent !== formattedTime) timeNode.textContent = formattedTime;

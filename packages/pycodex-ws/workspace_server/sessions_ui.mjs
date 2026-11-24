@@ -1,6 +1,8 @@
 import {messageSignature} from "./conversation.mjs";
 import {PromptHistory} from "./content_views.mjs";
-import {isNearBottom, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
+import {isNearBottom, readStorage, relativeUrl, scrollToBottom} from "./workspace_dom.mjs";
+
+const POLL_TIMEOUT_MS = 15000;
 
 export function formatReplyAge(session, now = Date.now()) {
   if (!Number.isFinite(session?.last_message_at)) return "";
@@ -37,7 +39,7 @@ export function createSessionsUI({
   beginWorkspacePoll = null,
 }) {
   const workspaceTitle = document.title;
-  let activeSessionId = window.sessionStorage.getItem(activeSessionKey) || "";
+  let activeSessionId = readStorage("sessionStorage", activeSessionKey);
   let sessions = [];
   const sessionState = new Map();
   let sessionPoll = null;
@@ -160,6 +162,11 @@ export function createSessionsUI({
     }
     const request = {sessionId: requestedSessionId, controller: new AbortController()};
     sessionPoll = request;
+    let timedOut = false;
+    const pollTimeout = setTimeout(() => {
+      timedOut = true;
+      request.controller.abort();
+    }, POLL_TIMEOUT_MS);
     if (sessionNeedsRefresh) setSessionRefresh("loading");
     const finishWorkspacePoll = beginWorkspacePoll ? beginWorkspacePoll() : null;
     try {
@@ -191,9 +198,10 @@ export function createSessionsUI({
     } catch (error) {
       if (sessionPoll === request && requestedSessionId === activeSessionId) {
         if (sessionNeedsRefresh) setSessionRefresh("error");
-        setSpinner(`poll error: ${error.message}`);
+        setSpinner(`poll error: ${timedOut ? "request timed out" : error.message}`);
       }
     } finally {
+      clearTimeout(pollTimeout);
       if (sessionPoll === request) sessionPoll = null;
     }
   }

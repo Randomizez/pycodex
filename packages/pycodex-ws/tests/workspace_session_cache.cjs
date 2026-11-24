@@ -65,8 +65,8 @@ function turn(id, text) {
     await page.route("**/*", async route => {
       const url = new URL(route.request().url());
       if (url.hostname !== "workspace.test") {
-        // Offline dependency doubles: ordinary messages use the page's text
-        // fallback; Mermaid is controlled to exercise its asynchronous lifetime.
+        // Offline dependency doubles: markdown-it and DOMPurify are bundled locally;
+        // Mermaid is controlled here to exercise its asynchronous lifetime.
         if (url.pathname.includes("mermaid.esm")) {
           return route.fulfill({contentType: "text/javascript", body: `
             export default {
@@ -239,7 +239,7 @@ function turn(id, text) {
     snapshots.get("a").turns[79].response = "Updated while inactive";
     releaseA();
     await page.evaluate("window.selection");
-    assert.equal(await page.locator(".response").last().textContent(), "Updated while inactive");
+    assert.equal((await page.locator(".response").last().textContent()).trim(), "Updated while inactive");
     assert.equal(await page.evaluate(() => document.getElementById("log").firstElementChild === originalEntry), true);
     assert.equal(await page.locator(".model-retry-group").getAttribute("open"), "");
 
@@ -255,7 +255,7 @@ function turn(id, text) {
     failures.add("a");
     await page.evaluate("fixture.switchSession('a')");
     assert.match(await page.locator("#sessionRefresh").textContent(), /Unable to load latest session/);
-    assert.equal(await page.locator(".response").last().textContent(), "Updated while inactive");
+    assert.equal((await page.locator(".response").last().textContent()).trim(), "Updated while inactive");
     failures.delete("a");
     const releaseRetry = block("a");
     await page.evaluate(() => {window.retry = fixture.pollSession();});
@@ -331,7 +331,7 @@ function turn(id, text) {
     assert.equal(await page.locator('#sessionBanners [data-banner-id="customize-agent"]').count(), 1);
     await page.evaluate("fixture.switchSession('a')");
     assert.equal(await page.locator("#sessionBanners").getAttribute("hidden"), "");
-    assert.equal(await page.locator(".response").last().textContent(), "Arrived during creation");
+    assert.equal((await page.locator(".response").last().textContent()).trim(), "Arrived during creation");
     await page.evaluate("fixture.setSessionsOpen(true)");
     const tabB = page.locator('#tabs [data-session-id="b"]');
     const closeB = tabB.locator(".tab-close");
@@ -431,10 +431,11 @@ function turn(id, text) {
       });
     });
     const reasoning = "**Checking**\n\nBoth inputs.";
+    const renderedReasoning = "Checking\nBoth inputs.";
     const committed = "Both inputs retained.";
     for (const [phase, status, thinking, expected, animation] of [
       ["commentary", "tool", "", committed, "activity-breathe"],
-      ["commentary", "running", reasoning, reasoning, "activity-breathe"],
+      ["commentary", "running", reasoning, renderedReasoning, "activity-breathe"],
       ["commentary", "responding", "Next reply", "Next reply", "activity-breathe"],
       ["commentary", "tool", "", committed, "activity-breathe"],
       ["final", "tool", reasoning, committed, "none"],
@@ -446,7 +447,10 @@ function turn(id, text) {
         Object.assign(messageSnapshot.turns[0], {response_phase: phase, status, thinking});
         fixture.renderSnapshot(messageSnapshot);
       }, [phase, status, thinking]);
-      assert.deepEqual(await page.locator("#log > .entry:not(.user) > .text.markdown").allTextContents(), [expected]);
+      assert.deepEqual(
+        (await page.locator("#log > .entry:not(.user) > .text.markdown").allTextContents()).map(t => t.trim()),
+        [expected],
+      );
       assert.equal(await page.locator("#log > .entry:not(.user)").count(), 1);
       assert.equal(await page.locator(".entry.response").evaluate(entry =>
         getComputedStyle(entry).animationName), animation);

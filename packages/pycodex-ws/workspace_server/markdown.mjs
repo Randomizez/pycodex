@@ -1,4 +1,8 @@
-import {isWorkspaceLink} from "./content_views.mjs";
+import {
+  DOMPurify as bundledDOMPurify,
+  isWorkspaceLink,
+  markdownit as bundledMarkdownit,
+} from "./content_views.mjs";
 import {element, isNearBottom, scrollToBottom} from "./workspace_dom.mjs";
 
 const mathDelimiters = [
@@ -9,6 +13,44 @@ const mathDelimiters = [
 ];
 const mathTokenPrefix = "\uE000math";
 const mathTokenSuffix = "\uE001";
+const KATEX_CDN_BASE = "https://cdn.jsdelivr.net/npm/katex@0.16.22/dist";
+let katexPromise = null;
+let katexRetry = 0;
+
+function loadKatex() {
+  if (typeof window === "undefined") return Promise.resolve(null);
+  if (window.katex?.render) return Promise.resolve(window.katex);
+  if (!katexPromise) {
+    const cssHref = `${KATEX_CDN_BASE}/katex.min.css`;
+    if (!document.querySelector(`link[href="${cssHref}"]`)) {
+      document.head.appendChild(Object.assign(document.createElement("link"), {
+        rel: "stylesheet", href: cssHref,
+      }));
+    }
+    const url = `${KATEX_CDN_BASE}/katex.mjs${katexRetry ? `?retry=${katexRetry}` : ""}`;
+    katexPromise = import(url)
+      .then(mod => {
+        window.katex = mod.default || mod;
+        return window.katex;
+      })
+      .catch(error => {
+        katexPromise = null;
+        katexRetry += 1;
+        throw error;
+      });
+  }
+  return katexPromise;
+}
+
+function renderMathNode(katex, node, {delimiter, body}) {
+  if (katex?.render) {
+    katex.render(body, node, {displayMode: delimiter.display, throwOnError: false, trust: false});
+  } else if (window.renderMathInElement) {
+    node.textContent = delimiter.left + body + delimiter.right;
+    window.renderMathInElement(node, {delimiters: [{...delimiter}], throwOnError: false, trust: false});
+  }
+}
+
 const renderMermaidSvg = (() => {
   let rendererPromise = null;
   let diagramId = 0;
@@ -27,6 +69,9 @@ const renderMermaidSvg = (() => {
           fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
         });
         return renderer;
+      }).catch(error => {
+        rendererPromise = null;
+        throw error;
       });
     }
     const renderer = await rendererPromise;
@@ -138,11 +183,12 @@ export function protectMath(source) {
   };
 }
 
-function renderProtectedMath(root, expressions) {
+function renderProtectedMath(root, expressions, log) {
   if (!expressions.length) return;
   const expressionByToken = new Map(expressions.map((expression, index) => [
     mathTokenPrefix + index + mathTokenSuffix, expression,
   ]));
+  const pending = [];
   const textWalker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   const textNodes = [];
   let textNode = textWalker.nextNode();
@@ -168,16 +214,11 @@ function renderProtectedMath(root, expressions) {
         );
       }
       const mathNode = document.createElement("span");
-      const {delimiter, body} = expression;
-      if (window.renderMathInElement) {
-        mathNode.textContent = delimiter.left + body + delimiter.right;
-        window.renderMathInElement(mathNode, {
-          delimiters: [{...delimiter}],
-          throwOnError: false,
-          trust: false,
-        });
+      if (window.katex?.render || window.renderMathInElement) {
+        renderMathNode(window.katex, mathNode, expression);
       } else {
-        mathNode.textContent = body;
+        mathNode.textContent = expression.body;
+        pending.push({node: mathNode, expression});
       }
       fragment.appendChild(mathNode);
       cursor = tokenEnd + mathTokenSuffix.length;
@@ -193,6 +234,19 @@ function renderProtectedMath(root, expressions) {
     }
   }
   restoreUnrenderedMathTokens(root, expressionByToken);
+  if (pending.length) {
+    loadKatex().then(katex => {
+      if (!katex?.render) return;
+      const stickToBottom = log && root.isConnected && isNearBottom(log);
+      let rendered = false;
+      for (const {node, expression} of pending) {
+        if (!node.isConnected) continue;
+        renderMathNode(katex, node, expression);
+        rendered = true;
+      }
+      if (rendered && stickToBottom) scrollToBottom(log);
+    }).catch(() => {});
+  }
 }
 
 function restoreUnrenderedMathTokens(root, expressionByToken) {
@@ -248,8 +302,10 @@ function showMermaidDiagram(svg) {
 }
 
 export function createMarkdownRenderer(log) {
-  const markdownRenderer = window.markdownit
-    ? window.markdownit({html: false, linkify: true, breaks: false})
+  const markdownFactory = (typeof window !== "undefined" && window.markdownit) || bundledMarkdownit || null;
+  const getPurifier = () => (typeof window !== "undefined" && window.DOMPurify) || bundledDOMPurify || null;
+  const markdownRenderer = markdownFactory
+    ? markdownFactory({html: false, linkify: true, breaks: false})
     : null;
   if (markdownRenderer) {
     // Bare filenames such as TODO.md must not become http://TODO.md.
@@ -289,17 +345,20 @@ export function createMarkdownRenderer(log) {
   }
 
   function renderMarkdownInto(root, source, imageBase = null) {
-    if (!markdownRenderer || !window.DOMPurify) {
+    const purifier = getPurifier();
+    if (!markdownRenderer || !purifier) {
+      root.dataset.plainText = "true";
       root.textContent = source || "";
       return;
     }
+    delete root.dataset.plainText;
     const protectedMath = protectMath(String(source || ""));
     const dirtyHtml = markdownRenderer.render(protectedMath.source, {imageBase});
-    root.innerHTML = window.DOMPurify.sanitize(dirtyHtml, {
+    root.innerHTML = purifier.sanitize(dirtyHtml, {
       USE_PROFILES: {html: true},
       ADD_ATTR: ["target", "rel"],
     });
-    renderProtectedMath(root, protectedMath.expressions);
+    renderProtectedMath(root, protectedMath.expressions, log);
     root.querySelectorAll("a").forEach((anchor) => {
       const link = anchor.getAttribute("data-workspace-link");
       if (isWorkspaceLink(link)) {
@@ -332,7 +391,9 @@ export function createMarkdownRenderer(log) {
         // Cached conversations may finish rendering while detached.
         if (!root.contains(figure)) return;
         const stickToBottom = root.isConnected && isNearBottom(log);
-        diagram.innerHTML = window.DOMPurify.sanitize(result.svg, {
+        const purifier = getPurifier();
+        if (!purifier) throw new Error("DOMPurify is unavailable");
+        diagram.innerHTML = purifier.sanitize(result.svg, {
           USE_PROFILES: {svg: true, svgFilters: true},
         });
         const svg = diagram.querySelector("svg");

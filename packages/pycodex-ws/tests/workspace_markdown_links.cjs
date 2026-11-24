@@ -1,4 +1,4 @@
-// Run manually with Playwright, markdown-it and DOMPurify installed; see tests/TESTS.md.
+// Run manually with Playwright installed; see tests/TESTS.md.
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -12,8 +12,6 @@ const {chromium} = require("playwright");
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));
     await openWorkspaceFixture(page, '<div id="content"></div>');
-    await page.addScriptTag({path: require.resolve("markdown-it/dist/markdown-it.min.js")});
-    await page.addScriptTag({path: path.join(path.dirname(require.resolve("dompurify")), "purify.min.js")});
     await page.evaluate(async () => {
       const {createMarkdownRenderer, createViewLinkHandlers, protectMath} = await import("/assets/markdown.mjs");
       const {renderMarkdownInto} = createMarkdownRenderer(document.getElementById("content"));

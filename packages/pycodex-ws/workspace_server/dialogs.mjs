@@ -41,6 +41,11 @@ export function setupContextDetails({getActiveSessionId, frontendEvents, openTra
   let structure = "";
   let request = null;
   let timer = null;
+  let hoverCloseTimer = null;
+  const clearHoverClose = () => {
+    clearTimeout(hoverCloseTimer);
+    hoverCloseTimer = null;
+  };
   const stop = () => {
     request?.controller.abort();
     request = null;
@@ -134,6 +139,7 @@ export function setupContextDetails({getActiveSessionId, frontendEvents, openTra
     }
   };
   const show = visible => {
+    clearHoverClose();
     details.hidden = !visible;
     contextMeter.setAttribute("aria-expanded", String(visible));
     if (!visible) stop();
@@ -154,7 +160,8 @@ export function setupContextDetails({getActiveSessionId, frontendEvents, openTra
     if (event.pointerType !== "touch") show(true);
   });
   control.addEventListener("pointerleave", () => {
-    if (!pinned) show(false);
+    clearHoverClose();
+    if (!pinned) hoverCloseTimer = setTimeout(() => show(false), 180);
   });
   contextMeter.addEventListener("focus", () => show(true));
   control.addEventListener("focusout", event => {

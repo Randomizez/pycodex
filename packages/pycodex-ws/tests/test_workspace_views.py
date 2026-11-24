@@ -1025,8 +1025,8 @@ def test_content_tab_controller():
 def test_page_imports_match_shipped_module():
     workspace = Path(__file__).parents[1] / "workspace_server"
     # Canvas must not load Monaco's multi-megabyte code or stylesheet.
-    # Include the live transcript controller while keeping Monaco lazy-loaded.
-    assert (workspace / "content_views.mjs").stat().st_size < 50000
+    # Include the live transcript controller plus offline markdown-it and DOMPurify while keeping Monaco lazy-loaded.
+    assert (workspace / "content_views.mjs").stat().st_size < 300000
     assert (workspace / "content_views.css").stat().st_size < 8000
     page = (workspace / "workspace.html").read_text(encoding="utf-8")
     # The process that serves this page may still have the pre-split asset routes.

@@ -152,10 +152,9 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 流式更新还检查历史消息不产生多余 DOM mutation，元数据实际变化仍及时更新。
 所有请求使用离线 fixture，不访问真实会话或 CDN。
 
-Markdown 文件链接的浏览器回归使用与页面相同版本的渲染和清洗库，手动运行：
+Markdown 文件链接的浏览器回归直接使用页面内置打包的渲染和清洗库，手动运行：
 
 ```bash
-npm install --prefix /tmp/pycodex-browser-check playwright markdown-it@14.1.0 dompurify@3.2.6
 NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests/workspace_markdown_links.cjs
 ```
 

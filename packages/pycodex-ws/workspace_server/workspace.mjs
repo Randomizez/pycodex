@@ -1,5 +1,7 @@
 import {Composer, mountContentViews} from "./content_views.mjs";
-import {encodeViewPath, frontendUrl, reconcileChildren, relativeUrl} from "./workspace_dom.mjs";
+import {
+  encodeViewPath, frontendUrl, readStorage, reconcileChildren, relativeUrl, writeStorage,
+} from "./workspace_dom.mjs";
 import {createMarkdownRenderer, createViewLinkHandlers} from "./markdown.mjs";
 import {createConversationRenderer} from "./conversation.mjs";
 import {createSessionsUI, formatReplyAge} from "./sessions_ui.mjs";
@@ -48,9 +50,15 @@ const contextMeterValue = document.getElementById("contextMeterValue");
 const activeSessionKey = "pycodex.workspace.activeSession:" + window.location.pathname;
 const customizeSessionsKey = "pycodex.workspace.customizeSessions:" + window.location.pathname;
 const builtinFrontend = new URLSearchParams(window.location.search).get("builtin") === "1";
-const customizeSessions = new Set(
-  JSON.parse(window.sessionStorage.getItem(customizeSessionsKey) || "[]")
-);
+function readStoredList(key) {
+  try {
+    const parsed = JSON.parse(readStorage("sessionStorage", key, "[]"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_error) {
+    return [];
+  }
+}
+const customizeSessions = new Set(readStoredList(customizeSessionsKey));
 let pollTimer = null;
 let lastBoardSignature = null;
 let contentViewsActive = false;
@@ -98,16 +106,40 @@ const {
 composer.set({parts: []});
 
 function loadChatWidth() {
-  const stored = Number(window.localStorage.getItem("pycodex.workspace.chatWidth") || 0);
-  if (stored > 0) setChatWidth(stored);
+  if (mobileSessionsMedia.matches) return;
+  const stored = Number(readStorage("localStorage", "pycodex.workspace.chatWidth", "0"));
+  if (stored > 0) setChatWidth(stored, false);
+}
+
+function isSidebarDocked() {
+  return !mobileSessionsMedia.matches && sessionsOpen && !workspace.classList.contains("sessions-overlay");
+}
+
+function syncSidebarOverlay() {
+  if (!sessionsOpen || mobileSessionsMedia.matches) {
+    workspace.classList.remove("sessions-overlay");
+    return;
+  }
+  if (!sessionsPinned) {
+    workspace.classList.add("sessions-overlay");
+    return;
+  }
+  const chatWidth = document.querySelector(".chat").getBoundingClientRect().width;
+  const openSize = parseFloat(getComputedStyle(workspace).getPropertyValue("--session-sidebar-size")) || 248;
+  const reservedWidth = isSidebarDocked() ? openSize : sessionSidebarWidth();
+  workspace.classList.toggle("sessions-overlay", chatWidth + reservedWidth - openSize < 320);
 }
 
 function centerSplit() {
   const sidebarWidth = parseFloat(getComputedStyle(workspace).getPropertyValue(
-    sessionsOpen ? "--session-sidebar-size" : "--session-rail-width"
+    isSidebarDocked() ? "--session-sidebar-size" : "--session-rail-width"
   ));
-  setChatWidth(Math.max(0, (window.innerWidth - sidebarWidth - 8) / 2) +
+  setChatWidth(Math.max(0, (window.innerWidth - sidebarWidth - splitterWidth()) / 2) +
     sidebarWidth - sessionSidebarWidth());
+}
+
+function splitterWidth() {
+  return parseFloat(getComputedStyle(workspace).getPropertyValue("--splitter-width")) || 0;
 }
 
 function sessionSidebarWidth() {
@@ -133,6 +165,7 @@ function setSessionsOpen(open, restoreFocus = false, pinned = true) {
   sessionsOpen = open;
   sessionsPinned = open && pinned;
   workspace.classList.toggle("sessions-collapsed", !open);
+  syncSidebarOverlay();
   updateSessionControls();
   const modal = open && mobileSessionsMedia.matches;
   const hidden = !open && mobileSessionsMedia.matches;
@@ -186,11 +219,10 @@ async function selectSession(sessionId) {
   restoreSessionScroll();
 }
 
-function setChatWidth(width) {
+function setChatWidth(width, persist = true) {
   const viewportWidth = window.innerWidth || 0;
-  const splitterWidth = 8;
   const gutterWidth = Math.min(24, Math.max(12, Math.round(viewportWidth * 0.06)));
-  const availableWidth = Math.max(0, viewportWidth - sessionSidebarWidth() - splitterWidth);
+  const availableWidth = Math.max(0, viewportWidth - sessionSidebarWidth() - splitterWidth());
   const maxChatWidth = Math.max(gutterWidth, availableWidth - gutterWidth);
   const collapseWidth = Math.min(
     280,
@@ -207,13 +239,15 @@ function setChatWidth(width) {
   }
   workspace.style.setProperty("--chat-width", `${nextWidth}px`);
   workspace.classList.toggle("collapsed", collapsed);
-  window.localStorage.setItem("pycodex.workspace.chatWidth", String(nextWidth));
+  syncSidebarOverlay();
+  if (persist) writeStorage("localStorage", "pycodex.workspace.chatWidth", nextWidth);
 }
 
 function startResize(event) {
   if (!workspace) return;
+  const openSize = parseFloat(getComputedStyle(workspace).getPropertyValue("--session-sidebar-size")) || 248;
   const chatWidth = document.querySelector(".chat").getBoundingClientRect().width +
-    sessionSidebar.getBoundingClientRect().width - sessionSidebarWidth();
+    (isSidebarDocked() ? openSize - sessionSidebarWidth() : 0);
   resizeStart = { pointerId: event.pointerId, startX: event.clientX, startWidth: chatWidth };
   splitter.setPointerCapture(event.pointerId);
   workspace.classList.add("resizing");
@@ -242,11 +276,14 @@ function endResize(event) {
 function setSpinner(text, options = {}) {
   const previousText = spinnerText;
   const nextText = String(text || "").trim();
-  const wasRunning = Boolean(previousText);
-  const isRunning = Boolean(nextText);
+  const isError = nextText.startsWith("poll error:");
+  const wasRunning = Boolean(previousText && !previousText.startsWith("poll error:"));
+  const isRunning = Boolean(nextText && !isError);
   spinnerText = nextText;
   spinner.textContent = spinnerText;
-  if (wasRunning && !isRunning && !options.suppressDoneNotification) {
+  if (isError) spinner.dataset.state = "error";
+  else delete spinner.dataset.state;
+  if (wasRunning && !isRunning && !isError && !options.suppressDoneNotification) {
     const state = stateForSession(sessionUI.activeId);
     if (state.wasRunning) notifySessionDone(sessionUI.activeId);
   }
@@ -313,7 +350,7 @@ function notifySessionDone(sessionId, sessionSummary = null) {
 }
 
 function isSessionRunning(sessionId) {
-  if (sessionId === sessionUI.activeId && spinnerText) return true;
+  if (sessionId === sessionUI.activeId && spinnerText && !spinnerText.startsWith("poll error:")) return true;
   const session = sessionById(sessionId);
   if (session) return Boolean(session.running);
   return false;
@@ -369,7 +406,7 @@ function renderTabs() {
     lastFrontendSessionId = sessionUI.activeId;
     frontendEvents.dispatchEvent(new CustomEvent("sessionchange", {detail: sessionUI.activeId}));
   });
-  if (sessionUI.activeId) window.sessionStorage.setItem(activeSessionKey, sessionUI.activeId);
+  if (sessionUI.activeId) writeStorage("sessionStorage", activeSessionKey, sessionUI.activeId);
   const active = sessionById(sessionUI.activeId);
   const activeIndex = sessionUI.sessions.findIndex(session => session.id === sessionUI.activeId);
   activeSessionTitle.textContent = active ? active.title || `Session ${activeIndex + 1}` : "";
@@ -430,7 +467,11 @@ function renderSessionList(container, mobile) {
       const closeLabel = `Close session: ${title}`;
       if (close.getAttribute("aria-label") !== closeLabel) {
         close.setAttribute("aria-label", closeLabel);
-        tab.querySelector(".tab-close-confirmation").setAttribute("aria-label", closeLabel);
+        const confirmation = tab.querySelector(".tab-close-confirmation");
+        confirmation.setAttribute("aria-label", closeLabel);
+        const promptText = confirmation.querySelector("span");
+        promptText.textContent = `Close ${title}?`;
+        promptText.title = closeLabel;
       }
       close.disabled = closingSession || sessionUI.sessions.length <= 1;
       if (tab === sessionCloseRequest?.tab && close.disabled) dismissSessionClose();
@@ -605,7 +646,7 @@ function updateContextMeter(snapshot = null) {
 }
 
 function saveCustomizeSessions() {
-  window.sessionStorage.setItem(customizeSessionsKey, JSON.stringify(Array.from(customizeSessions)));
+  writeStorage("sessionStorage", customizeSessionsKey, JSON.stringify(Array.from(customizeSessions)));
 }
 
 function markCustomizeSession(sessionId) {
@@ -773,27 +814,43 @@ async function markVisibleFinalRead() {
   }
 }
 
-async function submitPrompt(text) {
+async function submitPrompt(text, draft = null) {
   const sessionId = sessionUI.activeId;
-  const response = await fetch(relativeUrl("api/session/message"), {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({prompt: text, sender: "web", session_id: sessionId}),
-  });
-  const payload = await response.json();
-  if (sessionUI.activeId !== sessionId) return;
-  if (!response.ok || !payload.ok) {
-    addEntry("error", payload.error || `HTTP ${response.status}`);
-    setSpinner("");
-    return;
+  const restoreDraft = () => {
+    if (!draft?.parts?.length || sessionUI.activeId !== sessionId) return;
+    if (!composer.read().parts.length) {
+      composer.set(draft);
+      stateForSession(sessionId).draft = composer.read();
+      resizePrompt();
+    }
+  };
+  try {
+    const response = await fetch(relativeUrl("api/session/message"), {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({prompt: text, sender: "web", session_id: sessionId}),
+    });
+    const payload = await response.json();
+    if (sessionUI.activeId !== sessionId) return;
+    if (!response.ok || !payload.ok) {
+      addEntry("error", payload.error || `HTTP ${response.status}`);
+      restoreDraft();
+      if (!sessionById(sessionId)?.running) setSpinner("");
+      return;
+    }
+    if (payload.snapshot) {
+      if (payload.sessions) updateSessions(payload.sessions);
+      renderSnapshot(payload.snapshot);
+    } else {
+      setSpinner("");
+    }
+    startPolling();
+  } catch (error) {
+    if (sessionUI.activeId !== sessionId) return;
+    addEntry("error", `Unable to send message: ${error.message}`);
+    restoreDraft();
+    if (!sessionById(sessionId)?.running) setSpinner("");
   }
-  if (payload.snapshot) {
-    if (payload.sessions) updateSessions(payload.sessions);
-    renderSnapshot(payload.snapshot);
-  } else {
-    setSpinner("");
-  }
-  startPolling();
 }
 
 function insertEditorContext(context) {
@@ -832,7 +889,7 @@ form.addEventListener("submit", (event) => {
   composer.set({parts: []});
   resizePrompt();
   stateForSession(sessionUI.activeId).draft = composer.read();
-  submitPrompt(text);
+  submitPrompt(text, draft);
 });
 
 contextBlockEditor.addEventListener("input", () => {
@@ -910,7 +967,7 @@ sessionSidebar.addEventListener("pointerleave", event => {
   }
 });
 sessionSidebar.addEventListener("click", event => {
-  if (event.target.closest("#sessionsClose, .tab")) return;
+  if (event.target.closest("#sessionsClose, #newTab, .tab")) return;
   if (!sessionsOpen) {
     event.preventDefault();
     event.stopPropagation();
@@ -978,6 +1035,7 @@ document.querySelectorAll("[data-pane]").forEach((button) => {
 });
 window.addEventListener("resize", () => {
   loadChatWidth();
+  syncSidebarOverlay();
   resizePrompt();
   restoreSessionScroll();
   requestAnimationFrame(markVisibleFinalRead);
@@ -990,14 +1048,6 @@ document.addEventListener("visibilitychange", () => {
   }
   pollSession();
   requestAnimationFrame(markVisibleFinalRead);
-});
-
-document.addEventListener("animationstart", event => {
-  if (!["spinner-pulse", "activity-breathe", "agent-message-breathe"].includes(event.animationName)) return;
-  // Include pseudo-elements and anchor new indicators to the page's breathing phase.
-  for (const animation of event.target.getAnimations({subtree: true})) {
-    if (animation.animationName === event.animationName) animation.startTime = 0;
-  }
 });
 
 const recoveryNotice = document.getElementById("frontendRecovery");

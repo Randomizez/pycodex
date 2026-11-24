@@ -101,7 +101,7 @@ async function main() {
     const packageRoot = path.join(directory, "node_modules", name);
     const metadata = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     const files = await readdir(packageRoot);
-    const licenseName = files.find(file => /^licen[cs]e(?:\.(md|txt))?$/i.test(file));
+    const licenseName = files.find(file => /^licen[cs]e(?:[-.][a-z0-9]+)*$/i.test(file));
     const license = await readFile(path.join(packageRoot, licenseName), "utf8");
     const notices = files.filter(file => /^thirdpartynotices\./i.test(file));
     const texts = [license];

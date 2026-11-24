@@ -29,6 +29,23 @@ export function scrollToBottom(log) {
   log.scrollTop = log.scrollHeight;
 }
 
+export function readStorage(kind, key, fallback = "") {
+  try {
+    const value = window[kind]?.getItem(key);
+    return value == null ? fallback : value;
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+export function writeStorage(kind, key, value) {
+  try {
+    window[kind]?.setItem(key, String(value));
+  } catch (_error) {
+    // Storage can be disabled in privacy-restricted or sandboxed webviews.
+  }
+}
+
 /** Make `container` hold exactly `nodes`, in order, moving only misplaced children. */
 export function reconcileChildren(container, nodes) {
   const retained = new Set(nodes);
