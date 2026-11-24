@@ -856,6 +856,18 @@ Existing full-ID alias files are not rewritten. If a previous short-identity
 version saved 16-character alias keys, registration restores the matching full
 key while preserving the alias and its position.
 
+`RouterClient` accepts an optional `identity_key` (`load_node_identity_key`
+persists a `0600` 64-hex key file), maintains pre-warmed standby `/tunnel/data`
+channels (falling back cleanly if the router closes standby with `1008`), and
+pools `WebSocket /tunnel/peer` connections. `/tunnel/peer` on the router
+authenticates the caller with the tunnel registration key plus an active
+registered `identity_key` and supports persistent connection reuse across
+`"peers"` (online peer `{id, name, alias}` in saved alias order, excluding the
+caller) and `"open"` (streaming HTTP relay to a target `node_id` over a standby
+or newly connected `/tunnel/data` channel with `scope["pycodex.peer_access"] = True`
+and full caller headers preserved, restricted by `peer_profile_request` to
+`GET /api/peer-profiles*` and `/api/peer-proxy`).
+
 ### External Call
 
 **Settings → External Call** creates a temporary workspace tab

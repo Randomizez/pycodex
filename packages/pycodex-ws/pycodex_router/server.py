@@ -6,6 +6,7 @@ import re
 import secrets
 import sys
 import tempfile
+from collections import deque
 from contextlib import asynccontextmanager
 from getpass import getpass
 from pathlib import Path
@@ -34,6 +35,7 @@ from .protocol import (
     encode,
     external_call_request,
     normalize_api_url,
+    peer_profile_request,
     request_scope,
     response_headers,
     send_event,
@@ -85,6 +87,7 @@ class Node:
         self.name = name
         self.workspaces = workspaces
         self.streams = {}
+        self.standby = deque()
         self.send_lock = asyncio.Lock()
 
 
@@ -100,7 +103,7 @@ async def close_websocket(websocket, code=1000):
     if websocket.application_state == WebSocketState.CONNECTED:
         try:
             await websocket.close(code=code)
-        except (WebSocketDisconnect, OSError):
+        except (WebSocketDisconnect, OSError, RuntimeError):
             pass
 
 
@@ -151,6 +154,20 @@ def validate_inventory(workspaces):
             raise ValueError("invalid workspace inventory values")
         seen.add(workspace_id)
     return workspaces
+
+
+async def _run_relay_pair(first, second):
+    tasks = [asyncio.create_task(first), asyncio.create_task(second)]
+    try:
+        done, _pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in done:
+            task.result()
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 class Router:
@@ -354,6 +371,11 @@ class Router:
         finally:
             if node is not None:
                 self.nodes.pop(node.id, None)
+                while node.standby:
+                    standby = node.standby.popleft()
+                    if standby.websocket is not None:
+                        await close_websocket(standby.websocket, 1012)
+                    standby.done.set()
                 for stream in tuple(node.streams.values()):
                     if not stream.ready.done():
                         stream.ready.set_result(None)
@@ -367,6 +389,30 @@ class Router:
         stream = None
         try:
             message = await asyncio.wait_for(control_message(websocket), 10)
+            if message.get("type") == "standby":
+                node_id = device_id(message["identity_key"])
+                node = self.nodes.get(node_id)
+                if (
+                    node is None
+                    or len(node.standby) >= 8
+                    or not secrets.compare_digest(
+                        message["identity_key"], node.identity_key
+                    )
+                ):
+                    await close_websocket(websocket, 1008)
+                    return
+                stream = Stream(node.id)
+                stream.websocket = websocket
+                stream.ready.set_result(websocket)
+                node.standby.append(stream)
+                try:
+                    await stream.done.wait()
+                finally:
+                    try:
+                        node.standby.remove(stream)
+                    except ValueError:
+                        pass
+                return
             stream = self.streams.get(message["stream_id"])
             node = self.nodes.get(stream.node_id) if stream is not None else None
             if (
@@ -428,6 +474,39 @@ class Router:
             node.streams.pop(stream_id, None)
             stream.done.set()
 
+    @asynccontextmanager
+    async def peer_connection(self, node_id, opening):
+        node = self.node_for_route(node_id)
+        if node is None:
+            raise TunnelUnavailable("Workspace device is offline.")
+        if len(node.streams) >= self.max_connections:
+            raise TunnelUnavailable("Workspace device has too many open requests.")
+        encoded_opening = encode(opening)
+        while node.standby:
+            standby = node.standby.popleft()
+            ws = standby.websocket
+            if ws is None or ws.application_state != WebSocketState.CONNECTED:
+                standby.done.set()
+                continue
+            try:
+                await ws.send_text(encoded_opening)
+            except (WebSocketDisconnect, OSError, RuntimeError):
+                standby.done.set()
+                continue
+            stream_id = uuid4().hex
+            node.streams[stream_id] = standby
+            self.streams[stream_id] = standby
+            try:
+                yield ws
+            finally:
+                self.streams.pop(stream_id, None)
+                node.streams.pop(stream_id, None)
+                standby.done.set()
+            return
+        async with self.connection(node_id) as target_ws:
+            await target_ws.send_text(encoded_opening)
+            yield target_ws
+
     async def proxy(self, scope, receive, send):
         connection = HTTPConnection(scope)
         blocked = connection.client.host in self.blocked_ips
@@ -487,20 +566,7 @@ class Router:
                         }
                     )
                 )
-                tasks = [
-                    asyncio.create_task(requests(websocket)),
-                    asyncio.create_task(responses(websocket)),
-                ]
-                try:
-                    done, _pending = await asyncio.wait(
-                        tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        task.result()
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
+                await _run_relay_pair(requests(websocket), responses(websocket))
         except TunnelUnavailable as exc:
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1013})
@@ -543,6 +609,152 @@ class Router:
                 )
                 workspaces.append(item)
         return JSONResponse({"nodes": nodes, "workspaces": workspaces})
+
+    async def peer(self, websocket):
+        if not await self.accept_tunnel(websocket):
+            return
+        try:
+            first_message = True
+            while True:
+                if first_message:
+                    message = await asyncio.wait_for(control_message(websocket), 10)
+                    first_message = False
+                else:
+                    message = await control_message(websocket)
+                caller_key = message["identity_key"]
+                caller_id = device_id(caller_key)
+                caller = self.nodes.get(caller_id)
+                if caller is None or not secrets.compare_digest(
+                    caller_key, caller.identity_key
+                ):
+                    await close_websocket(websocket, 1008)
+                    return
+                action = message.get("type")
+                if action == "peers":
+                    ordered_ids = list(self.aliases) + [
+                        node_id for node_id in self.nodes if node_id not in self.aliases
+                    ]
+                    peers = []
+                    for node_id in ordered_ids:
+                        if node_id == caller.id or node_id not in self.nodes:
+                            continue
+                        node = self.nodes[node_id]
+                        peers.append(
+                            {
+                                "id": node.id,
+                                "name": node.name,
+                                "alias": self.aliases.get(node.id, ""),
+                            }
+                        )
+                    await websocket.send_text(encode({"type": "peers", "nodes": peers}))
+                    continue
+                if action != "open":
+                    raise ValueError("unknown router peer action")
+                target_id = message["target"]
+                if (
+                    not isinstance(target_id, str)
+                    or not re.fullmatch("[a-z2-7]{52}", target_id)
+                    or target_id == caller.id
+                ):
+                    raise ValueError("invalid peer target node")
+                raw_scope = message["scope"]
+                if not isinstance(raw_scope, dict) or raw_scope.get("type") != "http":
+                    raise ValueError("peer requests must use HTTP scopes")
+                clean_scope = request_scope(raw_scope, preserve_headers=True)
+                if not peer_profile_request(clean_scope):
+                    await close_websocket(websocket, 1008)
+                    return
+
+                started = False
+                request_done = False
+                response_done = False
+                client_disconnected = False
+
+                async def requests(target_ws):
+                    nonlocal request_done, client_disconnected
+                    while True:
+                        try:
+                            event = decode(await websocket.receive_text())
+                        except WebSocketDisconnect:
+                            client_disconnected = True
+                            await send_event(
+                                target_ws.send_text, {"type": "http.disconnect"}
+                            )
+                            return
+                        if event.get("type") not in {"http.request", "http.disconnect"}:
+                            raise ValueError("invalid peer request event")
+                        await send_event(target_ws.send_text, event)
+                        if event["type"] == "http.disconnect":
+                            client_disconnected = True
+                            return
+                        if not event.get("more_body", False):
+                            request_done = True
+
+                async def responses(target_ws):
+                    nonlocal started, response_done
+                    while True:
+                        event = decode(await target_ws.receive_text())
+                        if event.get("type") not in {
+                            "http.response.start",
+                            "http.response.body",
+                        }:
+                            raise ValueError("invalid peer response event")
+                        await send_event(websocket.send_text, event)
+                        started = True
+                        if event["type"] == "http.response.body" and not event.get(
+                            "more_body", False
+                        ):
+                            response_done = True
+                            return
+
+                opening = {
+                    "type": "open",
+                    "scope": clean_scope,
+                    "agent_access": False,
+                    "peer_access": True,
+                }
+                try:
+                    async with self.peer_connection(target_id, opening) as target_ws:
+                        await _run_relay_pair(requests(target_ws), responses(target_ws))
+                except TunnelUnavailable as exc:
+                    if not started:
+                        body = json.dumps({"error": {"message": str(exc)}}).encode(
+                            "utf-8"
+                        )
+                        await send_event(
+                            websocket.send_text,
+                            {
+                                "type": "http.response.start",
+                                "status": 503,
+                                "headers": [
+                                    [b"content-type", b"application/json"],
+                                    [
+                                        b"content-length",
+                                        str(len(body)).encode("ascii"),
+                                    ],
+                                ],
+                            },
+                        )
+                        await send_event(
+                            websocket.send_text,
+                            {
+                                "type": "http.response.body",
+                                "body": body,
+                                "more_body": False,
+                            },
+                        )
+                    else:
+                        await close_websocket(websocket, 1012)
+                    return
+
+                if client_disconnected or not request_done or not response_done:
+                    return
+        except WebSocketDisconnect:
+            pass
+        except (ValueError, KeyError, TypeError, asyncio.TimeoutError):
+            await close_websocket(websocket, 1008)
+        finally:
+            await close_websocket(websocket)
 
     async def close(self):
         for node in tuple(self.nodes.values()):
@@ -621,6 +833,7 @@ def create_tunnel_app(router):
         routes=[
             WebSocketRoute("/tunnel/control", router.control),
             WebSocketRoute("/tunnel/data", router.data),
+            WebSocketRoute("/tunnel/peer", router.peer),
         ]
     )
 

@@ -75,6 +75,31 @@ def trusted_agent_request(scope):
     return scope.get("pycodex.agent_access") is True and agent_api_request(scope)
 
 
+_PEER_PROXY_METHODS = frozenset(
+    ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+)
+
+
+def peer_profile_request(scope):
+    """Peer-to-peer profile discovery and outbound HTTP proxy endpoints."""
+    if scope["type"] != "http":
+        return False
+    path = route_path(scope)
+    method = scope["method"]
+    if path == "/api/peer-proxy":
+        return method in _PEER_PROXY_METHODS
+    if path == "/api/peer-profiles":
+        return method == "GET"
+    selector = r"(?:default|base|named/[A-Za-z0-9_-]+)"
+    if re.fullmatch(r"/api/peer-profiles/" + selector, path):
+        return method == "GET"
+    return False
+
+
+def trusted_peer_request(scope):
+    return scope.get("pycodex.peer_access") is True and peer_profile_request(scope)
+
+
 def tunnel_url(target, endpoint):
     parsed = urlsplit(target if "://" in target else "ws://" + target)
     schemes = {"http": "ws", "https": "wss", "ws": "ws", "wss": "wss"}
@@ -151,7 +176,7 @@ def decode(payload):
     return value
 
 
-def request_scope(scope):
+def request_scope(scope, preserve_headers=False):
     """Keep only the portable ASGI fields, with a path relative to the mount."""
     root = scope.get("root_path", "")
     path = scope["path"]
@@ -163,15 +188,18 @@ def request_scope(scope):
             raw_path = raw_path[len(raw_root) :]
     headers = []
     for name, value in scope["headers"]:
-        if name.lower() in {b"authorization", b"proxy-authorization"}:
-            continue
-        if name.lower() == b"cookie":
-            value = b"; ".join(
-                part.strip()
-                for part in value.split(b";")
-                if part.strip().split(b"=", 1)[0] == b"pycodex_ws_auth"
-            )
-        headers.append((name, value))
+        if not isinstance(name, bytes) or not isinstance(value, bytes):
+            raise TypeError("HTTP scope headers must be byte pairs")
+        if not preserve_headers:
+            if name.lower() in {b"authorization", b"proxy-authorization"}:
+                continue
+            if name.lower() == b"cookie":
+                value = b"; ".join(
+                    part.strip()
+                    for part in value.split(b";")
+                    if part.strip().split(b"=", 1)[0] == b"pycodex_ws_auth"
+                )
+        headers.append((name.lower(), value))
     result = {
         "type": scope["type"],
         "asgi": {"version": "3.0", "spec_version": "2.3"},

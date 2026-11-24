@@ -13,9 +13,15 @@ from urllib.parse import quote, urlsplit
 import httpx
 import pytest
 import uvicorn
-from pycodex_router.client import RouterClient
+from pycodex_router.client import RouterClient, load_node_identity_key
 from pycodex_router.protocol import (
-    decode, device_id, encode, normalize_api_url, parse_target, tunnel_url,
+    decode,
+    device_id,
+    encode,
+    normalize_api_url,
+    parse_target,
+    trusted_peer_request,
+    tunnel_url,
 )
 from pycodex_router.server import create_app, create_tunnel_app, load_registration_key
 from starlette.applications import Starlette
@@ -2661,6 +2667,7 @@ def test_router_target_separates_key_from_address(target, expected):
     assert parsed_key == key
     assert key not in tunnel_url(address, "control")
     assert key not in tunnel_url(address, "data")
+    assert key not in tunnel_url(address, "peer")
 
 
 @pytest.mark.parametrize(
@@ -2685,3 +2692,207 @@ def test_invalid_router_target_errors_do_not_include_the_key(target):
         parse_target(target.format(key=key))
     assert "router-generated registration key" in str(error.value)
     assert key not in str(error.value)
+
+
+def test_load_node_identity_key_persists_and_validates(tmp_path):
+    key_path = tmp_path / "nodes" / "device.key"
+    first = load_node_identity_key(key_path)
+    assert re.fullmatch("[0-9a-f]{64}", first)
+    if os.name == "posix":
+        assert key_path.stat().st_mode & 0o777 == 0o600
+    assert load_node_identity_key(key_path) == first
+
+    bad_path = tmp_path / "nodes" / "bad.key"
+    bad_path.write_text("not-a-hex-key\n", encoding="ascii")
+    with pytest.raises(ValueError):
+        load_node_identity_key(bad_path)
+
+
+async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_supports_legacy_peers(
+    tmp_path,
+):
+    gate = create_app("router-password", aliases_path=tmp_path / "aliases.json")
+    seen = []
+
+    async def peer_proxy_endpoint(request):
+        seen.append(
+            {
+                "trusted": trusted_peer_request(request.scope),
+                "auth": request.headers.get("authorization"),
+                "cookie": request.headers.get("cookie"),
+                "query": request.url.query,
+                "body": (await request.body()).decode("utf-8"),
+            }
+        )
+        return StreamingResponse(
+            iter([b"chunk-1:", b"chunk-2"]),
+            media_type="text/plain",
+        )
+
+    async def peer_profiles_endpoint(request):
+        return JSONResponse(
+            {
+                "trusted": trusted_peer_request(request.scope),
+                "profiles": ["fast"],
+                "default_profile": "fast",
+            }
+        )
+
+    target_app = Starlette(
+        routes=[
+            Route("/api/peer-proxy", peer_proxy_endpoint, methods=["POST"]),
+            Route("/api/peer-profiles", peer_profiles_endpoint, methods=["GET"]),
+        ]
+    )
+    legacy_app = Starlette(
+        routes=[
+            Route("/api/peer-profiles", peer_profiles_endpoint, methods=["GET"]),
+        ]
+    )
+
+    key_a = load_node_identity_key(tmp_path / "a.key")
+    key_b = load_node_identity_key(tmp_path / "b.key")
+    key_legacy = load_node_identity_key(tmp_path / "legacy.key")
+
+    async with serve_router(gate) as (address, target):
+        caller = RouterClient(
+            Starlette(),
+            target,
+            "caller",
+            6001,
+            lambda: [workspace_record("caller")],
+            refresh_seconds=0.05,
+            reconnect_seconds=0.02,
+            identity_key=key_a,
+        )
+        peer = RouterClient(
+            target_app,
+            target,
+            "peer",
+            6002,
+            lambda: [workspace_record("peer")],
+            refresh_seconds=0.05,
+            reconnect_seconds=0.02,
+            identity_key=key_b,
+        )
+        legacy_peer = RouterClient(
+            legacy_app,
+            target,
+            "legacy",
+            6003,
+            lambda: [workspace_record("legacy")],
+            refresh_seconds=0.05,
+            reconnect_seconds=0.02,
+            identity_key=key_legacy,
+        )
+        # Simulate an older client that does not open pre-warmed standby channels.
+        legacy_peer._standby_count = 0
+
+        await caller.start()
+        await peer.start()
+        await legacy_peer.start()
+        try:
+            await eventually(
+                lambda: caller.connected
+                and peer.connected
+                and legacy_peer.connected
+                and len(gate.state.router.nodes[peer.node_id].standby) >= 1
+            )
+            async with ip_browser(address) as browser:
+                await login(browser)
+                assert (
+                    await browser.post(
+                        "/api/nodes/{0}/alias".format(peer.node_id),
+                        json={"alias": "GPU Box"},
+                    )
+                ).status_code == 200
+                assert (
+                    await browser.post(
+                        "/api/nodes/order",
+                        json={
+                            "order": [
+                                legacy_peer.node_id,
+                                peer.node_id,
+                                caller.node_id,
+                            ]
+                        },
+                    )
+                ).status_code == 200
+
+            peers = await caller.list_peers()
+            assert [item["id"] for item in peers] == [
+                legacy_peer.node_id,
+                peer.node_id,
+            ]
+            assert peers[1]["alias"] == "GPU Box"
+            assert len(caller._peer_pool) == 1
+            pooled_ws = caller._peer_pool[0]
+
+            status, _headers, body = await caller.peer_request(
+                peer.node_id,
+                "POST",
+                "/api/peer-proxy",
+                headers=[
+                    ("Authorization", "Bearer upstream-secret"),
+                    ("Cookie", "session=keep-me"),
+                ],
+                body=b"hello-peer",
+                query_string="mode=stream",
+            )
+            assert status == 200
+            assert body == b"chunk-1:chunk-2"
+            assert caller._peer_pool and caller._peer_pool[0] is pooled_ws
+            assert seen == [
+                {
+                    "trusted": True,
+                    "auth": "Bearer upstream-secret",
+                    "cookie": "session=keep-me",
+                    "query": "mode=stream",
+                    "body": "hello-peer",
+                }
+            ]
+
+            # Legacy peer without standby channels falls back to control connect.
+            assert len(gate.state.router.nodes[legacy_peer.node_id].standby) == 0
+            legacy_status, _lh, legacy_body = await caller.peer_request(
+                legacy_peer.node_id,
+                "GET",
+                "/api/peer-profiles",
+            )
+            assert legacy_status == 200
+            assert json.loads(legacy_body.decode("utf-8"))["trusted"] is True
+
+            # Unregistered identity keys and non-peer paths are rejected with 1008.
+            async with tunnel_connect(target, "peer") as bad_peer_ws:
+                await bad_peer_ws.send(
+                    encode({"type": "peers", "identity_key": secrets.token_hex(32)})
+                )
+                with pytest.raises(ConnectionClosedError) as closed:
+                    await bad_peer_ws.recv()
+                assert closed.value.rcvd.code == 1008
+
+            async with tunnel_connect(target, "peer") as bad_path_ws:
+                await bad_path_ws.send(
+                    encode(
+                        {
+                            "type": "open",
+                            "identity_key": key_a,
+                            "target": peer.node_id,
+                            "scope": {
+                                "type": "http",
+                                "method": "GET",
+                                "scheme": "http",
+                                "path": "/api/sessions",
+                                "query_string": b"",
+                                "headers": [],
+                            },
+                        }
+                    )
+                )
+                with pytest.raises(ConnectionClosedError) as closed:
+                    await bad_path_ws.recv()
+                assert closed.value.rcvd.code == 1008
+        finally:
+            await caller.close()
+            await peer.close()
+            await legacy_peer.close()
