@@ -230,21 +230,37 @@ def external_call_routes(resolve_workspace, prefix=""):
                 not isinstance(profile, str) or profile not in manager.profile_factories
             ):
                 raise HTTPException(422, "unknown profile")
-            source = manager.get()
-            if isinstance(source, ThreadedWorkspaceInteractiveSession):
-                source = source._session
-            source_config = source.runtime.agent.context_manager.config
-            host_tools = (
-                source.configured_toolset
-                if source.configured_toolset is not _UNSET
-                else source.runtime.agent.tool_registry.names()
-            )
+            if manager.peer_config is not None:
+                cfg = manager.peer_config
+                config_path = cfg.config_path
+                host_tools = cfg.toolset
+                extra_contextual = (
+                    (cfg.workspace_context,)
+                    if isinstance(cfg.workspace_context, str) and cfg.workspace_context
+                    else tuple(cfg.workspace_context or ())
+                )
+                system_prompt_override = cfg.system_prompt
+            else:
+                source = manager.get()
+                if isinstance(source, ThreadedWorkspaceInteractiveSession):
+                    source = source._session
+                if not hasattr(source, "runtime"):
+                    raise HTTPException(503, "no active session configuration available")
+                source_config = source.runtime.agent.context_manager.config
+                config_path = source.config_path
+                host_tools = (
+                    source.configured_toolset
+                    if source.configured_toolset is not _UNSET
+                    else source.runtime.agent.tool_registry.names()
+                )
+                extra_contextual = source_config.extra_contextual_user_messages
+                system_prompt_override = source_config.base_instructions_override
             connection = ExternalCallSession(lambda c: active.pop((manager, c.token), None))
             session = ThreadedWorkspaceInteractiveSession(partial(
-                connection.build_session, source.config_path, profile, workspace.work_dir,
+                connection.build_session, config_path, profile, workspace.work_dir,
                 host_tools,
-                source_config.extra_contextual_user_messages,
-                source_config.base_instructions_override,
+                extra_contextual,
+                system_prompt_override,
             ), asyncio.get_running_loop())
             try:
                 connection.session_id = await manager.attach_session(

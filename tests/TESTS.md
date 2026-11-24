@@ -213,6 +213,12 @@ Markdown 预览的相对目录、裸文件名不自动变成域名、明确 URL 
   profile 内 provider 定义、单/多 workspace 创建及重启恢复，默认配置变化后
   保存的显式基础配置仍保持不变；`test_portable.py` 验证两种格式混用及默认
   selector 经上传/下载后仍可加载，基础和各 profile 的相对指令文件均保留。
+- `test_peer_profiles.py` 覆盖通过 `pycodex-router` `/tunnel/peer` 的在线节点与
+  profile 目录发现、`/api/peer-proxy` 跨节点无条件 HTTP/SSE 代理（方法/请求头/查询串/gzip 响应、流断开即时回收与本机监听端口回环防护）、
+  跨节点 compat / 原生 `/v1/responses` / `pyagy`（含 `search_web`）薄配置代理与本地工具隔离、
+  对端 `.env` 密钥轮换恢复（不污染全局 `os.environ`）、本机配置损坏时降级选择对端 profile、离线缓存恢复与持久化节点身份，
+  以及无密码工作区与隧道路径的 403/1008 鉴权边界。节点/profile 二级选择弹窗的独立 Node
+  测试手动运行：`node packages/pycodex-ws/tests/workspace_peer_dialog.mjs`。
 - `test_doctor.py` 验证诊断报告显示顶层默认 selector 选中的 profile。
 - `ResponsesModelClient` 默认 `stream_max_retries = 5`。CLI/REPL 测试若要求
   “先报错，再由下一句 `go on` 继续”，fixture 的 provider 配置必须设

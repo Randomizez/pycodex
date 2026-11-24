@@ -211,6 +211,10 @@
   <dialog id="newSessionDialog" class="workspace-settings" aria-labelledby="newSessionTitle">
     <header><h2 id="newSessionTitle">New session</h2><button type="button" data-close-dialog>Cancel</button></header>
     <form id="newSessionForm">
+      <div id="sessionNodeField" hidden>
+        <label for="sessionNode">Node</label>
+        <select id="sessionNode"></select>
+      </div>
       <label for="sessionProfile">Profile</label>
       <select id="sessionProfile"></select>
       <p>The profile sets the model and instructions for this session.</p>

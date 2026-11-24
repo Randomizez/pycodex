@@ -132,9 +132,12 @@ def _wait_for_owner_eof(input_fd):
             pass
 
 
-def run_owned_server(build, host, port, input_fd, listen_to=None, workspaces=()):
+def run_owned_server(
+    build, host, port, input_fd, listen_to=None, workspaces=(), identity_key=None,
+):
     """Keep a reloadable server alive while its launching process holds stdin open."""
     import uvicorn
+    from pycodex.utils.session_persist import resolve_codex_home
 
     owner_closed = threading.Event()
 
@@ -173,11 +176,28 @@ def run_owned_server(build, host, port, input_fd, listen_to=None, workspaces=())
                 flush=True,
             )
         if listen_to:
-            from pycodex_router.client import RouterClient
+            from pycodex_router.client import RouterClient, load_node_identity_key
+            from .peer_profiles import node_identity_key_path
 
+            node_key = identity_key
+            workspace_config_path = getattr(
+                shell.app.state, "workspace_config_path", None
+            )
+            if node_key is None and workspace_config_path is not None:
+                codex_home = (
+                    getattr(shell.app.state, "codex_home", None)
+                    or resolve_codex_home()
+                )
+                node_key = load_node_identity_key(
+                    node_identity_key_path(codex_home, workspace_config_path)
+                )
             shell.router = RouterClient(
-                shell.current_app, listen_to, socket.gethostname(), actual_port,
+                shell.current_app,
+                listen_to,
+                socket.gethostname(),
+                actual_port,
                 shell.router_inventory,
+                identity_key=node_key,
             )
         _configure_agent_access(shell.state, cleanup, listener)
         try:

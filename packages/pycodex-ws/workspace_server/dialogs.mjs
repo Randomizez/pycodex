@@ -229,9 +229,97 @@ export function installDialogs({
 }) {
   const newTabButton = document.getElementById("newTab");
   const newSessionDialog = document.getElementById("newSessionDialog");
+  const sessionNodeField = document.getElementById("sessionNodeField");
+  const sessionNode = document.getElementById("sessionNode");
   const sessionProfile = document.getElementById("sessionProfile");
   const newSessionError = document.getElementById("newSessionError");
   const createSessionButton = document.getElementById("createSessionButton");
+  let newSessionRevision = 0;
+  let dialogOpenRevision = 0;
+  let creatingSession = false;
+  let profileSelectReady = false;
+  let localSessionCatalog = null;
+
+  function syncNewSessionControls() {
+    if (sessionNode) {
+      sessionNode.disabled = creatingSession;
+    }
+    sessionProfile.disabled = creatingSession || !profileSelectReady;
+    createSessionButton.disabled = creatingSession || !profileSelectReady || !sessionProfile.options.length;
+  }
+
+  function applyLocalSessionProfiles(catalog) {
+    sessionProfile.replaceChildren();
+    if (catalog.local_profile_error) {
+      profileSelectReady = false;
+      newSessionError.textContent = catalog.local_profile_error;
+      syncNewSessionControls();
+      return;
+    }
+    const defaultLabel = catalog.default_profile === null
+      ? "Default" : `Default (${catalog.default_profile})`;
+    sessionProfile.replaceChildren(new Option(defaultLabel, "null"));
+    for (const profile of catalog.profiles) {
+      sessionProfile.add(new Option(profile, JSON.stringify(profile)));
+    }
+    profileSelectReady = true;
+    newSessionError.textContent = "";
+    syncNewSessionControls();
+  }
+
+  async function loadPeerNodeProfiles(nodeId) {
+    const current = ++newSessionRevision;
+    newSessionError.textContent = "";
+    sessionProfile.replaceChildren(new Option("Loading profiles…", ""));
+    profileSelectReady = false;
+    syncNewSessionControls();
+    try {
+      const response = await fetch(
+        relativeUrl(`api/peer-nodes/${encodeURIComponent(nodeId)}/profiles`),
+        {cache: "no-store"}
+      );
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+      }
+      if (current !== newSessionRevision || sessionNode.value !== nodeId) return;
+      const defaultLabel = payload.default_profile === null
+        ? "Default" : `Default (${payload.default_profile})`;
+      sessionProfile.replaceChildren(new Option(defaultLabel, JSON.stringify(`peer:${nodeId}`)));
+      for (const profile of payload.profiles || []) {
+        sessionProfile.add(new Option(profile, JSON.stringify(`peer:${nodeId}:${profile}`)));
+      }
+      profileSelectReady = true;
+      syncNewSessionControls();
+    } catch (error) {
+      if (current === newSessionRevision && sessionNode.value === nodeId) {
+        sessionProfile.replaceChildren();
+        profileSelectReady = false;
+        syncNewSessionControls();
+        newSessionError.textContent = error.message;
+      }
+    }
+  }
+
+  if (sessionNode) {
+    sessionNode.addEventListener("change", () => {
+      if (creatingSession) return;
+      newSessionRevision++;
+      if (!sessionNode.value) {
+        if (localSessionCatalog) applyLocalSessionProfiles(localSessionCatalog);
+      } else {
+        loadPeerNodeProfiles(sessionNode.value);
+      }
+    });
+  }
+  newSessionDialog.addEventListener("close", () => {
+    dialogOpenRevision++;
+    newSessionRevision++;
+    creatingSession = false;
+    newSessionError.textContent = "";
+    syncNewSessionControls();
+  });
+
   newTabButton.addEventListener("click", async () => {
     newTabButton.disabled = true;
     try {
@@ -242,25 +330,64 @@ export function installDialogs({
       newTabButton.disabled = false;
     }
   });
+  function renderPeerNodeOptions(peers, preserveSelection = false) {
+    if (!sessionNode) return;
+    const previousValue = preserveSelection ? sessionNode.value : "";
+    sessionNode.replaceChildren(new Option("This device", ""));
+    for (const peer of peers || []) {
+      sessionNode.add(new Option(peer.alias || peer.name, peer.id));
+    }
+    sessionNode.value = Array.from(sessionNode.options).some(o => o.value === previousValue)
+      ? previousValue : "";
+  }
+
+  async function loadPeerNodesAsync(openRev) {
+    try {
+      const response = await fetch(relativeUrl("api/peer-nodes"), {cache: "no-store"});
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+      }
+      if (openRev !== dialogOpenRevision || !newSessionDialog.open) return;
+      renderPeerNodeOptions(payload.peer_nodes, true);
+    } catch (_error) {
+      if (openRev !== dialogOpenRevision || !newSessionDialog.open) return;
+      renderPeerNodeOptions([], true);
+    }
+  }
+
   const customProfileButton = document.getElementById("customProfile");
   customProfileButton.addEventListener("click", async () => {
     customProfileButton.disabled = true;
     try {
-      const response = await fetch(relativeUrl("api/sessions"));
+      const response = await fetch(relativeUrl("api/sessions"), {cache: "no-store"});
       const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || `HTTP ${response.status}`);
-      if (!payload.profiles.length) {
+      if (!response.ok) throw new Error(payload.error || payload.detail || `HTTP ${response.status}`);
+      const openRev = ++dialogOpenRevision;
+      newSessionRevision++;
+      creatingSession = false;
+      localSessionCatalog = payload;
+      const routerConnected = Boolean(payload.router_connected);
+      if (!routerConnected && !payload.profiles.length) {
         showToast("No named profiles are configured.");
         return;
       }
-      const defaultLabel = payload.default_profile === null
-        ? "Default" : `Default (${payload.default_profile})`;
-      sessionProfile.replaceChildren(new Option(defaultLabel, "null"));
-      for (const profile of payload.profiles) {
-        sessionProfile.add(new Option(profile, JSON.stringify(profile)));
+      if (sessionNodeField && sessionNode) {
+        sessionNodeField.hidden = !routerConnected;
+        if (routerConnected) {
+          const loadingOpt = new Option("Loading peer devices…", "");
+          loadingOpt.disabled = true;
+          sessionNode.replaceChildren(new Option("This device", ""), loadingOpt);
+          sessionNode.value = "";
+        } else {
+          sessionNode.replaceChildren();
+        }
       }
-      newSessionError.textContent = "";
+      applyLocalSessionProfiles(payload);
       newSessionDialog.showModal();
+      if (routerConnected) {
+        loadPeerNodesAsync(openRev);
+      }
     } catch (error) {
       showToast("Unable to create session: " + error.message);
     } finally {
@@ -269,15 +396,26 @@ export function installDialogs({
   });
   document.getElementById("newSessionForm").addEventListener("submit", async event => {
     event.preventDefault();
-    createSessionButton.disabled = true;
+    if (creatingSession || createSessionButton.disabled || !profileSelectReady || !sessionProfile.options.length) return;
+    const submitDialogRevision = dialogOpenRevision;
+    const selectedProfile = JSON.parse(sessionProfile.value);
+    creatingSession = true;
     newSessionError.textContent = "";
+    syncNewSessionControls();
     try {
-      await createSession({profile: JSON.parse(sessionProfile.value)});
-      newSessionDialog.close();
+      await createSession({profile: selectedProfile});
+      if (submitDialogRevision === dialogOpenRevision && newSessionDialog.open) {
+        newSessionDialog.close();
+      }
     } catch (error) {
-      newSessionError.textContent = error.message;
+      if (submitDialogRevision === dialogOpenRevision && newSessionDialog.open) {
+        newSessionError.textContent = error.message;
+      }
     } finally {
-      createSessionButton.disabled = false;
+      if (submitDialogRevision === dialogOpenRevision) {
+        creatingSession = false;
+        syncNewSessionControls();
+      }
     }
   });
   const customizeButtons = document.querySelectorAll(".customize-frontend");

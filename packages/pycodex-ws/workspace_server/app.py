@@ -12,6 +12,7 @@ import typing
 from pathlib import Path
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import (
@@ -34,6 +35,12 @@ from pycodex_ws.server_support import (
     parse_listen,
 )
 
+from .peer_profiles import (
+    PeerLoopbackBridge,
+    PeerProfileProvider,
+    PeerWorkspaceConfig,
+    node_identity_key_path,
+)
 from .routes import (
     WorkspaceRouteContext,
     _render_workspaces_manager_shell,
@@ -138,6 +145,7 @@ def create_app(
     password: "typing.Union[str, None]" = None,
     work_dir: "typing.Union[Path, None]" = None,
     enable_board: bool = True,
+    peer_provider: "typing.Optional[PeerProfileProvider]" = None,
 ) -> Starlette:
     manager = (
         session_source
@@ -147,15 +155,30 @@ def create_app(
     board_path = workspace_file_path(state_path, ".html") if enable_board else None
     resolved_work_dir = Path(work_dir or Path.cwd()).resolve()
     vscode = VsCodeRuntime()
+    app: "typing.Optional[Starlette]" = None
+    peer_bridge = PeerLoopbackBridge(
+        lambda: getattr(app.state, "router_client", None) if app is not None else None
+    )
+    manager.bind_peer_bridge(peer_bridge)
+    app_routes, close_peer_provider = PeerProfileProvider.lazy_routes(
+        peer_provider, lambda: manager.peer_config
+    )
 
     async def close() -> None:
         try:
             await manager.close()
         finally:
-            await vscode.close()
+            try:
+                await vscode.close()
+            finally:
+                try:
+                    await run_in_threadpool(peer_bridge.stop)
+                finally:
+                    await run_in_threadpool(close_peer_provider)
 
     app = _create_lifespan_app(manager.start, close)
     app.state.drain = partial(manager.close, True)
+    app.state.peer_bridge = peer_bridge
     sharing = WorkspaceSharing(password, multi=False)
     sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
@@ -168,24 +191,67 @@ def create_app(
         (),
         vscode=vscode,
     )
+    app.routes[0:0] = app_routes
     return app
 
 
 def create_multi_workspace_app(
     registry: "WorkspaceRegistry",
     password: "typing.Union[str, None]" = None,
+    peer_provider: "typing.Optional[PeerProfileProvider]" = None,
 ) -> Starlette:
     vscode = VsCodeRuntime()
+    app: "typing.Optional[Starlette]" = None
+    peer_bridge = PeerLoopbackBridge(
+        lambda: getattr(app.state, "router_client", None) if app is not None else None
+    )
+    registry.bind_peer_bridge(peer_bridge)
+    first_peer_cfg = registry.first_peer_config()
+    app_routes, close_peer_provider = PeerProfileProvider.lazy_routes(
+        peer_provider, lambda: registry.first_peer_config()
+    )
+
+    async def start(launcher=None) -> None:
+        router_client = getattr(app.state, "router_client", None)
+        if (
+            router_client is not None
+            and registry.config_path is not None
+            and app.state.codex_home is not None
+        ):
+            from pycodex_router.client import save_node_identity_key_if_absent
+
+            save_node_identity_key_if_absent(
+                node_identity_key_path(app.state.codex_home, registry.config_path),
+                getattr(router_client, "_identity_key", None),
+            )
+        await registry.start(launcher)
 
     async def close() -> None:
         try:
             await registry.close()
         finally:
-            await vscode.close()
+            try:
+                await vscode.close()
+            finally:
+                try:
+                    await run_in_threadpool(peer_bridge.stop)
+                finally:
+                    await run_in_threadpool(close_peer_provider)
 
-    app = _create_lifespan_app(registry.start, close)
+    app = _create_lifespan_app(start, close)
     app.state.drain = partial(registry.close, True)
     app.state.router_inventory = partial(_router_inventory, registry)
+    app.state.peer_bridge = peer_bridge
+    app.state.workspace_config_path = registry.config_path
+    app.state.codex_home = (
+        first_peer_cfg.config_path.parent
+        if first_peer_cfg is not None
+        else (
+            peer_provider.config_path.expanduser().resolve().parent
+            if peer_provider is not None
+            else None
+        )
+    )
     sharing = WorkspaceSharing(password, multi=True)
     sharing.vscode = vscode
     _install_auth(app, password, sharing=sharing)
@@ -260,6 +326,7 @@ def create_multi_workspace_app(
         leading_routes,
         vscode=vscode,
     )
+    app.routes[0:0] = app_routes
     return app
 
 
@@ -424,7 +491,17 @@ def build_app(args: "argparse.Namespace") -> Starlette:
             persist_callback,
         ),
     )
-    return create_multi_workspace_app(registry, password=args.password)
+    peer_provider = PeerProfileProvider(
+        args.config,
+        launch_profile=args.profile,
+        timeout_seconds=args.timeout_seconds,
+        vllm_endpoint=args.vllm_endpoint,
+    )
+    return create_multi_workspace_app(
+        registry,
+        password=args.password,
+        peer_provider=peer_provider,
+    )
 
 
 def run_serve_cli(args: "argparse.Namespace") -> int:
@@ -448,11 +525,15 @@ def _build_workspace_entry(
     args: "argparse.Namespace",
     persist_callback: "typing.Union[typing.Callable[[], None], None]" = None,
 ) -> "WorkspaceEntry":
+    workspace_context = (
+        _workspace_context_text(definition.board_path) if definition.board_path else None
+    )
+
     def session_factory(profile) -> "ThreadedWorkspaceInteractiveSession":
         return ThreadedWorkspaceInteractiveSession(
             partial(
                 build_workspace_session, args.config, profile, definition.work_dir, args.toolset,
-                workspace_context=_workspace_context_text(definition.board_path) if definition.board_path else None,
+                workspace_context=workspace_context,
                 system_prompt=args.system_prompt,
                 timeout_seconds=args.timeout_seconds, vllm_endpoint=args.vllm_endpoint,
             ), asyncio.get_running_loop(),
@@ -466,6 +547,18 @@ def _build_workspace_entry(
         }
         return factories, selected["profile"]
 
+    config_path = Path(args.config).expanduser().resolve()
+    peer_config = PeerWorkspaceConfig(
+        config_path=config_path,
+        launch_profile=args.profile,
+        work_dir=definition.work_dir,
+        toolset=args.toolset,
+        workspace_context=workspace_context,
+        system_prompt=args.system_prompt,
+        timeout_seconds=args.timeout_seconds,
+        vllm_endpoint=args.vllm_endpoint,
+    )
+
     return WorkspaceEntry(
         definition=definition,
         manager=WorkspaceSessionManager(
@@ -473,7 +566,9 @@ def _build_workspace_entry(
             definition.state_path,
             persist_callback=persist_callback,
             profile_loader=load_profiles,
-            codex_home=Path(args.config).expanduser().resolve().parent,
+            codex_home=config_path.parent,
+            peer_config=peer_config,
+            allow_degraded_startup=bool(getattr(args, "listen_to", None)),
         ),
     )
 

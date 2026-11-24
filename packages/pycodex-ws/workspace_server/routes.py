@@ -30,6 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from pycodex.utils.compat import importlib_metadata
 from pycodex.utils.skill_catalog import list_skills
+from pycodex_router.client import peer_http_request, peer_list_nodes
 from pycodex_ws.server_support import (
     AUTH_COOKIE_NAME,
     html_response as _html_response,
@@ -38,6 +39,11 @@ from pycodex_ws.server_support import (
 
 from .customization import frontend_asset_response, frontend_directory, load_workspace_template
 from . import external_call
+from .peer_profiles import (
+    PEER_NODE_ID_RE,
+    _error_message_from_body,
+    call_on_router_loop,
+)
 from .runtime_info import agent_help_text, runtime_info_prompt
 from .session_api import session_api_routes
 from .vscode_server import (
@@ -329,7 +335,17 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         )
 
     async def sessions(request: Request) -> JSONResponse:
-        return _sessions_response(workspace(request).manager)
+        return _sessions_response(workspace(request).manager, request)
+
+    async def peer_nodes(request: Request) -> JSONResponse:
+        workspace(request)
+        return await _peer_nodes_response(request)
+
+    async def peer_node_profiles(request: Request) -> JSONResponse:
+        workspace(request)
+        return await _peer_node_profiles_response(
+            request, request.path_params["node_id"]
+        )
 
     async def new_session(request: Request) -> JSONResponse:
         return await _new_session_response(workspace(request).manager, request)
@@ -346,7 +362,10 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
     async def read_session(request: Request) -> JSONResponse:
         payload = await _json_object_body(request)
         return _read_session_response(
-            workspace(request).manager, request.path_params["session_id"], payload
+            workspace(request).manager,
+            request.path_params["session_id"],
+            payload,
+            request,
         )
 
     async def session(request: Request) -> JSONResponse:
@@ -426,6 +445,8 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         route("/api/skills", skills, ["GET"]),
         route("/api/sessions", sessions, ["GET"]),
         route("/api/sessions", new_session, ["POST"]),
+        route("/api/peer-nodes", peer_nodes, ["GET"]),
+        route("/api/peer-nodes/{node_id}/profiles", peer_node_profiles, ["GET"]),
         route("/frontend/{asset_path:path}", frontend_asset, ["GET", "HEAD"]),
         route("/api/sessions/{session_id}", delete_session, ["DELETE"]),
         route("/api/sessions/{session_id}/read", read_session, ["POST"]),
@@ -610,20 +631,113 @@ def _websocket_backend_hint_response() -> JSONResponse:
     )
 
 
-def _sessions_response(manager: "WorkspaceSessionManager") -> JSONResponse:
+def _sessions_response(
+    manager: "WorkspaceSessionManager",
+    request: "typing.Optional[Request]" = None,
+) -> JSONResponse:
+    router_client = (
+        getattr(request.app.state, "router_client", None)
+        if request is not None
+        else None
+    )
+    router_connected = bool(router_client is not None and router_client.connected)
+    local_profile_error: "typing.Optional[str]" = None
     try:
         manager.refresh_profiles()
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    return JSONResponse({
+        profiles = list(manager.profile_factories)
+        default_profile = manager.default_profile
+    except (OSError, ValueError) as exc:
+        if not router_connected:
+            raise HTTPException(status_code=400, detail=str(exc))
+        profiles = []
+        default_profile = None
+        local_profile_error = str(exc)
+    payload: "typing.Dict[str, object]" = {
         "sessions": manager.list_sessions(),
-        "profiles": list(manager.profile_factories),
-        "default_profile": manager.default_profile,
-    }, headers={"Cache-Control": "no-store"})
+        "profiles": profiles,
+        "default_profile": default_profile,
+    }
+    if local_profile_error is not None:
+        payload["local_profile_error"] = local_profile_error
+    if router_connected and not (
+        request is not None and request.scope.get("pycodex.agent_access")
+    ):
+        payload["router_connected"] = True
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+async def _peer_nodes_response(request: Request) -> JSONResponse:
+    if request.scope.get("pycodex.agent_access"):
+        raise HTTPException(status_code=403, detail="browser session access required")
+    router_client = getattr(request.app.state, "router_client", None)
+    if router_client is None or not router_client.connected:
+        return JSONResponse(
+            {"error": "router tunnel is not connected"},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        nodes = await call_on_router_loop(
+            router_client, lambda: peer_list_nodes(router_client)
+        )
+    except (OSError, ValueError) as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(
+        {"peer_nodes": nodes}, headers={"Cache-Control": "no-store"}
+    )
+
+
+async def _peer_node_profiles_response(
+    request: Request, node_id: str
+) -> JSONResponse:
+    if not PEER_NODE_ID_RE.fullmatch(node_id):
+        raise HTTPException(status_code=400, detail="invalid peer node ID")
+    router_client = getattr(request.app.state, "router_client", None)
+    if router_client is None or not router_client.connected:
+        return JSONResponse(
+            {"error": "router tunnel is not connected"},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        status, _headers, body = await call_on_router_loop(
+            router_client,
+            lambda: peer_http_request(
+                router_client, node_id, "GET", "/api/peer-profiles"
+            ),
+        )
+    except (OSError, ValueError) as exc:
+        return JSONResponse(
+            {"error": str(exc)},
+            status_code=503,
+            headers={"Cache-Control": "no-store"},
+        )
+    if status >= 400:
+        return JSONResponse(
+            {"error": _error_message_from_body(body, status)},
+            status_code=status,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except ValueError:
+        return JSONResponse(
+            {"error": "invalid peer profiles response"},
+            status_code=502,
+            headers={"Cache-Control": "no-store"},
+        )
+    return JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 
 def _read_session_response(
-    manager: "WorkspaceSessionManager", session_id: str, payload: "typing.Dict[str, object]"
+    manager: "WorkspaceSessionManager",
+    session_id: str,
+    payload: "typing.Dict[str, object]",
+    request: "typing.Optional[Request]" = None,
 ) -> JSONResponse:
     try:
         manager.mark_read(session_id, payload.get("final_id"))
@@ -631,7 +745,7 @@ def _read_session_response(
         raise HTTPException(status_code=404, detail="session not found")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return _sessions_response(manager)
+    return _sessions_response(manager, request)
 
 
 def _user_message_name(payload):

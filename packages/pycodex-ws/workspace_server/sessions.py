@@ -25,7 +25,9 @@ from pycodex.events import (
 )
 from pycodex.multi_agents import AgentsManager
 from pycodex.tools import get_tools
+from pycodex.utils import uuid7_string
 from pycodex.utils.event_helpers import shorten_title
+from pycodex.utils.session_persist import load_display_history
 from pycodex_ws import register_feishu_commands
 
 from .session_api import history_page
@@ -53,11 +55,11 @@ def _import_build_agy_session():
         raise
 
 
-def build_workspace_session(
-    config_path, profile, cwd, toolset, workspace_context=None, system_prompt=None,
-    tools_factory=get_tools, extra_tools=(), **model_options
+def build_session_from_codex_config(
+    config, cwd, toolset, workspace_context=None, system_prompt=None,
+    tools_factory=get_tools, extra_tools=(), config_path=None, **model_options
 ):
-    config = CodexConfig.from_env(config_path, profile, use_default_profile=False)
+    effective_config_path = config.path if config_path is None else config_path
     if isinstance(workspace_context, str):
         contextual_messages = (workspace_context,) if workspace_context else ()
     elif workspace_context:
@@ -71,8 +73,8 @@ def build_workspace_session(
     if config.harness == "pyagy":
         build_agy_session = _import_build_agy_session()
         agy_session = build_agy_session(
-            config_path=config_path,
-            profile=profile,
+            config_path=effective_config_path,
+            profile=config.profile,
             cwd=Path(cwd),
             codex_config=config,
             context_config=context,
@@ -85,22 +87,59 @@ def build_workspace_session(
         runtime = agy_session.root_node.runtime
 
         async def _close_agy_resources():
+            atexit.unregister(agy_session.owned_server.stop)
             try:
                 await agy_session.controller.close_subagents()
             finally:
-                agy_session.owned_server.stop()
+                await run_in_threadpool(agy_session.owned_server.stop)
 
         runtime.add_close_handler(_close_agy_resources)
     else:
         bootstrap = build_model(config.provider, **model_options)
-        if bootstrap.owned_server is not None:
-            atexit.register(bootstrap.owned_server.stop)
-        runtime = AgentsManager(bootstrap.client, context, toolset, tools_factory).create_root_runtime()
+        owned_server = bootstrap.owned_server
+        if owned_server is not None:
+            atexit.register(owned_server.stop)
+        try:
+            runtime = AgentsManager(
+                bootstrap.client, context, toolset, tools_factory
+            ).create_root_runtime()
+        except BaseException:
+            if owned_server is not None:
+                atexit.unregister(owned_server.stop)
+                owned_server.stop()
+            raise
+        if owned_server is not None:
+            async def _close_compat_server():
+                atexit.unregister(owned_server.stop)
+                await run_in_threadpool(owned_server.stop)
+
+            runtime.add_close_handler(_close_compat_server)
 
     preview_reasoning = config.harness == "pyagy"
     register_feishu_commands(runtime, preview_reasoning=preview_reasoning)
     return WorkspaceInteractiveSession(
-        runtime, config_path, configured_toolset=toolset, preview_reasoning=preview_reasoning,
+        runtime,
+        effective_config_path,
+        configured_toolset=toolset,
+        preview_reasoning=preview_reasoning,
+    )
+
+
+def build_workspace_session(
+    config_path, profile, cwd, toolset, workspace_context=None, system_prompt=None,
+    tools_factory=get_tools, extra_tools=(), **model_options
+):
+    config = CodexConfig.from_env(config_path, profile, use_default_profile=False)
+    return build_session_from_codex_config(
+        config,
+        cwd,
+        toolset,
+        workspace_context=workspace_context,
+        system_prompt=system_prompt,
+        tools_factory=tools_factory,
+        extra_tools=extra_tools,
+        config_path=config_path,
+        **model_options
     )
 
 
@@ -385,6 +424,161 @@ class WorkspaceInteractiveSession:
             self.runtime.set_title(title)
 
 
+class DegradedWorkspaceSession:
+    """Placeholder session preserving tab state and rollout history when startup is degraded."""
+
+    def __init__(
+        self,
+        error: str,
+        server_loop: "asyncio.AbstractEventLoop",
+        cwd: "typing.Optional[typing.Union[str, Path]]" = None,
+        promote_callback: "typing.Optional[typing.Callable[[], typing.Awaitable[typing.Optional[object]]]]" = None,
+    ) -> None:
+        self.error = str(error or "session profile is currently unavailable")
+        self._server_loop = server_loop
+        self._history_id = uuid7_string()
+        self.view = WebSessionView()
+        self.view.attach_server_loop(server_loop)
+        if cwd is not None:
+            self.view._cwd = str(Path(cwd).resolve())
+        self._promote_callback = promote_callback
+        self._promoted = None
+
+    async def start(self) -> "DegradedWorkspaceSession":
+        return self
+
+    async def close(self, finish_turn: bool = False) -> None:
+        if self._promoted is not None:
+            await self._promoted.close(finish_turn)
+            return
+        self.view.close()
+
+    async def _try_promote(self):
+        if self._promoted is not None:
+            return self._promoted
+        if self._promote_callback is None:
+            return None
+        try:
+            promoted = await self._promote_callback()
+        except (OSError, ValueError, RuntimeError) as exc:
+            self.error = str(exc)
+            return None
+        if promoted is not None:
+            self._promoted = promoted
+        return promoted
+
+    async def submit(
+        self, prompt: str, sender: str = "web", name: str = "user", trigger: bool = True,
+    ) -> "typing.Dict[str, object]":
+        promoted = await self._try_promote()
+        if promoted is not None:
+            return await promoted.submit(prompt, sender=sender, name=name, trigger=trigger)
+        return {"ok": False, "error": self.error, "snapshot": self.snapshot()}
+
+    async def answer_input(self, request_id, answer):
+        promoted = await self._try_promote()
+        if promoted is not None:
+            return await promoted.answer_input(request_id, answer)
+        return {"ok": False, "error": self.error, "snapshot": self.snapshot()}
+
+    async def api_query(self, resource, options):
+        promoted = await self._try_promote()
+        if promoted is not None:
+            return await promoted.api_query(resource, options)
+        if options.get("agent_id") is not None:
+            raise KeyError(options["agent_id"])
+        if resource == "state":
+            return self.view.api_snapshot()
+        if resource == "history":
+            rollout = Path(self.rollout_path()) if self.rollout_path() else None
+            return await run_in_threadpool(
+                history_page,
+                self._history_id,
+                rollout if rollout is not None and rollout.is_file() else None,
+                (),
+                options.get("before"),
+                options["limit"],
+            )
+        if resource == "background-work":
+            return {"background_work": []}
+        if resource == "models":
+            return {"model": self.view.snapshot()["model"], "models": []}
+        if resource == "agents":
+            return {
+                "root": {
+                    "agent_id": self._history_id,
+                    "parent_agent_id": None,
+                    "agent_path": "/root",
+                    "status": {"errored": self.error},
+                    "elapsed_seconds": 0.0,
+                    "last_message": shorten_title(
+                        self.view.summary()["last_assistant"],
+                        limit=SPINNER_STATUS_PREVIEW_LIMIT,
+                    ),
+                },
+                "agents": [],
+            }
+        raise ValueError("unknown session resource: " + resource)
+
+    async def submit_command(self, command, argument="", agent_id=None):
+        promoted = await self._try_promote()
+        if promoted is not None:
+            return await promoted.submit_command(command, argument, agent_id=agent_id)
+        raise RuntimeError(self.error)
+
+    async def event_view(self, agent_id=None):
+        promoted = await self._try_promote()
+        if promoted is not None:
+            return await promoted.event_view(agent_id)
+        if agent_id is not None:
+            raise KeyError(agent_id)
+        return self.view
+
+    def subscribe(self) -> "asyncio.Queue":
+        return self.view.subscribe()
+
+    def unsubscribe(self, queue: "asyncio.Queue") -> None:
+        self.view.unsubscribe(queue)
+
+    def snapshot(self) -> "typing.Dict[str, object]":
+        if self._promoted is not None:
+            return self._promoted.snapshot()
+        return self.view.snapshot()
+
+    def summary(self) -> "typing.Dict[str, object]":
+        if self._promoted is not None:
+            return self._promoted.summary()
+        return self.view.summary()
+
+    def rollout_path(self) -> str:
+        if self._promoted is not None:
+            return self._promoted.rollout_path()
+        return self.view.snapshot()["rollout_path"]
+
+    async def restore_from_rollout(
+        self,
+        rollout_path: str,
+        title: str = "",
+        cwd: "typing.Optional[str]" = None,
+    ) -> None:
+        if cwd is not None:
+            cwd_path = Path(cwd)
+            if not cwd_path.is_dir():
+                raise FileNotFoundError(str(cwd))
+            self.view._cwd = str(cwd_path.resolve())
+        if rollout_path:
+            path = Path(rollout_path)
+            if not path.is_file():
+                raise FileNotFoundError(str(rollout_path))
+            display_turns = load_display_history(path)
+            self.view.load_session_history(title, display_turns)
+            with self.view._lock:
+                self.view._rollout_path = str(path)
+                self.view._recorded_rollout_path = str(path)
+        else:
+            self.view.set_session_title(title)
+
+
 class ThreadedWorkspaceInteractiveSession:
     def __init__(
         self,
@@ -400,6 +594,12 @@ class ThreadedWorkspaceInteractiveSession:
         self._startup: "typing.Optional[asyncio.Task]" = None
         self._thread_launcher = None
         self._session: "typing.Union[WorkspaceInteractiveSession, None]" = None
+
+    def use_view(self, view: WebSessionView) -> None:
+        if self._startup is not None:
+            raise RuntimeError("cannot replace session view after startup")
+        self._view = view
+        self._view.attach_server_loop(self._server_loop)
 
     async def start(self, thread_launcher=None) -> "ThreadedWorkspaceInteractiveSession":
         if self._startup is None:
@@ -512,6 +712,10 @@ class ThreadedWorkspaceInteractiveSession:
 
     async def event_view(self, agent_id=None):
         return await self._call(self._session.event_view(agent_id))
+
+    @property
+    def view(self) -> WebSessionView:
+        return self._view
 
     def subscribe(self) -> "asyncio.Queue":
         return self._view.subscribe()

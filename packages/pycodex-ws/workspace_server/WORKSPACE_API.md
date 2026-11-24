@@ -100,11 +100,20 @@ take effect without restarting the server. Responses use `Cache-Control: no-stor
 `profile`, or `null` for the base configuration. Invalid catalog configuration
 or duplicate names return HTTP 400 rather than a stale catalog.
 Each session list entry includes its effective `profile` name or `null`.
+When connected to `pycodex-router` (browser requests without `pycodex.agent_access`),
+`GET api/sessions` returns the local catalog immediately with `router_connected: true`
+(no router RPC) and surfaces `local_profile_error` instead of failing HTTP 400 when
+local configuration cannot be loaded; `GET api/peer-nodes` returns
+`{peer_nodes: [{id, name, alias}]}` in router alias order, and
+`GET api/peer-nodes/{node_id}/profiles` returns `{profiles, default_profile}` for that
+online peer node.
 
 `POST api/sessions` accepts `{title?, prompt?, profile?, name?, trigger?}`. Title and
-prompt are strings and default to empty. Profile is a string name; omission or `null` uses
-the current server default. An unknown or removed name returns HTTP 400; an invalid field type
-returns HTTP 422. An empty body still creates a default session.
+prompt are strings and default to empty. Profile is a string name (local profile name, or
+`peer:<node_id>`, `peer:<node_id>@base` or `peer:<node_id>:<profile>` for an online router peer);
+omission or `null` uses the current server default, and `peer:<node_id>` resolves and pins the
+peer's current default (`peer:<node_id>:<profile>` or `peer:<node_id>@base`) at creation time. An
+unknown or removed name returns HTTP 400; an invalid field type returns HTTP 422. An empty body still creates a default session.
 The selected profile configures both the model and Agent instructions; CLI
 overrides still apply. A nonempty prompt is submitted through Runtime.
 `name` and `trigger` (boolean, default `true`) follow the message contract below:

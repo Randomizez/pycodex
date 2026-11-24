@@ -17,7 +17,12 @@ from pycodex_ws.workspace_config import (
     workspace_file_path,
 )
 
-from .sessions import ThreadedWorkspaceInteractiveSession
+from .peer_profiles import (
+    PeerManifestCache,
+    is_peer_profile,
+    resolve_peer_session_factory,
+)
+from .sessions import DegradedWorkspaceSession, ThreadedWorkspaceInteractiveSession
 from .session_view import session_timing
 from .workspace_views import WorkspaceViewStore
 
@@ -66,20 +71,33 @@ class WorkspaceSessionManager:
         default_profile: "typing.Optional[str]" = None,
         profile_loader=None,
         codex_home=None,
+        peer_config=None,
+        allow_degraded_startup: bool = False,
     ) -> None:
         if profile_loader is not None and (
             profile_factories is not None or default_profile is not None
         ):
             raise ValueError("profile_loader cannot be combined with static profiles")
         self.codex_home = resolve_codex_home() if codex_home is None else Path(codex_home)
+        self.peer_config = peer_config
+        self._allow_degraded_startup = bool(allow_degraded_startup)
+        self._peer_bridge = None
+        self._peer_cache = PeerManifestCache(self.codex_home)
         self._session_factory = session_factory
         self._profile_loader = profile_loader
         self.profile_factories = dict(profile_factories or {})
         self.default_profile = default_profile
-        self.refresh_profiles()
+        if self._profile_loader is None:
+            self.refresh_profiles()
+        else:
+            try:
+                self.refresh_profiles()
+            except (OSError, ValueError):
+                pass
         self._sessions: "typing.Dict[str, object]" = {}
         self._session_order: "typing.List[str]" = []
         self._state_watchers: "typing.Dict[str, asyncio.Task]" = {}
+        self._promote_tasks: "typing.Dict[str, asyncio.Task]" = {}
         self._tab_states: "typing.Dict[str, typing.Dict[str, object]]" = {}
         self._read_final_ids: "typing.Dict[str, str]" = {}
         self._lock = None
@@ -107,6 +125,21 @@ class WorkspaceSessionManager:
             self._lock = asyncio.Lock()
         return self._lock
 
+    def bind_peer_bridge(self, peer_bridge) -> None:
+        self._peer_bridge = peer_bridge
+
+    def _degraded_startup_allowed(self, state_tabs=()) -> bool:
+        if self._allow_degraded_startup:
+            return True
+        if self._peer_bridge is not None and self._peer_bridge.router_client is not None:
+            return True
+        return any(is_peer_profile(tab.get("profile")) for tab in state_tabs)
+
+    def _default_cwd(self) -> str:
+        if self.peer_config is not None:
+            return str(Path(self.peer_config.work_dir).resolve())
+        return str(Path.cwd().resolve())
+
     def set_persist_callback(
         self,
         callback: "typing.Union[typing.Callable[[], None], None]",
@@ -121,27 +154,94 @@ class WorkspaceSessionManager:
 
     async def start(self, thread_launcher=None) -> None:
         self._thread_launcher = thread_launcher
-        self.refresh_profiles()
+        self._closing = False
         state_tabs = self._state_store.load_tabs()
+        degrade_ok = self._degraded_startup_allowed(state_tabs)
+        local_refresh_error: "typing.Optional[str]" = None
+        try:
+            self.refresh_profiles()
+        except (OSError, ValueError) as exc:
+            if not degrade_ok:
+                raise
+            local_refresh_error = str(exc)
+
         if not state_tabs:
-            await self.create_session()
+            if local_refresh_error is not None:
+                session_id = await self._create_degraded_session(
+                    title="",
+                    rollout_path="",
+                    cwd=self._default_cwd(),
+                    profile=None,
+                    error=local_refresh_error,
+                    unresolved_default=True,
+                )
+                self._subscribe_session_state(session_id)
+                self.persist_workspace_state()
+                return
+            try:
+                await self.create_session()
+            except (OSError, ValueError, RuntimeError) as exc:
+                if not degrade_ok:
+                    raise
+                session_id = await self._create_degraded_session(
+                    title="",
+                    rollout_path="",
+                    cwd=self._default_cwd(),
+                    profile=self.default_profile,
+                    error=str(exc),
+                    unresolved_default=True,
+                )
+                self._subscribe_session_state(session_id)
+                self.persist_workspace_state()
             return
+
         for tab in state_tabs:
-            await self._create_session(
-                title=tab["title"],
-                rollout_path=tab["rollout_path"],
-                cwd=tab.get("cwd"),
-                profile=tab.get("profile", self.default_profile),
+            has_profile_key = "profile" in tab
+            tab_profile = (
+                tab["profile"] if has_profile_key else self.default_profile
             )
+            try:
+                if local_refresh_error is not None and (
+                    not has_profile_key or not is_peer_profile(tab_profile)
+                ):
+                    raise ValueError(local_refresh_error)
+                await self._create_session(
+                    title=tab["title"],
+                    rollout_path=tab["rollout_path"],
+                    cwd=tab.get("cwd"),
+                    profile=tab_profile,
+                    allow_cached_peer=True,
+                )
+            except FileNotFoundError:
+                raise
+            except (OSError, ValueError, RuntimeError) as exc:
+                if not degrade_ok:
+                    raise
+                await self._create_degraded_session(
+                    title=tab["title"],
+                    rollout_path=tab["rollout_path"],
+                    cwd=tab.get("cwd"),
+                    profile=tab_profile,
+                    error=str(exc),
+                    unresolved_default=not has_profile_key,
+                )
         for session_id in self._session_order:
             self._subscribe_session_state(session_id)
         self.persist_workspace_state()
 
     async def close(self, finish_turn: bool = False) -> None:
         """Close every session together; ``finish_turn`` lets active turns end naturally."""
-        self._closing = True
-        sessions = list(self._sessions.values())
-        watchers = list(self._state_watchers.values())
+        async with self._get_lock():
+            self._closing = True
+            promote_tasks = list(self._promote_tasks.values())
+            self._promote_tasks.clear()
+        if promote_tasks:
+            for task in promote_tasks:
+                task.cancel()
+            await asyncio.gather(*promote_tasks, return_exceptions=True)
+        async with self._get_lock():
+            sessions = list(self._sessions.values())
+            watchers = list(self._state_watchers.values())
         try:
             outcomes = await asyncio.gather(
                 *(session.close(finish_turn) for session in sessions),
@@ -169,10 +269,12 @@ class WorkspaceSessionManager:
         rollout_path: str = "",
         profile: "typing.Optional[str]" = None,
     ) -> str:
-        self.refresh_profiles()
+        if not is_peer_profile(profile):
+            self.refresh_profiles()
         session_id = await self._create_session(
             title, rollout_path,
             profile=self.default_profile if profile is None else profile,
+            allow_cached_peer=False,
         )
         self._subscribe_session_state(session_id)
         self.persist_workspace_state()
@@ -186,6 +288,144 @@ class WorkspaceSessionManager:
         self.persist_workspace_state()
         return session_id
 
+    async def _create_degraded_session(
+        self,
+        title: str = "",
+        rollout_path: str = "",
+        cwd: "typing.Optional[str]" = None,
+        profile: "typing.Optional[str]" = None,
+        error: str = "",
+        unresolved_default: bool = False,
+    ) -> str:
+        server_loop = asyncio.get_running_loop()
+        effective_cwd = cwd if cwd is not None else self._default_cwd()
+        async with self._get_lock():
+            if self._closing:
+                raise ValueError("workspace is shutting down")
+            session_id = uuid7_string()
+            degraded = DegradedWorkspaceSession(
+                error=error,
+                server_loop=server_loop,
+                cwd=effective_cwd,
+                promote_callback=lambda sid=session_id: self._promote_degraded_session(
+                    sid
+                ),
+            )
+            await degraded.start()
+            try:
+                if rollout_path or title or cwd is not None:
+                    await degraded.restore_from_rollout(
+                        rollout_path, title=title, cwd=cwd
+                    )
+            except BaseException:
+                await degraded.close()
+                raise
+            self._sessions[session_id] = degraded
+            self._session_order.append(session_id)
+            summary = session_summary(degraded)
+            tab_state: "typing.Dict[str, object]" = {
+                "title": str(title or summary.get("title") or ""),
+                "cwd": str(cwd if cwd is not None else summary["cwd"]),
+                "rollout_path": rollout_path,
+            }
+            if not unresolved_default:
+                tab_state["profile"] = profile
+            self._tab_states[session_id] = tab_state
+            return session_id
+
+    async def _promote_degraded_session(self, session_id: str):
+        existing = self._promote_tasks.get(session_id)
+        if existing is not None and not existing.done():
+            return await asyncio.shield(existing)
+        task = asyncio.create_task(self._run_promote_degraded_session(session_id))
+        self._promote_tasks[session_id] = task
+        try:
+            return await asyncio.shield(task)
+        finally:
+            if self._promote_tasks.get(session_id) is task:
+                self._promote_tasks.pop(session_id, None)
+
+    async def _run_promote_degraded_session(self, session_id: str):
+        current = self._sessions.get(session_id)
+        tab_state = self._tab_states.get(session_id)
+        if not isinstance(current, DegradedWorkspaceSession) or tab_state is None:
+            return current
+        if self._closing:
+            raise ValueError("workspace is shutting down")
+        has_explicit_profile = "profile" in tab_state
+        raw_profile = tab_state.get("profile")
+        if has_explicit_profile and is_peer_profile(raw_profile):
+            factory, effective_profile = await resolve_peer_session_factory(
+                str(raw_profile),
+                self.peer_config,
+                self._peer_bridge,
+                self._peer_cache,
+                allow_cached=False,
+            )
+        else:
+            self.refresh_profiles()
+            effective_profile = (
+                raw_profile if has_explicit_profile else self.default_profile
+            )
+            if effective_profile is not None and (
+                not isinstance(effective_profile, str)
+                or effective_profile not in self.profile_factories
+            ):
+                raise ValueError("unknown Codex profile: {0}".format(effective_profile))
+            factory = (
+                self._session_factory
+                if effective_profile is None
+                else self.profile_factories[effective_profile]
+            )
+
+        async with self._get_lock():
+            if self._closing:
+                raise ValueError("workspace is shutting down")
+            if self._sessions.get(session_id) is not current:
+                return self._sessions.get(session_id)
+            live_session = factory()
+            if isinstance(live_session, ThreadedWorkspaceInteractiveSession):
+                live_session.use_view(current.view)
+            await self._start_session(live_session)
+            rollout_path = str(tab_state.get("rollout_path") or "")
+            title = str(tab_state.get("title") or "")
+            cwd = tab_state.get("cwd")
+            try:
+                if rollout_path or title or cwd is not None:
+                    await live_session.restore_from_rollout(
+                        rollout_path,
+                        title=title,
+                        cwd=str(cwd) if cwd is not None else None,
+                    )
+            except BaseException:
+                await live_session.close()
+                raise
+            if getattr(live_session, "view", None) is not current.view:
+                old_watcher = self._state_watchers.pop(session_id, None)
+                if old_watcher is not None:
+                    old_watcher.cancel()
+                    await asyncio.gather(old_watcher, return_exceptions=True)
+                current.view.close()
+                self._sessions[session_id] = live_session
+                self._subscribe_session_state(session_id)
+            else:
+                self._sessions[session_id] = live_session
+            snap = session_snapshot(live_session)
+            summary = session_summary(live_session)
+            new_state: "typing.Dict[str, object]" = {
+                "title": str(summary.get("title") or title or ""),
+                "cwd": str(summary.get("cwd") or cwd or ""),
+                "rollout_path": str(
+                    snap.get("recorded_rollout_path") or rollout_path or ""
+                ),
+                "profile": effective_profile,
+            }
+            if tab_state.get("temporary"):
+                new_state["temporary"] = True
+            self._tab_states[session_id] = new_state
+            self.persist_workspace_state()
+            return live_session
+
     async def _create_session(
         self,
         title: str = "",
@@ -193,17 +433,38 @@ class WorkspaceSessionManager:
         cwd: "typing.Optional[str]" = None,
         profile: "typing.Optional[str]" = None,
         session=None,
+        allow_cached_peer: bool = False,
     ) -> str:
-        if profile is not None and (
-            not isinstance(profile, str) or profile not in self.profile_factories
+        if (
+            profile is not None
+            and not is_peer_profile(profile)
+            and (not isinstance(profile, str) or profile not in self.profile_factories)
         ):
             raise ValueError("unknown Codex profile: {0}".format(profile))
         if self._closing:
             raise ValueError("workspace is shutting down")
-        factory = (
-            self._session_factory if profile is None else self.profile_factories[profile]
-        )
+        effective_profile = profile
+        if session is not None:
+            factory = None
+        elif is_peer_profile(profile):
+            factory, effective_profile = await resolve_peer_session_factory(
+                str(profile),
+                self.peer_config,
+                self._peer_bridge,
+                self._peer_cache,
+                allow_cached=allow_cached_peer,
+            )
+        else:
+            factory = (
+                self._session_factory
+                if profile is None
+                else self.profile_factories[profile]
+            )
         async with self._get_lock():
+            if self._closing:
+                if session is not None:
+                    await session.close()
+                raise ValueError("workspace is shutting down")
             session_id = uuid7_string()
             if session is None:
                 session = factory()
@@ -225,7 +486,7 @@ class WorkspaceSessionManager:
                 "title": str(summary.get("title") or ""),
                 "cwd": summary["cwd"],
                 "rollout_path": rollout_path,
-                "profile": profile,
+                "profile": effective_profile,
             }
             return session_id
 
@@ -311,7 +572,7 @@ class WorkspaceSessionManager:
                     "id": session_id,
                     "title": summary.get("title") or "pycodex",
                     "cwd": summary["cwd"],
-                    "profile": self._tab_states[session_id]["profile"],
+                    "profile": self._tab_states[session_id].get("profile"),
                     "running": bool(summary.get("running")),
                     "last_final_id": final_id,
                     "unread": bool(
@@ -372,10 +633,27 @@ class WorkspaceRegistry:
             None if config_path is None else Path(config_path).expanduser().resolve()
         )
         self._entry_factory = entry_factory
+        self._peer_bridge = None
         for entry in entries:
             self._register(entry)
         if not self._entries and self._entry_factory is None:
             raise ValueError("at least one workspace is required")
+
+    @property
+    def config_path(self) -> "typing.Optional[Path]":
+        return self._config_path
+
+    def bind_peer_bridge(self, peer_bridge) -> None:
+        self._peer_bridge = peer_bridge
+        for entry in self._entries.values():
+            entry.manager.bind_peer_bridge(peer_bridge)
+
+    def first_peer_config(self):
+        for key in self._order:
+            peer_config = self._entries[key].manager.peer_config
+            if peer_config is not None:
+                return peer_config
+        return None
 
     def _register(self, entry: "WorkspaceEntry") -> None:
         workspace_id = entry.definition.workspace_id
@@ -390,6 +668,8 @@ class WorkspaceRegistry:
         self._name_to_key[workspace_id] = key
         self._order.append(key)
         entry.manager.set_persist_callback(self.persist_definitions)
+        if self._peer_bridge is not None:
+            entry.manager.bind_peer_bridge(self._peer_bridge)
 
     def _key_for_definition(self, definition: "WorkspaceDefinition") -> str:
         return str(definition.state_path.resolve())

@@ -868,6 +868,59 @@ or newly connected `/tunnel/data` channel with `scope["pycodex.peer_access"] = T
 and full caller headers preserved, restricted by `peer_profile_request` to
 `GET /api/peer-profiles*` and `/api/peer-proxy`).
 
+CLI workspace servers launched with `--listen-to` persist a per-workspace-config
+node identity key in `<codex-home>/router-nodes/<sha256>.key` (`0600`) so the
+device retains its 52-character `node_id` across process restarts as well as
+in-process reloads.
+
+### Peer profile sharing
+
+Workspace nodes connected to the same `pycodex-router` mutually trust each other
+and can unconditionally proxy outbound HTTP requests as well as share their
+default and named profiles by default, while keeping the router stateless and
+rejecting external callers.
+
+- Direct HTTP, browser-proxied and local Agent-token requests cannot set
+  `pycodex.peer_access`; `install_auth` only accepts `trusted_peer_request` on
+  `/tunnel/peer`-relayed `GET /api/peer-profiles*` discovery/manifests and
+  `/api/peer-proxy` (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`/`HEAD`/`OPTIONS`), and
+  all other callers without `pycodex.peer_access` are rejected with `403`.
+- `/api/peer-proxy` on `PeerProfileProvider` serves two modes over a shared
+  keep-alive `requests.Session` pool: `X-Peer-Target-Url` unconditionally forwards arbitrary
+  outbound HTTP/HTTPS requests (methods, caller `Authorization`/`Cookie`/custom
+  headers, merged query parameters, request body, and streaming responses, while
+  rejecting self-loopback requests to the host's own workspace listener), and
+  `X-Peer-Profile` (plus optional `X-Peer-Subpath`) reads `.env` and
+  `config.toml` into an isolated lookup without mutating `os.environ` and
+  attaches the profile's upstream `base_url`, provider headers, and API key
+  (`Authorization: Bearer` or `x-goog-api-key`). Client disconnects immediately
+  close the upstream stream.
+- When connected to a router, `GET api/sessions` returns the local catalog
+  immediately with `router_connected: true` (no router RPC; local config errors
+  surface as `local_profile_error` instead of failing with `400`, so peer
+  profiles remain selectable even if the local config is broken). The `+`
+  `Custom profile` dialog opens local profiles immediately while loading
+  `GET api/peer-nodes` asynchronously, and `GET api/peer-nodes/{node_id}/profiles`
+  queries the peer's live `profiles` and `default_profile`. The `+` dialog shows
+  **Node** (`This device` or an online peer) followed by **Profile**.
+- Peer sessions accept profile IDs `peer:<node_id>` (unpinned default request),
+  `peer:<node_id>@base` (pinned peer base configuration), or
+  `peer:<node_id>:<profile>` (pinned named peer profile). Selecting
+  `peer:<node_id>` resolves and pins the peer's active profile at session
+  creation (`peer:<node_id>:<profile>` when a named default is active, or
+  `peer:<node_id>@base` when using its base config) so existing conversations
+  keep their provider across default switches and restarts while credentials in
+  `.env` reload on each model request. Agent, Runtime, tools, working directory,
+  `AGENTS.md`, skills, Canvas, local execution permissions and rollout files
+  remain local on the requesting workspace: manifests ship a sanitized TOML
+  `selected` mapping, and `build_peer_workspace_session` overlays local
+  permissions plus `PeerLoopbackBridge` `base_url` and reuses
+  `ResponsesProviderConfig.from_mapping`, `ContextConfig.from_mapping` and
+  `build_session_from_codex_config`. Manifests are cached per pinned profile ID
+  in `<codex-home>/peer-profiles-cache/` so saved peer tabs restore history
+  while offline, and degraded local or uncached peer tabs promote on demand once
+  local config or the router connection becomes available.
+
 ### External Call
 
 **Settings → External Call** creates a temporary workspace tab

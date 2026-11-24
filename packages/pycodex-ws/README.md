@@ -57,6 +57,13 @@ session's working directory while idle; `/model`, `/resume`, `/compact` and
 other core session commands are also available.
 
 Use **New session** for the default profile, or its **+** button to choose one.
+When connected to a router (`--listen-to`), the chooser first selects a **Node**
+(**This device** or another online device on the same router) and then selects a
+**Profile** from that node. Choosing a peer node runs the Agent, tools, files,
+Canvas and rollout recording locally while proxying upstream provider HTTP
+requests through the router (`/api/peer-proxy`) using the selected peer node's
+profile; API keys and upstream endpoints stay on the peer node and reload on
+each request.
 Profiles reload when you open the chooser or create a session, so config changes
 apply to new sessions without restarting the server. Existing sessions keep their configuration.
 

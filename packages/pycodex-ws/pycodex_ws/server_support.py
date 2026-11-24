@@ -15,7 +15,12 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
 
-from pycodex_router.protocol import external_call_request, route_path, trusted_agent_request
+from pycodex_router.protocol import (
+    external_call_request,
+    route_path,
+    trusted_agent_request,
+    trusted_peer_request,
+)
 
 AUTH_COOKIE_NAME = "pycodex_ws_auth"
 
@@ -210,7 +215,11 @@ def install_auth(
             cookie = request.cookies.get(cookie_name)
             if path in {"/favicon.ico", "/login"}:
                 return await call_next(request)
-            if trusted_agent_request(request.scope) or sharing.is_admin(cookie):
+            if (
+                trusted_agent_request(request.scope)
+                or trusted_peer_request(request.scope)
+                or sharing.is_admin(cookie)
+            ):
                 request.scope["pycodex.access_role"] = "admin"
                 return await call_next(request)
             grant = None if target is None else sharing.grant(target[0], cookie)
@@ -224,9 +233,14 @@ def install_auth(
             login_url = root + "/login"
             destination = root + path + ("?" + request.url.query if request.url.query else "")
             return RedirectResponse(login_url + "?" + urlencode({"next": destination}), 303)
-        if path in {"/favicon.ico", "/login"} or trusted_agent_request(request.scope) or auth_cookie_matches(
-            token,
-            request.cookies.get(cookie_name),
+        if (
+            path in {"/favicon.ico", "/login"}
+            or trusted_agent_request(request.scope)
+            or trusted_peer_request(request.scope)
+            or auth_cookie_matches(
+                token,
+                request.cookies.get(cookie_name),
+            )
         ):
             return await call_next(request)
         if path.startswith("/api/") or "/api/" in path:
