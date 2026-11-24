@@ -235,7 +235,9 @@ def test_reload_imports_backend_modules_again(tmp_path):
 import importlib
 import sys
 from starlette.testclient import TestClient
+from workspace_server import reloader
 from workspace_server.owned_process import ReloadableApp
+import responses_server.transport
 
 def build():
     app_module = importlib.import_module("workspace_server.app")
@@ -248,10 +250,26 @@ shell = ReloadableApp(build)
 with TestClient(shell) as client:
     old_module = shell.app.state.module
     old_core = sys.modules["pycodex.runtime"]
+    old_responses = sys.modules["responses_server.transport"]
+    assert "responses_server" in reloader.RELOAD_PREFIXES
     response = client.post("/w/main/api/reload", json={})
     assert response.json() == {"ok": True, "status": "reloaded"}, response.text
     assert shell.app.state.module is not old_module
     assert sys.modules["pycodex.runtime"] is not old_core
+    assert sys.modules.get("responses_server.transport") is not old_responses
+    import responses_server.transport
+    assert sys.modules["responses_server.transport"] is not old_responses
+
+    # Also verify self-healing when an older process shell lacks "responses_server" in RELOAD_PREFIXES.
+    stale_responses = sys.modules["responses_server.transport"]
+    reloader.RELOAD_PREFIXES = tuple(
+        p for p in reloader.RELOAD_PREFIXES if p != "responses_server"
+    )
+    response2 = client.post("/w/main/api/reload", json={})
+    assert response2.json() == {"ok": True, "status": "reloaded"}, response2.text
+    assert "responses_server" in reloader.RELOAD_PREFIXES
+    import responses_server.transport
+    assert sys.modules["responses_server.transport"] is not stale_responses
     assert client.get("/api/workspaces").json()["workspaces"][0]["id"] == "main"
 """
     config_path = tmp_path / "workspaces.json"

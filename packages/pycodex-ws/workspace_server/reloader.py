@@ -12,7 +12,14 @@ import typing
 from functools import partial
 from pathlib import Path
 
-RELOAD_PREFIXES = ("pycodex", "pycodex_ws", "pycodex_router", "workspace_server", "pyagy")
+RELOAD_PREFIXES = (
+    "pycodex",
+    "responses_server",
+    "pycodex_ws",
+    "pycodex_router",
+    "workspace_server",
+    "pyagy",
+)
 
 
 def _is_reloadable_module(name: str) -> bool:

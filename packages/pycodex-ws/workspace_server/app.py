@@ -35,6 +35,26 @@ from pycodex_ws.server_support import (
     parse_listen,
 )
 
+
+def _ensure_responses_server_reloaded() -> None:
+    from . import reloader
+
+    if "responses_server" in reloader.RELOAD_PREFIXES:
+        return
+    reloader.RELOAD_PREFIXES = tuple(reloader.RELOAD_PREFIXES) + ("responses_server",)
+    import importlib
+
+    importlib.invalidate_caches()
+    for name in list(sys.modules):
+        if name == "responses_server" or name.startswith("responses_server."):
+            mod = sys.modules.pop(name, None)
+            file_path = getattr(mod, "__file__", None)
+            if file_path:
+                reloader._evict_same_second_bytecode(file_path)
+
+
+_ensure_responses_server_reloaded()
+
 from .peer_profiles import (
     PeerLoopbackBridge,
     PeerProfileProvider,
