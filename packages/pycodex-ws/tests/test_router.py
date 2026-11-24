@@ -13,7 +13,14 @@ from urllib.parse import quote, urlsplit
 import httpx
 import pytest
 import uvicorn
-from pycodex_router.client import RouterClient, load_node_identity_key
+from pycodex_router.client import (
+    RouterClient,
+    load_node_identity_key,
+    peer_http_request,
+    peer_list_nodes,
+    router_client_loop,
+    save_node_identity_key_if_absent,
+)
 from pycodex_router.protocol import (
     decode,
     device_id,
@@ -2707,6 +2714,12 @@ def test_load_node_identity_key_persists_and_validates(tmp_path):
     with pytest.raises(ValueError):
         load_node_identity_key(bad_path)
 
+    saved_path = tmp_path / "nodes" / "saved.key"
+    save_node_identity_key_if_absent(saved_path, first)
+    assert load_node_identity_key(saved_path) == first
+    save_node_identity_key_if_absent(saved_path, "b" * 64)
+    assert load_node_identity_key(saved_path) == first
+
 
 async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_supports_legacy_peers(
     tmp_path,
@@ -2785,12 +2798,29 @@ async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_suppor
             reconnect_seconds=0.02,
             identity_key=key_legacy,
         )
-        # Simulate an older client that does not open pre-warmed standby channels.
+        # Simulate a v0.7.2 shell-owned RouterClient kept across in-process reload:
+        # no standby channels, no loop/peer_url/_peer_pool attributes, and _serve
+        # only populates pycodex.agent_access from opening.
         legacy_peer._standby_count = 0
+        del legacy_peer.peer_url
+        del legacy_peer._peer_pool
+
+        orig_dispatch = legacy_peer._dispatch_opening
+
+        async def v072_dispatch(channel, opening):
+            no_peer_flag = dict(opening)
+            no_peer_flag.pop("peer_access", None)
+            # Restore pycodex.peer_access strictly from scope as v0.7.2 _serve does:
+            had_scope_peer = opening["scope"].get("pycodex.peer_access") is True
+            no_peer_flag["peer_access"] = had_scope_peer
+            await orig_dispatch(channel, no_peer_flag)
+
+        legacy_peer._dispatch_opening = v072_dispatch
 
         await caller.start()
         await peer.start()
         await legacy_peer.start()
+        legacy_peer.loop = None
         try:
             await eventually(
                 lambda: caller.connected
@@ -2852,8 +2882,9 @@ async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_suppor
                 }
             ]
 
-            # Legacy peer without standby channels falls back to control connect.
+            # Legacy v0.7.2 shell client works both inbound and outbound after reload.
             assert len(gate.state.router.nodes[legacy_peer.node_id].standby) == 0
+            assert router_client_loop(legacy_peer) is asyncio.get_running_loop()
             legacy_status, _lh, legacy_body = await caller.peer_request(
                 legacy_peer.node_id,
                 "GET",
@@ -2861,6 +2892,20 @@ async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_suppor
             )
             assert legacy_status == 200
             assert json.loads(legacy_body.decode("utf-8"))["trusted"] is True
+
+            legacy_peers = await peer_list_nodes(legacy_peer)
+            assert [item["id"] for item in legacy_peers] == [
+                peer.node_id,
+                caller.node_id,
+            ]
+            out_status, _oh, out_body = await peer_http_request(
+                legacy_peer,
+                peer.node_id,
+                "GET",
+                "/api/peer-profiles",
+            )
+            assert out_status == 200
+            assert json.loads(out_body.decode("utf-8"))["profiles"] == ["fast"]
 
             # Unregistered identity keys and non-peer paths are rejected with 1008.
             async with tunnel_connect(target, "peer") as bad_peer_ws:

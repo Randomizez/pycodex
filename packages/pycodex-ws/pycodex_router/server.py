@@ -664,6 +664,7 @@ class Router:
                 if not peer_profile_request(clean_scope):
                     await close_websocket(websocket, 1008)
                     return
+                clean_scope["pycodex.peer_access"] = True
 
                 started = False
                 request_done = False

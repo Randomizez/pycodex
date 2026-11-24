@@ -38,6 +38,303 @@ def load_node_identity_key(path):
     return value
 
 
+def save_node_identity_key_if_absent(path, value):
+    if not isinstance(value, str) or not re.fullmatch("[0-9a-f]{64}", value):
+        return
+    path = Path(path)
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(
+            str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+        )
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w", encoding="ascii", newline="\n") as handle:
+        handle.write(value + "\n")
+
+
+def router_client_loop(client):
+    if client is None:
+        return None
+    loop = getattr(client, "loop", None)
+    if loop is not None:
+        return loop
+    task = getattr(client, "_task", None)
+    if task is None:
+        return None
+    get_loop = getattr(task, "get_loop", None)
+    if callable(get_loop):
+        return get_loop()
+    return getattr(task, "_loop", None)
+
+
+def _client_peer_url(client):
+    peer_url = getattr(client, "peer_url", None)
+    if peer_url is not None:
+        return peer_url
+    control_url = client.control_url
+    if not control_url.endswith("/tunnel/control"):
+        raise ValueError("unexpected router control URL")
+    peer_url = control_url[: -len("control")] + "peer"
+    client.peer_url = peer_url
+    return peer_url
+
+
+def _client_peer_pool(client):
+    pool = getattr(client, "_peer_pool", None)
+    if pool is None:
+        pool = deque()
+        client._peer_pool = pool
+    return pool
+
+
+async def _acquire_peer_channel(client, allow_pooled=True):
+    pool = _client_peer_pool(client)
+    if allow_pooled:
+        while pool:
+            ch = pool.popleft()
+            if ch.open:
+                return ch, True
+            client._channels.discard(ch)
+    ch = await client._connect(_client_peer_url(client))
+    client._channels.add(ch)
+    return ch, False
+
+
+async def _release_peer_channel(client, ch, reusable):
+    pool = _client_peer_pool(client)
+    if reusable and client.connected and ch.open and len(pool) < 4:
+        pool.append(ch)
+        return
+    client._channels.discard(ch)
+    try:
+        await ch.close()
+    except Exception:
+        pass
+
+
+async def peer_list_nodes(client):
+    if client is None or not client.connected:
+        raise OSError("router tunnel is not connected")
+    for allow_pooled in (True, False):
+        ch = None
+        reused = False
+        reusable = False
+        try:
+            ch, reused = await _acquire_peer_channel(client, allow_pooled=allow_pooled)
+            await ch.send(
+                encode({"type": "peers", "identity_key": client._identity_key})
+            )
+            reply = decode(await asyncio.wait_for(ch.recv(), 10))
+            if reply.get("type") != "peers" or not isinstance(
+                reply.get("nodes"), list
+            ):
+                raise ValueError("unexpected router peers response")
+            reusable = True
+            return reply["nodes"]
+        except ConnectionClosed as exc:
+            if reused:
+                continue
+            raise OSError(
+                "peer tunnel error ({0})".format(type(exc).__name__)
+            ) from exc
+        except (InvalidHandshake, asyncio.TimeoutError) as exc:
+            raise OSError(
+                "peer tunnel error ({0})".format(type(exc).__name__)
+            ) from exc
+        finally:
+            if ch is not None:
+                await _release_peer_channel(client, ch, reusable)
+    raise OSError("peer tunnel error (ConnectionClosed)")
+
+
+async def peer_forward(client, target_node_id, scope, receive, send):
+    if client is None or not client.connected:
+        raise OSError("router tunnel is not connected")
+    buffered_first = None
+    for allow_pooled in (True, False):
+        ch = None
+        reused = False
+        request_done = False
+        response_started = False
+        response_done = False
+        disconnected = False
+        try:
+            ch, reused = await _acquire_peer_channel(client, allow_pooled=allow_pooled)
+            await ch.send(
+                encode(
+                    {
+                        "type": "open",
+                        "identity_key": client._identity_key,
+                        "target": target_node_id,
+                        "scope": scope,
+                    }
+                )
+            )
+
+            async def requests():
+                nonlocal buffered_first, request_done, disconnected
+                if buffered_first is None:
+                    buffered_first = await receive()
+                first_msg = buffered_first
+                if first_msg["type"] == "http.disconnect":
+                    disconnected = True
+                    return
+                await send_event(ch.send, first_msg)
+                if not first_msg.get("more_body", False):
+                    request_done = True
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        disconnected = True
+                        return
+                    if not request_done:
+                        await send_event(ch.send, message)
+                        if not message.get("more_body", False):
+                            request_done = True
+
+            async def responses():
+                nonlocal response_started, response_done
+                while True:
+                    event = decode(await ch.recv())
+                    if event.get("type") not in {
+                        "http.response.start",
+                        "http.response.body",
+                    }:
+                        raise ValueError("invalid peer response event")
+                    response_started = True
+                    await send(event)
+                    if event["type"] == "http.response.body" and not event.get(
+                        "more_body", False
+                    ):
+                        response_done = True
+                        return
+
+            tasks = [
+                asyncio.create_task(requests()),
+                asyncio.create_task(responses()),
+            ]
+            try:
+                done, _pending = await asyncio.wait(
+                    tasks, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    task.result()
+            finally:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            return
+        except ConnectionClosed as exc:
+            if reused and not response_started and (
+                buffered_first is None or not buffered_first.get("more_body", False)
+            ):
+                continue
+            raise OSError(
+                "peer tunnel error ({0})".format(type(exc).__name__)
+            ) from exc
+        except (InvalidHandshake, asyncio.TimeoutError) as exc:
+            raise OSError(
+                "peer tunnel error ({0})".format(type(exc).__name__)
+            ) from exc
+        finally:
+            if ch is not None:
+                reusable = (
+                    request_done and response_done and not disconnected
+                )
+                await _release_peer_channel(client, ch, reusable)
+
+
+async def peer_http_request(
+    client,
+    target_node_id,
+    method,
+    path,
+    headers=(),
+    body=b"",
+    query_string=b"",
+    timeout=15.0,
+):
+    encoded_headers = [
+        [
+            (
+                name.encode("latin-1") if isinstance(name, str) else bytes(name)
+            ).lower(),
+            value.encode("latin-1") if isinstance(value, str) else bytes(value),
+        ]
+        for name, value in headers
+    ]
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode("utf-8"),
+        "root_path": "",
+        "query_string": (
+            query_string.encode("ascii")
+            if isinstance(query_string, str)
+            else bytes(query_string)
+        ),
+        "headers": encoded_headers,
+        "client": ("127.0.0.1", 0),
+        "server": ("127.0.0.1", getattr(client, "port", 0)),
+    }
+    request_sent = False
+    status = 500
+    resp_headers = []
+    resp_body = bytearray()
+
+    async def receive():
+        nonlocal request_sent
+        if not request_sent:
+            request_sent = True
+            return {
+                "type": "http.request",
+                "body": bytes(body),
+                "more_body": False,
+            }
+        await asyncio.Future()
+
+    async def send(event):
+        nonlocal status, resp_headers
+        if event["type"] == "http.response.start":
+            status = int(event["status"])
+            resp_headers = [
+                (
+                    (
+                        name.decode("latin-1")
+                        if isinstance(name, bytes)
+                        else str(name)
+                    ).lower(),
+                    (
+                        value.decode("latin-1")
+                        if isinstance(value, bytes)
+                        else str(value)
+                    ),
+                )
+                for name, value in event.get("headers", ())
+            ]
+        elif event["type"] == "http.response.body":
+            chunk = event.get("body", b"")
+            if chunk:
+                resp_body.extend(chunk)
+
+    coro = peer_forward(client, target_node_id, scope, receive, send)
+    try:
+        if timeout is None:
+            await coro
+        else:
+            await asyncio.wait_for(coro, timeout)
+    except asyncio.TimeoutError as exc:
+        raise OSError(
+            "peer tunnel error ({0})".format(type(exc).__name__)
+        ) from exc
+    return status, resp_headers, bytes(resp_body)
+
+
 class RouterClient:
     def __init__(
         self,
@@ -319,32 +616,15 @@ class RouterClient:
             if not released:
                 sem.release()
 
-    async def _acquire_peer_channel(self, allow_pooled=True):
-        if allow_pooled:
-            while self._peer_pool:
-                ch = self._peer_pool.popleft()
-                if ch.open:
-                    return ch, True
-                self._channels.discard(ch)
-        ch = await self._connect(self.peer_url)
-        self._channels.add(ch)
-        return ch, False
-
-    async def _release_peer_channel(self, ch, reusable):
-        if reusable and self.connected and ch.open and len(self._peer_pool) < 4:
-            self._peer_pool.append(ch)
-            return
-        self._channels.discard(ch)
-        try:
-            await ch.close()
-        except Exception:
-            pass
+    _acquire_peer_channel = _acquire_peer_channel
+    _release_peer_channel = _release_peer_channel
 
     async def _warm_peer_pool(self):
-        if not self.connected or self._peer_pool:
+        pool = _client_peer_pool(self)
+        if not self.connected or pool:
             return
         try:
-            ch = await self._connect(self.peer_url)
+            ch = await self._connect(_client_peer_url(self))
         except Exception:
             return
         if not self.connected:
@@ -354,223 +634,8 @@ class RouterClient:
                 pass
             return
         self._channels.add(ch)
-        self._peer_pool.append(ch)
+        pool.append(ch)
 
-    async def list_peers(self):
-        if not self.connected:
-            raise OSError("router tunnel is not connected")
-        for allow_pooled in (True, False):
-            ch = None
-            reused = False
-            reusable = False
-            try:
-                ch, reused = await self._acquire_peer_channel(allow_pooled=allow_pooled)
-                await ch.send(
-                    encode({"type": "peers", "identity_key": self._identity_key})
-                )
-                reply = decode(await asyncio.wait_for(ch.recv(), 10))
-                if reply.get("type") != "peers" or not isinstance(
-                    reply.get("nodes"), list
-                ):
-                    raise ValueError("unexpected router peers response")
-                reusable = True
-                return reply["nodes"]
-            except ConnectionClosed as exc:
-                if reused:
-                    continue
-                raise OSError(
-                    "peer tunnel error ({0})".format(type(exc).__name__)
-                ) from exc
-            except (InvalidHandshake, asyncio.TimeoutError) as exc:
-                raise OSError(
-                    "peer tunnel error ({0})".format(type(exc).__name__)
-                ) from exc
-            finally:
-                if ch is not None:
-                    await self._release_peer_channel(ch, reusable)
-        raise OSError("peer tunnel error (ConnectionClosed)")
-
-    async def forward_peer(self, target_node_id, scope, receive, send):
-        if not self.connected:
-            raise OSError("router tunnel is not connected")
-        buffered_first = None
-        for allow_pooled in (True, False):
-            ch = None
-            reused = False
-            request_done = False
-            response_started = False
-            response_done = False
-            disconnected = False
-            try:
-                ch, reused = await self._acquire_peer_channel(allow_pooled=allow_pooled)
-                await ch.send(
-                    encode(
-                        {
-                            "type": "open",
-                            "identity_key": self._identity_key,
-                            "target": target_node_id,
-                            "scope": scope,
-                        }
-                    )
-                )
-
-                async def requests():
-                    nonlocal buffered_first, request_done, disconnected
-                    if buffered_first is None:
-                        buffered_first = await receive()
-                    first_msg = buffered_first
-                    if first_msg["type"] == "http.disconnect":
-                        disconnected = True
-                        return
-                    await send_event(ch.send, first_msg)
-                    if not first_msg.get("more_body", False):
-                        request_done = True
-                    while True:
-                        message = await receive()
-                        if message["type"] == "http.disconnect":
-                            disconnected = True
-                            return
-                        if not request_done:
-                            await send_event(ch.send, message)
-                            if not message.get("more_body", False):
-                                request_done = True
-
-                async def responses():
-                    nonlocal response_started, response_done
-                    while True:
-                        event = decode(await ch.recv())
-                        if event.get("type") not in {
-                            "http.response.start",
-                            "http.response.body",
-                        }:
-                            raise ValueError("invalid peer response event")
-                        response_started = True
-                        await send(event)
-                        if event["type"] == "http.response.body" and not event.get(
-                            "more_body", False
-                        ):
-                            response_done = True
-                            return
-
-                tasks = [
-                    asyncio.create_task(requests()),
-                    asyncio.create_task(responses()),
-                ]
-                try:
-                    done, _pending = await asyncio.wait(
-                        tasks, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        task.result()
-                finally:
-                    for task in tasks:
-                        task.cancel()
-                    await asyncio.gather(*tasks, return_exceptions=True)
-                return
-            except ConnectionClosed as exc:
-                if reused and not response_started and (
-                    buffered_first is None or not buffered_first.get("more_body", False)
-                ):
-                    continue
-                raise OSError(
-                    "peer tunnel error ({0})".format(type(exc).__name__)
-                ) from exc
-            except (InvalidHandshake, asyncio.TimeoutError) as exc:
-                raise OSError(
-                    "peer tunnel error ({0})".format(type(exc).__name__)
-                ) from exc
-            finally:
-                if ch is not None:
-                    reusable = (
-                        request_done and response_done and not disconnected
-                    )
-                    await self._release_peer_channel(ch, reusable)
-
-    async def peer_request(
-        self,
-        target_node_id,
-        method,
-        path,
-        headers=(),
-        body=b"",
-        query_string=b"",
-        timeout=15.0,
-    ):
-        encoded_headers = [
-            [
-                (
-                    name.encode("latin-1") if isinstance(name, str) else bytes(name)
-                ).lower(),
-                value.encode("latin-1") if isinstance(value, str) else bytes(value),
-            ]
-            for name, value in headers
-        ]
-        scope = {
-            "type": "http",
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-            "http_version": "1.1",
-            "method": method,
-            "scheme": "http",
-            "path": path,
-            "raw_path": path.encode("utf-8"),
-            "root_path": "",
-            "query_string": (
-                query_string.encode("ascii")
-                if isinstance(query_string, str)
-                else bytes(query_string)
-            ),
-            "headers": encoded_headers,
-            "client": ("127.0.0.1", 0),
-            "server": ("127.0.0.1", self.port),
-        }
-        request_sent = False
-        status = 500
-        resp_headers = []
-        resp_body = bytearray()
-
-        async def receive():
-            nonlocal request_sent
-            if not request_sent:
-                request_sent = True
-                return {
-                    "type": "http.request",
-                    "body": bytes(body),
-                    "more_body": False,
-                }
-            await asyncio.Future()
-
-        async def send(event):
-            nonlocal status, resp_headers
-            if event["type"] == "http.response.start":
-                status = int(event["status"])
-                resp_headers = [
-                    (
-                        (
-                            name.decode("latin-1")
-                            if isinstance(name, bytes)
-                            else str(name)
-                        ).lower(),
-                        (
-                            value.decode("latin-1")
-                            if isinstance(value, bytes)
-                            else str(value)
-                        ),
-                    )
-                    for name, value in event.get("headers", ())
-                ]
-            elif event["type"] == "http.response.body":
-                chunk = event.get("body", b"")
-                if chunk:
-                    resp_body.extend(chunk)
-
-        coro = self.forward_peer(target_node_id, scope, receive, send)
-        try:
-            if timeout is None:
-                await coro
-            else:
-                await asyncio.wait_for(coro, timeout)
-        except asyncio.TimeoutError as exc:
-            raise OSError(
-                "peer tunnel error ({0})".format(type(exc).__name__)
-            ) from exc
-        return status, resp_headers, bytes(resp_body)
+    list_peers = peer_list_nodes
+    forward_peer = peer_forward
+    peer_request = peer_http_request
