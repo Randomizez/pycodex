@@ -1050,6 +1050,14 @@ document.addEventListener("visibilitychange", () => {
   requestAnimationFrame(markVisibleFinalRead);
 });
 
+document.addEventListener("animationstart", event => {
+  if (!["spinner-pulse", "activity-breathe", "agent-message-breathe"].includes(event.animationName)) return;
+  // Include pseudo-elements and anchor new indicators to the page's breathing phase.
+  for (const animation of event.target.getAnimations?.({subtree: true}) || []) {
+    if (animation.animationName === event.animationName) animation.startTime = 0;
+  }
+});
+
 const recoveryNotice = document.getElementById("frontendRecovery");
 recoveryNotice.hidden = !builtinFrontend;
 recoveryNotice.querySelector("a").href = frontendUrl(false);
