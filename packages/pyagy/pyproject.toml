@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pyagy"
-version = "0.7.2"
+version = "0.7.3"
 description = "Antigravity CLI (agy 1.5.14) wire-compatible harness built on python-codex"
 readme = "README.md"
 requires-python = ">=3.7"
 dependencies = [
-    "python-codex==0.7.2",
+    "python-codex==0.7.3",
 ]
 
 [project.scripts]
