@@ -1,10 +1,7 @@
 // Workspace content tabs, live updates and editor lifecycle.
-import DOMPurify from "dompurify";
-import markdownit from "markdown-it";
 import {tabLabels} from "./view_labels.mjs";
 import {reconcileChildren} from "../workspace_dom.mjs";
 import {TranscriptView} from "./transcript.mjs";
-export {DOMPurify, markdownit};
 export {Composer} from "./composer.mjs";
 export {PromptHistory} from "./prompt_history.mjs";
 

@@ -536,25 +536,40 @@ class RouterClient:
         scope["pycodex.agent_access"] = opening.get("agent_access") is True
         scope["pycodex.peer_access"] = opening.get("peer_access") is True
 
+        disconnected = False
+        recv_lock = asyncio.Lock()
+
+        def _disconnect_event():
+            if scope["type"] == "http":
+                return {"type": "http.disconnect"}
+            return {"type": "websocket.disconnect", "code": 1001}
+
         async def receive():
-            try:
-                message = decode(await channel.recv())
-            except ConnectionClosed:
-                if scope["type"] == "http":
-                    return {"type": "http.disconnect"}
-                return {"type": "websocket.disconnect", "code": 1001}
-            allowed = (
-                {"http.request", "http.disconnect"}
-                if scope["type"] == "http"
-                else {
-                    "websocket.connect",
-                    "websocket.receive",
-                    "websocket.disconnect",
-                }
-            )
-            if message.get("type") not in allowed:
-                raise ValueError("invalid router request event")
-            return message
+            nonlocal disconnected
+            if disconnected:
+                return _disconnect_event()
+            async with recv_lock:
+                if disconnected:
+                    return _disconnect_event()
+                try:
+                    message = decode(await channel.recv())
+                except ConnectionClosed:
+                    disconnected = True
+                    return _disconnect_event()
+                allowed = (
+                    {"http.request", "http.disconnect"}
+                    if scope["type"] == "http"
+                    else {
+                        "websocket.connect",
+                        "websocket.receive",
+                        "websocket.disconnect",
+                    }
+                )
+                if message.get("type") not in allowed:
+                    raise ValueError("invalid router request event")
+                if message.get("type") in {"http.disconnect", "websocket.disconnect"}:
+                    disconnected = True
+                return message
 
         async def send(message):
             await send_event(channel.send, message)

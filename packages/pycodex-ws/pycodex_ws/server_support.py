@@ -10,7 +10,6 @@ from urllib.parse import urlencode
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.routing import Route
@@ -202,7 +201,7 @@ def install_auth(
             status_code=403,
         )
 
-    async def auth_middleware(request: Request, call_next):
+    def authorize_http(request: Request):
         if blocked_ips is not None and request.client.host in blocked_ips:
             return ip_blocked_response()
         path = route_path(request.scope)
@@ -211,23 +210,23 @@ def install_auth(
             target = sharing.workspace(path)
             if external_call_request(request.scope):
                 # The terminal exchange authenticates its own session connection.
-                return await call_next(request)
+                return None
             cookie = request.cookies.get(cookie_name)
             if path in {"/favicon.ico", "/login"}:
-                return await call_next(request)
+                return None
             if (
                 trusted_agent_request(request.scope)
                 or trusted_peer_request(request.scope)
                 or sharing.is_admin(cookie)
             ):
                 request.scope["pycodex.access_role"] = "admin"
-                return await call_next(request)
+                return None
             grant = None if target is None else sharing.grant(target[0], cookie)
             if grant is not None:
                 if target[1].rstrip("/") in {"/api/share", "/api/reload", "/api/external-call-sessions"}:
                     return JSONResponse({"error": "administrator access required"}, 403)
                 request.scope["pycodex.access_role"] = "visitor"
-                return await call_next(request)
+                return None
             if "/api/" in path or request.method not in {"GET", "HEAD"}:
                 return JSONResponse({"error": "authentication required"}, 401)
             login_url = root + "/login"
@@ -242,7 +241,7 @@ def install_auth(
                 request.cookies.get(cookie_name),
             )
         ):
-            return await call_next(request)
+            return None
         if path.startswith("/api/") or "/api/" in path:
             return JSONResponse(
                 {"ok": False, "error": "authentication required"},
@@ -252,6 +251,20 @@ def install_auth(
         return RedirectResponse(
             url=root + "/login?" + urlencode({"next": target}), status_code=303
         )
+
+    class _AuthMiddleware:
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            denied = authorize_http(Request(scope))
+            if denied is not None:
+                await denied(scope, receive, send)
+                return
+            await self.app(scope, receive, send)
 
     async def login_page(request: Request) -> HTMLResponse:
         address = str(request.url.replace(
@@ -313,7 +326,7 @@ def install_auth(
         )
         return response
 
-    app.add_middleware(BaseHTTPMiddleware, dispatch=auth_middleware)
+    app.add_middleware(_AuthMiddleware)
     app.routes.extend([
         Route("/login", login_page, methods=["GET"]),
         Route("/login", login, methods=["POST"]),
