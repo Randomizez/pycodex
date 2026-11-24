@@ -861,7 +861,7 @@ async function lateSourceLoadsCannotReplaceMarkupPreview(extension, fail) {
 
 async function markupDiffsAlwaysUseCodeEditors() {
   const state = selectionFixture();
-  for (const extension of ["md", "html"]) {
+  for (const extension of ["md", "html", "svg"]) {
     await state.display.show(extension, {
       kind: "diff", revision: 1, documents: [
         {label: "left." + extension, text: "old"}, {label: "right." + extension, text: "new"},
@@ -871,6 +871,29 @@ async function markupDiffsAlwaysUseCodeEditors() {
     assert.equal(state.display.htmlPreview, null);
     assert.equal(state.content.querySelector(".snapshot-markdown"), null);
   }
+}
+
+async function svgFilesPreviewAsImagesAndKeepLineLinks() {
+  const state = selectionFixture();
+  state.display.retain(["svg"]);
+  const xml = '<svg xmlns="http://www.w3.org/2000/svg">\n<text fill="#123456">图 50%</text>\n</svg>';
+  const snapshot = state.snapshot(xml, "diagram.SVG");
+  await state.display.show("svg", snapshot);
+  const image = state.content.querySelector(".snapshot-image");
+  assert.equal(image.tagName, "img");
+  assert.equal(image.src, "data:image/svg+xml;charset=utf-8," + encodeURIComponent(xml));
+  assert.equal(state.created.length, 0);
+
+  const updated = xml.replace("50%", "100%");
+  const next = state.snapshot(updated, "diagram.SVG");
+  await state.display.show("svg", next);
+  assert.equal(state.content.querySelector(".snapshot-image"), image);
+  assert.equal(decodeURIComponent(image.src.split(",")[1]), updated);
+  await state.display.show("svg", next, {document: 0, line: 2, revision: 1}, "source");
+  assert.deepEqual(state.display.editor.reveals, [{document: 0, line: 2}]);
+  await state.display.show("svg", next, null, "preview");
+  assert.equal(state.display.editor, null);
+  assert.equal(state.content.querySelector(".snapshot-image"), image);
 }
 
 async function lateSelectionAfterAnUpdateCannotOverrideTheNewTarget() {
@@ -1421,6 +1444,7 @@ async function main() {
   await htmlUpdatesReuseTheFrameAndSwitchingReleasesIt();
   await htmlPreviewKeepsNativeResourcesAndReadingState();
   await markupDiffsAlwaysUseCodeEditors();
+  await svgFilesPreviewAsImagesAndKeepLineLinks();
   await lateSelectionAfterAnUpdateCannotOverrideTheNewTarget();
   await lateSelectionAfterDiffCannotOverrideTheLatestRequest({document: 1, line: 42, revision: 2});
   await lateSelectionAfterDiffCannotOverrideTheLatestRequest(null);

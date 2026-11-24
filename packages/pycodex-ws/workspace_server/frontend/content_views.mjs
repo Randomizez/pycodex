@@ -553,6 +553,9 @@ export class SnapshotDisplay {
     const markup = snapshot.kind === "file" && !this.sourceViews.has(id);
     const markdown = markup && /\.(md|markdown)$/i.test(source.label) && this.renderMarkdown;
     const html = markup && /\.html?$/i.test(source.label);
+    const imageUrl = markup && /\.svg$/i.test(source.label)
+      ? "data:image/svg+xml;charset=utf-8," + encodeURIComponent(source.text)
+      : source.image_url;
     const pdf = snapshot.kind === "file" && source.media_type === "application/pdf";
     const pdfUrl = pdf ? new URL(
       `../api/views/${encodeURIComponent(id)}/pdf?revision=${snapshot.revision}`, import.meta.url,
@@ -568,7 +571,7 @@ export class SnapshotDisplay {
     if (this.activeId === id && this.htmlPreview && html) {
       return this.htmlPreview.update(source.text, selection);
     }
-    if (this.activeId === id && this.editor && !markdown && !html && !pdf) {
+    if (this.activeId === id && this.editor && !imageUrl && !markdown && !html && !pdf) {
       const generation = this.generation;
       try {
         await this.editor.update(snapshot);
@@ -600,7 +603,7 @@ export class SnapshotDisplay {
       this.content.append(heading, this.pdfFrame);
       return;
     }
-    if (snapshot.kind === "diff" || (!source.image_url && !markdown && !html)) {
+    if (snapshot.kind === "diff" || (!imageUrl && !markdown && !html)) {
       this.content.classList.add("code-view");
       this.content.appendChild(element(this.document, "div", "content-placeholder", "Loading code viewer…"));
       try {
@@ -654,7 +657,7 @@ export class SnapshotDisplay {
         this.addModeToggle(heading, false);
       }
       root.appendChild(heading);
-      if (source.image_url) {
+      if (imageUrl) {
         const image = element(this.document, "img", "snapshot-image");
         image.alt = source.label;
         root.appendChild(image);
@@ -665,7 +668,7 @@ export class SnapshotDisplay {
     }
     this.content.appendChild(this.previews.get(id));
     const image = this.content.querySelector(".snapshot-image");
-    if (image && image.src !== source.image_url) image.src = source.image_url;
+    if (image && image.getAttribute("src") !== imageUrl) image.src = imageUrl;
     if (markdown) {
       const parent = this.content.querySelector(".snapshot-markdown");
       if (source.source) parent.setAttribute("data-src-path", source.source.path);

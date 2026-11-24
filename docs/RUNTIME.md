@@ -1241,8 +1241,9 @@ routes; filesystem image paths are not implicitly converted into asset URLs.
 Image `src`, `srcset`, CSS resource URLs and HTML `<base>` URLs keep their native
 browser behavior. The viewer does not fetch or convert HTML images to data URLs.
 The existing Board image routes continue to enforce directory and MIME boundaries.
-Code and SVG files are shown as source, and
-PNG/JPEG/GIF/WebP files are stored as image data URLs. Code and text diffs use
+SVG files open as images. The viewer uses the SVG text from the local file or
+pinned Git snapshot as an `<img>` data URL. PNG/JPEG/GIF/WebP files are stored
+as image data URLs. Code and text diffs use
 Monaco with filename-based syntax highlighting, line numbers, native
 find, code folding, selection/copying and optional line wrapping. Unknown
 extensions use plain text. Both editor state and DOM editing are read-only;
@@ -1251,13 +1252,13 @@ with no accept/reject or revert controls.
 The editor uses textarea input (`editContext: false`) so `domReadOnly` sets the
 native `readonly` attribute and touching code does not open the mobile keyboard.
 The separate find field remains editable.
-Opening Markdown or HTML with a line number switches that tab to its source
+Opening Markdown, HTML or SVG with a line number switches that tab to its source
 editor, so line numbers refer to the actual file. An explicit link without a
 line switches the same tab back to preview. Source and preview keep separate
 reading positions. Ordinary content refreshes and manual tab switches preserve
 the current presentation and do not replay line requests. Presentation choices
 belong to that browser page; another page's opens do not change them.
-Markdown/HTML comparisons always use the code diff editor.
+Markdown, HTML and SVG comparisons use the code diff editor.
 
 Local `.pdf` files open in a native browser PDF iframe with new-tab and download
 links. The view stores only the source path and file metadata; the authenticated
