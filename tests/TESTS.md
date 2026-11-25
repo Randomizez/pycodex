@@ -138,6 +138,13 @@ NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests
 其他诊断及最终错误可见、会话隔离、重新渲染、键盘、手机触摸和 HTML 转义。
 该脚本使用合成诊断与真实页面渲染函数，不请求模型。
 
+同一 Playwright 环境可以验证 router 两个设备入口的首次打开、目录轮询和刷新。
+用例使用 router 的 `no-referrer` 策略，检查浏览器发出的验证请求通过同源校验。
+
+```bash
+NODE_PATH=/tmp/pycodex-browser-check/node_modules node packages/pycodex-ws/tests/router_device_verification.cjs
+```
+
 会话缓存的完整页面浏览器回归使用同一 Playwright 环境，手动运行：
 
 ```bash

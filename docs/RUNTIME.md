@@ -839,6 +839,15 @@ The router CLI requires `--password [PASSWORD]` for browser login. A bare
 redirected stdin. Device connections use the persistent registration key in
 `<codex-home>/router.key` and reconnect automatically after a router restart.
 
+New node IDs appear in the browser directory with `verified: false`. Their
+workspace inventories and HTTP/WebSocket routes become available when a signed-in
+user chooses **Verify and open**. The button posts to `api/nodes/{full_node_id}/verify`,
+which records the online device and returns its directory URL. Repeated submissions
+are idempotent. Direct links and inventory polling leave verification unchanged.
+The CLI router atomically saves verified IDs in `<codex-home>/router-verified.json`.
+Existing aliases and device order are preserved on upgrade. Each previously
+registered device needs verification once, just like a newly registered ID.
+
 Registration version 2 retains the original 52-character Base32 SHA-256 identity.
 The registration response, device identifiers in API records, aliases and order
 use that full identity. Agent API requests and data channels authenticate with
@@ -848,7 +857,8 @@ Browser directory links use `/n/<prefix>/` with the identity's first 5 character
 The Router resolves that prefix to a full identity; existing 52-character links
 remain valid. Prefixes must be unique among saved identities, including offline
 devices. Ambiguous prefixes do not resolve, and directory links use the full ID.
-Authenticated Agent discovery retains full-ID URLs because older clients'
+Agent discovery lists verified online devices and their workspaces, including
+the caller's. It retains full-ID URLs because older clients'
 private API bridges only accept that format. Original clients can therefore
 connect without upgrading.
 
@@ -861,8 +871,8 @@ persists a `0600` 64-hex key file), maintains pre-warmed standby `/tunnel/data`
 channels (falling back cleanly if the router closes standby with `1008`), and
 pools `WebSocket /tunnel/peer` connections. `/tunnel/peer` on the router
 authenticates the caller with the tunnel registration key plus an active
-registered `identity_key` and supports persistent connection reuse across
-`"peers"` (online peer `{id, name, alias}` in saved alias order, excluding the
+verified device's `identity_key` and supports persistent connection reuse across
+`"peers"` (verified online peer `{id, name, alias}` in saved alias order, excluding the
 caller) and `"open"` (streaming HTTP relay to a target `node_id` over a standby
 or newly connected `/tunnel/data` channel with `scope["pycodex.peer_access"] = True`
 and full caller headers preserved, restricted by `peer_profile_request` to
@@ -875,10 +885,9 @@ in-process reloads.
 
 ### Peer profile sharing
 
-Workspace nodes connected to the same `pycodex-router` mutually trust each other
-and can unconditionally proxy outbound HTTP requests as well as share their
-default and named profiles by default, while keeping the router stateless and
-rejecting external callers.
+Workspace nodes verified by the same `pycodex-router` mutually trust each other.
+They can proxy outbound HTTP requests and share their default and named profiles.
+Profile configuration and credentials stay on the device serving the request.
 
 - Direct HTTP, browser-proxied and local Agent-token requests cannot set
   `pycodex.peer_access`; `install_auth` only accepts `trusted_peer_request` on
@@ -1080,14 +1089,23 @@ remains a separate action.
 The router collects unread workspace shortcuts across all devices in a distinct,
 tinted Unread panel above the complete device groups. Each shortcut shows its
 device; the existing inventory polling removes it once all its sessions are read
-and hides the panel when none remain. Device groups stay ordered by device id,
-with workspaces in configuration order. They start collapsed on page load and
-preserve their expanded state through inventory updates. Each device's heading
-includes Manage, even when collapsed or empty. A red dot on that heading and in
+and hides the panel when none remain. Device groups follow the saved device order,
+with workspaces in configuration order. Expanded/collapsed state persists in
+`localStorage` across reloads and inventory updates (verified devices default to
+expanded on first visit when total workspaces are 12 or fewer; unverified
+devices start collapsed). The directory patches existing DOM nodes in place,
+pauses polling while the tab is hidden, reflects the unread count in the page
+title, and provides search (`/`), a `working` filter chip, Expand/Collapse all,
+sidebar jump-to-group, and one-click copy of the registration key and prefilled
+`--listen-to` command (including the configured device port from
+`/api/registration-key`). Each device's heading
+includes Manage for verified devices and Verify and open for new devices, even
+when collapsed or empty. A red dot on that heading and in
 the Online devices list indicates that any of the device's workspaces is unread.
 Both places show `n working` while any of the device's workspaces are working.
-Click the device name to rename it; the surrounding group heading toggles its
-disclosure. Aliases must be nonblank, single-line text of 1 to 128 characters.
+Use the rename button in Online devices to set an alias, and click the device
+name to jump to its workspace group; the group heading toggles its disclosure.
+Aliases must be nonblank, single-line text of 1 to 128 characters.
 
 Login pages identify the service being unlocked (`pycodex router` or
 `pycodex workspace`) and show its hostname and access address, including any

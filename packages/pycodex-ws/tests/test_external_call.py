@@ -27,7 +27,7 @@ from workspace_server.app import _build_workspace_entry
 from workspace_server.external_call import EXTERNAL_CALL_CONTEXT, ExternalCallSession
 from workspace_server.owned_process import ReloadableApp
 
-from test_router import attach_router, serve, serve_router
+from test_router import attach_router, serve, serve_router, verify_device
 
 
 async def wait_until(predicate, timeout=20.0):
@@ -466,6 +466,7 @@ async def test_terminal_executes_commands_and_exits_on_close(
             await stack.enter_async_context(serve(app))
             await wait_until(lambda: app.state.router_client.connected)
             await web.post(address + "/remote/login", json={"password": "router-password"})
+            await verify_device(web, app.state.router_client.node_id, address + "/remote")
             node = address + "/remote/n/" + app.state.router_client.node_id[:5]
             base = node + "/w/alpha"
         else:

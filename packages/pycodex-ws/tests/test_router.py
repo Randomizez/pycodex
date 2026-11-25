@@ -188,6 +188,13 @@ async def login(browser, root="", password="router-password"):
     assert response.status_code == 200
 
 
+async def verify_device(browser, node_id, root=""):
+    response = await browser.post(root + "/api/nodes/" + node_id + "/verify")
+    assert response.status_code == 200
+    assert response.json()["verified"] is True
+    return response.json()["url"]
+
+
 def ip_browser(address, ip="127.0.0.1", timeout=5):
     return httpx.AsyncClient(
         base_url=address,
@@ -304,6 +311,7 @@ async def test_reload_through_router_keeps_the_node_and_serves_new_app(tmp_path,
             base = node_url(address, node_id)
             async with ip_browser(address) as browser:
                 await login(browser)
+                await verify_device(browser, node_id)
                 assert (await browser.post(
                     base + "login", json={"password": "local-password"},
                 )).status_code == 200
@@ -450,6 +458,10 @@ async def test_registered_agents_contact_password_protected_peers_and_revoke_on_
                 agent = source.state.router_client
                 peer = target_app.state.router_client
                 await eventually(lambda: agent.connected and peer.connected)
+                async with ip_browser(address) as admin:
+                    await login(admin, root)
+                    await verify_device(admin, agent.node_id, root)
+                    await verify_device(admin, peer.node_id, root)
                 agent_loop = agent._task.get_loop()
                 info = await local.get("/w/shared/api/session", params={"runtime_info": "true"})
                 assert info.status_code == 200
@@ -541,6 +553,8 @@ async def test_real_workspace_pages_files_messages_and_namespaces(tmp_path):
                     ).status_code == 401
                     await login(browser)
                     assert "Your workspaces" in (await browser.get("/")).text
+                    await verify_device(browser, first_client.node_id)
+                    await verify_device(browser, second_client.node_id)
                     inventory = (await browser.get("/api/workspaces")).json()
                     assert len(inventory["nodes"]) == 2
                     assert {item["name"] for item in inventory["nodes"]} == {
@@ -683,6 +697,84 @@ async def test_registration_uses_peer_ip_and_reconnect_keeps_assigned_id(monkeyp
         assert second.api_url is None
 
 
+@pytest.mark.asyncio
+async def test_device_access_requires_explicit_browser_verification():
+    gate = create_app("router-password")
+    downstream = Starlette(routes=[Route("/", lambda request: Response("device page"))])
+    async with serve_router(gate) as (address, target):
+        async with device(downstream, target) as client, ip_browser(address) as browser:
+            endpoint = "/api/nodes/" + client.node_id + "/verify"
+            token = {"Authorization": "Bearer " + client._identity_key}
+            assert (await browser.post(endpoint, headers=token)).status_code == 401
+            assert (await browser.get("/api/workspaces", headers=token)).status_code == 401
+            await login(browser)
+            assert (await browser.get(endpoint)).status_code == 405
+            for origin_header in ("null", "https://other.example"):
+                response = await browser.post(endpoint, headers={"Origin": origin_header})
+                assert response.status_code == 403
+            short_endpoint = "/api/nodes/" + client.node_id[:5] + "/verify"
+            assert (await browser.post(short_endpoint)).status_code == 404
+
+            inventory = (await browser.get("/api/workspaces")).json()
+            assert inventory["workspaces"] == []
+            node, = inventory["nodes"]
+            assert node["verified"] is False
+            for path in (node["url"], "/n/" + client.node_id + "/w/shared/api/session"):
+                assert (await browser.get(path)).status_code == 403
+            async with ip_browser(address) as terminal:
+                assert (await terminal.get(node["url"] + "w/shared/b/code")).status_code == 403
+            with pytest.raises(InvalidStatusCode) as denied:
+                cookie = browser.build_request("GET", node["url"]).headers["cookie"]
+                async with connect(
+                    node_url(address, client.node_id).replace("http:", "ws:") + "ws",
+                    extra_headers={"Cookie": cookie},
+                ):
+                    pass
+            assert denied.value.status_code == 403
+
+            destination = await verify_device(browser, client.node_id)
+            assert destination == node["url"]
+            assert (await browser.get(destination)).text == "device page"
+
+            async with device(downstream, target) as other:
+                inventory = (await browser.get("/api/workspaces")).json()
+                assert {n["id"]: n["verified"] for n in inventory["nodes"]} == {
+                    client.node_id: True, other.node_id: False,
+                }
+                assert [w["node_id"] for w in inventory["workspaces"]] == [client.node_id]
+                async with ip_browser(address) as agent:
+                    listing = (await agent.get("/api/workspaces", headers=token)).json()
+                    assert [n["id"] for n in listing["nodes"]] == [client.node_id]
+                    path = node_url(address, other.node_id) + "api/sessions"
+                    assert (await agent.get(path, headers=token)).status_code == 403
+                    endpoint = "/api/nodes/" + other.node_id + "/verify"
+                    assert (await agent.post(endpoint, headers=token)).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_verification_write_failure_and_retry(tmp_path, monkeypatch):
+    path = tmp_path / "verified.json"
+    gate = create_app("router-password", verified_path=path)
+    async with serve_router(gate) as (address, target):
+        async with device(Starlette(), target) as client, ip_browser(address) as browser:
+            await login(browser)
+            endpoint = "/api/nodes/" + client.node_id + "/verify"
+
+            def disk_full(source, destination):
+                raise OSError("disk full")
+
+            with monkeypatch.context() as patch:
+                patch.setattr("pycodex_router.server.os.replace", disk_full)
+                assert (await browser.post(endpoint)).status_code == 500
+            assert not path.exists()
+            assert (await browser.get(node_url(address, client.node_id))).status_code == 403
+            destination = await verify_device(browser, client.node_id)
+            assert json.loads(path.read_text(encoding="utf-8")) == [client.node_id]
+            with monkeypatch.context() as patch:
+                patch.setattr("pycodex_router.server.os.replace", disk_full)
+                assert await verify_device(browser, client.node_id) == destination
+
+
 @pytest.mark.parametrize("value", [
     "https://user:secret@example.test", "https://example.test?key=secret",
     "https://example.test/#secret", "ws://example.test", "/relative",
@@ -715,6 +807,7 @@ async def test_runtime_info_through_router_keeps_local_and_public_addresses(tmp_
                     address + "/remote/login", json={"password": "router-password"}
                 )
                 assert response.status_code == 200
+                await verify_device(browser, app.state.router_client.node_id, address + "/remote")
                 records = (await browser.get(address + "/remote/api/workspaces")).json()
                 prefix = address + records["workspaces"][0]["url"].rstrip("/")
                 response = await browser.get(prefix + "/api/session", params={"runtime_info": "true"})
@@ -786,6 +879,7 @@ async def test_router_and_workspace_passwords_protect_remote_visitors(tmp_path, 
                     )
                 ).status_code == 200
 
+                await verify_device(browser, node_id, root)
                 redirect = await browser.get(target)
                 assert redirect.status_code == 303
                 workspace_login_url = redirect.headers["location"]
@@ -885,6 +979,7 @@ async def test_router_login_ip_lock_blocks_browser_access(root):
                         root + "/login", json={"password": "router-password"}
                     )
                 ).status_code == 200
+                await verify_device(browser, client.node_id, root)
                 assert (await browser.get(base)).status_code == 200
                 websocket_url = (base + "ws").replace("http:", "ws:")
                 cookies = {
@@ -1114,6 +1209,8 @@ async def test_workspace_passwords_and_cookies_are_isolated_between_devices(tmp_
                 ).rstrip("/")
                 async with ip_browser(address) as browser:
                     await login(browser)
+                    await verify_device(browser, first.state.router_client.node_id)
+                    await verify_device(browser, second.state.router_client.node_id)
                     assert (
                         await browser.post(
                             first_base + "/login", json={"password": "first-password"}
@@ -1203,6 +1300,7 @@ async def test_streaming_binary_http_and_websocket_and_concurrent_requests():
             base = node_url(address, client.node_id)
             async with ip_browser(address) as browser:
                 await login(browser)
+                await verify_device(browser, client.node_id)
                 slow_request = asyncio.create_task(browser.get(base + "slow"))
                 await asyncio.wait_for(blocked.wait(), 3)
                 try:
@@ -1265,6 +1363,7 @@ async def test_disconnect_reconnect_does_not_replay_an_accepted_request():
             original = gate.state.router.nodes[client.node_id]
             async with ip_browser(address) as browser:
                 await login(browser)
+                await verify_device(browser, client.node_id)
                 pending = asyncio.create_task(
                     browser.post(
                         node_url(address, client.node_id) + "once", content=b"execute"
@@ -1474,6 +1573,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
     address = "http://127.0.0.1:{0}".format(port)
     key_path = tmp_path / "router.key"
     aliases_path = tmp_path / "router-aliases.json"
+    verified_path = tmp_path / "router-verified.json"
     registration_key = load_registration_key(key_path)
     app, registry = workspace_app(tmp_path / "workspace")
     attach_router(app, client_target(address, registration_key), 6007)
@@ -1500,6 +1600,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                     "router-password",
                     registration_key=load_registration_key(key_path),
                     aliases_path=aliases_path,
+                    verified_path=verified_path,
                 )
                 async with serve_router(gate, listener=listener) as (web, unused):
                     await eventually(lambda: client.connected)
@@ -1508,6 +1609,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                     assert list(gate.state.router.nodes) == [node_id]
                     async with ip_browser(web) as browser:
                         await login(browser)
+                        await verify_device(browser, node_id)
                         renamed = await browser.post(
                             "/api/nodes/" + node_id + "/alias",
                             json={"alias": "开发机"},
@@ -1526,6 +1628,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                     "new-browser-password",
                     registration_key=load_registration_key(key_path),
                     aliases_path=aliases_path,
+                    verified_path=verified_path,
                 )
                 async with serve_router(
                     restarted_gate, listener=replacement_listener
@@ -1538,6 +1641,7 @@ async def test_offline_start_and_router_restart_preserve_workspace_and_default_i
                         await login(browser, password="new-browser-password")
                         inventory = (await browser.get("/api/workspaces")).json()
                         assert inventory["nodes"][0]["alias"] == "开发机"
+                        assert inventory["nodes"][0]["verified"] is True
                         resumed = (
                             await browser.get(
                                 node_url(web, node_id) + "w/shared/api/session"
@@ -1647,6 +1751,8 @@ async def test_legacy_client_connects_with_short_public_links(tmp_path, root, sa
                 inventory = (await browser.get(root + "/api/workspaces")).json()
                 assert inventory["nodes"][0]["id"] == identity
                 assert inventory["nodes"][0]["url"] == urlsplit(short_url).path
+                assert inventory["nodes"][0]["verified"] is False
+                assert await verify_device(browser, identity, root) == urlsplit(short_url).path
                 for url in (short_url, long_url):
                     assert (await browser.get(url)).text == "legacy client"
                     cookies = {"Cookie": browser.build_request("GET", url).headers["cookie"]}
@@ -1684,6 +1790,8 @@ async def test_short_link_collisions_keep_full_links_and_offline_ownership(monke
                     assert {node["url"] for node in inventory["nodes"]} == {
                         "/n/" + first.node_id + "/", "/n/" + second.node_id + "/",
                     }
+                    for client in (first, second):
+                        assert await verify_device(browser, client.node_id) == "/n/" + client.node_id + "/"
                     assert (await browser.get(node_url(address, first.node_id))).text == "first"
                     assert (await browser.get(node_url(address, second.node_id))).text == "second"
                     short_url = node_url(address, "a" * 5)
@@ -1717,6 +1825,7 @@ async def test_connection_limits_timeouts_and_inventory_changes():
                 )
                 assert decode(await control.recv())["type"] == "registered"
                 prefix = node_url(address, node_id)
+                await verify_device(browser, node_id)
                 pending = asyncio.create_task(browser.get(prefix + "w/shared/"))
                 assert decode(await control.recv())["type"] == "connect"
                 limited = await browser.get(prefix + "w/shared/")
@@ -1754,6 +1863,7 @@ async def test_router_can_be_mounted_under_a_path_prefix(tmp_path):
                 await browser.post(
                     "/remote/login", json={"password": "router-password"}
                 )
+                await verify_device(browser, client.node_id, "/remote")
                 inventory = (await browser.get("/remote/api/workspaces")).json()
                 destination = node_url(address, client.node_id[:5], "/remote") + "w/shared/"
                 assert inventory["workspaces"][0]["url"] == urlsplit(destination).path
@@ -1786,6 +1896,7 @@ async def test_lifespan_attachment_keeps_runtime_alive_across_reconnect(tmp_path
             original = gate.state.router.nodes[node_id]
             async with ip_browser(address) as browser:
                 await login(browser)
+                await verify_device(browser, node_id)
                 await browser.post(
                     prefix + "api/session/message",
                     json={"prompt": "continue"},
@@ -1925,6 +2036,9 @@ async def test_data_channel_is_bound_to_its_device(monkeypatch, collision):
     release = asyncio.Event()
     async with serve_router(gate) as (address, target):
         async with device(Starlette(routes=[Route("/", index)]), target) as owner:
+            async with ip_browser(address) as admin:
+                await login(admin)
+                await verify_device(admin, owner.node_id)
             impostor_key = secrets.token_hex(32)
             if collision:
                 monkeypatch.setattr(
@@ -1999,6 +2113,8 @@ async def test_trusted_devices_use_ip_paths_and_keep_browser_header_checks():
             ) as second:
                 async with ip_browser(address) as browser:
                     await login(browser)
+                    await verify_device(browser, first.node_id)
+                    await verify_device(browser, second.node_id)
                     first_url = node_url(address, first.node_id)
                     second_url = node_url(address, second.node_id)
                     assert origin(first_url) == origin(second_url) == address
@@ -2056,6 +2172,7 @@ async def test_device_aliases_are_authenticated_and_do_not_change_identity(
                     await browser.post(
                         root + "/login", json={"password": "router-password"}
                     )
+                    await verify_device(browser, first.node_id, root)
                     before = (await browser.get(root + "/api/workspaces")).json()
                     original = next(
                         node for node in before["nodes"] if node["id"] == first.node_id
@@ -2128,7 +2245,7 @@ async def test_device_aliases_are_authenticated_and_do_not_change_identity(
                     }
 
 
-async def test_device_aliases_cannot_be_changed_without_a_router_password():
+async def test_device_alias_and_verification_require_a_router_password():
     async with serve_router(create_app()) as (address, target):
         async with device(Starlette(), target) as client:
             async with ip_browser(address) as browser:
@@ -2136,6 +2253,9 @@ async def test_device_aliases_cannot_be_changed_without_a_router_password():
                     "/api/nodes/" + client.node_id + "/alias", json={"alias": "device"}
                 )
                 assert response.status_code == 401
+                assert (await browser.post(
+                    "/api/nodes/" + client.node_id + "/verify"
+                )).status_code == 401
 
 
 @pytest.mark.parametrize("root", ["", "/remote"])
@@ -2160,6 +2280,8 @@ async def test_device_order_is_shared_persistent_and_preserves_offline_slots(
                         await browser.post(
                             root + "/login", json={"password": "router-password"}
                         )
+                        for node_id in original:
+                            await verify_device(browser, node_id, root)
                         assert (await browser.post(
                             root + "/api/nodes/" + first.node_id + "/alias",
                             json={"alias": "Build server"},
@@ -2352,6 +2474,22 @@ async def test_registration_key_is_not_exposed_by_an_app_without_a_password():
             assert (await browser.get("/api/registration-key")).status_code == 401
 
 
+async def test_registration_key_includes_configured_device_port():
+    gate = create_app("router-password", device_port=6123)
+    async with serve_router(gate) as (address, _target):
+        async with ip_browser(address) as browser:
+            await login(browser)
+            response = await browser.get("/api/registration-key")
+            assert response.status_code == 200
+            assert response.json() == {
+                "key": gate.state.router.registration_key,
+                "device_port": 6123,
+            }
+            gate.state.router.device_port = 0
+            response = await browser.get("/api/registration-key")
+            assert response.json() == {"key": gate.state.router.registration_key}
+
+
 async def test_tunnels_require_registration_key_instead_of_browser_credentials():
     gate = create_app("router-password")
     async with serve_router(gate) as (address, target):
@@ -2541,6 +2679,10 @@ async def test_cli_starts_two_listeners_and_attaches_an_owned_workspace(
             inventory = await asyncio.wait_for(registered(), 10)
             node = inventory["nodes"][0]
             assert node["id"]
+            assert node["verified"] is False
+            await verify_device(browser, node["id"])
+            verified_file = Path(os.environ["CODEX_HOME"]) / "router-verified.json"
+            assert json.loads(verified_file.read_text(encoding="utf-8")) == [node["id"]]
             assert node["name"].startswith(socket.gethostname() + "/127.0.0.1:")
             local_port = int(node["name"].rsplit(":", 1)[1])
             assert local_port > 0
@@ -2830,6 +2972,17 @@ async def test_peer_tunnel_relays_authorized_requests_reuses_channels_and_suppor
             )
             async with ip_browser(address) as browser:
                 await login(browser)
+                await verify_device(browser, caller.node_id)
+                with pytest.raises(OSError, match="peer tunnel error"):
+                    await peer.list_peers()
+                assert await caller.list_peers() == []
+                status, _headers, _body = await caller.peer_request(
+                    peer.node_id, "POST", "/api/peer-proxy"
+                )
+                assert status == 403
+                assert seen == []
+                await verify_device(browser, peer.node_id)
+                await verify_device(browser, legacy_peer.node_id)
                 assert (
                     await browser.post(
                         "/api/nodes/{0}/alias".format(peer.node_id),

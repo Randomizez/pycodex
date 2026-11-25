@@ -44,7 +44,13 @@ from .protocol import (
 
 
 class TunnelUnavailable(Exception):
-    pass
+    status_code = 503
+    websocket_code = 1013
+
+
+class DeviceNotVerified(TunnelUnavailable):
+    status_code = 403
+    websocket_code = 1008
 
 
 def load_registration_key(path):
@@ -77,6 +83,25 @@ def normalize_alias(value):
         raise ValueError("Device alias must be a single line of 1 to 128 characters.")
     value.encode("utf-8")
     return value.strip()
+
+
+def save_router_json(path, value):
+    if path is None:
+        return
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n",
+        dir=str(path.parent), prefix=path.name + ".", delete=False,
+    )
+    temporary_path = Path(temporary.name)
+    try:
+        with temporary as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        os.replace(str(temporary_path), str(path))
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
 
 
 class Node:
@@ -179,9 +204,12 @@ class Router:
         aliases_path=None,
         api_url=None,
         api_port=None,
+        verified_path=None,
+        device_port=None,
     ):
         self.api_url = normalize_api_url(api_url) if api_url is not None else None
         self.api_port = api_port
+        self.device_port = device_port
         self.registration_key = (
             base58_encode(os.urandom(16))
             if registration_key is None
@@ -209,29 +237,40 @@ class Router:
             ):
                 raise ValueError("invalid router aliases file")
             self.aliases = aliases
+        self.verified_path = Path(verified_path) if verified_path is not None else None
+        self.verified_ids = set()
+        if self.verified_path is not None and self.verified_path.exists():
+            ids = json.loads(self.verified_path.read_text(encoding="utf-8"))
+            if not isinstance(ids, list) or any(
+                not isinstance(node_id, str) or not re.fullmatch("[a-z2-7]{52}", node_id)
+                for node_id in ids
+            ):
+                raise ValueError("invalid router verified devices file")
+            self.verified_ids = set(ids)
 
     def _save_aliases(self, aliases):
-        if self.aliases_path is not None:
-            path = self.aliases_path
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            data = json.dumps(aliases, ensure_ascii=False, indent=2).encode("utf-8")
-            with tempfile.NamedTemporaryFile(
-                dir=str(path.parent), prefix=path.name + ".", delete=False
-            ) as handle:
-                temporary_path = Path(handle.name)
-                try:
-                    handle.write(data + b"\n")
-                    handle.close()
-                    os.replace(str(temporary_path), str(path))
-                finally:
-                    if temporary_path.exists():
-                        temporary_path.unlink()
+        save_router_json(self.aliases_path, aliases)
         self.aliases = aliases
 
-    async def reorder_devices(self, request):
-        if not self.browser_token or not auth_cookie_matches(
+    def has_browser_login(self, request):
+        return bool(self.browser_token) and auth_cookie_matches(
             self.browser_token, request.cookies.get("pycodex_router_auth")
-        ):
+        )
+
+    async def verify_device(self, request):
+        if not self.has_browser_login(request):
+            raise HTTPException(401, "Authentication required.")
+        node = self.nodes.get(request.path_params["node_id"])
+        if node is None:
+            raise HTTPException(404, "Device is not connected.")
+        if node.id not in self.verified_ids:
+            verified = self.verified_ids | {node.id}
+            save_router_json(self.verified_path, sorted(verified))
+            self.verified_ids = verified
+        return JSONResponse({"verified": True, "url": self.node_url(request, node)})
+
+    async def reorder_devices(self, request):
+        if not self.has_browser_login(request):
             raise HTTPException(401, "Authentication required.")
         payload = await json_object_body(request, max_bytes=64 * 1024)
         order = payload.get("order")
@@ -256,9 +295,7 @@ class Router:
         return JSONResponse({"order": order})
 
     async def rename_device(self, request):
-        if not self.browser_token or not auth_cookie_matches(
-            self.browser_token, request.cookies.get("pycodex_router_auth")
-        ):
+        if not self.has_browser_login(request):
             raise HTTPException(401, "Authentication required.")
         node_id = request.path_params["node_id"]
         if node_id not in self.nodes:
@@ -290,16 +327,17 @@ class Router:
         authorization = connection.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return None
+        return self.verified_device(authorization[7:])
+
+    def verified_device(self, identity_key):
         try:
-            node_id = device_id(authorization[7:])
+            node_id = device_id(identity_key)
         except ValueError:
             return None
         node = self.nodes.get(node_id)
-        if node is not None and secrets.compare_digest(
-            authorization[7:], node.identity_key,
-        ):
-            return node
-        return None
+        if node is None or node_id not in self.verified_ids:
+            return None
+        return node if secrets.compare_digest(identity_key, node.identity_key) else None
 
     async def control(self, websocket):
         if not await self.accept_tunnel(websocket):
@@ -440,13 +478,28 @@ class Router:
         matches = [node_id for node_id in self.aliases if node_id[:5] == route_id]
         return self.nodes.get(matches[0]) if len(matches) == 1 else None
 
-    @asynccontextmanager
-    async def connection(self, node_id):
+    def node_url(self, request, node):
+        route_id = node.id
+        # Older Agent API bridges only accept full identity paths.
+        if not request.scope.get("pycodex.agent_access"):
+            short_id = node.id[:5]
+            if self.node_for_route(short_id) is node:
+                route_id = short_id
+        return request.scope.get("root_path", "") + "/n/" + route_id + "/"
+
+    def relay_node(self, node_id):
         node = self.node_for_route(node_id)
         if node is None:
             raise TunnelUnavailable("Workspace device is offline.")
+        if node.id not in self.verified_ids:
+            raise DeviceNotVerified("Open this device from the router directory to verify it.")
         if len(node.streams) >= self.max_connections:
             raise TunnelUnavailable("Workspace device has too many open requests.")
+        return node
+
+    @asynccontextmanager
+    async def connection(self, node_id):
+        node = self.relay_node(node_id)
         stream_id = uuid4().hex
         stream = Stream(node.id)
         node.streams[stream_id] = stream
@@ -476,11 +529,7 @@ class Router:
 
     @asynccontextmanager
     async def peer_connection(self, node_id, opening):
-        node = self.node_for_route(node_id)
-        if node is None:
-            raise TunnelUnavailable("Workspace device is offline.")
-        if len(node.streams) >= self.max_connections:
-            raise TunnelUnavailable("Workspace device has too many open requests.")
+        node = self.relay_node(node_id)
         encoded_opening = encode(opening)
         while node.standby:
             standby = node.standby.popleft()
@@ -569,9 +618,9 @@ class Router:
                 await _run_relay_pair(requests(websocket), responses(websocket))
         except TunnelUnavailable as exc:
             if scope["type"] == "websocket":
-                await send({"type": "websocket.close", "code": 1013})
+                await send({"type": "websocket.close", "code": exc.websocket_code})
             elif not started:
-                await JSONResponse({"error": str(exc)}, status_code=503)(
+                await JSONResponse({"error": str(exc)}, status_code=exc.status_code)(
                     scope, receive, send
                 )
             else:
@@ -584,20 +633,20 @@ class Router:
         for node_id in self.aliases:
             if node_id not in self.nodes:
                 continue
+            verified = node_id in self.verified_ids
+            if not verified and request.scope.get("pycodex.agent_access"):
+                continue
             node = self.nodes[node_id]
-            route_id = node.id
-            # Older Agent API bridges only accept full identity paths.
-            if not request.scope.get("pycodex.agent_access"):
-                short_id = node.id[:5]
-                if self.node_for_route(short_id) is node:
-                    route_id = short_id
-            base = request.scope.get("root_path", "") + "/n/" + route_id + "/"
+            base = self.node_url(request, node)
             nodes.append({
                 "id": node.id,
                 "name": node.name,
                 "alias": self.aliases.get(node.id, ""),
                 "url": base,
+                "verified": verified,
             })
+            if not verified:
+                continue
             for workspace in node.workspaces:
                 item = dict(workspace)
                 item.update(
@@ -621,31 +670,19 @@ class Router:
                     first_message = False
                 else:
                     message = await control_message(websocket)
-                caller_key = message["identity_key"]
-                caller_id = device_id(caller_key)
-                caller = self.nodes.get(caller_id)
-                if caller is None or not secrets.compare_digest(
-                    caller_key, caller.identity_key
-                ):
+                caller = self.verified_device(message["identity_key"])
+                if caller is None:
                     await close_websocket(websocket, 1008)
                     return
                 action = message.get("type")
                 if action == "peers":
-                    ordered_ids = list(self.aliases) + [
-                        node_id for node_id in self.nodes if node_id not in self.aliases
+                    peers = [
+                        {"id": node_id, "name": self.nodes[node_id].name, "alias": alias}
+                        for node_id, alias in self.aliases.items()
+                        if node_id != caller.id
+                        and node_id in self.nodes
+                        and node_id in self.verified_ids
                     ]
-                    peers = []
-                    for node_id in ordered_ids:
-                        if node_id == caller.id or node_id not in self.nodes:
-                            continue
-                        node = self.nodes[node_id]
-                        peers.append(
-                            {
-                                "id": node.id,
-                                "name": node.name,
-                                "alias": self.aliases.get(node.id, ""),
-                            }
-                        )
                     await websocket.send_text(encode({"type": "peers", "nodes": peers}))
                     continue
                 if action != "open":
@@ -726,7 +763,7 @@ class Router:
                             websocket.send_text,
                             {
                                 "type": "http.response.start",
-                                "status": 503,
+                                "status": exc.status_code,
                                 "headers": [
                                     [b"content-type", b"application/json"],
                                     [
@@ -770,9 +807,13 @@ def create_app(
     aliases_path=None,
     api_url=None,
     api_port=None,
+    verified_path=None,
+    device_port=None,
 ):
     router = Router(
-        connect_timeout, max_connections, registration_key, aliases_path, api_url, api_port
+        connect_timeout, max_connections, registration_key, aliases_path, api_url, api_port,
+        verified_path=verified_path,
+        device_port=device_port,
     )
 
     async def index(request):
@@ -782,12 +823,13 @@ def create_app(
         )
 
     async def registration_key_info(request):
-        if not router.browser_token or not auth_cookie_matches(
-            router.browser_token, request.cookies.get("pycodex_router_auth")
-        ):
+        if not router.has_browser_login(request):
             return JSONResponse({"error": "authentication required"}, status_code=401)
+        payload = {"key": router.registration_key}
+        if router.device_port:
+            payload["device_port"] = router.device_port
         return JSONResponse(
-            {"key": router.registration_key},
+            payload,
             headers={"Cache-Control": "no-store"},
         )
 
@@ -797,6 +839,7 @@ def create_app(
             Route("/api/workspaces", router.workspaces),
             Route("/api/registration-key", registration_key_info),
             Route("/api/nodes/order", router.reorder_devices, methods=["POST"]),
+            Route("/api/nodes/{node_id}/verify", router.verify_device, methods=["POST"]),
             Route("/api/nodes/{node_id}/alias", router.rename_device, methods=["POST"]),
         ]
     )
@@ -845,8 +888,9 @@ def build_parser():
         description="Publish reverse-connected pycodex workspaces.",
         epilog=(
             "Sign in to the router page to copy its device registration key. "
-            "Clients connect with --listen-to KEY@host:port; registered devices "
-            "and their pages are trusted and share the router's browser origin."
+            "Clients connect with --listen-to KEY@host:port. Open each new device "
+            "in the router directory to verify it. Verified device pages share "
+            "the router's browser origin."
         ),
     )
     parser.add_argument("--listen", default="0.0.0.0:6007", help="Browser host:port.")
@@ -899,6 +943,7 @@ def main(argv=None):
         args.password,
         registration_key=load_registration_key(key_path),
         aliases_path=codex_home / "router-aliases.json",
+        verified_path=codex_home / "router-verified.json",
         api_url=args.api_url,
     )
     tunnel_app = create_tunnel_app(app.state.router)
@@ -961,6 +1006,7 @@ def main(argv=None):
         if sockets[0].getsockname()[1] == sockets[1].getsockname()[1]:
             raise ValueError("browser and device listeners must use different ports")
         app.state.router.api_port = sockets[0].getsockname()[1]
+        app.state.router.device_port = sockets[1].getsockname()[1]
         RouterServer(config).run(sockets=sockets)
     finally:
         for listener_socket in sockets:

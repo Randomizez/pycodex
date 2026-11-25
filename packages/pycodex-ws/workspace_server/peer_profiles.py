@@ -1,6 +1,6 @@
 """Peer-to-peer HTTP proxying and profile sharing over pycodex-router.
 
-Nodes registered on the same `pycodex-router` mutually trust each other:
+Nodes verified by the same `pycodex-router` mutually trust each other.
 - `/api/peer-proxy` unconditionally proxies outbound HTTP/HTTPS requests for
   authenticated router peers, and injects a local Codex profile's upstream
   `base_url`, headers, and `.env` API key when `X-Peer-Profile` is set.

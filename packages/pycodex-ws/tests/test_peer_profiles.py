@@ -26,7 +26,7 @@ from workspace_server import app as app_module
 from workspace_server.owned_process import run_owned_server
 from workspace_server.peer_profiles import PEER_BRIDGE_API_KEY_ENV, PeerProfileProvider
 
-from test_router import client_target, eventually, ip_browser, login, serve
+from test_router import client_target, eventually, ip_browser, login, serve, verify_device
 
 pytestmark = pytest.mark.asyncio
 
@@ -94,6 +94,7 @@ def build_cli_workspace_app(
 
 @asynccontextmanager
 async def serve_router_node(app, target: str, name: str, identity_key=None):
+    """Start a workspace and verify it through the advertised router API."""
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     listener.bind(("127.0.0.1", 0))
@@ -113,6 +114,9 @@ async def serve_router_node(app, target: str, name: str, identity_key=None):
         await client.start()
         try:
             await eventually(lambda: client.connected)
+            async with ip_browser(client.api_url) as admin:
+                await login(admin)
+                await verify_device(admin, client.node_id)
             yield client, local_url
         finally:
             await client.close()
@@ -1048,6 +1052,9 @@ async def test_offline_peer_session_restore_and_persistent_node_identity(tmp_pat
                 if task_a1.done():
                     task_a1.result()
                 first_node_a_id = app_a_holder["app"].state.router_client.node_id
+                async with ip_browser(router_addr) as admin:
+                    await login(admin)
+                    await verify_device(admin, first_node_a_id)
 
                 app_b1, _, _ = build_cli_workspace_app(tmp_path / "owned_ws_b", cfg_b)
                 async with serve_router_node(app_b1, target, "node-b") as (
@@ -1419,7 +1426,8 @@ async def test_base_pinning_stream_disconnect_and_trajectory_isolation(
 
         gate = create_router_app("router-password")
         tunnel = create_tunnel_app(gate.state.router)
-        async with serve(gate) as _router_addr, serve(tunnel) as tunnel_addr:
+        async with serve(gate) as router_addr, serve(tunnel) as tunnel_addr:
+            gate.state.router.api_port = urlsplit(router_addr).port
             target = client_target(tunnel_addr, gate.state.router.registration_key)
             async with serve_router_node(
                 app_a, target, "pin-a", identity_key=node_a_key
@@ -1578,7 +1586,8 @@ async def test_unconditional_peer_http_proxy_methods_headers_gzip_and_self_ssrf_
 
         gate = create_router_app("router-password")
         tunnel = create_tunnel_app(gate.state.router)
-        async with serve(gate) as _router_addr, serve(tunnel) as tunnel_addr:
+        async with serve(gate) as router_addr, serve(tunnel) as tunnel_addr:
+            gate.state.router.api_port = urlsplit(router_addr).port
             target = client_target(tunnel_addr, gate.state.router.registration_key)
             async with serve_router_node(app_a, target, "proxy-node-a") as (
                 client_a,
@@ -1933,6 +1942,8 @@ async def test_in_process_reload_with_legacy_v072_router_client_enables_peer_pro
                 )
                 async with ip_browser(router_addr) as browser:
                     await login(browser, password="router-pw")
+                    await verify_device(browser, shell_a.router.node_id)
+                    await verify_device(browser, shell_b.router.node_id)
                     base_a = router_addr + "/n/" + shell_a.router.node_id
                     base_b = router_addr + "/n/" + shell_b.router.node_id
                     assert (

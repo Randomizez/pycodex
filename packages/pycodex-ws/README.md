@@ -42,6 +42,12 @@ With `pycodex-ws --listen-to KEY@router:6000`, the OS assigns a free local
 loopback port. The CLI prints the local URL and registers that port with the
 router. Add `--listen 127.0.0.1:6007` to use a fixed port.
 
+New devices appear as **Unverified** in the router directory. Sign in and
+choose **Verify and open** to open a device and enable workspace forwarding
+and peer access. The router remembers the full node ID across reconnects,
+workspace reloads and router restarts. Devices first seen before upgrading
+also need this one-time verification.
+
 ## Conversations and views
 
 The session sidebar starts collapsed. Hover to preview it, click to keep it
@@ -58,7 +64,7 @@ other core session commands are also available.
 
 Use **New session** for the default profile, or its **+** button to choose one.
 When connected to a router (`--listen-to`), the chooser first selects a **Node**
-(**This device** or another online device on the same router) and then selects a
+(**This device** or another verified online device on the same router) and then selects a
 **Profile** from that node. Choosing a peer node runs the Agent, tools, files,
 Canvas and rollout recording locally while proxying upstream provider HTTP
 requests through the router (`/api/peer-proxy`) using the selected peer node's

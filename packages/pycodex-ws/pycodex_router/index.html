@@ -14,13 +14,21 @@
       --muted: #687383;
       --line: #e1e6ed;
       --accent: #385bc7;
+      --accent-soft: #edf1fc;
       --green: #26734f;
       --green-soft: #eaf5ee;
+      --green-line: #b8dec6;
+      --amber: #9a5b13;
+      --amber-soft: #fef3dc;
+      --amber-line: #ebd19a;
       --danger: #b54739;
+      --danger-soft: #fdf0ee;
+      --danger-line: #ecc8c1;
       --unread-bg: #fff7f4;
       --unread-line: #ead0c8;
       --breathing-duration: 1.2s;
       --breathing-ease: cubic-bezier(0.4, 0, 0.2, 1);
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     @media (prefers-color-scheme: dark) {
@@ -32,9 +40,16 @@
         --muted: #a1adbd;
         --line: #303c4d;
         --accent: #a0b8ff;
+        --accent-soft: #202c46;
         --green: #8ad5ad;
         --green-soft: #233b31;
+        --green-line: #345c4b;
+        --amber: #f2be6b;
+        --amber-soft: #3a2d18;
+        --amber-line: #6b5023;
         --danger: #ffa396;
+        --danger-soft: #351f1e;
+        --danger-line: #6c3c39;
         --unread-bg: #2b2221;
         --unread-line: #62433d;
       }
@@ -42,10 +57,11 @@
     * { box-sizing: border-box; }
     body { margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink); font-size: 13px; }
     a { color: inherit; text-decoration: none; }
-    a:focus-visible, button:focus-visible, .workspace-group-heading:focus-visible { outline: 2px solid var(--accent); outline-offset: 5px; border-radius: 3px; }
+    a:focus-visible, button:focus-visible, input:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+    .workspace-group-heading:focus-visible { outline-offset: -2px; }
     svg { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
     h1, h2, h3, h4, p { margin: 0; }
-    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    code { font-family: var(--mono); }
     .page { width: min(1440px, calc(100% - 48px)); margin: 0 auto; padding-bottom: 32px; }
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 16px 0; border-bottom: 1px solid var(--line); }
     .brand { display: inline-flex; align-items: center; gap: 10px; }
@@ -56,40 +72,69 @@
     .connection { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; line-height: 1.5; }
     .connection-dot, .online-dot { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 50%; background: var(--muted); }
     .connection[data-state="live"] .connection-dot, .online-dot { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+    .device[data-verified="false"] .online-dot { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
     .connection[data-state="error"] { color: var(--danger); }
     .connection[data-state="error"] .connection-dot { background: var(--danger); }
-    .intro { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px; padding: 24px 0; }
+    .intro { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 18px; padding: 24px 0 18px; }
     h1 { font-size: 24px; line-height: 1.3; font-weight: 650; letter-spacing: -.7px; }
     .intro p { color: var(--muted); font-size: 12px; line-height: 1.6; }
-    .registration { max-width: 640px; margin-bottom: 24px; }
-    .registration summary { width: fit-content; color: var(--accent); cursor: pointer; }
-    .registration-content { display: grid; gap: 8px; margin-top: 12px; }
-    .registration input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .registration { max-width: 680px; margin-bottom: 20px; }
+    .registration summary { width: fit-content; color: var(--accent); font-weight: 500; cursor: pointer; }
+    .registration-content { display: grid; gap: 12px; margin-top: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); }
+    .registration-field { display: grid; gap: 6px; }
+    .registration-field label { color: var(--muted); font-size: 11px; font-weight: 550; }
+    .copy-row { display: flex; align-items: stretch; gap: 8px; }
+    .registration input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--soft); color: var(--ink); font: 12px var(--mono); }
+    .copy-button, .subtle-button, .filter-chip { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: 11px/1.4 inherit; font-weight: 550; white-space: nowrap; cursor: pointer; }
+    .copy-button:hover:not(:disabled), .subtle-button:hover:not(:disabled) { background: var(--soft); }
+    .copy-button:disabled, .subtle-button:disabled { opacity: .45; cursor: default; }
+    .copy-button[data-copied="true"] { border-color: var(--green-line); background: var(--green-soft); color: var(--green); }
     .registration p { color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-    #alias-status, #order-status { margin-bottom: 12px; color: var(--danger); font-size: 12px; }
-    #alias-status:empty, #order-status:empty { display: none; }
-    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 20px; align-items: start; }
+    #registration-status:empty { display: none; }
+    .status-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 12px; line-height: 1.5; }
+    .status-banner[data-empty="true"] { position: absolute; width: 1px; height: 1px; margin: 0; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); }
+    .status-dismiss { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 26px; height: 26px; border: 0; border-radius: 5px; background: transparent; color: inherit; cursor: pointer; }
+    .status-dismiss:hover { background: var(--panel); }
+    .status-dismiss svg { width: 14px; height: 14px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1fr) 292px; gap: 20px; align-items: start; }
     .layout > * { min-width: 0; }
-    .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .section-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 12px; min-height: 30px; margin-bottom: 12px; }
     h2 { display: flex; align-items: center; gap: 9px; font-size: 13px; font-weight: 600; }
     .count { min-width: 23px; padding: 2px 7px; border-radius: 6px; background: var(--soft); color: var(--muted); font-size: 11px; text-align: center; font-variant-numeric: tabular-nums; }
-    #activity { color: var(--green); font-size: 12px; }
+    .workspace-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .filter-chip { border-color: var(--green-line); background: var(--green-soft); color: var(--green); }
+    .filter-chip[hidden] { display: none; }
+    .filter-chip::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: spinner-pulse var(--breathing-duration) var(--breathing-ease) infinite; }
+    .filter-chip[data-active="false"]::before { animation: none; opacity: .55; }
+    .filter-chip[aria-pressed="true"] { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+    .search-input { width: 196px; min-width: 0; min-height: 30px; padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); font: 12px/1.4 inherit; }
+    .search-input::placeholder { color: var(--muted); }
+    .subtle-button { color: var(--muted); font-weight: 500; }
+    .subtle-button:hover:not(:disabled) { color: var(--ink); }
+    .subtle-button[hidden] { display: none; }
     #workspaces { display: grid; gap: 16px; }
     .workspace-table, .nodes { background: var(--panel); border: 1px solid var(--line); border-radius: 9px; }
-    .workspace-group-heading { display: flex; align-items: center; gap: 10px; padding: 12px 14px; cursor: pointer; list-style: none; }
+    .workspace-group { transition: border-color .2s ease, box-shadow .2s ease; }
+    .workspace-group[data-highlight="true"] { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+    .workspace-group-heading { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 8px; cursor: pointer; list-style: none; }
+    .workspace-group[open] .workspace-group-heading { border-radius: 8px 8px 0 0; }
     .workspace-group-heading::-webkit-details-marker { display: none; }
-    .disclosure-icon { width: 14px; height: 14px; color: var(--muted); }
+    .disclosure-icon { width: 14px; height: 14px; color: var(--muted); transition: transform .15s ease; }
     .workspace-group[open] .disclosure-icon { transform: rotate(90deg); }
-    .workspace-group-name { flex: 1; min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
+    .workspace-group-name { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; flex: 1; min-width: 0; font-size: 12px; font-weight: 600; line-height: 1.6; overflow-wrap: anywhere; }
     .workspace-group-heading .count { flex: 0 0 auto; }
+    .workspace-group[data-verified="false"] .count { background: var(--amber-soft); color: var(--amber); font-weight: 550; }
+    .device-action { display: inline-flex; align-items: center; flex: 0 0 auto; }
+    .device-footer .device-action { margin-left: auto; }
     .list-head, .workspace-row { display: grid; grid-template-columns: minmax(94px, .85fr) minmax(120px, 1.85fr) 76px 44px; gap: 12px; align-items: center; padding: 10px 14px; }
-    .list-head { position: sticky; top: 0; z-index: 1; background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 550; letter-spacing: .3px; }
+    .list-head { border-top: 1px solid var(--line); background: var(--soft); color: var(--muted); font-size: 10px; font-weight: 550; letter-spacing: .3px; }
+    .list-head[hidden] { display: none; }
     .workspace-row { position: relative; min-height: 62px; border-top: 1px solid var(--line); }
     .workspace-row > * { min-width: 0; }
     .workspace-row:hover { background: var(--soft); }
-    .workspace-row:last-child { border-radius: 0 0 9px 9px; }
+    .workspace-row:last-child { border-radius: 0 0 8px 8px; }
     #unread-workspaces { background: var(--unread-bg); border-color: var(--unread-line); border-left: 3px solid var(--danger); }
-    .unread-heading { display: flex; align-items: center; gap: 9px; padding: 14px; color: var(--danger); }
+    .unread-heading { display: flex; align-items: center; gap: 9px; padding: 14px; border-radius: 8px 8px 0 0; color: var(--danger); }
     .unread-heading svg { width: 17px; height: 17px; }
     .unread-heading h3 { flex: 1; font-size: 13px; font-weight: 600; }
     .unread-heading .count { color: var(--panel); background: var(--danger); }
@@ -97,7 +142,7 @@
     #unread-workspaces .workspace-row:hover { background: var(--panel); }
     .activity-badge { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; border-radius: 4px; color: var(--muted); background: var(--soft); font-size: 10px; font-weight: 500; }
     .activity-badge[hidden] { display: none; }
-    .workspace-group-name .device-working { margin-left: 8px; white-space: nowrap; }
+    .workspace-group-name .device-working { white-space: nowrap; }
     .activity-badge[data-state="working"] { color: var(--green); background: var(--green-soft); }
     .activity-badge[data-state="working"]::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: currentColor; animation: spinner-pulse var(--breathing-duration) var(--breathing-ease) infinite; }
     @keyframes spinner-pulse {
@@ -105,45 +150,59 @@
       50% { opacity: 1; transform: scale(1.08); }
     }
     @media (prefers-reduced-motion: reduce) {
-      .activity-badge[data-state="working"]::before { animation: none; opacity: .8; transform: none; }
+      .activity-badge[data-state="working"]::before, .filter-chip::before { animation: none; opacity: .8; transform: none; }
+      .disclosure-icon, .workspace-group { transition: none; }
     }
     .workspace-status { display: inline-flex; align-items: center; gap: 6px; justify-self: start; }
     .unread-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); }
     .workspace-title { font-size: 12px; line-height: 1.6; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .workspace-path, .state-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11px; line-height: 1.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .workspace-path, .state-path { font-family: var(--mono); font-size: 11px; line-height: 1.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .state-path { color: var(--muted); }
     .session-count { display: block; color: var(--muted); font-size: 11px; line-height: 1.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .open-link, .manage-link { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; min-height: 28px; color: var(--accent); font-size: 11px; font-weight: 550; white-space: nowrap; }
+    .open-link, .manage-link, .verify-link { display: inline-flex; align-items: center; justify-content: flex-end; gap: 4px; min-height: 28px; font-size: 11px; font-weight: 550; white-space: nowrap; }
+    .open-link, .manage-link { color: var(--accent); }
     .open-link svg, .manage-link svg { width: 13px; height: 13px; }
     .open-link::after { content: ""; position: absolute; inset: 0; }
     .open-link:hover, .manage-link:hover { text-decoration: underline; text-underline-offset: 4px; }
+    .verify-link { padding: 3px 9px; border: 1px solid var(--amber-line); border-radius: 6px; background: var(--amber-soft); color: var(--amber); font-family: inherit; cursor: pointer; }
+    .verify-link:hover:not(:disabled) { border-color: var(--amber); }
+    .verify-link:disabled { opacity: .65; cursor: progress; }
     .device { min-width: 0; padding: 12px 14px; }
     .device + .device { border-top: 1px solid var(--line); }
-    .device-heading { display: flex; align-items: start; gap: 9px; }
-    .device-heading svg { width: 17px; height: 17px; margin-top: 1px; color: var(--muted); }
+    .device-heading { display: flex; align-items: center; gap: 9px; }
+    .device-heading:has(.device-alias-editor) { align-items: start; }
+    .device-heading svg { width: 17px; height: 17px; color: var(--muted); }
     .device-name { flex: 1; min-width: 0; font-size: 11px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
-    .device-label { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .device-jump { display: block; width: 100%; border: 0; padding: 3px 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+    .device-jump:hover .device-label { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+    .device-label { font-family: var(--mono); }
     .device-rename, .device-drag, .device-alias-actions button { display: inline-flex; align-items: center; justify-content: center; min-height: 28px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--muted); font: inherit; cursor: pointer; }
-    .device-rename:hover, .device-drag:hover, .device-alias-actions button:hover { background: var(--soft); color: var(--ink); }
+    .device-rename:hover, .device-drag:hover, .device-alias-actions button:hover:not(:disabled) { background: var(--soft); color: var(--ink); }
     .device-rename, .device-drag { flex: 0 0 28px; padding: 4px; border-color: transparent; }
     .device-rename[hidden] { display: none; }
     .device-rename svg, .device-drag svg { width: 14px; height: 14px; margin: 0; color: inherit; }
     .device-drag { touch-action: none; user-select: none; cursor: grab; }
     .device-drag:disabled { opacity: .35; cursor: default; }
     .device[data-dragging] { background: var(--soft); opacity: .65; }
+    .device[data-drag-outside] { opacity: .35; }
     .device-drop-before { box-shadow: 0 -2px var(--accent); }
     .nodes.device-drop-end { box-shadow: inset 0 -2px var(--accent); }
+    .device-alias-editor { display: block; }
     .device-alias-input { width: 100%; min-width: 0; padding: 3px 6px; border: 1px solid var(--accent); border-radius: 4px; background: var(--panel); color: var(--ink); font: inherit; outline: none; }
     .device-alias-actions { display: flex; gap: 6px; margin-top: 6px; }
-    .online-dot { margin-top: 7px; }
-    .device-heading > .unread-dot { margin-top: 7px; }
-    .device-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 2px 8px; margin-top: 6px; }
+    .device-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 8px; margin-top: 6px; }
     .device-detail { color: var(--muted); font-size: 10px; line-height: 1.5; }
+    .device[data-verified="false"] .device-detail { color: var(--amber); font-weight: 550; }
     .empty { grid-column: 1 / -1; display: grid; justify-items: center; gap: 8px; padding: 32px 20px; text-align: center; }
     .empty svg { width: 24px; height: 24px; margin-bottom: 4px; color: var(--muted); }
     .empty h3 { font-size: 13px; font-weight: 550; }
-    .empty p { max-width: 290px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+    .empty p { max-width: 310px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+    .empty-action { margin-top: 4px; }
     .layout[data-stale="true"] .workspace-table, .layout[data-stale="true"] .nodes { opacity: .6; }
+    @media (min-width: 1001px) {
+      .devices-aside { position: sticky; top: 16px; }
+      .nodes { max-height: calc(100vh - 84px); overflow-y: auto; }
+    }
     @media (max-width: 1000px) {
       .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
     }
@@ -152,7 +211,12 @@
       .topbar { gap: 16px; padding: 14px 0; }
       .brand-context { display: none; }
       .connection { max-width: 160px; font-size: 11px; }
-      .intro { padding: 20px 0; }
+      .intro { padding: 20px 0 14px; }
+      .copy-row { flex-wrap: wrap; }
+      .copy-button { min-height: 36px; }
+      .workspace-controls { width: 100%; }
+      .search-input { flex: 1 1 160px; width: auto; min-height: 36px; }
+      .filter-chip, .subtle-button, .manage-link, .verify-link, .device-jump { min-height: 36px; }
       .list-head { display: none; }
       .workspace-row { grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px 10px; padding: 10px 12px; }
       .workspace-paths { grid-column: 1 / -1; grid-row: 2; }
@@ -182,27 +246,47 @@
         <p>Across your connected devices.</p>
       </div>
       <details id="device-connection" class="registration">
-        <summary>Connect a trusted device</summary>
+        <summary>Connect a device</summary>
         <div class="registration-content">
-          <label for="registration-key">Registration key</label>
-          <input id="registration-key" readonly autocomplete="off" spellcheck="false">
+          <div class="registration-field">
+            <label for="registration-key">Registration key</label>
+            <div class="copy-row">
+              <input id="registration-key" readonly autocomplete="off" spellcheck="false">
+              <button type="button" id="copy-registration-key" class="copy-button" disabled>Copy key</button>
+            </div>
+          </div>
+          <div class="registration-field">
+            <label for="registration-command">Command</label>
+            <div class="copy-row">
+              <input id="registration-command" readonly autocomplete="off" spellcheck="false">
+              <button type="button" id="copy-registration-command" class="copy-button" disabled>Copy command</button>
+            </div>
+          </div>
           <p id="registration-status" role="status"></p>
-          <p>On the device, use <code>pycodex-ws --listen-to KEY@ROUTER_ADDRESS:6000</code>. Replace <code>KEY</code> with this key and use your router's device port.</p>
+          <p id="registration-hint">Run this on the device. Replace the host or port if your router is reached through a different address or port forwarding.</p>
         </div>
       </details>
-      <p id="alias-status" role="alert"></p>
-      <p id="order-status" role="alert"></p>
+      <div id="device-status" class="status-banner" role="alert" data-empty="true">
+        <span id="device-status-text"></span>
+        <button type="button" id="device-status-dismiss" class="status-dismiss" aria-label="Dismiss error" title="Dismiss" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
       <div class="layout">
         <section aria-labelledby="workspace-heading">
           <div class="section-heading">
             <h2 id="workspace-heading">Workspaces <span id="workspace-count" class="count">—</span></h2>
-            <span id="activity"></span>
+            <div class="workspace-controls">
+              <button type="button" id="activity" class="filter-chip" hidden aria-pressed="false" title="Filter working workspaces"></button>
+              <input id="workspace-filter" class="search-input" type="search" placeholder="Filter workspaces… (/)" aria-label="Filter workspaces and devices" autocomplete="off" spellcheck="false">
+              <button type="button" id="toggle-all-groups" class="subtle-button" hidden>Expand all</button>
+            </div>
           </div>
           <div id="workspaces" aria-busy="true">
             <div class="empty"><h3>Loading workspaces…</h3></div>
           </div>
         </section>
-        <aside aria-labelledby="device-heading">
+        <aside class="devices-aside" aria-labelledby="device-heading">
           <div class="section-heading">
             <h2 id="device-heading">Online devices <span id="device-count" class="count">—</span></h2>
           </div>
@@ -231,7 +315,7 @@
         </h3>
         <span class="unread-dot device-unread" hidden role="img" aria-label="Unread workspaces" title="Unread workspaces"></span>
         <span class="count"></span>
-        <a class="manage-link">Manage <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
+        <span class="device-action"></span>
       </summary>
       <div class="list-head" aria-hidden="true">
         <span>Workspace</span><span>Directory / state</span><span>Status</span><span></span>
@@ -250,7 +334,7 @@
         <p class="state-path"></p>
       </div>
       <span class="workspace-status">
-        <span class="unread-dot" role="img" aria-label="Unread reply" title="Unread reply"></span>
+        <span class="unread-dot" role="img" aria-label="Unread reply"></span>
         <span class="activity-badge"></span>
       </span>
       <a class="open-link">Open <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
@@ -262,27 +346,36 @@
         <button type="button" class="device-drag" title="Drag to reorder, or use the up and down arrow keys">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5h.01M15 5h.01M9 12h.01M15 12h.01M9 19h.01M15 19h.01" stroke-width="3"/></svg>
         </button>
-        <h3 class="device-name"><span class="device-label"></span></h3>
+        <h3 class="device-name">
+          <button type="button" class="device-jump"><span class="device-label"></span></button>
+        </h3>
         <button type="button" class="device-rename" title="Rename device">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m16 4 4 4M4 20l4-1L20 7a2.1 2.1 0 0 0-3-3L5 16l-1 4Z"/></svg>
         </button>
         <span class="unread-dot device-unread" hidden role="img" aria-label="Unread workspaces" title="Unread workspaces"></span>
-        <span class="online-dot" aria-label="Online"></span>
+        <span class="online-dot" role="img" aria-label="Online"></span>
       </div>
       <div class="device-footer">
         <p class="device-detail"></p>
         <span class="activity-badge device-working" data-state="working" hidden></span>
+        <span class="device-action"></span>
       </div>
     </article>
   </template>
+  <template id="verify-device-template">
+    <button type="button" class="verify-link">Verify and open</button>
+  </template>
+  <template id="manage-device-template">
+    <a class="manage-link">Manage <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
+  </template>
   <template id="device-alias-template">
-    <span class="device-alias-editor">
+    <form class="device-alias-editor" novalidate>
       <input type="text" class="device-alias-input" minlength="1" maxlength="128" required aria-label="Device alias" title="Use 1 to 128 characters.">
       <span class="device-alias-actions">
-        <button type="button" class="device-alias-save">Save</button>
+        <button type="submit" class="device-alias-save">Save</button>
         <button type="button" class="device-alias-cancel">Cancel</button>
       </span>
-    </span>
+    </form>
   </template>
   <template id="empty-template">
     <div class="empty">
@@ -292,207 +385,593 @@
     </div>
   </template>
   <script type="module">
-    function mountDirectory() {
-      const status = document.getElementById("status");
-      const statusText = document.getElementById("status-text");
-      const layout = document.querySelector(".layout");
-      const workspaces = document.getElementById("workspaces");
-      const nodes = document.getElementById("nodes");
-      const unreadTemplate = document.getElementById("unread-template");
-      const workspaceGroupTemplate = document.getElementById("workspace-group-template");
-      const workspaceTemplate = document.getElementById("workspace-template");
-      const deviceTemplate = document.getElementById("device-template");
-      const deviceAliasTemplate = document.getElementById("device-alias-template");
-      const emptyTemplate = document.getElementById("empty-template");
-      const deviceConnection = document.getElementById("device-connection");
-      const registrationKey = document.getElementById("registration-key");
-      const registrationStatus = document.getElementById("registration-status");
-      const aliasStatus = document.getElementById("alias-status");
-      const orderStatus = document.getElementById("order-status");
-      let refreshing = false;
-      let signature = "";
-      let editingDevice = null;
-      let inventoryRevision = 0;
-      let reordering = false;
-      let drag = null;
+    const POLL_INTERVAL_MS = 2000;
+    const POLL_TIMEOUT_MS = 12000;
+    const DROP_ZONE_PAD_X = 72;
+    const DROP_ZONE_PAD_Y = 48;
+    const AUTO_EXPAND_WORKSPACE_LIMIT = 12;
 
-      registrationKey.addEventListener("focus", () => registrationKey.select());
-      deviceConnection.addEventListener("toggle", async () => {
-        registrationKey.value = "";
-        registrationStatus.textContent = "";
-        if (!deviceConnection.open) return;
-        registrationStatus.textContent = "Loading…";
+    const $ = id => document.getElementById(id);
+    const baseTitle = document.title;
+    const status = $("status");
+    const statusText = $("status-text");
+    const layout = document.querySelector(".layout");
+    const workspaces = $("workspaces");
+    const nodes = $("nodes");
+    const workspaceCount = $("workspace-count");
+    const deviceCount = $("device-count");
+    const activityButton = $("activity");
+    const filterInput = $("workspace-filter");
+    const toggleAllButton = $("toggle-all-groups");
+    const deviceConnection = $("device-connection");
+    const registrationKey = $("registration-key");
+    const registrationCommand = $("registration-command");
+    const copyKeyButton = $("copy-registration-key");
+    const copyCommandButton = $("copy-registration-command");
+    const registrationStatus = $("registration-status");
+    const deviceStatus = $("device-status");
+    const deviceStatusText = $("device-status-text");
+    const deviceStatusDismiss = $("device-status-dismiss");
+
+    const templates = {
+      unread: $("unread-template"),
+      group: $("workspace-group-template"),
+      workspace: $("workspace-template"),
+      device: $("device-template"),
+      verify: $("verify-device-template"),
+      manage: $("manage-device-template"),
+      alias: $("device-alias-template"),
+      empty: $("empty-template"),
+    };
+
+    const expandedStore = createExpandedStore(`pycodex-router:expanded:${window.location.pathname}`);
+    const defaultOpenCache = new Map();
+    const filterOpenOverrides = new Map();
+    const copyResetTimers = new Map();
+
+    let inventory = null;
+    let signature = "";
+    let inventoryRevision = 0;
+    let initialAutoExpand = null;
+    let refreshing = false;
+    let editingDevice = null;
+    let verifyingDevice = null;
+    let reordering = false;
+    let drag = null;
+    let workingOnly = false;
+    let highlightTimer = null;
+    let registrationToken = 0;
+
+    // -- Helpers -------------------------------------------------------------
+
+    const countLabel = (count, label) => `${count} ${label}${count === 1 ? "" : "s"}`;
+    const deviceDisplayName = node => node.alias || node.name;
+    const cloneTemplate = name => templates[name].content.firstElementChild.cloneNode(true);
+    const nodeById = nodeId => (inventory ? inventory.nodes.find(node => node.id === nodeId) || null : null);
+    const isBusy = () => editingDevice !== null || reordering || verifyingDevice !== null;
+    const isFiltering = () => Boolean(filterInput.value.trim()) || workingOnly;
+    const setText = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+
+    function setGroupOpen(group, open) {
+      const flag = String(Boolean(open));
+      if (group.open !== Boolean(open) || group.dataset.appliedOpen !== flag) {
+        group.dataset.appliedOpen = flag;
+        group.open = Boolean(open);
+      }
+    }
+
+    function syncChildren(parent, items, getKey, createNode, patchNode) {
+      const existing = new Map();
+      for (const child of Array.from(parent.children)) {
+        if (child.dataset.key !== undefined) existing.set(child.dataset.key, child);
+      }
+      const desired = [];
+      const used = new Set();
+      for (const item of items) {
+        const key = getKey(item);
+        let el = existing.get(key);
+        if (!el) {
+          el = createNode(item);
+          el.dataset.key = key;
+        }
+        patchNode(el, item);
+        desired.push(el);
+        used.add(el);
+      }
+      for (const child of Array.from(parent.children)) {
+        if (!used.has(child)) child.remove();
+      }
+      let cursor = parent.firstElementChild;
+      for (const el of desired) {
+        if (el === cursor) {
+          cursor = cursor.nextElementSibling;
+        } else {
+          parent.insertBefore(el, cursor);
+        }
+      }
+    }
+
+    function createExpandedStore(storageKey) {
+      const map = new Map();
+      try {
+        const parsed = JSON.parse(window.localStorage.getItem(storageKey) || "null");
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          for (const [k, v] of Object.entries(parsed)) map.set(k, Boolean(v));
+        }
+      } catch {}
+      const persist = () => {
         try {
-          const response = await fetch("api/registration-key", {cache: "no-store"});
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const data = await response.json();
-          if (!deviceConnection.open) return;
-          registrationKey.value = data.key;
-          registrationStatus.textContent = "Select the key to copy it.";
-        } catch (error) {
-          if (deviceConnection.open) registrationStatus.textContent = `Could not load key · ${error.message}`;
+          window.localStorage.setItem(storageKey, JSON.stringify(Object.fromEntries(map)));
+        } catch {}
+      };
+      return {
+        has: id => map.has(id),
+        get: id => Boolean(map.get(id)),
+        set(id, open) { map.set(id, Boolean(open)); persist(); },
+        setMany(entries) { for (const [id, open] of entries) map.set(id, Boolean(open)); persist(); },
+      };
+    }
+
+    async function readErrorMessage(response) {
+      const text = (await response.text()).trim();
+      if (text) {
+        try {
+          const parsed = JSON.parse(text);
+          const detail = parsed && typeof parsed === "object" && (parsed.error || parsed.detail || parsed.message);
+          if (typeof detail === "string" && detail.trim()) return detail.trim();
+        } catch {}
+        if (!text.startsWith("<")) return text.slice(0, 200);
+      }
+      return `HTTP ${response.status}`;
+    }
+
+    async function requestJson(url, options) {
+      const response = await fetch(url, options);
+      if (response.status === 401) {
+        window.location.assign("login");
+        return null;
+      }
+      if (!response.ok) throw new Error(await readErrorMessage(response));
+      return response.json();
+    }
+
+    const postJson = (url, body) => requestJson(url, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(body),
+    });
+
+    async function copyToClipboard(text, fallbackInput) {
+      if (navigator.clipboard?.writeText) {
+        try {
+          await navigator.clipboard.writeText(text);
+          return true;
+        } catch {}
+      }
+      if (!fallbackInput) return false;
+      fallbackInput.focus();
+      fallbackInput.select();
+      try { return document.execCommand("copy"); } catch { return false; }
+    }
+
+    function setStatus(state, message) {
+      status.dataset.state = state;
+      setText(statusText, message);
+      layout.dataset.stale = String(state === "error");
+    }
+
+    function showDeviceError(message) {
+      setText(deviceStatusText, message);
+      deviceStatus.dataset.empty = String(!message);
+      deviceStatusDismiss.hidden = !message;
+    }
+
+    const clearDeviceError = () => showDeviceError("");
+
+    function commitInventoryChange() {
+      inventoryRevision += 1;
+      signature = JSON.stringify(inventory);
+      render();
+    }
+
+    function patchEmptyCard(card, title, description, action) {
+      setText(card.querySelector("h3"), title);
+      setText(card.querySelector("p"), description);
+      let button = card.querySelector(".empty-action");
+      if (action) {
+        if (!button) {
+          button = document.createElement("button");
+          button.type = "button";
+          button.className = "subtle-button empty-action";
+          card.append(button);
+        }
+        setText(button, action.label);
+        button.onclick = action.onClick;
+      } else if (button) {
+        button.remove();
+      }
+    }
+
+    function clearFilters() {
+      workingOnly = false;
+      filterInput.value = "";
+      filterOpenOverrides.clear();
+      render();
+    }
+
+    // -- Device registration -------------------------------------------------
+
+    function formatListenCommand(key, port) {
+      const rawHost = window.location.hostname || "ROUTER_ADDRESS";
+      const host = rawHost.includes(":") && !rawHost.startsWith("[") ? `[${rawHost}]` : rawHost;
+      const target = `${key}@${host}:${port}`;
+      return host.startsWith("[")
+        ? `pycodex-ws --listen-to '${target}'`
+        : `pycodex-ws --listen-to ${target}`;
+    }
+
+    function resetCopyButton(button, defaultLabel) {
+      clearTimeout(copyResetTimers.get(button));
+      copyResetTimers.delete(button);
+      delete button.dataset.copied;
+      setText(button, defaultLabel);
+    }
+
+    function bindSelectOnFocus(input) {
+      input.addEventListener("focus", () => input.select());
+      input.addEventListener("mouseup", event => {
+        if (input.selectionStart === 0 && input.selectionEnd === input.value.length) {
+          event.preventDefault();
         }
       });
+    }
 
-      function countLabel(count, label) {
-        return `${count} ${label}${count === 1 ? "" : "s"}`;
-      }
-
-      function empty(title, description) {
-        const element = emptyTemplate.content.firstElementChild.cloneNode(true);
-        element.querySelector("h3").textContent = title;
-        element.querySelector("p").textContent = description;
-        return element;
-      }
-
-      function setStatus(state, message) {
-        status.dataset.state = state;
-        if (statusText.textContent !== message) statusText.textContent = message;
-        layout.dataset.stale = String(state === "error");
-      }
-
-      function setDeviceLabel(label, node) {
-        label.textContent = node.alias || node.name;
-        label.title = node.name;
-      }
-
-      function editDeviceAlias(label, button, node, data) {
-        if (editingDevice !== null || reordering) return;
-        editingDevice = node.id;
-        aliasStatus.textContent = "";
-        const editor = deviceAliasTemplate.content.firstElementChild.cloneNode(true);
-        const input = editor.querySelector("input");
-        input.value = node.alias || "";
-        input.placeholder = node.name;
-        label.hidden = true;
-        button.hidden = true;
-        label.before(editor);
-        let finished = false;
-        const finish = async save => {
-          if (finished) return;
-          finished = true;
-          const alias = input.value.trim();
-          editor.remove();
-          label.hidden = false;
-          button.hidden = false;
-          try {
-            if (save && !alias) throw new Error("Device alias must contain at least one character.");
-            if (save && alias !== (node.alias || "")) {
-              const response = await fetch(`api/nodes/${encodeURIComponent(node.id)}/alias`, {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({alias}),
-              });
-              if (!response.ok) throw new Error(await response.text());
-              const result = await response.json();
-              node.alias = result.alias;
-              inventoryRevision += 1;
-              render(data);
-              signature = JSON.stringify(data);
-            }
-          } catch (error) {
-            aliasStatus.textContent = `Could not rename device: ${error.message}`;
-          } finally {
-            editingDevice = null;
-            nodes.querySelector(`.device[data-node-id="${CSS.escape(node.id)}"] .device-rename`).focus();
-            refresh();
-          }
-        };
-        editor.addEventListener("keydown", event => {
-          if (event.isComposing) return;
-          if (event.key === "Escape" || (event.key === "Enter" && event.target === input)) {
-            event.preventDefault();
-            finish(event.key === "Enter");
-          }
-        });
-        editor.querySelector(".device-alias-save").addEventListener("click", () => finish(true));
-        editor.querySelector(".device-alias-cancel").addEventListener("click", () => finish(false));
-        input.focus();
-        input.select();
-      }
-
-      async function saveDeviceOrder(data, order, nodeId) {
-        reordering = true;
-        orderStatus.textContent = "";
-        try {
-          if (order.some((id, index) => id !== data.nodes[index].id)) {
-            const response = await fetch("api/nodes/order", {
-              method: "POST",
-              headers: {"Content-Type": "application/json"},
-              body: JSON.stringify({order}),
-            });
-            if (!response.ok) throw new Error(await response.text());
-            const result = await response.json();
-            const byId = new Map(data.nodes.map(node => [node.id, node]));
-            data.nodes = result.order.map(id => byId.get(id));
-            data.workspaces = result.order.flatMap(
-              id => data.workspaces.filter(workspace => workspace.node_id === id));
-            inventoryRevision += 1;
-            render(data);
-            signature = JSON.stringify(data);
-          }
-        } catch (error) {
-          orderStatus.textContent = `Could not reorder devices: ${error.message}`;
-        } finally {
-          reordering = false;
-          nodes.querySelector(`.device[data-node-id="${CSS.escape(nodeId)}"] .device-drag`).focus({preventScroll: true});
-          refresh();
-        }
-      }
-
-      function clearDropMarker() {
-        nodes.classList.remove("device-drop-end");
-        for (const card of nodes.querySelectorAll(".device-drop-before")) {
-          card.classList.remove("device-drop-before");
-        }
-      }
-
-      function markDropTarget() {
-        clearDropMarker();
-        drag.before = Array.from(nodes.children).find(card => {
-          const rect = card.getBoundingClientRect();
-          return card !== drag.card && drag.y < (rect.top + rect.bottom) / 2;
-        });
-        (drag.before || nodes).classList.add(drag.before ? "device-drop-before" : "device-drop-end");
-      }
-
-      function scrollDrag() {
-        const step = drag.y < 56 ? -12 : drag.y > innerHeight - 56 ? 12 : 0;
-        if (step) {
-          window.scrollBy(0, step);
-          markDropTarget();
-        }
-        drag.frame = requestAnimationFrame(scrollDrag);
-      }
-
-      function finishDrag(commit, event) {
-        const current = drag;
-        if (!current) return;
-        drag = null;
-        cancelAnimationFrame(current.frame);
-        current.card.removeAttribute("data-dragging");
-        clearDropMarker();
-        if (nodes.hasPointerCapture(current.pointerId)) {
-          nodes.releasePointerCapture(current.pointerId);
-        }
-        const rect = nodes.getBoundingClientRect();
-        if (commit && current.moved && event.clientX >= rect.left
-            && event.clientX <= rect.right && event.clientY >= rect.top && event.clientY <= rect.bottom) {
-          const cards = Array.from(nodes.children).filter(card => card !== current.card);
-          const index = current.before ? cards.indexOf(current.before) : cards.length;
-          cards.splice(index, 0, current.card);
-          saveDeviceOrder(current.data, cards.map(card => card.dataset.nodeId), current.card.dataset.nodeId);
+    function bindCopyButton(button, input, defaultLabel, subject) {
+      button.addEventListener("click", async () => {
+        if (!input.value) return;
+        const token = registrationToken;
+        const copied = await copyToClipboard(input.value, input);
+        if (!deviceConnection.open || token !== registrationToken) return;
+        clearTimeout(copyResetTimers.get(button));
+        if (copied) {
+          button.dataset.copied = "true";
+          setText(button, "Copied");
+          setText(registrationStatus, `${subject} copied to clipboard.`);
+          copyResetTimers.set(button, setTimeout(() => resetCopyButton(button, defaultLabel), 1600));
         } else {
-          reordering = false;
+          input.focus();
+          input.select();
+          setText(registrationStatus, "Selected text — press Ctrl/Cmd+C to copy.");
+        }
+      });
+    }
+
+    function setupRegistration() {
+      bindSelectOnFocus(registrationKey);
+      bindSelectOnFocus(registrationCommand);
+      bindCopyButton(copyKeyButton, registrationKey, "Copy key", "Key");
+      bindCopyButton(copyCommandButton, registrationCommand, "Copy command", "Command");
+
+      deviceConnection.addEventListener("toggle", async () => {
+        const token = ++registrationToken;
+        registrationKey.value = "";
+        registrationCommand.value = "";
+        copyKeyButton.disabled = true;
+        copyCommandButton.disabled = true;
+        resetCopyButton(copyKeyButton, "Copy key");
+        resetCopyButton(copyCommandButton, "Copy command");
+        setText(registrationStatus, "");
+        if (!deviceConnection.open) return;
+        setText(registrationStatus, "Loading…");
+        try {
+          const data = await requestJson("api/registration-key", {cache: "no-store"});
+          if (!data || !deviceConnection.open || token !== registrationToken) return;
+          registrationKey.value = data.key;
+          registrationCommand.value = formatListenCommand(data.key, data.device_port || 6000);
+          copyKeyButton.disabled = false;
+          copyCommandButton.disabled = false;
+          setText(registrationStatus, "");
+        } catch (error) {
+          if (deviceConnection.open && token === registrationToken) {
+            setText(registrationStatus, `Could not load key: ${error.message}`);
+          }
+        }
+      });
+    }
+
+    // -- Device actions ------------------------------------------------------
+
+    async function verifyDevice(nodeId) {
+      if (verifyingDevice !== null) return;
+      const node = nodeById(nodeId);
+      const name = node ? deviceDisplayName(node) : nodeId;
+      verifyingDevice = nodeId;
+      clearDeviceError();
+      render();
+      try {
+        const data = await requestJson(`api/nodes/${encodeURIComponent(nodeId)}/verify`, {method: "POST"});
+        if (!data) {
+          verifyingDevice = null;
+          return;
+        }
+        if (node) node.verified = true;
+        verifyingDevice = null;
+        commitInventoryChange();
+        window.location.assign(data.url);
+      } catch (error) {
+        verifyingDevice = null;
+        showDeviceError(`Could not open ${name}: ${error.message}`);
+        render();
+      }
+    }
+
+    function patchDeviceAction(slot, node) {
+      const name = deviceDisplayName(node);
+      const kind = node.verified ? "manage" : "verify";
+      if (slot.dataset.actionKind !== kind) {
+        slot.dataset.actionKind = kind;
+        const control = cloneTemplate(kind);
+        control.addEventListener("keyup", event => {
+          if (event.key === " ") event.stopPropagation();
+        });
+        if (kind === "manage") {
+          control.addEventListener("click", event => event.stopPropagation());
+          control.addEventListener("keydown", event => {
+            if (event.key === " ") {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          });
+        } else {
+          control.addEventListener("click", event => {
+            event.preventDefault();
+            event.stopPropagation();
+            verifyDevice(control.dataset.nodeId);
+          });
+        }
+        slot.replaceChildren(control);
+      }
+      const control = slot.firstElementChild;
+      if (kind === "manage") {
+        control.setAttribute("href", node.url);
+        control.setAttribute("aria-label", `Manage workspaces on ${name}`);
+      } else {
+        control.dataset.nodeId = node.id;
+        control.disabled = verifyingDevice !== null;
+        setText(control, verifyingDevice === node.id ? "Verifying…" : "Verify and open");
+        control.setAttribute("aria-label", `Verify and open ${name}`);
+      }
+    }
+
+    function editDeviceAlias(card, nodeId) {
+      if (isBusy()) return;
+      const node = nodeById(nodeId);
+      if (!node) return;
+      const jumpButton = card.querySelector(".device-jump");
+      const renameButton = card.querySelector(".device-rename");
+      editingDevice = node.id;
+      clearDeviceError();
+
+      const editor = cloneTemplate("alias");
+      const input = editor.querySelector("input");
+      const buttons = Array.from(editor.querySelectorAll("button"));
+      input.value = node.alias || "";
+      input.placeholder = node.name;
+      jumpButton.hidden = true;
+      renameButton.hidden = true;
+      jumpButton.before(editor);
+
+      let saving = false;
+      const close = (restoreFocus, shouldRefresh) => {
+        const keepFocus = restoreFocus && (editor.contains(document.activeElement) || document.activeElement === document.body);
+        editor.remove();
+        jumpButton.hidden = false;
+        renameButton.hidden = false;
+        editingDevice = null;
+        if (keepFocus) {
+          nodes.querySelector(`.device[data-node-id="${CSS.escape(node.id)}"] .device-rename`)?.focus({preventScroll: true});
+        }
+        if (shouldRefresh) refresh();
+      };
+
+      const submit = async () => {
+        if (saving) return;
+        const alias = input.value.trim();
+        if (!alias) {
+          input.setCustomValidity("Device alias must contain at least one character.");
+          input.reportValidity();
+          input.focus();
+          return;
+        }
+        input.setCustomValidity("");
+        if (alias === (node.alias || "")) {
+          close(true, true);
+          return;
+        }
+        saving = true;
+        input.disabled = true;
+        for (const btn of buttons) btn.disabled = true;
+        clearDeviceError();
+        try {
+          const result = await postJson(`api/nodes/${encodeURIComponent(node.id)}/alias`, {alias});
+          if (!result) {
+            close(false, false);
+            return;
+          }
+          node.alias = result.alias;
+          commitInventoryChange();
+          close(true, true);
+        } catch (error) {
+          saving = false;
+          input.disabled = false;
+          for (const btn of buttons) btn.disabled = false;
+          showDeviceError(`Could not rename device: ${error.message}`);
+          input.focus();
+        }
+      };
+
+      input.addEventListener("input", () => input.setCustomValidity(""));
+      editor.addEventListener("submit", event => { event.preventDefault(); submit(); });
+      editor.addEventListener("keydown", event => {
+        if (!event.isComposing && event.key === "Escape") {
+          event.preventDefault();
+          if (!saving) close(true, true);
+        }
+      });
+      editor.querySelector(".device-alias-cancel").addEventListener("click", () => {
+        if (!saving) close(true, true);
+      });
+      input.focus();
+      input.select();
+    }
+
+    async function saveDeviceOrder(order, nodeId) {
+      if (!inventory) return;
+      reordering = true;
+      clearDeviceError();
+      const hadFocus = nodes.contains(document.activeElement) || document.activeElement === document.body;
+      let redirected = false;
+      try {
+        if (order.some((id, index) => id !== inventory.nodes[index]?.id)) {
+          const result = await postJson("api/nodes/order", {order});
+          if (!result) {
+            redirected = true;
+            return;
+          }
+          const byId = new Map(inventory.nodes.map(node => [node.id, node]));
+          const orderedNodes = result.order.map(id => byId.get(id)).filter(Boolean);
+          for (const node of inventory.nodes) {
+            if (!orderedNodes.includes(node)) orderedNodes.push(node);
+          }
+          inventory.nodes = orderedNodes;
+          inventory.workspaces = orderedNodes.flatMap(
+            node => inventory.workspaces.filter(workspace => workspace.node_id === node.id),
+          );
+          commitInventoryChange();
+        }
+      } catch (error) {
+        showDeviceError(`Could not reorder devices: ${error.message}`);
+      } finally {
+        reordering = false;
+        if (!redirected) {
+          if (hadFocus && (nodes.contains(document.activeElement) || document.activeElement === document.body)) {
+            nodes.querySelector(`.device[data-node-id="${CSS.escape(nodeId)}"] .device-drag`)?.focus({preventScroll: true});
+          }
           refresh();
         }
       }
+    }
 
+    function focusWorkspaceGroup(nodeId) {
+      if (isBusy()) return;
+      if (isFiltering() && !workspaces.querySelector(`.workspace-group[data-node-id="${CSS.escape(nodeId)}"]`)) {
+        clearFilters();
+      }
+      const group = workspaces.querySelector(`.workspace-group[data-node-id="${CSS.escape(nodeId)}"]`);
+      if (!group) return;
+      if (!group.open) {
+        if (isFiltering()) filterOpenOverrides.set(nodeId, true);
+        else expandedStore.set(nodeId, true);
+        setGroupOpen(group, true);
+        updateExpandToggleButton();
+      }
+      const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      group.scrollIntoView({behavior: reduced ? "auto" : "smooth", block: "nearest"});
+      group.querySelector(".workspace-group-heading")?.focus({preventScroll: true});
+      for (const existing of workspaces.querySelectorAll('.workspace-group[data-highlight="true"]')) {
+        delete existing.dataset.highlight;
+      }
+      group.dataset.highlight = "true";
+      clearTimeout(highlightTimer);
+      highlightTimer = setTimeout(() => delete group.dataset.highlight, 1200);
+    }
+
+    // -- Drag reorder --------------------------------------------------------
+
+    function isInsideDropZone(clientX, clientY) {
+      const rect = nodes.getBoundingClientRect();
+      return clientX >= rect.left - DROP_ZONE_PAD_X
+        && clientX <= rect.right + DROP_ZONE_PAD_X
+        && clientY >= rect.top - DROP_ZONE_PAD_Y
+        && clientY <= rect.bottom + DROP_ZONE_PAD_Y;
+    }
+
+    function findDropBefore(dragCard, clientY) {
+      return Array.from(nodes.children).find(card => {
+        const rect = card.getBoundingClientRect();
+        return card !== dragCard && clientY < (rect.top + rect.bottom) / 2;
+      }) || null;
+    }
+
+    function clearDropMarker() {
+      nodes.classList.remove("device-drop-end");
+      for (const card of nodes.querySelectorAll(".device-drop-before")) {
+        card.classList.remove("device-drop-before");
+      }
+    }
+
+    function markDropTarget() {
+      clearDropMarker();
+      if (!drag) return;
+      const inside = isInsideDropZone(drag.x, drag.y);
+      drag.card.toggleAttribute("data-drag-outside", !inside);
+      if (!inside) {
+        drag.before = null;
+        return;
+      }
+      drag.before = findDropBefore(drag.card, drag.y);
+      (drag.before || nodes).classList.add(drag.before ? "device-drop-before" : "device-drop-end");
+    }
+
+    function scrollDrag() {
+      if (!drag) return;
+      const overflowY = getComputedStyle(nodes).overflowY;
+      const innerScrollable = overflowY !== "visible" && nodes.scrollHeight > nodes.clientHeight + 1;
+      let step = 0;
+      if (innerScrollable) {
+        const rect = nodes.getBoundingClientRect();
+        const top = Math.max(rect.top, 0);
+        const bottom = Math.min(rect.bottom, window.innerHeight);
+        step = drag.y < top + 48 ? -10 : drag.y > bottom - 48 ? 10 : 0;
+        if (step) nodes.scrollTop += step;
+      } else {
+        step = drag.y < 56 ? -12 : drag.y > window.innerHeight - 56 ? 12 : 0;
+        if (step) window.scrollBy(0, step);
+      }
+      if (step) markDropTarget();
+      drag.frame = requestAnimationFrame(scrollDrag);
+    }
+
+    function finishDrag(commit, event) {
+      const current = drag;
+      if (!current) return;
+      drag = null;
+      cancelAnimationFrame(current.frame);
+      current.card.removeAttribute("data-dragging");
+      current.card.removeAttribute("data-drag-outside");
+      clearDropMarker();
+      if (nodes.hasPointerCapture(current.pointerId)) {
+        nodes.releasePointerCapture(current.pointerId);
+      }
+      if (commit && current.moved && isInsideDropZone(event.clientX, event.clientY)) {
+        const before = findDropBefore(current.card, event.clientY);
+        const cards = Array.from(nodes.children).filter(card => card !== current.card);
+        const index = before ? cards.indexOf(before) : cards.length;
+        cards.splice(index, 0, current.card);
+        saveDeviceOrder(cards.map(card => card.dataset.nodeId), current.card.dataset.nodeId);
+      } else {
+        reordering = false;
+        refresh();
+      }
+    }
+
+    function setupDeviceDrag() {
       nodes.addEventListener("pointermove", event => {
         if (!drag || event.pointerId !== drag.pointerId) return;
+        drag.x = event.clientX;
         drag.y = event.clientY;
         if (!drag.moved) {
-          if (Math.hypot(event.clientX - drag.x, event.clientY - drag.startY) < 5) return;
+          if (Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < 5) return;
           drag.moved = true;
           drag.card.setAttribute("data-dragging", "");
           drag.frame = requestAnimationFrame(scrollDrag);
@@ -502,148 +981,370 @@
       nodes.addEventListener("pointerup", event => {
         if (drag && event.pointerId === drag.pointerId) finishDrag(true, event);
       });
-      nodes.addEventListener("pointercancel", () => finishDrag(false));
-      nodes.addEventListener("lostpointercapture", () => finishDrag(false));
-      nodes.addEventListener("keydown", event => {
+      nodes.addEventListener("pointercancel", event => {
+        if (drag && event.pointerId === drag.pointerId) finishDrag(false);
+      });
+      nodes.addEventListener("lostpointercapture", event => {
+        if (drag && event.pointerId === drag.pointerId) finishDrag(false);
+      });
+      document.addEventListener("keydown", event => {
         if (drag && event.key === "Escape") {
           event.preventDefault();
           finishDrag(false);
         }
       });
+    }
 
-      function bindDeviceDrag(card, node, data) {
-        const handle = card.querySelector(".device-drag");
-        handle.disabled = data.nodes.length < 2;
-        handle.setAttribute("aria-label", `Reorder device ${node.alias || node.name}`);
-        handle.addEventListener("pointerdown", event => {
-          if (event.button !== 0 || reordering || editingDevice !== null) return;
-          event.preventDefault();
-          handle.focus({preventScroll: true});
-          reordering = true;
-          orderStatus.textContent = "";
-          drag = {card, data, pointerId: event.pointerId, x: event.clientX,
-            startY: event.clientY, y: event.clientY, moved: false, frame: null, before: null};
+    // -- Rendering -----------------------------------------------------------
+
+    function patchDeviceChrome(container, node, workingCount, hasUnread) {
+      container.dataset.nodeId = node.id;
+      container.dataset.verified = String(Boolean(node.verified));
+      const label = container.querySelector(".device-label");
+      setText(label, deviceDisplayName(node));
+      label.title = node.name;
+      patchDeviceAction(container.querySelector(".device-action"), node);
+      container.querySelector(".device-unread").hidden = !hasUnread;
+      const badge = container.querySelector(".device-working");
+      badge.hidden = !workingCount;
+      setText(badge, workingCount ? `${workingCount} working` : "");
+    }
+
+    function patchWorkspaceRow(row, {workspace, node, showDevicePrefix}) {
+      const name = deviceDisplayName(node);
+      setText(row.querySelector(".workspace-title"), workspace.id);
+      row.querySelector(".unread-dot").hidden = !workspace.unread;
+      setText(row.querySelector(".workspace-path"), workspace.work_dir);
+      setText(row.querySelector(".state-path"), workspace.state_path);
+      const activity = row.querySelector(".activity-badge");
+      activity.dataset.state = workspace.running ? "working" : "ready";
+      setText(activity, workspace.running ? "Working" : "Ready");
+      const sessions = countLabel(workspace.session_count, "session");
+      setText(row.querySelector(".session-count"), showDevicePrefix ? `${name} · ${sessions}` : sessions);
+      const link = row.querySelector(".open-link");
+      link.setAttribute("href", workspace.url);
+      link.setAttribute("aria-label", `Open ${workspace.id} on ${name}`);
+      link.title = [workspace.id, workspace.work_dir, workspace.state_path, workspace.unread ? "Unread reply" : ""]
+        .filter(Boolean).join("\n");
+    }
+
+    function createWorkspaceGroup() {
+      const group = cloneTemplate("group");
+      group.addEventListener("toggle", () => {
+        if (group.dataset.appliedOpen === String(group.open)) return;
+        group.dataset.appliedOpen = String(group.open);
+        const nodeId = group.dataset.nodeId;
+        if (isFiltering()) filterOpenOverrides.set(nodeId, group.open);
+        else expandedStore.set(nodeId, group.open);
+        updateExpandToggleButton();
+      });
+      return group;
+    }
+
+    function patchWorkspaceGroup(group, {node, owned, isOpen, workingCount, hasUnread}) {
+      patchDeviceChrome(group, node, workingCount, hasUnread);
+      group.setAttribute("aria-label", deviceDisplayName(node));
+      setText(group.querySelector(".count"), node.verified ? countLabel(owned.length, "workspace") : "Unverified");
+      group.querySelector(".list-head").hidden = owned.length === 0;
+      const list = group.querySelector(".workspace-group-list");
+      if (owned.length) {
+        syncChildren(
+          list,
+          owned,
+          workspace => workspace.id,
+          () => cloneTemplate("workspace"),
+          (row, workspace) => patchWorkspaceRow(row, {workspace, node, showDevicePrefix: false}),
+        );
+      } else {
+        const emptySpec = node.verified
+          ? ["No workspaces yet", "Use Manage to create a workspace on this device."]
+          : ["Device awaiting verification", "Choose Verify and open to access its workspaces."];
+        syncChildren(
+          list,
+          [emptySpec],
+          () => "__empty__",
+          () => cloneTemplate("empty"),
+          (card, [title, description]) => patchEmptyCard(card, title, description),
+        );
+      }
+      // Avoid overriding a pending user click whose async toggle event has not fired yet.
+      if (group.dataset.appliedOpen === undefined || group.dataset.appliedOpen === String(group.open)) {
+        setGroupOpen(group, isOpen);
+      }
+    }
+
+    function createDeviceCard() {
+      const card = cloneTemplate("device");
+      const handle = card.querySelector(".device-drag");
+      handle.addEventListener("pointerdown", event => {
+        if (event.button !== 0 || isBusy() || !inventory || inventory.nodes.length < 2) return;
+        event.preventDefault();
+        try {
           nodes.setPointerCapture(event.pointerId);
-        });
-        handle.addEventListener("keydown", event => {
-          if (reordering || editingDevice !== null || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
-          event.preventDefault();
-          const order = data.nodes.map(item => item.id);
-          const index = order.indexOf(node.id);
-          const target = index + (event.key === "ArrowUp" ? -1 : 1);
-          if (target < 0 || target >= order.length) return;
-          [order[index], order[target]] = [order[target], order[index]];
-          saveDeviceOrder(data, order, node.id);
-        });
-      }
-
-      function render(data) {
-        const focusedHandle = nodes.contains(document.activeElement)
-          && document.activeElement.matches(".device-drag")
-          ? document.activeElement.closest(".device").dataset.nodeId : null;
-        const expanded = new Set(Array.from(
-          workspaces.querySelectorAll(".workspace-group[open]"), group => group.dataset.nodeId));
-        const workspaceList = document.createDocumentFragment();
-        const unreadGroup = unreadTemplate.content.firstElementChild.cloneNode(true);
-        const unreadList = unreadGroup.querySelector(".workspace-group-list");
-        const groups = new Map();
-        for (const node of data.nodes) {
-          const group = workspaceGroupTemplate.content.firstElementChild.cloneNode(true);
-          group.dataset.nodeId = node.id;
-          group.open = expanded.has(node.id);
-          group.setAttribute("aria-label", node.alias || node.name);
-          setDeviceLabel(group.querySelector(".device-label"), node);
-          const link = group.querySelector(".manage-link");
-          link.href = node.url;
-          link.setAttribute("aria-label", `Manage workspaces on ${node.alias || node.name}`);
-          groups.set(node.id, {node, group});
+        } catch {
+          return;
         }
-        for (const workspace of data.workspaces) {
-          const card = workspaceTemplate.content.firstElementChild.cloneNode(true);
-          const title = card.querySelector(".workspace-title");
-          title.textContent = workspace.id;
-          title.title = workspace.id;
-          card.querySelector(".unread-dot").hidden = !workspace.unread;
-          const path = card.querySelector(".workspace-path");
-          path.textContent = workspace.work_dir;
-          path.title = workspace.work_dir;
-          const statePath = card.querySelector(".state-path");
-          statePath.textContent = workspace.state_path;
-          statePath.title = workspace.state_path;
-          const activity = card.querySelector(".activity-badge");
-          activity.dataset.state = workspace.running ? "working" : "ready";
-          activity.textContent = workspace.running ? "Working" : "Ready";
-          card.querySelector(".session-count").textContent = countLabel(workspace.session_count, "session");
-          const link = card.querySelector(".open-link");
-          link.href = workspace.url;
-          const {node, group} = groups.get(workspace.node_id);
-          link.setAttribute("aria-label", `Open ${workspace.id} on ${node.alias || node.name}`);
-          group.querySelector(".workspace-group-list").append(card);
+        handle.focus({preventScroll: true});
+        reordering = true;
+        clearDeviceError();
+        drag = {
+          card, pointerId: event.pointerId,
+          startX: event.clientX, startY: event.clientY,
+          x: event.clientX, y: event.clientY,
+          moved: false, frame: null, before: null,
+        };
+      });
+      handle.addEventListener("keydown", event => {
+        if (isBusy() || !inventory || !["ArrowUp", "ArrowDown"].includes(event.key)) return;
+        event.preventDefault();
+        const nodeId = card.dataset.nodeId;
+        const order = inventory.nodes.map(item => item.id);
+        const index = order.indexOf(nodeId);
+        const target = index + (event.key === "ArrowUp" ? -1 : 1);
+        if (index < 0 || target < 0 || target >= order.length) return;
+        [order[index], order[target]] = [order[target], order[index]];
+        saveDeviceOrder(order, nodeId);
+      });
+      card.querySelector(".device-jump").addEventListener("click", () => focusWorkspaceGroup(card.dataset.nodeId));
+      card.querySelector(".device-rename").addEventListener("click", () => editDeviceAlias(card, card.dataset.nodeId));
+      return card;
+    }
+
+    function patchDeviceCard(card, {node, owned, workingCount, hasUnread, sessionCount, totalNodes}) {
+      const name = deviceDisplayName(node);
+      patchDeviceChrome(card, node, workingCount, hasUnread);
+      const handle = card.querySelector(".device-drag");
+      handle.disabled = totalNodes < 2;
+      handle.setAttribute("aria-label", `Reorder device ${name}`);
+      card.querySelector(".device-jump").title = `Show ${name} in workspace list`;
+      card.querySelector(".device-rename").setAttribute("aria-label", `Rename device ${name}`);
+      const dot = card.querySelector(".online-dot");
+      const dotLabel = node.verified ? "Online" : "Awaiting verification";
+      dot.setAttribute("aria-label", dotLabel);
+      dot.title = dotLabel;
+      setText(
+        card.querySelector(".device-detail"),
+        node.verified ? `${countLabel(owned.length, "workspace")} · ${countLabel(sessionCount, "session")}` : "Unverified",
+      );
+    }
+
+    function toggleTargetGroups() {
+      const groups = Array.from(workspaces.querySelectorAll(".workspace-group"));
+      const verified = groups.filter(group => group.dataset.verified === "true");
+      return {groups, targets: verified.length ? verified : groups};
+    }
+
+    function updateExpandToggleButton() {
+      const {targets} = toggleTargetGroups();
+      if (!targets.length || isFiltering()) {
+        toggleAllButton.hidden = true;
+        return;
+      }
+      toggleAllButton.hidden = false;
+      const allOpen = targets.every(group => group.open);
+      setText(toggleAllButton, allOpen ? "Collapse all" : "Expand all");
+      toggleAllButton.dataset.nextOpen = String(!allOpen);
+    }
+
+    function matchesQuery(node, workspace, query) {
+      if (!query) return true;
+      const fields = [node.alias, node.name, workspace?.id, workspace?.work_dir, workspace?.state_path];
+      return fields.some(value => value && value.toLowerCase().includes(query));
+    }
+
+    function defaultGroupOpen(node, totalWorkspaces) {
+      if (initialAutoExpand === null) initialAutoExpand = totalWorkspaces <= AUTO_EXPAND_WORKSPACE_LIMIT;
+      if (!defaultOpenCache.has(node.id)) {
+        defaultOpenCache.set(node.id, Boolean(node.verified) && initialAutoExpand);
+      }
+      return defaultOpenCache.get(node.id);
+    }
+
+    function summarizeInventory(data) {
+      const byNode = new Map(data.nodes.map(node => [
+        node.id, {owned: [], workingCount: 0, unreadCount: 0, sessionCount: 0},
+      ]));
+      let totalWorking = 0;
+      let totalUnread = 0;
+      for (const workspace of data.workspaces) {
+        if (workspace.running) totalWorking += 1;
+        if (workspace.unread) totalUnread += 1;
+        const summary = byNode.get(workspace.node_id);
+        if (!summary) continue;
+        summary.owned.push(workspace);
+        if (workspace.running) summary.workingCount += 1;
+        if (workspace.unread) summary.unreadCount += 1;
+        summary.sessionCount += workspace.session_count;
+      }
+      return {byNode, totalWorkspaces: data.workspaces.length, totalWorking, totalUnread};
+    }
+
+    function render() {
+      if (!inventory) return;
+      const data = inventory;
+      const query = filterInput.value.trim().toLowerCase();
+      const filtering = isFiltering();
+      const {byNode, totalWorkspaces, totalWorking, totalUnread} = summarizeInventory(data);
+
+      const visibleGroups = [];
+      const visibleUnread = [];
+      let visibleWorkspaceCount = 0;
+
+      for (const node of data.nodes) {
+        const summary = byNode.get(node.id);
+        const owned = filtering
+          ? summary.owned.filter(ws => (!workingOnly || ws.running) && matchesQuery(node, ws, query))
+          : summary.owned;
+        const deviceMatchesQuery = Boolean(query) && !workingOnly && matchesQuery(node, null, query);
+        if (filtering && !owned.length && !deviceMatchesQuery) continue;
+
+        let groupWorking = 0;
+        let hasUnread = false;
+        visibleWorkspaceCount += owned.length;
+        for (const workspace of owned) {
+          if (workspace.running) groupWorking += 1;
           if (workspace.unread) {
-            group.querySelector(".device-unread").hidden = false;
-            const unreadCard = card.cloneNode(true);
-            const detail = unreadCard.querySelector(".session-count");
-            detail.textContent = `${node.alias || node.name} · ${detail.textContent}`;
-            detail.title = detail.textContent;
-            unreadList.append(unreadCard);
+            hasUnread = true;
+            visibleUnread.push({workspace, node});
           }
         }
-        if (unreadList.childElementCount) {
-          unreadGroup.querySelector(".count").textContent = countLabel(
-            unreadList.childElementCount, "workspace");
-          workspaceList.append(unreadGroup);
-        }
-        for (const {group} of groups.values()) {
-          const count = group.querySelector(".workspace-group-list").childElementCount;
-          group.querySelector(".count").textContent = countLabel(count, "workspace");
-          if (!count) {
-            group.querySelector(".list-head").remove();
-            group.querySelector(".workspace-group-list").append(
-              empty("No workspaces yet", "Use Manage to create a workspace on this device."));
-          }
-          workspaceList.append(group);
-        }
-        if (!data.nodes.length) {
-          workspaceList.append(empty("No workspaces yet",
-            "Your workspaces will appear when a device connects."));
-        }
-
-        const nodeList = document.createDocumentFragment();
-        for (const node of data.nodes) {
-          const card = deviceTemplate.content.firstElementChild.cloneNode(true);
-          card.dataset.nodeId = node.id;
-          bindDeviceDrag(card, node, data);
-          const label = card.querySelector(".device-label");
-          setDeviceLabel(label, node);
-          const rename = card.querySelector(".device-rename");
-          rename.setAttribute("aria-label", `Rename device ${node.alias || node.name}`);
-          rename.addEventListener("click", () => editDeviceAlias(label, rename, node, data));
-          const owned = data.workspaces.filter(workspace => workspace.node_id === node.id);
-          card.querySelector(".device-unread").hidden = !owned.some(workspace => workspace.unread);
-          const sessions = owned.reduce((total, workspace) => total + workspace.session_count, 0);
-          card.querySelector(".device-detail").textContent = `${countLabel(owned.length, "workspace")} · ${countLabel(sessions, "session")}`;
-          const working = owned.filter(workspace => workspace.running).length;
-          for (const container of [groups.get(node.id).group, card]) {
-            const badge = container.querySelector(".device-working");
-            badge.hidden = !working;
-            badge.textContent = working ? `${working} working` : "";
-          }
-          nodeList.append(card);
-        }
-        if (!data.nodes.length) {
-          nodeList.append(empty("No devices connected", "Connected devices will appear here automatically."));
-        }
-        workspaces.replaceChildren(workspaceList);
-        nodes.replaceChildren(nodeList);
-        if (focusedHandle) {
-          const handle = nodes.querySelector(`.device[data-node-id="${CSS.escape(focusedHandle)}"] .device-drag`);
-          if (handle) handle.focus({preventScroll: true});
-        }
-        document.getElementById("workspace-count").textContent = data.workspaces.length;
-        document.getElementById("device-count").textContent = data.nodes.length;
-        const running = data.workspaces.filter(workspace => workspace.running).length;
-        document.getElementById("activity").textContent = running ? `${running} working` : "";
+        const isOpen = filtering
+          ? (filterOpenOverrides.has(node.id) ? filterOpenOverrides.get(node.id) : true)
+          : (expandedStore.has(node.id) ? expandedStore.get(node.id) : defaultGroupOpen(node, totalWorkspaces));
+        visibleGroups.push({kind: "group", key: `group:${node.id}`, node, owned, isOpen, workingCount: groupWorking, hasUnread});
       }
+
+      const sections = [];
+      if (!data.nodes.length) {
+        sections.push({
+          kind: "empty", key: "__empty_nodes__",
+          title: "No workspaces yet",
+          description: "Your workspaces will appear when a device connects.",
+        });
+      } else if (filtering && !visibleGroups.length) {
+        sections.push({
+          kind: "empty", key: "__empty_filter__",
+          title: "No matching workspaces",
+          description: workingOnly && !query
+            ? "No workspaces are currently working."
+            : "Try a different filter or clear the current filters.",
+          action: {label: "Clear filters", onClick: clearFilters},
+        });
+      } else {
+        if (visibleUnread.length) sections.push({kind: "unread", key: "__unread__", items: visibleUnread});
+        sections.push(...visibleGroups);
+      }
+
+      syncChildren(
+        workspaces,
+        sections,
+        item => item.key,
+        item => item.kind === "unread" ? cloneTemplate("unread")
+          : item.kind === "group" ? createWorkspaceGroup() : cloneTemplate("empty"),
+        (el, item) => {
+          if (item.kind === "unread") {
+            setText(el.querySelector(".count"), countLabel(item.items.length, "workspace"));
+            syncChildren(
+              el.querySelector(".workspace-group-list"),
+              item.items,
+              entry => `${entry.node.id}/${entry.workspace.id}`,
+              () => cloneTemplate("workspace"),
+              (row, entry) => patchWorkspaceRow(row, {...entry, showDevicePrefix: true}),
+            );
+          } else if (item.kind === "group") {
+            patchWorkspaceGroup(el, item);
+          } else {
+            patchEmptyCard(el, item.title, item.description, item.action);
+          }
+        },
+      );
+
+      const deviceItems = data.nodes.length
+        ? data.nodes.map(node => {
+            const summary = byNode.get(node.id);
+            return {
+              kind: "device", key: node.id, node,
+              owned: summary.owned,
+              workingCount: summary.workingCount,
+              hasUnread: summary.unreadCount > 0,
+              sessionCount: summary.sessionCount,
+              totalNodes: data.nodes.length,
+            };
+          })
+        : [{
+            kind: "empty", key: "__empty_devices__",
+            title: "No devices connected",
+            description: "Connected devices will appear here automatically.",
+          }];
+
+      syncChildren(
+        nodes,
+        deviceItems,
+        item => item.key,
+        item => item.kind === "device" ? createDeviceCard() : cloneTemplate("empty"),
+        (el, item) => item.kind === "device"
+          ? patchDeviceCard(el, item)
+          : patchEmptyCard(el, item.title, item.description),
+      );
+
+      setText(workspaceCount, filtering ? `${visibleWorkspaceCount}/${totalWorkspaces}` : String(totalWorkspaces));
+      setText(deviceCount, String(data.nodes.length));
+      activityButton.hidden = totalWorking === 0 && !workingOnly;
+      activityButton.dataset.active = String(totalWorking > 0);
+      activityButton.setAttribute("aria-pressed", String(workingOnly));
+      setText(activityButton, `${totalWorking} working`);
+      updateExpandToggleButton();
+      document.title = totalUnread ? `(${totalUnread}) ${baseTitle}` : baseTitle;
+    }
+
+    // -- Controls & polling --------------------------------------------------
+
+    function setupControls() {
+      deviceStatusDismiss.addEventListener("click", clearDeviceError);
+
+      activityButton.addEventListener("click", () => {
+        workingOnly = !workingOnly;
+        filterOpenOverrides.clear();
+        render();
+      });
+
+      filterInput.addEventListener("input", () => {
+        filterOpenOverrides.clear();
+        render();
+      });
+
+      filterInput.addEventListener("keydown", event => {
+        if (event.key !== "Escape") return;
+        if (filterInput.value) {
+          event.preventDefault();
+          filterInput.value = "";
+          filterOpenOverrides.clear();
+          render();
+        } else {
+          filterInput.blur();
+        }
+      });
+
+      toggleAllButton.addEventListener("click", () => {
+        if (!inventory) return;
+        const nextOpen = toggleAllButton.dataset.nextOpen === "true";
+        const {groups, targets} = toggleTargetGroups();
+        const affected = nextOpen ? targets : groups;
+        expandedStore.setMany(affected.map(group => [group.dataset.nodeId, nextOpen]));
+        for (const group of affected) setGroupOpen(group, nextOpen);
+        updateExpandToggleButton();
+      });
+
+      document.addEventListener("keydown", event => {
+        if (event.key !== "/" || isBusy() || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return;
+        const target = event.target;
+        if (target instanceof HTMLElement && (target.matches("input, textarea, select") || target.isContentEditable)) {
+          return;
+        }
+        event.preventDefault();
+        filterInput.focus();
+        filterInput.select();
+      });
 
       document.addEventListener("animationstart", event => {
         if (event.animationName !== "spinner-pulse") return;
@@ -653,42 +1354,58 @@
         }
       });
 
-      async function refresh() {
-        if (refreshing) return;
-        refreshing = true;
-        const revision = inventoryRevision;
-        try {
-          const response = await fetch("api/workspaces", {cache: "no-store"});
-          if (response.status === 401) {
-            window.location.assign("login");
-            return;
-          }
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const data = await response.json();
-          const next = JSON.stringify(data);
-          if (editingDevice === null && !reordering && revision === inventoryRevision && next !== signature) {
-            render(data);
-            signature = next;
-          }
-          statusText.title = "";
-          setStatus("live", "Live · updates automatically");
-        } catch (error) {
-          setStatus("error", "Could not refresh · retrying");
-          statusText.title = error.message;
-          if (!signature) {
-            workspaces.replaceChildren(empty("Unable to load workspaces", "The page will try again automatically."));
-            nodes.replaceChildren();
-          }
-        } finally {
-          refreshing = false;
-          workspaces.setAttribute("aria-busy", "false");
-          nodes.setAttribute("aria-busy", "false");
+      window.addEventListener("pageshow", event => {
+        if (event.persisted) {
+          verifyingDevice = null;
+          refresh(true);
         }
-      }
-      refresh();
-      setInterval(refresh, 2000);
+      });
     }
-    mountDirectory();
+
+    async function refresh(force = false) {
+      if (refreshing || (!force && document.hidden)) return;
+      refreshing = true;
+      const revision = inventoryRevision;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+      try {
+        const data = await requestJson("api/workspaces", {cache: "no-store", signal: controller.signal});
+        if (!data) return;
+        const next = JSON.stringify(data);
+        if (!isBusy() && revision === inventoryRevision && next !== signature) {
+          inventory = data;
+          signature = next;
+          render();
+        }
+        statusText.title = "";
+        setStatus("live", "Live · updates automatically");
+      } catch (error) {
+        setStatus("error", "Could not refresh · retrying");
+        statusText.title = error.message;
+        if (!signature) {
+          const emptyWs = cloneTemplate("empty");
+          patchEmptyCard(emptyWs, "Unable to load workspaces", "The page will try again automatically.");
+          workspaces.replaceChildren(emptyWs);
+          const emptyNodes = cloneTemplate("empty");
+          patchEmptyCard(emptyNodes, "Unable to load devices", "The page will try again automatically.");
+          nodes.replaceChildren(emptyNodes);
+        }
+      } finally {
+        clearTimeout(timeout);
+        refreshing = false;
+        workspaces.setAttribute("aria-busy", "false");
+        nodes.setAttribute("aria-busy", "false");
+      }
+    }
+
+    setupRegistration();
+    setupDeviceDrag();
+    setupControls();
+    document.addEventListener("visibilitychange", () => {
+      if (!document.hidden) refresh(true);
+    });
+    refresh(true);
+    setInterval(() => refresh(false), POLL_INTERVAL_MS);
   </script>
 </body>
 </html>
