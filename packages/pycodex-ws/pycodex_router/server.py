@@ -492,7 +492,7 @@ class Router:
         if node is None:
             raise TunnelUnavailable("Workspace device is offline.")
         if node.id not in self.verified_ids:
-            raise DeviceNotVerified("Open this device from the router directory to verify it.")
+            raise DeviceNotVerified("Verify this device in the router directory to access it.")
         if len(node.streams) >= self.max_connections:
             raise TunnelUnavailable("Workspace device has too many open requests.")
         return node
@@ -887,9 +887,9 @@ def build_parser():
         prog="pycodex-router",
         description="Publish reverse-connected pycodex workspaces.",
         epilog=(
-            "Sign in to the router page to copy its device registration key. "
-            "Clients connect with --listen-to KEY@host:port. Open each new device "
-            "in the router directory to verify it. Verified device pages share "
+            "Sign in to the router page to copy its device connect command. "
+            "Clients connect with --listen-to KEY@host:port. Verify each new "
+            "device in the router directory. Verified device pages share "
             "the router's browser origin."
         ),
     )

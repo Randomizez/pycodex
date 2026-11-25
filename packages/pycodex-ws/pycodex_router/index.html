@@ -249,17 +249,10 @@
         <summary>Connect a device</summary>
         <div class="registration-content">
           <div class="registration-field">
-            <label for="registration-key">Registration key</label>
-            <div class="copy-row">
-              <input id="registration-key" readonly autocomplete="off" spellcheck="false">
-              <button type="button" id="copy-registration-key" class="copy-button" disabled>Copy key</button>
-            </div>
-          </div>
-          <div class="registration-field">
             <label for="registration-command">Command</label>
             <div class="copy-row">
               <input id="registration-command" readonly autocomplete="off" spellcheck="false">
-              <button type="button" id="copy-registration-command" class="copy-button" disabled>Copy command</button>
+              <button type="button" id="copy-registration-command" class="copy-button" disabled>Copy</button>
             </div>
           </div>
           <p id="registration-status" role="status"></p>
@@ -363,7 +356,7 @@
     </article>
   </template>
   <template id="verify-device-template">
-    <button type="button" class="verify-link">Verify and open</button>
+    <button type="button" class="verify-link">Verify</button>
   </template>
   <template id="manage-device-template">
     <a class="manage-link">Manage <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg></a>
@@ -404,9 +397,7 @@
     const filterInput = $("workspace-filter");
     const toggleAllButton = $("toggle-all-groups");
     const deviceConnection = $("device-connection");
-    const registrationKey = $("registration-key");
     const registrationCommand = $("registration-command");
-    const copyKeyButton = $("copy-registration-key");
     const copyCommandButton = $("copy-registration-command");
     const registrationStatus = $("registration-status");
     const deviceStatus = $("device-status");
@@ -427,7 +418,7 @@
     const expandedStore = createExpandedStore(`pycodex-router:expanded:${window.location.pathname}`);
     const defaultOpenCache = new Map();
     const filterOpenOverrides = new Map();
-    const copyResetTimers = new Map();
+    let copyResetTimer = null;
 
     let inventory = null;
     let signature = "";
@@ -610,70 +601,57 @@
         : `pycodex-ws --listen-to ${target}`;
     }
 
-    function resetCopyButton(button, defaultLabel) {
-      clearTimeout(copyResetTimers.get(button));
-      copyResetTimers.delete(button);
-      delete button.dataset.copied;
-      setText(button, defaultLabel);
-    }
-
-    function bindSelectOnFocus(input) {
-      input.addEventListener("focus", () => input.select());
-      input.addEventListener("mouseup", event => {
-        if (input.selectionStart === 0 && input.selectionEnd === input.value.length) {
-          event.preventDefault();
-        }
-      });
-    }
-
-    function bindCopyButton(button, input, defaultLabel, subject) {
-      button.addEventListener("click", async () => {
-        if (!input.value) return;
-        const token = registrationToken;
-        const copied = await copyToClipboard(input.value, input);
-        if (!deviceConnection.open || token !== registrationToken) return;
-        clearTimeout(copyResetTimers.get(button));
-        if (copied) {
-          button.dataset.copied = "true";
-          setText(button, "Copied");
-          setText(registrationStatus, `${subject} copied to clipboard.`);
-          copyResetTimers.set(button, setTimeout(() => resetCopyButton(button, defaultLabel), 1600));
-        } else {
-          input.focus();
-          input.select();
-          setText(registrationStatus, "Selected text — press Ctrl/Cmd+C to copy.");
-        }
-      });
+    function resetCopyButton() {
+      clearTimeout(copyResetTimer);
+      copyResetTimer = null;
+      delete copyCommandButton.dataset.copied;
+      setText(copyCommandButton, "Copy");
     }
 
     function setupRegistration() {
-      bindSelectOnFocus(registrationKey);
-      bindSelectOnFocus(registrationCommand);
-      bindCopyButton(copyKeyButton, registrationKey, "Copy key", "Key");
-      bindCopyButton(copyCommandButton, registrationCommand, "Copy command", "Command");
+      registrationCommand.addEventListener("focus", () => registrationCommand.select());
+      registrationCommand.addEventListener("mouseup", event => {
+        if (registrationCommand.selectionStart === 0
+            && registrationCommand.selectionEnd === registrationCommand.value.length) {
+          event.preventDefault();
+        }
+      });
+
+      copyCommandButton.addEventListener("click", async () => {
+        if (!registrationCommand.value) return;
+        const token = registrationToken;
+        const copied = await copyToClipboard(registrationCommand.value, registrationCommand);
+        if (!deviceConnection.open || token !== registrationToken) return;
+        clearTimeout(copyResetTimer);
+        if (copied) {
+          copyCommandButton.dataset.copied = "true";
+          setText(copyCommandButton, "Copied");
+          setText(registrationStatus, "Command copied to clipboard.");
+          copyResetTimer = setTimeout(resetCopyButton, 1600);
+        } else {
+          registrationCommand.focus();
+          registrationCommand.select();
+          setText(registrationStatus, "Selected text — press Ctrl/Cmd+C to copy.");
+        }
+      });
 
       deviceConnection.addEventListener("toggle", async () => {
         const token = ++registrationToken;
-        registrationKey.value = "";
         registrationCommand.value = "";
-        copyKeyButton.disabled = true;
         copyCommandButton.disabled = true;
-        resetCopyButton(copyKeyButton, "Copy key");
-        resetCopyButton(copyCommandButton, "Copy command");
+        resetCopyButton();
         setText(registrationStatus, "");
         if (!deviceConnection.open) return;
         setText(registrationStatus, "Loading…");
         try {
           const data = await requestJson("api/registration-key", {cache: "no-store"});
           if (!data || !deviceConnection.open || token !== registrationToken) return;
-          registrationKey.value = data.key;
           registrationCommand.value = formatListenCommand(data.key, data.device_port || 6000);
-          copyKeyButton.disabled = false;
           copyCommandButton.disabled = false;
           setText(registrationStatus, "");
         } catch (error) {
           if (deviceConnection.open && token === registrationToken) {
-            setText(registrationStatus, `Could not load key: ${error.message}`);
+            setText(registrationStatus, `Could not load command: ${error.message}`);
           }
         }
       });
@@ -681,7 +659,7 @@
 
     // -- Device actions ------------------------------------------------------
 
-    async function verifyDevice(nodeId) {
+    async function verifyDevice(nodeId, unfold) {
       if (verifyingDevice !== null) return;
       const node = nodeById(nodeId);
       const name = node ? deviceDisplayName(node) : nodeId;
@@ -694,21 +672,39 @@
           verifyingDevice = null;
           return;
         }
-        if (node) node.verified = true;
+        if (unfold) {
+          if (isFiltering()) filterOpenOverrides.set(nodeId, true);
+          else expandedStore.set(nodeId, true);
+        }
+        let nextInventory = undefined;
+        try {
+          nextInventory = await requestJson("api/workspaces", {cache: "no-store"});
+        } catch {}
+        if (nextInventory === null) {
+          verifyingDevice = null;
+          return;
+        }
+        if (nextInventory) {
+          inventory = nextInventory;
+        } else if (node) {
+          node.verified = true;
+        }
         verifyingDevice = null;
         commitInventoryChange();
-        window.location.assign(data.url);
+        if (!nextInventory) refresh(true);
       } catch (error) {
         verifyingDevice = null;
-        showDeviceError(`Could not open ${name}: ${error.message}`);
+        showDeviceError(`Could not verify ${name}: ${error.message}`);
         render();
       }
     }
 
-    function patchDeviceAction(slot, node) {
+    function patchDeviceAction(slot, node, unfoldOnVerify) {
       const name = deviceDisplayName(node);
       const kind = node.verified ? "manage" : "verify";
-      if (slot.dataset.actionKind !== kind) {
+      const kindChanged = slot.dataset.actionKind !== kind;
+      const hadFocus = kindChanged && slot.contains(document.activeElement);
+      if (kindChanged) {
         slot.dataset.actionKind = kind;
         const control = cloneTemplate(kind);
         control.addEventListener("keyup", event => {
@@ -726,7 +722,7 @@
           control.addEventListener("click", event => {
             event.preventDefault();
             event.stopPropagation();
-            verifyDevice(control.dataset.nodeId);
+            verifyDevice(control.dataset.nodeId, control.dataset.unfold === "true");
           });
         }
         slot.replaceChildren(control);
@@ -736,11 +732,14 @@
         control.setAttribute("href", node.url);
         control.setAttribute("aria-label", `Manage workspaces on ${name}`);
       } else {
+        const actionLabel = unfoldOnVerify ? "Verify and unfold" : "Verify";
         control.dataset.nodeId = node.id;
+        control.dataset.unfold = String(Boolean(unfoldOnVerify));
         control.disabled = verifyingDevice !== null;
-        setText(control, verifyingDevice === node.id ? "Verifying…" : "Verify and open");
-        control.setAttribute("aria-label", `Verify and open ${name}`);
+        setText(control, verifyingDevice === node.id ? "Verifying…" : actionLabel);
+        control.setAttribute("aria-label", `${actionLabel} ${name}`);
       }
+      if (hadFocus) control.focus({preventScroll: true});
     }
 
     function editDeviceAlias(card, nodeId) {
@@ -997,13 +996,13 @@
 
     // -- Rendering -----------------------------------------------------------
 
-    function patchDeviceChrome(container, node, workingCount, hasUnread) {
+    function patchDeviceChrome(container, node, workingCount, hasUnread, unfoldOnVerify) {
       container.dataset.nodeId = node.id;
       container.dataset.verified = String(Boolean(node.verified));
       const label = container.querySelector(".device-label");
       setText(label, deviceDisplayName(node));
       label.title = node.name;
-      patchDeviceAction(container.querySelector(".device-action"), node);
+      patchDeviceAction(container.querySelector(".device-action"), node, unfoldOnVerify);
       container.querySelector(".device-unread").hidden = !hasUnread;
       const badge = container.querySelector(".device-working");
       badge.hidden = !workingCount;
@@ -1042,7 +1041,7 @@
     }
 
     function patchWorkspaceGroup(group, {node, owned, isOpen, workingCount, hasUnread}) {
-      patchDeviceChrome(group, node, workingCount, hasUnread);
+      patchDeviceChrome(group, node, workingCount, hasUnread, true);
       group.setAttribute("aria-label", deviceDisplayName(node));
       setText(group.querySelector(".count"), node.verified ? countLabel(owned.length, "workspace") : "Unverified");
       group.querySelector(".list-head").hidden = owned.length === 0;
@@ -1058,7 +1057,7 @@
       } else {
         const emptySpec = node.verified
           ? ["No workspaces yet", "Use Manage to create a workspace on this device."]
-          : ["Device awaiting verification", "Choose Verify and open to access its workspaces."];
+          : ["Device awaiting verification", "Verify this device to view and open its workspaces."];
         syncChildren(
           list,
           [emptySpec],
@@ -1112,7 +1111,7 @@
 
     function patchDeviceCard(card, {node, owned, workingCount, hasUnread, sessionCount, totalNodes}) {
       const name = deviceDisplayName(node);
-      patchDeviceChrome(card, node, workingCount, hasUnread);
+      patchDeviceChrome(card, node, workingCount, hasUnread, false);
       const handle = card.querySelector(".device-drag");
       handle.disabled = totalNodes < 2;
       handle.setAttribute("aria-label", `Reorder device ${name}`);
@@ -1146,10 +1145,11 @@
       toggleAllButton.dataset.nextOpen = String(!allOpen);
     }
 
-    function matchesQuery(node, workspace, query) {
-      if (!query) return true;
-      const fields = [node.alias, node.name, workspace?.id, workspace?.work_dir, workspace?.state_path];
-      return fields.some(value => value && value.toLowerCase().includes(query));
+    function matchesTerms(terms, node, workspace) {
+      if (!terms.length) return true;
+      const haystack = [node.alias, node.name, workspace?.id, workspace?.work_dir, workspace?.state_path]
+        .filter(Boolean).join("\n").toLowerCase();
+      return terms.every(term => haystack.includes(term));
     }
 
     function defaultGroupOpen(node, totalWorkspaces) {
@@ -1182,7 +1182,7 @@
     function render() {
       if (!inventory) return;
       const data = inventory;
-      const query = filterInput.value.trim().toLowerCase();
+      const terms = filterInput.value.trim().toLowerCase().split(/\s+/).filter(Boolean);
       const filtering = isFiltering();
       const {byNode, totalWorkspaces, totalWorking, totalUnread} = summarizeInventory(data);
 
@@ -1193,9 +1193,9 @@
       for (const node of data.nodes) {
         const summary = byNode.get(node.id);
         const owned = filtering
-          ? summary.owned.filter(ws => (!workingOnly || ws.running) && matchesQuery(node, ws, query))
+          ? summary.owned.filter(ws => (!workingOnly || ws.running) && matchesTerms(terms, node, ws))
           : summary.owned;
-        const deviceMatchesQuery = Boolean(query) && !workingOnly && matchesQuery(node, null, query);
+        const deviceMatchesQuery = terms.length > 0 && !workingOnly && matchesTerms(terms, node, null);
         if (filtering && !owned.length && !deviceMatchesQuery) continue;
 
         let groupWorking = 0;
@@ -1225,7 +1225,7 @@
         sections.push({
           kind: "empty", key: "__empty_filter__",
           title: "No matching workspaces",
-          description: workingOnly && !query
+          description: workingOnly && !terms.length
             ? "No workspaces are currently working."
             : "Try a different filter or clear the current filters.",
           action: {label: "Clear filters", onClick: clearFilters},

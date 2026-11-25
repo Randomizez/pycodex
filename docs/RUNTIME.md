@@ -841,7 +841,10 @@ redirected stdin. Device connections use the persistent registration key in
 
 New node IDs appear in the browser directory with `verified: false`. Their
 workspace inventories and HTTP/WebSocket routes become available when a signed-in
-user chooses **Verify and open**. The button posts to `api/nodes/{full_node_id}/verify`,
+user chooses **Verify and unfold** on the device's group heading (which verifies
+the device, refreshes its workspaces in place, and unfolds the group without
+leaving the directory) or **Verify** in Online devices (which verifies and
+refreshes in place). The button posts to `api/nodes/{full_node_id}/verify`,
 which records the online device and returns its directory URL. Repeated submissions
 are idempotent. Direct links and inventory polling leave verification unchanged.
 The CLI router atomically saves verified IDs in `<codex-home>/router-verified.json`.
@@ -1096,11 +1099,11 @@ expanded on first visit when total workspaces are 12 or fewer; unverified
 devices start collapsed). The directory patches existing DOM nodes in place,
 pauses polling while the tab is hidden, reflects the unread count in the page
 title, and provides search (`/`), a `working` filter chip, Expand/Collapse all,
-sidebar jump-to-group, and one-click copy of the registration key and prefilled
-`--listen-to` command (including the configured device port from
-`/api/registration-key`). Each device's heading
-includes Manage for verified devices and Verify and open for new devices, even
-when collapsed or empty. A red dot on that heading and in
+sidebar jump-to-group, and one-click copy of the prefilled `--listen-to`
+command (including the configured device port from `/api/registration-key`).
+Each device's heading includes Manage for verified devices and Verify and
+unfold for new devices (while Online devices offers a compact Verify button),
+even when collapsed or empty. A red dot on that heading and in
 the Online devices list indicates that any of the device's workspaces is unread.
 Both places show `n working` while any of the device's workspaces are working.
 Use the rename button in Online devices to set an alias, and click the device

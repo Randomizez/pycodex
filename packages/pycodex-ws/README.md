@@ -43,7 +43,8 @@ loopback port. The CLI prints the local URL and registers that port with the
 router. Add `--listen 127.0.0.1:6007` to use a fixed port.
 
 New devices appear as **Unverified** in the router directory. Sign in and
-choose **Verify and open** to open a device and enable workspace forwarding
+choose **Verify and unfold** on the device group (or **Verify** in Online
+devices) to verify the device in place and enable workspace forwarding
 and peer access. The router remembers the full node ID across reconnects,
 workspace reloads and router restarts. Devices first seen before upgrading
 also need this one-time verification.
