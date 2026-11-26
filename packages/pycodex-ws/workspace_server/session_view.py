@@ -258,7 +258,11 @@ class WebSessionView:
                 "spinner": self._spinner_status,
                 "title": self._title,
                 "turn_count": len(self._turns),
-                "last_assistant": preview or _last_assistant_text(self._turns),
+                "last_assistant": (
+                    self._input_request.visualize()
+                    if self._input_request is not None
+                    else (preview or _last_assistant_text(self._turns))
+                ),
                 **cached[1],
                 **self._context_usage(),
             }
@@ -322,6 +326,7 @@ class WebSessionView:
             return
         if isinstance(event, InputRequestedEvent):
             self._input_request = event
+            self._set_spinner_status("")
             return
         if isinstance(event, InputResolvedEvent):
             self._input_request = None
@@ -653,8 +658,10 @@ def session_timing(turns):
 
 def _last_assistant_text(turns: "typing.Iterable[typing.Dict[str, object]]") -> str:
     for turn in reversed(list(turns)):
-        if str(turn.get("kind") or "assistant") == "control":
+        if str(turn.get("kind") or "assistant") in ("control", "compaction"):
             continue
+        if turn.get("status") == "error" and turn.get("error"):
+            return "Error: " + str(turn["error"]).strip()
         text = str(turn.get("thinking") or turn.get("response") or "").strip()
         if text:
             return text

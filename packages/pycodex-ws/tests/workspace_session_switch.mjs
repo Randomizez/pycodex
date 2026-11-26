@@ -113,9 +113,9 @@ globalThis.fetch = async (path, options = {}) => {
 async function checkClosingActiveSession() {
   updateSessions([{id: "a", running: false, last_user_at: 1}, {id: "b", running: true}]);
   assert.equal(ui.activeId, "a");
-  assert.equal(document.title, "● Workspace");
+  assert.equal(document.title, "Workspace");
   updateSessions([{id: "a", running: false}, {id: "b", running: true}]);
-  assert.equal(document.title, "● Workspace");
+  assert.equal(document.title, "Workspace");
   renderSnapshot(snapshot("a"));
   assert.equal(cwdName.textContent, "a");
   assert.equal(cwdLabel.hidden, true);
@@ -200,7 +200,7 @@ async function checkClosingActiveSession() {
   assert.equal(stateForSession("a").customizeAgent, true);
   assert.equal(bannerSyncCount, syncBeforeSetup + 1);
   updateSessions([{id: "a", running: true}]);
-  assert.equal(document.title, "● Workspace");
+  assert.equal(document.title, "Workspace");
   updateSessions([]);
   assert.equal(document.title, "Workspace");
 }

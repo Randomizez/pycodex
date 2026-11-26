@@ -11,6 +11,7 @@ import {createSessionBanners, loadEmbeddedBanners} from "./banners.mjs";
 
 const log = document.getElementById("log");
 const spinner = document.getElementById("spinner");
+const notifyToggle = document.getElementById("notifyToggle");
 const queueHint = document.getElementById("queueHint");
 const steerHint = document.getElementById("steerHint");
 const enqueueHint = document.getElementById("enqueueHint");
@@ -65,6 +66,7 @@ let contentViewsActive = false;
 let resizeStart = null;
 let spinnerText = "";
 let toastTimer = null;
+let notificationSwPromise = null;
 const frontendEvents = new EventTarget();
 let lastFrontendSessionId = "";
 let editingContextId = null;
@@ -301,17 +303,17 @@ function showToast(text) {
 }
 
 function updateSpinnerNotifyUi() {
-  const state = stateForSession(sessionUI.activeId);
-  const enabled = Boolean(spinnerText && state.notifyWhenDone);
-  spinner.classList.toggle("notify-enabled", enabled);
-  spinner.setAttribute("aria-checked", enabled ? "true" : "false");
-  if (!spinnerText) {
-    spinner.title = "Spinner is idle";
-  } else if (enabled) {
-    spinner.title = "Notify when done is on";
-  } else {
-    spinner.title = "Notify when done is off";
-  }
+  const running = Boolean(spinnerText && !spinnerText.startsWith("poll error:"));
+  const enabled = Boolean(running && stateForSession(sessionUI.activeId).notifyWhenDone);
+  const title = !running ? "" : enabled
+    ? "Completion notification on — click to cancel"
+    : "Click to notify when done";
+  spinner.title = title;
+  if (!notifyToggle) return;
+  notifyToggle.hidden = !running;
+  notifyToggle.classList.toggle("notify-enabled", enabled);
+  notifyToggle.setAttribute("aria-checked", enabled ? "true" : "false");
+  notifyToggle.title = title;
 }
 
 function notificationAvailable() {
@@ -330,23 +332,69 @@ function requestNotificationPermission() {
   }
 }
 
+function ensureNotificationSw() {
+  if (!("serviceWorker" in navigator)) return Promise.resolve(null);
+  if (!notificationSwPromise) {
+    notificationSwPromise = navigator.serviceWorker.register(relativeUrl("sw.js"))
+      .then(() => navigator.serviceWorker.ready)
+      .catch(() => {
+        notificationSwPromise = null;
+        return null;
+      });
+  }
+  return notificationSwPromise;
+}
+
+function plainTextPreview(markdownText, limit = 160) {
+  const raw = String(markdownText || "").trim();
+  if (!raw) return "";
+  const container = document.createElement("div");
+  renderMarkdownInto(container, raw);
+  const text = (container.textContent || "").replace(/\s+/g, " ").trim();
+  return text.length > limit ? text.slice(0, limit - 1).trimEnd() + "…" : text;
+}
+
+async function showSessionNotification(label, body, sessionId) {
+  const tag = `pycodex-workspace-done-${sessionId}`;
+  try {
+    const notice = new Notification(label, {body, tag});
+    notice.onclick = () => {
+      window.focus();
+      if (sessionUI.activeId !== sessionId) selectSession(sessionId);
+      notice.close();
+    };
+    return;
+  } catch (_error) {
+    // Mobile Chromium (Android Edge/Chrome) and standalone PWAs require ServiceWorkerRegistration.showNotification().
+  }
+  const registration = await ensureNotificationSw();
+  if (!registration || typeof registration.showNotification !== "function") return;
+  try {
+    await registration.showNotification(label, {
+      body,
+      tag,
+      data: {sessionId, url: window.location.href},
+    });
+  } catch (_error) {
+    // Notification display is best-effort only.
+  }
+}
+
 function notifySessionDone(sessionId, sessionSummary = null) {
   if (!sessionId) return;
   const state = stateForSession(sessionId);
   if (!state.notifyWhenDone) return;
   state.notifyWhenDone = false;
+  renderTabs();
+  updateSpinnerNotifyUi();
   if (!notificationAvailable() || Notification.permission !== "granted") return;
   const session = sessionSummary || sessionById(sessionId);
   const title = (session && session.title) || "pycodex";
-  const lastAssistant = (session && session.last_assistant) || "Done.";
-  try {
-    new Notification(`session: ${title}`, {
-      body: lastAssistant,
-      tag: `pycodex-workspace-done-${sessionId}`,
-    });
-  } catch (_error) {
-    return;
-  }
+  const label = sessionUI.workspaceTitle && sessionUI.workspaceTitle !== title
+    ? `${title} · ${sessionUI.workspaceTitle}`
+    : title;
+  const body = plainTextPreview(session && session.last_assistant) || "Done.";
+  showSessionNotification(label, body, sessionId);
 }
 
 function isSessionRunning(sessionId) {
@@ -359,41 +407,49 @@ function isSessionRunning(sessionId) {
 async function toggleSpinnerNotification() {
   const sessionId = sessionUI.activeId;
   if (!sessionId || !isSessionRunning(sessionId)) {
-    showToast("notify-on-done unavailable");
+    showToast("Only available while running");
     return;
   }
   const state = stateForSession(sessionId);
   if (state.notifyWhenDone) {
     state.notifyWhenDone = false;
-    showToast("notify-on-done canceled");
+    showToast("Notification canceled");
     updateSpinnerNotifyUi();
+    renderTabs();
     return;
   }
   if (!notificationAvailable()) {
-    showToast("browser notifications unavailable");
+    showToast(window.isSecureContext === false
+      ? "Notifications require HTTPS or localhost"
+      : "Browser notifications unavailable");
     return;
   }
   if (Notification.permission === "denied") {
-    showToast("browser notifications blocked");
+    showToast("Browser notifications are blocked");
     return;
   }
   state.notifyWhenDone = true;
-  showToast("notify-on-done enabled");
+  showToast("Will notify when done");
   updateSpinnerNotifyUi();
+  renderTabs();
   if (Notification.permission !== "granted") {
     const permission = await requestNotificationPermission();
     if (permission !== "granted") {
       state.notifyWhenDone = false;
-      showToast("notify-on-done canceled");
+      showToast("Notification permission not granted");
       updateSpinnerNotifyUi();
+      renderTabs();
       return;
     }
   }
   if (!isSessionRunning(sessionId)) {
     state.notifyWhenDone = false;
-    showToast("notify-on-done canceled");
+    showToast("Session already finished");
+  } else {
+    ensureNotificationSw();
   }
   updateSpinnerNotifyUi();
+  renderTabs();
 }
 
 function resizePrompt() {
@@ -438,8 +494,9 @@ function renderSessionList(container, mobile) {
     tab.classList.toggle("completed", Boolean(session.last_final_id));
     const title = session.title || `Session ${index + 1}`;
     const status = session.running ? "Running" : session.last_final_id ? "Finished" : "Idle";
+    const notifyArmed = Boolean(session.running && stateForSession(sessionId).notifyWhenDone);
     const replyAge = formatReplyAge(session);
-    const description = `${title} · ${status}${replyAge ? ` · ${replyAge}` : ""}${session.unread ? " · Unread reply" : ""}`;
+    const description = `${title} · ${status}${replyAge ? ` · ${replyAge}` : ""}${notifyArmed ? " · Notify when done" : ""}${session.unread ? " · Unread reply" : ""}`;
     const nextTitle = mobile ? description : title;
     if (tab.title !== nextTitle) tab.title = nextTitle;
     const selectedAttr = mobile ? "aria-pressed" : "aria-selected";
@@ -461,6 +518,8 @@ function renderSessionList(container, mobile) {
       if (labelText.textContent !== title) labelText.textContent = title;
       const labelTitle = active ? "Click to rename session" : title;
       if (label.title !== labelTitle) label.title = labelTitle;
+      const notifyIcon = tab.querySelector(".tab-notify-icon");
+      if (notifyIcon) notifyIcon.hidden = !notifyArmed;
       const age = tab.querySelector(".session-reply-age");
       if (age.textContent !== replyAge) age.textContent = replyAge;
       const close = tab.querySelector(".tab-close");
@@ -921,6 +980,12 @@ splitter.addEventListener("pointerup", endResize);
 splitter.addEventListener("pointercancel", endResize);
 splitter.addEventListener("dblclick", centerSplit);
 spinner.addEventListener("click", toggleSpinnerNotification);
+if (notifyToggle) notifyToggle.addEventListener("click", toggleSpinnerNotification);
+navigator.serviceWorker?.addEventListener("message", event => {
+  if (event.data?.type === "pycodex:select-session" && event.data.sessionId) {
+    selectSession(event.data.sessionId);
+  }
+});
 for (const container of [tabsEl, mobileSessionDots]) {
   container.addEventListener("click", event => {
     const tab = event.target.closest("[data-session-id]");

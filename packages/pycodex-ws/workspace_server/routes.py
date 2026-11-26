@@ -68,6 +68,25 @@ class WorkspaceRouteContext:
     workspace_id: "typing.Optional[str]" = None
 
 
+_NOTIFICATION_SW_JS = """self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", event => event.waitUntil(self.clients.claim()));
+self.addEventListener("notificationclick", event => {
+  event.notification.close();
+  const data = event.notification.data || {};
+  event.waitUntil(
+    self.clients.matchAll({type: "window", includeUncontrolled: true}).then(list => {
+      const target = list.find(client => client.url.startsWith(self.registration.scope)) || list[0];
+      if (target && "focus" in target) {
+        if (data.sessionId) target.postMessage({type: "pycodex:select-session", sessionId: data.sessionId});
+        return target.focus();
+      }
+      if (data.url && self.clients.openWindow) return self.clients.openWindow(data.url);
+    })
+  );
+});
+"""
+
+
 def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), vscode=None):
     if vscode is None and sharing.password:
         vscode = getattr(sharing, "vscode", None)
@@ -125,6 +144,38 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
 
     async def favicon(request: Request) -> Response:
         return Response(status_code=204)
+
+    async def service_worker(request: Request) -> Response:
+        workspace(request)
+        return Response(
+            b"" if request.method == "HEAD" else _NOTIFICATION_SW_JS.encode("utf-8"),
+            media_type="text/javascript",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    async def web_manifest(request: Request) -> Response:
+        title = workspace(request).title or "pycodex"
+        body = json.dumps(
+            {
+                "name": title,
+                "short_name": title,
+                "start_url": "./",
+                "scope": "./",
+                "display": "standalone",
+            },
+            ensure_ascii=False,
+        ).encode("utf-8")
+        return Response(
+            b"" if request.method == "HEAD" else body,
+            media_type="application/manifest+json",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     async def board(request: Request) -> Response:
         return _board_response(workspace(request).board_path)
@@ -415,6 +466,8 @@ def workspace_routes(resolve_workspace, sharing, prefix="", leading_routes=(), v
         *([Route("/api/help", root_agent_help, methods=["GET"])] if prefix else []),
         route("/", index, ["GET"]),
         *([] if prefix else [route("/favicon.ico", favicon, ["GET"])]),
+        route("/sw.js", service_worker, ["GET", "HEAD"]),
+        route("/manifest.webmanifest", web_manifest, ["GET", "HEAD"]),
         route("/board", board, ["GET", "HEAD"]),
         route("/api/board", board_status, ["GET"]),
         route("/api/views", views, ["GET"]),

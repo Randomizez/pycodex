@@ -748,3 +748,49 @@ async def test_idle_spinner_tracks_background_work_updates_without_new_turn():
     session.view.handle_event(RuntimeUpdatedEvent("background_work"), closed_state)
     assert session.snapshot()["spinner"] == ""
     assert session.snapshot()["running"] is False
+
+
+def test_web_session_summary_tracks_error_and_input_request_for_notifications():
+    from pycodex.events import (
+        InputRequestedEvent,
+        InputResolvedEvent,
+        MessagesAddedEvent,
+        TurnCompletedEvent,
+        TurnFailedEvent,
+        TurnStartedEvent,
+    )
+    from workspace_server.session_view import WebSessionView
+
+    view = WebSessionView()
+    view.handle_event(TurnStartedEvent("t1", (UserMessage("hi", turn_id="t1"),)))
+    view.handle_event(MessagesAddedEvent("t1", (AssistantMessage("First reply", turn_id="t1"),)))
+    view.handle_event(TurnCompletedEvent("t1", 1, "First reply", 0))
+    assert view.summary()["last_assistant"] == "First reply"
+    assert view.summary()["running"] is False
+
+    # Input request clears spinner (running -> False) and exposes the prompt text via last_assistant.
+    view.handle_event(TurnStartedEvent("t2", (UserMessage("deploy", turn_id="t2"),)))
+    assert view.summary()["running"] is True
+    view.handle_event(
+        InputRequestedEvent(
+            request_id="perm-1",
+            request_kind="permissions",
+            other=False,
+            permissions={"reason": "Run deployment script"},
+        )
+    )
+    assert view.summary()["running"] is False
+    assert "Run deployment script" in view.summary()["last_assistant"]
+
+    # Failed turn surfaces its error text instead of stale previous-turn reply.
+    view.handle_event(InputResolvedEvent(request_id="perm-1"))
+    view.handle_event(TurnFailedEvent("t2", 1, "HTTP 502 Bad Gateway", "HTTPError", 0))
+    assert view.summary()["running"] is False
+    assert view.summary()["last_assistant"] == "Error: HTTP 502 Bad Gateway"
+
+    # Subsequent completed turn restores normal reply text.
+    view.handle_event(TurnStartedEvent("t3", (UserMessage("retry", turn_id="t3"),)))
+    view.handle_event(MessagesAddedEvent("t3", (AssistantMessage("Deployed cleanly", turn_id="t3"),)))
+    view.handle_event(TurnCompletedEvent("t3", 1, "Deployed cleanly", 0))
+    assert view.summary()["last_assistant"] == "Deployed cleanly"
+

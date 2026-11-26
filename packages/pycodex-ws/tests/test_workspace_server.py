@@ -1128,6 +1128,12 @@ def test_workspace_registry_crud_and_duplicate_state_path(tmp_path):
         assert (
             "Canvas pending" in browser.get("/w/{}/board".format(workspace["id"])).text
         )
+        sw = browser.get("/w/alpha/sw.js")
+        assert sw.status_code == 200
+        assert "notificationclick" in sw.text
+        manifest = browser.get("/w/alpha/manifest.webmanifest")
+        assert manifest.status_code == 200
+        assert manifest.json()["display"] == "standalone"
         assert browser.get("/w/alpha/").status_code == 200
         assert browser.delete("/api/workspaces/alpha").status_code == 200
         assert browser.get("/w/alpha/api/session").status_code == 404

@@ -120,7 +120,6 @@ export function createSessionsUI({
         }
       }
     }
-    document.title = (sessions.some(session => session.running) ? "● " : "") + workspaceTitle;
     if (!activeSessionId && sessions.length) {
       activeSessionId = sessions[0].id || "";
     }
@@ -363,6 +362,7 @@ export function createSessionsUI({
   return {
     get activeId() { return activeSessionId; },
     get sessions() { return sessions; },
+    get workspaceTitle() { return workspaceTitle; },
     sessionState, sessionById, stateForSession,
     restoreSessionScroll, saveActiveSessionUiState, saveScroll, updateSessions, renderSnapshot, pollSession,
     createSession, closeSession, switchSession,
