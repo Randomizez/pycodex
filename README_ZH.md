@@ -1,153 +1,65 @@
 # pycodex
 
-[English](README.md) · [0.7.0 发布说明（英文）](https://github.com/Randomizez/pycodex/blob/v0.7.0/docs/RELEASE_0.7.0.md)
+[English](README.md) · [0.7.4 发布说明（英文）](https://github.com/Randomizez/pycodex/blob/v0.7.4/docs/RELEASE_0.7.4.md)
 
-pycodex 用 Python 实现 [Codex](https://github.com/openai/codex) 编程 Agent，
-可在终端、浏览器或自己的 Python 程序中使用，支持文件编辑、命令执行、
-多 Agent 协作和会话恢复。支持范围及与上游的差异见[对齐文档](docs/ALIGNMENT.md)。
+用 Python 实现的 [Codex](https://github.com/openai/codex) 编程 Agent，自带浏览器工作区、
+实时 HTML Canvas、多模型/多运行时支持，以及完整的 CLI 与 Python SDK。
 
-## 安装
-
-| 包 | 内容 | Python |
-| --- | --- | --- |
-| `python-codex` | CLI 和 Python API | 3.6.2+ |
-| `pyagy` | Core 与 Antigravity CLI（`agy`）协议兼容 harness | 3.7+ |
-| `pycodex-ws` | Core、`pyagy`、浏览器工作区和可选飞书集成 | 3.7+ |
-
-使用 CLI 或 Python API：
-
-```bash
-python3 -m pip install --upgrade python-codex
-```
-
-使用浏览器工作区则安装 `pycodex-ws`，它会同时安装匹配版本的 `python-codex` 和 `pyagy`：
+## 快速开始
 
 ```bash
 python3 -m pip install --upgrade pycodex-ws
+pycodex-ws
 ```
 
-## 配置模型
+在浏览器打开 `http://127.0.0.1:6007`，点击 **Create workspace**，后续操作全部在前端完成。
 
-可从 [config_examples/](config_examples/README.md) 选择 Responses、StepFun、
-Chat Completions、Claude Messages 或 Gemini 模板。向 Agent 提供 endpoint 和 key
-（StepFun Coding Plan 已内置 endpoint），让它按目录说明安装配置或 profile 并验证连接。
+- **已经在用 Codex CLI？** 零配置直接开跑——`pycodex-ws` 会自动继承
+  `~/.codex/config.toml`、`~/.codex/.env`、`AGENTS.md`、skills 和 `~/.codex/sessions`。
+- **还没有 Codex 配置？** 在 `~/.codex/config.toml` 写入 `model = "gpt-5.4"` 并设置
+  `OPENAI_API_KEY`（环境变量或 `~/.codex/.env`）；或直接把
+  [config_examples/](config_examples/README.md) 连同你的 endpoint 和 key 交给任意 Agent 帮你配好。
+- **偏好纯终端？** 在项目目录下运行 `pycodex` 即可（仅需 CLI / Python API 且兼容 Python 3.6.2+
+  时可只装 `python-codex`）。
 
-创建 `~/.codex/config.toml`。以 OpenAI 为例：
+## 特色功能
 
-```toml
-model = "gpt-5.4"
-model_provider = "openai"
-```
+- **无痛继承 Codex 生态** — 共用 `~/.codex` 配置、`AGENTS.md`、skills 与会话历史；支持运行中直接
+  steer 纠偏、`/queue` 排队、多子 Agent 协作与自动压缩。
+- **多模型协议与多运行时** — 支持 OpenAI Responses、Chat Completions（StepFun、vLLM、各类网关）、
+  Claude Messages 和 Gemini API，并内置 [`pyagy`](packages/pyagy/README.md)（Antigravity CLI 协议兼容）
+  运行时；浏览器内新建会话时可随时切换 profile，改配置无需重启。
+- **实时 HTML Canvas 与代码/Diff 查看器** — 对话旁实时渲染 HTML 看板、图表与报告；内置源码、
+  Markdown、图片和 Git diff 查看器，选中代码一键 **Insert into chat**，加 `--password` 还可启用内置 VS Code。
+- **用 Agent 定制前端（`Customize Agent`）** — 点击 **Settings → Customize Agent**，通过对话
+  一键安装可选特性（如 `@/$` skill 补全、文件上传、语音输入）或魔改界面 CSS/JS，随时可用 `?builtin=1` 回退。
+- **多机统一 Router 与跨节点借用 Profile** — 多台机器通过 `pycodex-router` 汇聚到同一浏览器目录，
+  支持带密码分享工作区、**Peer Profiles**（工具和文件跑在本地，模型请求经 router 代理调用另一台已验证设备的
+  profile，API key 不离机），以及网页端 **Settings → Update & reboot** 原地升级重启。
+- **External Call、飞书卡片与加密配置迁移** — 支持把远端终端接入 Web 会话（**External Call**）、
+  通过飞书卡片 `/link` 在手机上随时交互，以及用 `pycodex --put` / `--call` 加密迁移整套配置与 skills。
 
-API key 通过环境变量或 `~/.codex/.env` 提供：
+## 进阶配置交给 Agent
+
+不需要手写复杂 JSON 或记参数，启动后直接在浏览器对话里让 Agent 帮你完成：
+
+- **接入其他模型 / 新增 Profile（Claude、Gemini、StepFun、`pyagy`、vLLM）**：
+  > 请按 `config_examples/README.md` 用我的 endpoint 和 API key 新增一个 profile，并用 `pycodex doctor` 验证可用。
+- **定制工作区界面 / 安装扩展功能**：
+  点开 **Settings → Customize Agent**，浏览内置功能目录，直接告诉 Agent 你想开启或修改什么。
+- **配置多机 Router、密码分享、External Call 或飞书接入**：
+  > 请参考 `packages/pycodex-ws/README.md`，帮我配置好 `pycodex-router` / 飞书 `/link` / 工作区分享。
+
+## CLI 与 Python API
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
+pycodex                       # 进入交互式终端会话
+pycodex "概括这个仓库。"        # 执行单次任务
+pycodex doctor                # 检查配置与连通性
 ```
 
-其他 provider 需要配置 `base_url` 和 `env_key`，并在 profile 或 provider 中
-用 `compat_api` 选择接口：
-
-| `compat_api` | 接口 |
-| --- | --- |
-| `"none"`（默认） | Responses |
-| `"chat_completions"` | Chat Completions，包括 Step |
-| `"messages"` | Claude Messages |
-| `"gemini"` | Gemini API |
-
-旧配置 `use_chat_completion = true/false` 仍可用，分别对应 `chat_completions/none`。
-
-用 `--profile NAME` 选择同目录的 `NAME.config.toml` 或内嵌的 `[profiles.NAME]`；
-用 `--config PATH` 指定其他配置文件。`pycodex doctor` 可检查配置和连接。
-浏览器工作区会为新会话动态读取 profile，修改配置后无需重启。
-使用 `harness = "pyagy"` 时，Web 和飞书用当前的完整思考文本或摘要作临时预览，
-收到下一段正文后显示累计的回复正文。浏览器在同一个 Markdown 块中显示预览和回复，
-长预览可在约四行高的区域内滚动，定稿后显示全文。
-原生 pycodex 通过独立事件传递推理，预览显示正文。
-
-详见[配置文档](docs/CONTEXT.md#配置读取与-profile)和
-[Gemini 配置示例](docs/responses_server/README.md#gemini-api)。
-Gemini 4 Argon 和 Carbon 内置基于 Antigravity 编码指导适配的提示词。
-Gemini 工具参数支持流式接收，完整调用收到后再执行工具。
-
-## 使用 CLI
-
-在项目目录中运行：
-
-```bash
-pycodex
-pycodex "概括这个仓库。"
-pycodex --profile my_profile "审查最近的改动。"
-pycodex --json "概括这个仓库。"
-```
-
-不带问题时进入交互会话，其他命令执行单次任务。
-网页 skill 补全是 [optional feature](packages/pycodex-ws/workspace_server/optional_features/skill-completion/README.md)：
-通过 Customize 应用 `skill-completion` 后启用 @/$ 名称前缀补全。
-Agent 可以修改文件、执行命令，使用当前用户的系统权限。
-
-| 命令 | 用途 |
-| --- | --- |
-| `/model`、`/effort` | 查看或切换模型及推理强度 |
-| `/cd <directory>` | 空闲时切换目录 |
-| `/title`、`/history` | 管理标题、查看历史 |
-| `/resume` | 列出或恢复已保存会话 |
-| `/retry` | 重试上一次失败的模型请求 |
-| `/compact` | 压缩历史，释放上下文 |
-| `/queue <message>` | 等当前任务完成后再执行 |
-
-`/retry 429|502` 对这两个错误码中的任意一个无限重试。`/retry *` 对所有模型请求错误
-无限重试，包括连接中断。用 `/retry off` 关闭无限重试。
-
-手动与自动压缩共用摘要流程，保留工具声明、指令前缀和普通采样的 tool choice。
-Agent 可以在内存中调用当前会话的工具并生成摘要。成功时写入一条摘要 checkpoint，
-再替换活跃历史。压缩报错时保存已经执行的工具调用及结果，供重试使用。
-
-Agent 工作时可直接发送消息调整方向，或用 `/queue` 排队。
-会话默认保存在 `~/.codex/sessions`。
-Ctrl+C 或 Ctrl+D 会在已发出的操作完成后退出。完整选项见 `pycodex --help`。
-
-接入本地 vLLM 服务：
-
-```bash
-pycodex --vllm-endpoint http://127.0.0.1:18000
-```
-
-## 使用浏览器工作区
-
-安装 `pycodex-ws` 后，创建 `workspaces.json`：
-
-```json
-{
-  "workspaces": [
-    {"id": "demo", "work_dir": ".", "state_path": "demo", "enable_board": true}
-  ]
-}
-```
-
-启动服务并保持终端打开：
-
-```bash
-pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
-```
-
-访问 `http://127.0.0.1:6007`。工作区沿用 CLI 的模型配置，提供对话、
-实时 HTML Canvas 和文件/diff 查看器。聊天每两秒轮询更新，完整回复按 Markdown 渲染。
-打开或切换会话时，输入框上方显示加载提示，直到最新状态加载完成；
-即使缓存中的旧消息已立即显示，也能看到页面仍在更新。
-点击会话旁的 × 并确认后，才会将该会话从工作区移除。
-每个会话标题下方按分钟显示距离最后活动的时间（如 `1h 12m ago`），并自动更新。
-点击文件链接查看代码，选中文字后
-用 **Insert into chat** 加入下一条消息。
-`report.html#results` 这样的本地 HTML 链接会在预览中直接定位到对应章节。
-
-设置菜单支持界面定制和带密码的工作区分享。会话操作、存储和飞书配置见
-[工作区指南](packages/pycodex-ws/README.md)。
-
-## 使用 Python API
-
-将以下代码保存为 `example.py`，运行 `python3 example.py`。
-它会使用前面的模型配置和内置工具：
+<details>
+<summary>最小 Python API 示例</summary>
 
 ```python
 from contextlib import closing
@@ -174,29 +86,20 @@ async def main():
 run_async(main())
 ```
 
-`AgentsManager` 创建 runtime，`submit_input` 提交任务，等待 `receipt.future` 获取结果。
-模型和工具从 `pycodex.events` 导入 `EventScope`，调用 `EventScope.emit(event)` 通知当前会话的订阅者。
-每个订阅者收到独立副本。订阅者在 turn 中抛出异常时，事件循环报告错误，Agent 继续执行。
-自定义模型客户端通过 `ModelResponse.usage` 返回用量，
-供 goal 记账和自动压缩使用。
-示例结束时会关闭 runtime 和本地兼容服务。
-自定义模型、工具与集成方式见[运行时文档](docs/RUNTIME.md#ownership)。
+</details>
 
-## 更多功能
+## 包结构与文档
 
-- [Portable 配置](docs/PORTABLE.md)：将配置、指令和 skills 加密迁移到其他机器。
-- [界面定制](packages/pycodex-ws/README.md#customize-the-interface)：通过 Agent 对话或 CSS/JavaScript 修改工作区。
-- [Responses 兼容服务](docs/responses_server/README.md)：通过 Responses API 接入支持的模型后端。
-- [重试与备用模型](docs/RUNTIME.md#responses-reliability)：配置模型故障后的恢复策略。
+| 包 | 内容 | Python |
+| --- | --- | --- |
+| `pycodex-ws` | 浏览器工作区、Router、可选飞书集成，自动包含匹配版本的 `python-codex` 与 `pyagy`（[指南](packages/pycodex-ws/README.md)） | 3.7+ |
+| `pyagy` | Core + Antigravity CLI（`agy`）协议兼容 harness（[指南](packages/pyagy/README.md)） | 3.7+ |
+| `python-codex` | 核心 CLI、Python API 与 Responses 兼容服务 | 3.6.2+ |
 
-## 开发
-
-在仓库根目录运行：
+- 配置与使用：[配置模板](config_examples/README.md) · [配置与 profile](docs/CONTEXT.md#配置读取与-profile) · [Responses 兼容服务](docs/responses_server/README.md) · [Portable 迁移](docs/PORTABLE.md)
+- 架构与开发：[上游对齐说明](docs/ALIGNMENT.md) · [运行时架构](docs/RUNTIME.md) · [工作区 API](docs/WORKSPACE_API.md) · [开发约定](AGENTS.md) · [测试指南](tests/TESTS.md)
 
 ```bash
 env -u VIRTUAL_ENV uv sync --dev
 env -u VIRTUAL_ENV uv run --dev pytest
 ```
-
-参考[开发约定](AGENTS.md)、[测试指南](tests/TESTS.md)、
-[运行时架构](docs/RUNTIME.md)和[工作区 API](docs/WORKSPACE_API.md)。

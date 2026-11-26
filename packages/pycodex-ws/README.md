@@ -5,16 +5,27 @@ optional Feishu integration for
 [`python-codex`](https://pypi.org/project/python-codex/).
 Requires Python 3.7+ and installs the matching core version.
 
-For changes since 0.6.0 and Python integration updates, see the
-[0.7.0 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.0/docs/RELEASE_0.7.0.md).
+For recent changes, see the
+[0.7.4 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.4/docs/RELEASE_0.7.4.md).
 
 ## Quick start
 
 ```bash
-python3 -m pip install pycodex-ws
+python3 -m pip install --upgrade pycodex-ws
+pycodex-ws
 ```
 
-Create `workspaces.json`:
+Open `http://127.0.0.1:6007` and click **Create workspace** (this creates and
+saves `./workspaces.json` automatically). Model configuration is automatically
+inherited from `~/.codex/config.toml` and `~/.codex/.env`. Use
+`python3 -m workspace_server` if `pycodex-ws` is not on `PATH`.
+
+Keep stdin open while the server runs; EOF initiates graceful shutdown. On
+Windows you can leave the console idle and press Ctrl+Z followed by Enter to
+send EOF, or close the stdin pipe if using a launcher.
+
+To pre-configure workspaces or customize the bind address, create
+`workspaces.json` and pass `--listen` / `--workspace-config`:
 
 ```json
 {
@@ -27,12 +38,6 @@ Create `workspaces.json`:
 ```bash
 pycodex-ws --listen 127.0.0.1:6007 --workspace-config workspaces.json
 ```
-
-Open `http://127.0.0.1:6007`. Use `python3 -m workspace_server` if the command
-is not on `PATH`. Keep stdin open while the server runs; EOF initiates shutdown.
-On Windows you can leave the console idle. Press Ctrl+Z followed by Enter
-to send EOF, or close the stdin pipe if using a launcher.
-Model configuration comes from `~/.codex/config.toml`.
 
 Start the router with `pycodex-router --password` and enter the browser login
 password at the hidden prompt. With redirected stdin, the router reads one line.
@@ -205,6 +210,8 @@ Paths in `workspaces.json` resolve from the configuration directory.
 `state_path` is a unique filename prefix: the example saves sessions in
 `demo.pycodex-ws.json`, file views in `demo.pycodex-views.json`, and Canvas in
 `demo.html`. Suffixes are appended to the complete prefix, including any dots.
+When creating a workspace from the browser without specifying a state prefix,
+it defaults to `~/.pycodex/workspaces/pcws-<id>`.
 
 Set `enable_board` to `false` to disable Canvas while retaining conversations
 and file views. Session directories and history survive server restarts;
