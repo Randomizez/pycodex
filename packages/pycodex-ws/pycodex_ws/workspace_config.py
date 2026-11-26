@@ -1,7 +1,6 @@
 """Workspace definitions and configuration paths shared by web and router."""
 
 import json
-import tempfile
 import typing
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,7 +8,7 @@ from uuid import uuid4
 
 
 def default_state_path() -> Path:
-    return Path(tempfile.gettempdir()) / "pcws-{0}".format(uuid4().hex[:8])
+    return Path.home() / ".pycodex" / "workspaces" / "pcws-{0}".format(uuid4().hex[:8])
 
 
 def workspace_file_path(

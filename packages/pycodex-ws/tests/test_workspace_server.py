@@ -1120,7 +1120,9 @@ def test_workspace_registry_crud_and_duplicate_state_path(tmp_path):
         assert generated.status_code == 200
         workspace = generated.json()["workspace"]
         assert workspace["id"]
-        assert workspace["state_path"].startswith("/tmp/pcws-")
+        generated_state = Path(workspace["state_path"])
+        assert generated_state.parent == (Path.home() / ".pycodex" / "workspaces").resolve()
+        assert generated_state.name.startswith("pcws-")
         assert workspace["board_path"] == workspace["state_path"] + ".html"
         assert workspace["enable_board"] is True
         assert (

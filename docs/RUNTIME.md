@@ -1143,7 +1143,9 @@ workspace server clears all unread dots. A read confirmation names the final it
 displayed, so a delayed confirmation cannot clear a newer reply or error.
 
 A workspace has one `state_path` filename prefix and an `enable_board` boolean
-that defaults to true. The prefix identifies the workspace and appends
+that defaults to true. When a workspace is created without an explicit
+`state_path`, `default_state_path()` allocates a persistent prefix under
+`~/.pycodex/workspaces/pcws-<8hex>`. The prefix identifies the workspace and appends
 `.pycodex-ws.json`, `.pycodex-views.json` and `.html` for session state, file views
 and Canvas respectively, preserving any suffix already in the prefix.
 `board_path` is derived from that prefix, not a second configurable input.
