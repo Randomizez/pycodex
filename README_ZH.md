@@ -1,6 +1,6 @@
 # pycodex
 
-[English](README.md) · [0.7.4 发布说明（英文）](https://github.com/Randomizez/pycodex/blob/v0.7.4/docs/RELEASE_0.7.4.md)
+[English](README.md) · [0.7.5 发布说明（英文）](https://github.com/Randomizez/pycodex/blob/v0.7.5/docs/RELEASE_0.7.5.md)
 
 用 Python 实现的 [Codex](https://github.com/openai/codex) 编程 Agent，自带浏览器工作区、
 实时 HTML Canvas、多模型/多运行时支持，以及完整的 CLI 与 Python SDK。

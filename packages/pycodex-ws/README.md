@@ -6,7 +6,7 @@ optional Feishu integration for
 Requires Python 3.7+ and installs the matching core version.
 
 For recent changes, see the
-[0.7.4 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.4/docs/RELEASE_0.7.4.md).
+[0.7.5 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.5/docs/RELEASE_0.7.5.md).
 
 ## Quick start
 

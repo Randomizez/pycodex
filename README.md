@@ -1,6 +1,6 @@
 # pycodex
 
-[中文](README_ZH.md) · [0.7.4 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.4/docs/RELEASE_0.7.4.md)
+[中文](README_ZH.md) · [0.7.5 release notes](https://github.com/Randomizez/pycodex/blob/v0.7.5/docs/RELEASE_0.7.5.md)
 
 A Python implementation of the [Codex](https://github.com/openai/codex) coding agent
 with a built-in browser workspace, live HTML Canvas, multi-provider support, and a
