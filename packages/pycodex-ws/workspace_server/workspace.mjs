@@ -393,7 +393,7 @@ function notifySessionDone(sessionId, sessionSummary = null) {
   const label = sessionUI.workspaceTitle && sessionUI.workspaceTitle !== title
     ? `${title} · ${sessionUI.workspaceTitle}`
     : title;
-  const body = plainTextPreview(session && session.last_assistant) || "Done.";
+  const body = plainTextPreview(session && (session.last_notice || session.last_assistant)) || "Done.";
   showSessionNotification(label, body, sessionId);
 }
 

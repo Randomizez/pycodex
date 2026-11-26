@@ -581,6 +581,7 @@ class WorkspaceSessionManager:
                     "spinner": summary.get("spinner") or "",
                     "turn_count": summary.get("turn_count") or 0,
                     "last_assistant": summary.get("last_assistant") or "",
+                    "last_notice": summary.get("last_notice") or "",
                     "last_message_at": summary.get("last_message_at", 0),
                     "last_user_at": summary.get("last_user_at", 0),
                     "context_remaining_percent": summary.get(
