@@ -702,3 +702,20 @@ def test_gemini_outbound_request_gzip_and_proxy_fallback(monkeypatch):
     finally:
         rs_transport._GZIP_UNSUPPORTED_BASE_URLS.discard(base_v1)
         server.stop()
+
+
+def test_encode_gemini_request_body_is_deterministic_across_timestamps(monkeypatch):
+    import gzip
+    import responses_server.transport as rs_transport
+
+    payload = b'{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}'
+    ticks = iter([1_700_000_000.0, 1_700_000_005.0])
+    monkeypatch.setattr("gzip.time.time", lambda: next(ticks))
+
+    first = rs_transport.encode_gemini_request_body(payload, True)
+    second = rs_transport.encode_gemini_request_body(payload, True)
+
+    assert first == second
+    assert first[4:8] == b"\x00\x00\x00\x00"
+    assert gzip.decompress(first) == payload
+    assert rs_transport.encode_gemini_request_body(payload, False) == payload

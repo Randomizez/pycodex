@@ -2,6 +2,7 @@
 
 import gzip
 import http.client
+import io
 import json
 import os
 import ssl
@@ -53,7 +54,18 @@ def mark_gzip_unsupported(base_url: "str") -> "None":
 
 
 def encode_gemini_request_body(raw_bytes: "bytes", compress: "bool") -> "bytes":
-    return gzip.compress(raw_bytes, compresslevel=6) if compress else raw_bytes
+    if not compress:
+        return raw_bytes
+    buffer = io.BytesIO()
+    with gzip.GzipFile(
+        filename="",
+        mode="wb",
+        fileobj=buffer,
+        compresslevel=6,
+        mtime=0,
+    ) as handle:
+        handle.write(raw_bytes)
+    return buffer.getvalue()
 
 
 def is_gzip_request_rejected_http_error(
